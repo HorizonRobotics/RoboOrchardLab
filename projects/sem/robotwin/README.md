@@ -73,15 +73,9 @@ First, run RoboTwin to obtain the expert data from the simulation.
 ```bash
 git clone https://github.com/RoboTwin-Platform/RoboTwin.git
 cd RoboTwin
-# git checkout CVPR-Challenge-2025-Round2
-
-# Follow the instructions in the RobotWin code repository to download the required assets
-python3 assets/_download.py
-
-# generate data
-bash run_task.sh ${task_name} ${gpu_id}
+git checkout e71140e9734e69686daa420a9be8b75a20ff4587  # TODO: Support the latest version
 ```
-
+Follow the instructions in the RobotWin code repository to download the required assets and generate data.
 Then, use the following command to package the data into LMDB format for training.
 ```bash
 cd path/to/robo_orchard_lab

@@ -97,7 +97,7 @@ class Lmdb(object):
             self._create_txn()
         data = self.txn.get(idx)
         if data is not None:
-            return pickle.loads(self.txn.get(idx))
+            return pickle.loads(data)
         return None
 
     def __getitem__(self, idx: Union[int, str]) -> bytes:
