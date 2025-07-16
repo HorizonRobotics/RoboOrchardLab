@@ -503,7 +503,7 @@ def build_dataset(config, lazy_init=False):
     )
 
     if ("det" in config["mode"]) and ("grounding" in config["mode"]):
-        g_train_transforms, g_val_transforms = build_transform(config, False)
+        g_train_transforms, _ = build_transform(config, False)
         g_train_dataset = EmbodiedScanDetGroundingDataset(
             data_root=data_root,
             ann_file=train_ann_file,

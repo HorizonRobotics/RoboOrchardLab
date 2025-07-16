@@ -24,7 +24,7 @@ help:
 	@cp -rf $(BUILDDIR)/html $(BUILDDIR)/$(ROBO_ORCHARD_LAB_DOCS_CURRENT_VERSION_ID)
 
 clean:
-	@rm -rf $API_ROOT
+	@rm -rf $(API_ROOT)
 	@rm -rf $(BUILDDIR)/*
 	@rm -rf build/
 

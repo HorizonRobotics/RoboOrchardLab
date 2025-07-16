@@ -57,8 +57,10 @@ class BIP3D(ModelMixin):
                 bias=True,
             )
 
-    def save_model(self, directory: str, model_prefix: str = "model"):
-        super().save_model(directory, model_prefix)
+    def save_model(
+        self, directory: str, model_prefix: str = "model", **kwargs
+    ):
+        super().save_model(directory, model_prefix, **kwargs)
         for module in [self.text_encoder, self.decoder]:
             if hasattr(module, "save_metadata") and callable(
                 module.save_metadata

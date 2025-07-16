@@ -23,4 +23,5 @@ from .layers import (
     ScalarEmbedder,
     UpsampleHead,
 )
+from .processor import SEMProcessor, SEMProcessorCfg
 from .robot_state_encoder import SEMRobotStateEncoder

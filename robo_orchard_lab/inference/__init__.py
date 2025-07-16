@@ -14,26 +14,15 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from . import (
-    dataset,
-    distributed,
-    inference,
-    models,
-    pipeline,
-    utils,
+from .basic import InferencePipeline, InferencePipelineCfg
+from .mixin import (
+    ClassType_co,
+    InferencePipelineMixin,
+    InferencePipelineMixinCfg,
 )
-from .version import __full_version__, __git_hash__, __version__
-
-
-def _set_env():
-    import os
-
-    import torch
-    from accelerate.utils import check_cuda_p2p_ib_support
-
-    if torch.cuda.is_available() and not check_cuda_p2p_ib_support():
-        os.environ["NCCL_P2P_DISABLE"] = "1"
-        os.environ["NCCL_IB_DISABLE"] = "1"
-
-
-_set_env()
+from .multi_arm_manipulation import (
+    MultiArmManipulationInput,
+    MultiArmManipulationOutput,
+    MultiArmManipulationPipeline,
+    MultiArmManipulationPipelineCfg,
+)

@@ -63,6 +63,20 @@ Key Features
    :align: center
    :width: 100%
 
+
+Using the pretrained model
+-----------------------------------
+
+You can easily load and use pre-trained **BIP3D** models.
+
+.. code-block:: python
+
+    import torch
+    from robo_orchard_lab.models import ModelMixin
+
+    # Load the pre-trained BIP3D Tiny Detection model from Hugging Face Hub
+    model: torch.nn.Module = ModelMixin.load_model("hf://HorizonRobotics/SEM-RoboTwin-Tiny")
+
 Resources
 ---------------------
 * **Paper (arXiv):** `SEM: Enhancing Spatial Understanding for Robust Robot Manipulation <https://arxiv.org/abs/2505.16196>`_

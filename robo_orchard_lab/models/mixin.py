@@ -29,6 +29,7 @@ from robo_orchard_core.utils.config import (
 from safetensors.torch import load_file, save_file
 
 from robo_orchard_lab.utils import set_env
+from robo_orchard_lab.utils.huggingface import download_repo
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     in_cwd,
@@ -134,6 +135,7 @@ class ModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         directory: str,
         model_prefix: str = "model",
         allow_shared_tensor: bool = False,
+        required_empty: bool = True,
     ):
         """Saves the model's config and weights to a directory.
 
@@ -154,6 +156,8 @@ class ModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
             allow_shared_tensor: If True, enables the logic to handle
                 tied weights by saving a de-duplicated state dict and a
                 key-sharing map.
+            required_empty (bool): If True, raises an error if the target
+                directory is not empty. Defaults to True.
 
         Raises:
             DirectoryNotEmptyError: If the target directory already exists and
@@ -161,7 +165,7 @@ class ModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         """  # noqa: E501
 
         os.makedirs(directory, exist_ok=True)
-        if not is_empty_directory(directory):
+        if required_empty and not is_empty_directory(directory):
             raise DirectoryNotEmptyError(f"{directory} is not empty!")
 
         config_path = os.path.join(directory, f"{model_prefix}.config.json")
@@ -263,30 +267,7 @@ class ModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         """  # noqa: E501
 
         if directory.startswith("hf://"):
-            from urllib.parse import urlparse
-
-            from huggingface_hub import snapshot_download
-
-            parsed_url = urlparse(directory)
-            token_from_url = parsed_url.username
-
-            repo_id = parsed_url.hostname
-
-            if not repo_id:
-                raise ValueError(f"Invalid Hugging Face Hub URI: {directory}")
-
-            if parsed_url.path:
-                repo_id += parsed_url.path
-
-            with set_env(HF_HUB_DISABLE_PROGRESS_BARS="1"):
-                directory = snapshot_download(
-                    repo_id=repo_id,
-                    # Pass the token extracted from the URL.
-                    # If no token was in the URL, this will be None, and
-                    # huggingface_hub will fall back to env variables/cache.
-                    token=token_from_url,
-                    repo_type="model",
-                )
+            directory = download_repo(directory, repo_type="model")
 
         directory = os.path.abspath(directory)
 

@@ -19,14 +19,19 @@ import re
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import fsspec
 from accelerate import Accelerator
+from huggingface_hub import snapshot_download
+
+from robo_orchard_lab.utils.env import set_env
 
 __all__ = [
     "get_accelerate_project_last_checkpoint_id",
     "accelerator_load_state",
     "AcceleratorState",
+    "download_repo",
 ]
 
 
@@ -223,3 +228,29 @@ class AcceleratorState:
                 setattr(self, key, value)
             else:
                 raise KeyError(f"Key {key} not found in TrainerProgressState.")
+
+
+def download_repo(url: str, repo_type: str) -> str:
+    if not url.startswith("hf://"):
+        raise ValueError("url should starts with hf://")
+    parsed_url = urlparse(url)
+    token_from_url = parsed_url.username
+
+    repo_id = parsed_url.hostname
+
+    if not repo_id:
+        raise ValueError(f"Invalid Hugging Face Hub URI: {url}")
+
+    if parsed_url.path:
+        repo_id += parsed_url.path
+
+    with set_env(HF_HUB_DISABLE_PROGRESS_BARS="1"):
+        directory = snapshot_download(
+            repo_id=repo_id,
+            # Pass the token extracted from the URL.
+            # If no token was in the URL, this will be None, and
+            # huggingface_hub will fall back to env variables/cache.
+            token=token_from_url,
+            repo_type=repo_type,
+        )
+        return directory
