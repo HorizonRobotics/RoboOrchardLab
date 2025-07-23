@@ -18,7 +18,7 @@ import os
 import re
 import warnings
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import fsspec
@@ -230,27 +230,68 @@ class AcceleratorState:
                 raise KeyError(f"Key {key} not found in TrainerProgressState.")
 
 
-def download_repo(url: str, repo_type: str) -> str:
+def download_repo(
+    url: str, repo_type: Literal["model", "dataset", "space"]
+) -> str:
+    """Downloads a repository from the Hugging Face Hub.
+
+    The URL format supports specifying a repository, an optional token,
+    and an optional revision, mimicking pip's git URL syntax.
+
+    URL Format: hf://<token>@<repo_id>@<revision>
+
+    - token (optional): A Hugging Face Hub token.
+
+    - repo_id: The repository ID (e.g., 'meta-llama/Llama-2-7b-chat-hf').
+
+    - revision (optional): A git revision (branch, tag, or commit hash),
+      preceded by an '@'.
+
+    Args:
+        url (str): The URL of the repository in the specified format.
+        repo_type (Literal["model", "dataset", "space"]): The type of the repository ('model', 'dataset', 'space').
+
+    Returns:
+        str: The local directory path where the repository is downloaded.
+
+    Raises:
+        ValueError: If the URL format is invalid.
+    """  # noqa: E501
     if not url.startswith("hf://"):
-        raise ValueError("url should starts with hf://")
-    parsed_url = urlparse(url)
+        raise ValueError("URL should start with hf://")
+
+    # Use rsplit to robustly separate the revision from the base URL.
+    # This correctly handles the user-friendly repo_url@revision format.
+    if "@" in url[5:]:  # Check for '@' beyond the 'hf://' prefix
+        parts = url.rsplit("@", 1)
+        base_url = parts[0]
+        # Heuristic check: if the part after '@' looks like a path, it's likely
+        # part of the repo_id (e.g., hf://user@model/path), not a revision.
+        # A simple check is for '/'. Revisions typically don't contain '/'.
+        if "/" in parts[1] or "=" in parts[1]:  # A simple heuristic
+            base_url = url
+            revision = None
+        else:
+            revision = parts[1]
+    else:
+        base_url = url
+        revision = None
+
+    parsed_url = urlparse(base_url)
+
     token_from_url = parsed_url.username
 
     repo_id = parsed_url.hostname
-
     if not repo_id:
         raise ValueError(f"Invalid Hugging Face Hub URI: {url}")
-
     if parsed_url.path:
         repo_id += parsed_url.path
 
     with set_env(HF_HUB_DISABLE_PROGRESS_BARS="1"):
         directory = snapshot_download(
             repo_id=repo_id,
-            # Pass the token extracted from the URL.
-            # If no token was in the URL, this will be None, and
-            # huggingface_hub will fall back to env variables/cache.
-            token=token_from_url,
             repo_type=repo_type,
+            token=token_from_url,
+            revision=revision,
         )
         return directory

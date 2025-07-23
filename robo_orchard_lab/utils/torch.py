@@ -14,9 +14,12 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from typing import Any
+import contextlib
+from typing import Any, Literal
 
 import torch
+
+__all__ = ["to_device", "switch_model_mode"]
 
 
 def to_device(data: Any, device: torch.device) -> Any:
@@ -53,3 +56,47 @@ def to_device(data: Any, device: torch.device) -> Any:
     # If data is not a tensor or a supported container, return it as is.
     else:
         return data
+
+
+@contextlib.contextmanager
+def switch_model_mode(
+    model: torch.nn.Module, target_mode: Literal["eval", "train"] = "eval"
+):
+    """A context manager to temporarily switch a model to a target mode.
+
+    This context manager ensures that the model is in the `target_mode`
+    within the `with` block, and restores its original training state
+    (`train()` or `eval()`) after exiting the block.
+
+    Args:
+        model (torch.nn.Module): The PyTorch model to manage.
+        target_mode (Literal["eval", "train"], optional): The mode to switch
+            the model to within the context. Defaults to "eval".
+
+    Yields:
+        None: This context manager does not yield any value.
+    """
+    original_mode_is_training = model.training
+
+    if (target_mode == "train" and original_mode_is_training) or (
+        target_mode == "eval" and not original_mode_is_training
+    ):
+        yield
+        return
+
+    try:
+        if target_mode == "eval":
+            model.eval()
+        elif target_mode == "train":
+            model.train()
+        else:
+            raise ValueError(
+                f"Invalid target_mode: '{target_mode}'. "
+                "Must be 'eval' or 'train'."
+            )
+        yield
+    finally:
+        if original_mode_is_training:
+            model.train()
+        else:
+            model.eval()

@@ -32,6 +32,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
 
 from robo_orchard_lab.dataset.robot.columns import (
+    PreservedColumnsKeys,
     PreservedIndexColumns,
     PreservedIndexColumnsKeys,
 )
@@ -135,6 +136,11 @@ class DatasetPackaging:
         features (hg_datasets.Features): The features of the dataset.
         database_driver (str): The database driver to use for the meta
             database. Default is "duckdb".
+        check_timestamp (bool, optional): Whether to check the
+            timestamp of the frames. Timestamps are required for time-based
+            queries and operations. If True, it will raise an error
+            if the timestamp is not set or if timestamp_min is greater
+            than timestamp_max. Default is False.
 
     """
 
@@ -142,11 +148,13 @@ class DatasetPackaging:
         self,
         features: hg_datasets.Features,
         database_driver: str = "duckdb",
+        check_timestamp: bool = False,
     ):
         self._features = self._check_and_update_features(features)
         self._database_driver = database_driver
         self._index_state: DatasetIndexState = DatasetIndexState()
         self._instruction_cache: InstructionCache = InstructionCache()
+        self._check_timestamp = check_timestamp
 
     @property
     def features(self) -> hg_datasets.Features:
@@ -178,7 +186,7 @@ class DatasetPackaging:
     ):
         """Extend the frame with index fields."""
         features = frame.features
-        for key in PreservedIndexColumnsKeys:
+        for key in PreservedColumnsKeys:
             if key in features:
                 raise ValueError(
                     f"key '{key}' is reserved for internal use "
@@ -236,7 +244,23 @@ class DatasetPackaging:
 
         def frame_generator(episode: EpisodePackaging):
             try:
-                yield from episode.generate_frames()
+                for frame in episode.generate_frames():
+                    if self._check_timestamp:
+                        if (
+                            frame.timestamp_ns_min is None
+                            or frame.timestamp_ns_max is None
+                        ):
+                            raise ValueError(
+                                "Frame must have both timestamp_ns_min "
+                                "and timestamp_ns_max set."
+                            )
+                        if frame.timestamp_ns_min > frame.timestamp_ns_max:
+                            raise ValueError(
+                                "timestamp_ns_min cannot be greater than "
+                                "timestamp_ns_max."
+                            )
+
+                    yield frame
             except Exception as e:
                 warnings.warn(
                     f"Failed to generate frames for {episode}. "
@@ -311,7 +335,6 @@ class DatasetPackaging:
                         self._index_state.last_task_idx,
                         episode_meta_orm.task.index,
                     )
-
                 self._index_state.last_episode_idx = max(
                     self._index_state.last_episode_idx,
                     episode_meta_orm.episode.index,

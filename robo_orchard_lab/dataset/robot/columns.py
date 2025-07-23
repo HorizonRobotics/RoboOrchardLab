@@ -15,7 +15,11 @@
 # permissions and limitations under the License.
 from dataclasses import dataclass, fields
 
-__all__ = ["PreservedIndexColumns", "PreservedIndexColumnsKeys"]
+__all__ = [
+    "PreservedIndexColumns",
+    "PreservedIndexColumnsKeys",
+    "PreservedColumnsKeys",
+]
 
 
 @dataclass
@@ -32,4 +36,11 @@ class PreservedIndexColumns:
 
 PreservedIndexColumnsKeys = tuple(
     field.name for field in fields(PreservedIndexColumns)
+)
+
+PreservedColumnsKeys = PreservedIndexColumnsKeys + (
+    "episode",
+    "task",
+    "robot",
+    "instruction",
 )

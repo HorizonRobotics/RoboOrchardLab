@@ -14,5 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""Transform module.
 
-from robo_orchard_lab.models.torch_model import *
+A Transform is a callable that takes an input and returns a transformed output.
+
+"""

@@ -99,7 +99,6 @@ class MyInferencePipeline(InferencePipelineMixin[Source, Target]):
                 pipeline.
         """
         self.model = model
-        self.model.eval()
         self.cfg = cfg
 
     def to(self, device: torch.device):

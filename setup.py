@@ -158,6 +158,7 @@ if __name__ == "__main__":
         "sqlalchemy",
         "duckdb-engine",
         "fsspec",
+        "sortedcontainers",
         # robo orchard
         # "robo_orchard_core>=0.1.0", # This should be used in release version.
         # use git url to install the latest version.

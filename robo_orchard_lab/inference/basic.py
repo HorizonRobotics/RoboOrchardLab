@@ -35,7 +35,7 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixinCfgType_co,
 )
 from robo_orchard_lab.models.mixin import ModelMixin
-from robo_orchard_lab.utils.torch import to_device
+from robo_orchard_lab.utils.torch import switch_model_mode, to_device
 
 __all__ = ["InferencePipeline", "InferencePipelineCfg"]
 
@@ -85,15 +85,16 @@ class InferencePipeline(InferencePipelineMixin[InputType, OutputType]):
         Returns:
             OutputType: The final, post-processed result.
         """
-        data = self.processor.pre_process(data)
-        batch = self.cfg.collate_fn([data])
-        batch = self.cfg.to_device_fn(batch, self.device)
+        with switch_model_mode(self.model, "eval"):
+            data = self.processor.pre_process(data)
+            batch = self.cfg.collate_fn([data])
+            batch = self.cfg.to_device_fn(batch, self.device)
 
-        model_outputs = self.model(batch)
+            model_outputs = self.model(batch)
 
-        outputs = self.processor.post_process(batch, model_outputs)
+            outputs = self.processor.post_process(batch, model_outputs)
 
-        return outputs
+            return outputs
 
 
 InferencePipelineMixinType_co = TypeVar(

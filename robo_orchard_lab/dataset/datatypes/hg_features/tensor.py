@@ -136,8 +136,7 @@ class TypedTensorFeature(RODataFeature, FeatureDecodeMixin):
             )
         if value is None:
             return None
-
-        decoded_tensor: np.ndarray = np.array(value["data"])
+        decoded_tensor: np.ndarray = np.array(value["data"], dtype=self.dtype)
         decoded_tensor = decoded_tensor.reshape(value["shape"])
         if self.as_torch_tensor:
             return torch.from_numpy(decoded_tensor)

@@ -28,7 +28,7 @@ from robo_orchard_lab.dataset.datatypes import (
     BatchJointsState,
     BatchJointsStateFeature,
 )
-from robo_orchard_lab.dataset.robot.dataset import RODataset
+from robo_orchard_lab.dataset.robot.dataset import RODataset, ROMultiRowDataset
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
@@ -44,6 +44,9 @@ from robo_orchard_lab.dataset.robot.packaging import (
     InstructionData,
     RobotData,
     TaskData,
+)
+from robo_orchard_lab.dataset.robot.row_sampler import (
+    DeltaTimestampSamplerConfig,
 )
 
 
@@ -307,6 +310,7 @@ class TestDataset:
     def test_load_dataset(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)
         assert len(dataset.frame_dataset) == 8
+        assert len(dataset.frame_dataset) == len(dataset)
         assert "data" in dataset.frame_dataset.column_names
         assert dataset.db_engine is not None
         assert dataset.dataset_format_version is not None
@@ -331,6 +335,7 @@ class TestDataset:
         last_index = -1
         assert dataset.get_meta(Episode, -1) is None
         print(dataset.frame_dataset.features)
+        max_episode_idx = -1
         for frame in dataset.frame_dataset:
             assert isinstance(frame, dict)
             assert frame["index"] > last_index
@@ -338,6 +343,7 @@ class TestDataset:
             episode = dataset.get_meta(Episode, frame["episode_index"])
             assert episode is not None
             assert episode.index == frame["episode_index"]
+            max_episode_idx = max(max_episode_idx, episode.index)
             assert frame["index"] >= episode.dataset_begin_index
             assert (
                 frame["index"]
@@ -357,3 +363,74 @@ class TestDataset:
                 )
                 assert instruction
                 assert instruction.index == frame["instruction_index"]
+
+        assert max_episode_idx > 0
+
+
+class TestRoboTwinDataset:
+    def test_load_train(self, ROBO_ORCHARD_TEST_WORKSPACE: str):
+        path = os.path.join(
+            ROBO_ORCHARD_TEST_WORKSPACE,
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        )
+        dataset = RODataset(dataset_path=path)
+        print(len(dataset))
+        print(dataset.frame_dataset.features)
+        row = dataset[500]
+        print(row.keys())
+        print("episode: ", row["episode"])
+        print("left_camera timestamps: ", row["left_camera"].timestamps)
+        print("joints timestamps: ", row["joints"].timestamps)
+        print(
+            "row timestamp range: ",
+            row["timestamp_min"],
+            row["timestamp_max"],
+        )
+        print("left_camera intrinsic: ", row["left_camera"].intrinsic_matrices)
+
+
+class TestMultiRowDataset:
+    def test_empty_delta_ts(self, ROBO_ORCHARD_TEST_WORKSPACE: str):
+        path = os.path.join(
+            ROBO_ORCHARD_TEST_WORKSPACE,
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        )
+
+        dataset = ROMultiRowDataset(
+            dataset_path=path,
+            row_sampler=DeltaTimestampSamplerConfig(column_delta_ts={}),
+        )
+        print(len(dataset))
+        row = dataset[0]
+        print("row keys: ", row.keys())
+        for k in row.keys():
+            assert not isinstance(row[k], list), (
+                f"Expected {k} to not be a list, but got {type(row[k])}"
+            )
+
+    def test_with_delta_ts(self, ROBO_ORCHARD_TEST_WORKSPACE: str):
+        path = os.path.join(
+            ROBO_ORCHARD_TEST_WORKSPACE,
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        )
+
+        dataset = ROMultiRowDataset(
+            dataset_path=path,
+            row_sampler=DeltaTimestampSamplerConfig(
+                column_delta_ts={
+                    "joints": [0, 0.0 + 0.1],
+                },
+                tolerance=0.019,
+            ),
+        )
+        row = dataset[0]
+        list_column_names = ["joints"]
+        for k in row.keys():
+            if k in list_column_names:
+                assert isinstance(row[k], list), (
+                    f"Expected {k} to be a list, but got {type(row[k])}"
+                )
+            else:
+                assert not isinstance(row[k], list), (
+                    f"Expected {k} to not be a list, but got {type(row[k])}"
+                )

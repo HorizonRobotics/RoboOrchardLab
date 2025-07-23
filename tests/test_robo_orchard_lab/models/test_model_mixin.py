@@ -24,10 +24,10 @@ import torch.nn as nn
 
 from robo_orchard_lab.models.mixin import (
     ClassType_co,
-    DirectoryNotEmptyError,
     ModelMixin,
     TorchModuleCfg,
 )
+from robo_orchard_lab.utils.path import DirectoryNotEmptyError
 
 
 # 1. without shared tensor
