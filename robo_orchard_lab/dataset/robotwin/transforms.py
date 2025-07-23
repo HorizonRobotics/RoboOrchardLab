@@ -23,12 +23,42 @@ import torch
 from pytorch3d.transforms import matrix_to_quaternion
 
 __all__ = [
+    "AddItems",
+    "AddScaleShift",
+    "ConvertDataType",
+    "ImageChannelFlip",
+    "ItemSelection",
     "SimpleStateSampling",
     "Resize",
     "ToTensor",
     "DualArmKinematics",
     "GetProjectionMat",
+    "UnsqueezeBatch",
 ]
+
+
+class ImageChannelFlip:
+    def __init__(self, output_channel=None):
+        if output_channel is None:
+            output_channel = [2, 1, 0]
+        self.output_channel = output_channel
+
+    def __call__(self, data):
+        if isinstance(data["imgs"], (list, tuple)):
+            data["imgs"] = [x[..., self.output_channel] for x in data["imgs"]]
+        else:
+            data["imgs"] = data["imgs"][..., self.output_channel]
+        return data
+
+
+class AddItems:
+    def __init__(self, **kwargs):
+        self.items = copy.deepcopy(kwargs)
+
+    def __call__(self, data):
+        for k, v in self.items.items():
+            data[k] = copy.deepcopy(v)
+        return data
 
 
 class AddScaleShift:
@@ -212,11 +242,14 @@ class ToTensor:
 
 
 class ConvertDataType:
-    def __init__(self, convert_map):
+    def __init__(self, convert_map, strict=True):
         self.convert_map = convert_map
+        self.strict = strict
 
     def __call__(self, data):
         for data_name, dtype in self.convert_map.items():
+            if data_name not in data and not self.strict:
+                continue
             if isinstance(data[data_name], np.ndarray):
                 data[data_name] = data[data_name].astype(dtype)
             elif isinstance(data[data_name], torch.Tensor):
@@ -428,4 +461,14 @@ class GetProjectionMat:
             embodiedment_mat = data["T_base2ego"]
         data["projection_mat"] = projection_mat
         data["embodiedment_mat"] = embodiedment_mat
+        return data
+
+
+class UnsqueezeBatch:
+    def __call__(self, data):
+        for k, v in data.items():
+            if isinstance(v, (torch.Tensor, np.ndarray)):
+                data[k] = v[None]
+            else:
+                data[k] = [v]
         return data

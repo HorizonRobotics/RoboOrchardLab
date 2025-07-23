@@ -111,6 +111,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         default_space="base",
         instructions=None,
         instruction_keys=("seen", "unseen"),
+        **kwargs,
     ):
         super().__init__(
             paths=paths,
@@ -121,6 +122,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
             task_names=task_names,
             lazy_init=lazy_init,
             num_episode=num_episode,
+            **kwargs,
         )
         self.cam_names = cam_names
         if T_base2world is None:

@@ -32,8 +32,10 @@ class BaseIndexData(BaseModel):
     """Base data structure for indexing simulation or task-related information."""  # noqa: E501
 
     uuid: str
-    task_name: str = Field(validation_alias=AliasChoices("task_name", "task"))
     num_steps: int
+    task_name: str = Field(
+        validation_alias=AliasChoices("task_name", "task"), default=None
+    )
     user: Optional[str] = None
     embodiment: Optional[str] = None
     date: Optional[str] = None
@@ -100,6 +102,8 @@ class BaseLmdbManipulationDataset(Dataset):
         num_episode: Optional[int] = None,
         lazy_init: bool = False,
         encoding_mode: str = "utf-8",
+        dataset_name: str = "",
+        reset_step: int = 10000,
     ):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
@@ -111,26 +115,24 @@ class BaseLmdbManipulationDataset(Dataset):
         self.task_names = task_names
         self.num_episode_ = num_episode
         self.encoding_mode = encoding_mode
+        self.dataset_name = dataset_name
+        self.reset_step = reset_step
         self.initialized = False
         if not lazy_init:
             self._init_lmdb()
 
     def _check_valid(self, index_data):
         if (self.task_names is not None) and (
-            index_data.task_name not in self.task_names
+            index_data["task_name"] not in self.task_names
+            # index_data.task_name not in self.task_names
         ):
             return False
         return True
 
     def _init_lmdb(self):
-        self.meta_lmdbs = [
-            Lmdb(
-                uri=os.path.join(path, "meta"),
-                writable=False,
-                encoding_mode=self.encoding_mode,
-            )
-            for path in self.paths
-        ]
+        self.meta_lmdbs = [None for path in self.paths]
+        self.img_lmdbs = [None for path in self.paths]
+        self.depth_lmdbs = [None for path in self.paths]
         self.idx_lmdbs = [
             Lmdb(
                 uri=os.path.join(path, "index"),
@@ -139,24 +141,6 @@ class BaseLmdbManipulationDataset(Dataset):
             )
             for path in self.paths
         ]
-        if self.load_image:
-            self.img_lmdbs = [
-                Lmdb(
-                    uri=os.path.join(path, "image"),
-                    writable=False,
-                    encoding_mode=self.encoding_mode,
-                )
-                for path in self.paths
-            ]
-        if self.load_depth:
-            self.depth_lmdbs = [
-                Lmdb(
-                    uri=os.path.join(path, "depth"),
-                    writable=False,
-                    encoding_mode=self.encoding_mode,
-                )
-                for path in self.paths
-            ]
 
         lmdb_indices = []
         episode_indices = []
@@ -166,7 +150,8 @@ class BaseLmdbManipulationDataset(Dataset):
             for episode_idx in idx_lmdb.keys():
                 if episode_idx == "__len__":
                     continue
-                data = BaseIndexData.model_validate(idx_lmdb.get(episode_idx))
+                data = idx_lmdb.get(episode_idx)
+                # data = BaseIndexData.model_validate(idx_lmdb.get(episode_idx))
 
                 if (self._check_valid(data)) and (
                     self.num_episode_ is None
@@ -174,7 +159,8 @@ class BaseLmdbManipulationDataset(Dataset):
                 ):
                     lmdb_indices.append(i)
                     episode_indices.append(episode_idx)
-                    num_steps.append(data.num_steps)
+                    num_steps.append(data["num_steps"])
+                    # num_steps.append(data.num_steps)
                     current_num_episode += 1
 
         self.lmdb_indices = lmdb_indices
@@ -184,7 +170,7 @@ class BaseLmdbManipulationDataset(Dataset):
         self.num_episode = len(num_steps)
         self.initialized = True
         logger.info(
-            f"dataset length: {self.__len__()}, "
+            f"{self.dataset_name} dataset length: {self.__len__()}, "
             f"number of episode: {self.num_episode}"
         )
 
@@ -211,6 +197,30 @@ class BaseLmdbManipulationDataset(Dataset):
         else:
             step_index = index - self.cumsum_steps[episode_index - 1]
         episode_index = self.episode_indices[episode_index]
+        if self.meta_lmdbs[lmdb_index] is None:
+            self.meta_lmdbs[lmdb_index] = Lmdb(
+                uri=os.path.join(self.paths[lmdb_index], "meta"),
+                writable=False,
+                encoding_mode=self.encoding_mode,
+                reset_step=-1,
+                **self.lmdb_kwargs,
+            )
+            if self.load_image:
+                self.img_lmdbs[lmdb_index] = Lmdb(
+                    uri=os.path.join(self.paths[lmdb_index], "image"),
+                    writable=False,
+                    encoding_mode=self.encoding_mode,
+                    reset_step=10000,
+                    **self.lmdb_kwargs,
+                )
+            if self.load_depth:
+                self.depth_lmdbs[lmdb_index] = Lmdb(
+                    uri=os.path.join(self.paths[lmdb_index], "depth"),
+                    writable=False,
+                    encoding_mode=self.encoding_mode,
+                    reset_step=10000,
+                    **self.lmdb_kwargs,
+                )
         return lmdb_index, episode_index, step_index
 
     def __getitem__(self, index):

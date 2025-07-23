@@ -42,8 +42,9 @@ class SEMActionDecoder(nn.Module):
         num_inference_timesteps=10,
         joint_self_attn=None,
         temp_cross_attn=None,
-        robot_encoder=None,
         text_cross_attn=None,
+        temp_joint_attn=None,
+        robot_encoder=None,
         timestep_norm_layer=None,
         feature_level=1,
         state_dims=8,
@@ -88,6 +89,7 @@ class SEMActionDecoder(nn.Module):
 
         self.op_config_map = {
             "joint_self_attn": joint_self_attn,
+            "temp_joint_attn": temp_joint_attn,
             "norm": norm_layer,
             "t_norm": timestep_norm_layer,
             "ffn": ffn,
@@ -252,14 +254,6 @@ class SEMActionDecoder(nn.Module):
         else:
             pred_actions = []
             for _ in range(self.num_test_traj):
-                # if i == 0:
-                #     noisy_action = torch.zeros(
-                #         [bs, self.pred_steps, num_joint, 1],
-                #     ).to(img_feature)
-                # else:
-                #     noisy_action = torch.randn(
-                #         [bs, self.pred_steps, num_joint, 1],
-                #     ).to(img_feature)
                 noisy_action = torch.randn(
                     [bs, self.pred_steps, num_joint, 1],
                 ).to(img_feature)
@@ -305,8 +299,6 @@ class SEMActionDecoder(nn.Module):
         t_embed = self.t_embed(timesteps)
         x = self.input_layers(noisy_action)
 
-        joint_relative_pos = joint_relative_pos.tile(num_chunk, 1, 1)
-
         if robot_feature is not None:
             num_hist_chunk = robot_feature.shape[2]
             robot_feature = robot_feature.flatten(0, 1)
@@ -347,6 +339,28 @@ class SEMActionDecoder(nn.Module):
             ica_query_pos = ica_query_pos.tile(bs, num_joint, 1).flatten(1, 2)
             ica_query_pos += 1
             ica_key_pos = None
+
+        if "temp_joint_attn" in self.operation_order:
+            temp_query_pos_wojoint = (
+                torch.arange(num_chunk)[None].tile(bs, 1).to(x)
+                + num_hist_chunk
+            )
+            temp_key_pos_wojoint = (
+                torch.arange(num_hist_chunk + num_chunk).tile(bs, 1).to(x)
+            )
+            joint_relative_pos_wochunk = joint_relative_pos
+            if "temp_cross_attn" not in self.operation_order:
+                temp_attn_mask = ~torch.tril(
+                    torch.ones(
+                        num_chunk,
+                        num_hist_chunk + num_chunk,
+                        dtype=torch.bool,
+                        device=x.device,
+                    ),
+                    num_hist_chunk,
+                )
+
+        joint_relative_pos = joint_relative_pos.tile(num_chunk, 1, 1)
 
         if self.pre_norm:
             identity = x
@@ -401,6 +415,26 @@ class SEMActionDecoder(nn.Module):
                     identity=_identity,
                 )
                 x = x.reshape(bs, num_joint * num_chunk, -1)
+            elif op == "temp_joint_attn":
+                x = x.reshape(bs, num_joint, num_chunk, -1)
+                kv = torch.cat(
+                    [robot_feature.unflatten(0, (bs, num_joint)), x], dim=2
+                )
+                if identity is not None:
+                    _identity = identity.reshape(bs, num_joint, num_chunk, -1)
+                else:
+                    _identity = None
+                kwargs = dict(
+                    query=x,
+                    key=kv,
+                    joint_distance=joint_relative_pos_wochunk,
+                    temporal_pos_q=temp_query_pos_wojoint,
+                    temporal_pos_k=temp_key_pos_wojoint,
+                    temporal_attn_mask=temp_attn_mask,
+                    identity=_identity,
+                )
+                x = layer(**kwargs)
+                x = x.reshape(bs, num_joint * num_chunk, -1)
             elif op == "text_cross_attn":
                 x = layer(
                     query=x,
@@ -449,13 +483,19 @@ class SEMActionDecoder(nn.Module):
         pred_mask = inputs.get("pred_mask")
         output = {}
         loss = self._loss_func(
-            pred, target, pred_mask, self.state_loss_weights
+            pred,
+            target,
+            pred_mask,
+            inputs.get("state_loss_weights", self.state_loss_weights),
         )
         output["loss_noise_mse"] = loss
         if self.fk_loss_weight is not None:
             fk_pred = self.recompute(pred, inputs)
             fk_loss = self._loss_func(
-                fk_pred, target, pred_mask, self.fk_loss_weight
+                fk_pred,
+                target,
+                pred_mask,
+                inputs.get("fk_loss_weight", self.fk_loss_weight),
             )
             output["loss_fk_mse"] = fk_loss
         return output
@@ -468,7 +508,7 @@ class SEMActionDecoder(nn.Module):
                 return pred.sum() * 0
         if weight is not None:
             error = error * error.new_tensor(weight)
-        loss = error.mean()
+        loss = error.sum(dim=-1).mean()
         return loss
 
     def post_process(self, model_outs, inputs, **kwargs):
