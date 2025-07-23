@@ -43,6 +43,7 @@ class Lmdb(object):
         uri: str,
         writable: bool = True,
         commit_step: int = 1,
+        reset_step: int = -1,
         map_size: int = None,
         encoding_mode: str = "utf-8",
         **kwargs,
@@ -74,8 +75,10 @@ class Lmdb(object):
             self._create_txn()
         # pack settings
         self.commit_step = commit_step
+        self.reset_step = reset_step
         self.encoding_mode = encoding_mode
         self.put_idx = 0
+        self.get_idx = 0
 
     def read(self, idx: Union[int, str]) -> bytes:
         """Read data by idx."""
@@ -96,6 +99,11 @@ class Lmdb(object):
         if self.txn is None:
             self._create_txn()
         data = self.txn.get(idx)
+        if self.reset_step > 0:
+            self.get_idx += 1
+            if self.get_idx % self.reset_step == 0:
+                self.get_idx = 0
+                self.reset()
         if data is not None:
             return pickle.loads(data)
         return None
@@ -154,6 +162,8 @@ class Lmdb(object):
         else:
             self.close()
             self.open()
+            if not self.writable:
+                self._create_txn()
 
     def keys(self):
         """Get all keys."""

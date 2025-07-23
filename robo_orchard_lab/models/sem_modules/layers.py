@@ -283,6 +283,103 @@ class JointGraphAttention(nn.Module):
         return x
 
 
+class TemporalJointGraphAttention(nn.Module):
+    def __init__(
+        self,
+        embed_dims,
+        num_heads=8,
+        qkv_bias=True,
+        qk_scale=None,
+        max_position_embeddings=None,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = embed_dims // num_heads
+        all_head_dim = head_dim * self.num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.q_proj = nn.Linear(embed_dims, all_head_dim, bias=qkv_bias)
+        self.k_proj = nn.Linear(embed_dims, all_head_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dims, all_head_dim, bias=qkv_bias)
+        self.proj = nn.Linear(all_head_dim, embed_dims)
+
+        self.joint_pos_encoder = ScalarEmbedder(embed_dims)
+        self.temporal_position_encoder = RotaryEmbedding(
+            head_dim, max_position_embeddings=max_position_embeddings
+        )
+        self.init_weights()
+
+    def init_weights(self):
+        xavier_uniform_(self.q_proj.weight)
+        xavier_uniform_(self.k_proj.weight)
+        xavier_uniform_(self.v_proj.weight)
+        if self.q_proj.bias is not None:
+            constant_(self.q_proj.bias, 0.0)
+        if self.v_proj.bias is not None:
+            constant_(self.v_proj.bias, 0.0)
+
+    def forward(
+        self,
+        query,
+        key=None,
+        value=None,
+        joint_distance=None,
+        temporal_pos_q=None,
+        temporal_pos_k=None,
+        temporal_attn_mask=None,
+        identity=None,
+        **kwargs,
+    ):
+        if identity is None:
+            identity = query
+        B, N, T_q, C = query.shape  # noqa: N806
+        M, T_k = key.shape[1:3]  # noqa: N806
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        if value is not None:
+            value = key
+        v = self.v_proj(value)
+
+        q = q.reshape(B, N, T_q, self.num_heads, -1).permute(
+            0, 3, 1, 2, 4
+        )  # b,h,n,tq,c
+        k = k.reshape(B, M, T_k, self.num_heads, -1).permute(0, 3, 1, 2, 4)
+        v = v.reshape(B, M * T_k, self.num_heads, -1).permute(
+            0, 2, 1, 3
+        )  # b,h,m*tk,c
+
+        num_head = q.shape[1]
+        q = self.temporal_position_encoder(q, temporal_pos_q)
+        k = self.temporal_position_encoder(k, temporal_pos_k)
+
+        joint_distance = self.joint_pos_encoder(
+            joint_distance.flatten()
+        ).reshape(B, N, M, C)  # bs, n, m, c
+        joint_distance = joint_distance.unflatten(
+            -1, (self.num_heads, -1)
+        ).permute(0, 3, 1, 2, 4)  # bs, h, n, m, c
+        joint_distance = joint_distance.unsqueeze(3)  # bs, h, n,1, m, c
+        q = q.unsqueeze(4)  # bs, h, n, tq, 1, c
+        q = q * joint_distance  # bs,h,n,tq,m,c
+        attn = torch.einsum("bhnqmc,bhmkc->bhnqmk", q, k) * self.scale
+
+        if temporal_attn_mask is not None:
+            attn = torch.where(
+                temporal_attn_mask[None, None, :, None, :],
+                float("-inf"),
+                attn,
+            )
+        attn = attn.reshape(B, num_head, T_q * N, T_k * M)
+
+        attn = attn.softmax(dim=-1)
+        x = (attn @ v).transpose(1, 2)
+        x = x.reshape(B, N, T_q, C)
+
+        x = self.proj(x)
+        x = x + identity
+        return x
+
+
 class AdaRMSNorm(nn.RMSNorm):
     def __init__(
         self,
@@ -327,7 +424,15 @@ class AdaRMSNorm(nn.RMSNorm):
 
 class UpsampleHead(nn.Module):
     def __init__(
-        self, upsample_sizes, input_dim, dims, norm, act, norm_act_idx
+        self,
+        upsample_sizes,
+        input_dim,
+        dims,
+        norm,
+        act,
+        norm_act_idx,
+        num_output_layers=-1,
+        out_dim=8,
     ):
         super().__init__()
         self.norm_act_idx = norm_act_idx
@@ -348,6 +453,17 @@ class UpsampleHead(nn.Module):
                     nn.Conv1d(dims[i], dims[i + 1], 3, padding=1),
                 )
             )
+        self.num_output_layers = num_output_layers
+        if num_output_layers >= 1:
+            self.output_layers = nn.Sequential()
+            for _ in range(num_output_layers):
+                self.output_layers.append(build(act))
+                self.output_layers.append(
+                    nn.Linear(dims[-1], dims[-1]),
+                )
+            self.output_layers.append(
+                nn.Linear(dims[-1], out_dim),
+            )
 
     def forward(self, x):
         bs, num_joint, num_chunk, state_dims = x.shape
@@ -359,4 +475,7 @@ class UpsampleHead(nn.Module):
             x = layer(x)
             x = x.permute(0, 2, 1)
         x = x.unflatten(0, (bs, num_joint))
+
+        if self.num_output_layers >= 1:
+            x = self.output_layers(x)
         return x
