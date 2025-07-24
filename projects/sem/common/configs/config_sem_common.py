@@ -25,24 +25,27 @@ config = dict(
     min_depth=0.01,
     max_depth=1.2,
     num_depth=128,
-    batch_size=8,
+    batch_size=16,
     max_step=int(1e5),
-    step_log_freq=25,
-    save_step_freq=4000,
+    step_log_freq=50,
+    save_step_freq=5000,
     num_workers=8,
     lr=1e-4,
     training_datasets=[
-        "robotwin1.0",
+        "robotwin1_0",
+        "robotwin2_0_piper",
         "challenge",
-        "challenge_new",
+        "challenge_finetune",
+        "challenge_self_collect",
         "horizon_beijing",
         "horizon_shanghai",
         "agilex",
         "rh20t",
-        "agibot",
+        "agibot_alpha",
+        "agibot_beta",
     ],
-    vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
-    checkpoint="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
+    vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
+    checkpoint="./ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
 )
 
 
@@ -114,9 +117,12 @@ def build_model(config):
     model = SEM_Qwen2_5_VL(
         cfg=SEM_Qwen2_5_VLConfig(
             use_state_dict_with_vlm=False,
+            with_cot=False,
+            vlm_pretrain=config["vlm_pretrain"],
             data_preprocessor=dict(
                 type=BaseDataPreprocessor,
-                channel_flip=True,  # input image should in BGR convention
+                # input image should in BGR convention, it will be converted to RGB here
+                channel_flip=True,
                 unsqueeze_depth_channel=True,
                 batch_transforms=[
                     dict(
@@ -128,10 +134,9 @@ def build_model(config):
                         valid_threshold=0.5,
                         stride=(28,),
                     ),
-                    TextTemplate(),
+                    dict(type=TextTemplate)
                 ],
             ),
-            vlm_pretrain=config["vlm_pretrain"],
             backbone_3d=(
                 dict(
                     type=SwinTransformer,
@@ -362,3 +367,7 @@ def build_optimizer(config, model):
         ]
     )
     return optimizer, lr_scheduler
+
+
+def build_deploy_pipeline(config):
+    pass

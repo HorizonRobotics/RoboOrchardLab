@@ -113,8 +113,8 @@ def build_transforms(config):
     )
 
     state_sampling = SimpleStateSampling(
-        hist_steps=config["hist_steps"] // 3 + 1,
-        pred_steps=config["pred_steps"] // 3 + 1,
+        hist_steps=config["hist_steps"],
+        pred_steps=config["pred_steps"],
         gripper_indices=[7, 15],  # AgiBot gripper indices
     )
 
@@ -218,30 +218,27 @@ def build_transforms(config):
         0.1,
     ]  # Gripper joints: same as base
     l1, l2 = 0.2, 1.8
-    loss_weight = np.concatenate(
-        [
-            np.array([base_joint_weights] * 7),  # left arm (7)
-            np.array([gripper_weights] * 1),  # left gripper (1)
-            np.array([base_joint_weights] * 7),  # right arm (7)
-            np.array([gripper_weights] * 1),  # right gripper (1)
-            np.array([lift_weights] * 2),  # lift joints (2)
-        ],
-        axis=0,
-    )
+    loss_weight = np.array([
+        [base_joint_weights] * 7  # left arm (7)
+        + [gripper_weights] * 1  # left gripper (1)
+        + [base_joint_weights] * 7  # right arm (7)
+        + [gripper_weights] * 1  # right gripper (1)
+        + [lift_weights] * 2  # lift joints (2)
+    ])  # 1, num_joint, 8
 
-    add_loss_weight = AddItems(
+    add_data_relative_items = AddItems(
         state_loss_weights=loss_weight * l1,
         fk_loss_weight=loss_weight * l2,
         T_base2ego=np.eye(4),
         T_base2world=np.eye(4),
     )
     return [
+        add_data_relative_items,
         state_sampling,
         resize,
         to_tensor,
         projection_mat,
         scale_shift,
-        add_loss_weight,
         convert_dtype,
         kinematics,
         joint_selection,  # Filter robot_state and joint_scale_shift to 16 joints

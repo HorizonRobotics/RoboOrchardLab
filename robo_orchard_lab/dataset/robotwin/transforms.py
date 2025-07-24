@@ -45,9 +45,14 @@ class ImageChannelFlip:
 
     def __call__(self, data):
         if isinstance(data["imgs"], (list, tuple)):
-            data["imgs"] = [x[..., self.output_channel] for x in data["imgs"]]
+            data["imgs"] = [
+                np.ascontiguousarray(x[..., self.output_channel])
+                for x in data["imgs"]
+            ]
         else:
-            data["imgs"] = data["imgs"][..., self.output_channel]
+            data["imgs"] = np.ascontiguousarray(
+                data["imgs"][..., self.output_channel]
+            )
         return data
 
 

@@ -143,6 +143,8 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         self.default_space = default_space
         self.load_instructions(instructions)
         self.instruction_keys = instruction_keys
+        # self.visualize(0)
+        # import pdb; pdb.set_trace()
 
     def load_instructions(self, instructions):
         if instructions is None:
@@ -316,7 +318,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         projection_mat=None,
         robot_state=None,
         ee_indices=(6, 13),
-        channel_conversion=True,
+        channel_conversion=False,
     ):
         from scipy.spatial.transform import Rotation
 

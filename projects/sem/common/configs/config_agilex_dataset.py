@@ -244,13 +244,19 @@ dataset_config = dict(
     ),
     agilex=dict(
         data_paths=[
-            f"./data/agilex_collect/agilex_data_0624_shard_{i}"
-            for i in range(12)
+            # f"./data/agilex_collect/agilex_data_0624_shard_{i}"
+            # for i in range(12)
+            f"data/agilex_collect/agitex_piper_0522_shard_{i}"
+            for i in range(13)
+        ] + [
+            f"data/agilex_collect/agilex_old_urdf/old_urdf_0523_shard_{i}"
+            for i in range(4)
         ],
         load_extrinsic=False,
-        load_calibration=True,
+        # load_calibration=True,
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "mid", "right"],
+        calibration=all_calibrations["horizon_beijing"],
         task_names=[
             "fold_towel",
             "pour_water",
@@ -264,6 +270,8 @@ dataset_config = dict(
             "ziploc_slide",
             "twist_off_the_cap",
             "unplug_the_charging_cable",
+
+            # exclude three mobile manipulation tasks
             # "wash_pan",
             # "wipe_wine",
             # "move_chair",
@@ -312,14 +320,12 @@ def build_transforms(
 
     joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
     ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
-    loss_weights = np.array(
-        [
-            [joint_state_loss_weights] * 6
-            + [ee_state_loss_weights]
-            + [joint_state_loss_weights] * 6
-            + [ee_state_loss_weights]
-        ],
-    )
+    loss_weights = np.array([
+        [joint_state_loss_weights] * 6
+        + [ee_state_loss_weights]
+        + [joint_state_loss_weights] * 6
+        + [ee_state_loss_weights]
+    ])
     state_loss_weights = loss_weights * 0.2
     fk_loss_weight = loss_weights * 1.8
 

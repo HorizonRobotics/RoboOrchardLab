@@ -1,6 +1,6 @@
 kinematics_config = dict(
     cfg1=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/flexiv/robot_pvt3.urdf",
+        urdf="./urdf/rh20t/flexiv/robot_pvt3.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -38,7 +38,7 @@ kinematics_config = dict(
         ],
     ),
     cfg2=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/flexiv/robot_pvt3.urdf",
+        urdf="./urdf/rh20t/flexiv/robot_pvt3.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -76,7 +76,7 @@ kinematics_config = dict(
         ],
     ),
     cfg3=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/ur5/urdf/ur5.urdf",
+        urdf="./urdf/rh20t/ur5/urdf/ur5.urdf",
         arm_joint_id=[list(range(6))],
         arm_link_keys=[
             [
@@ -113,7 +113,7 @@ kinematics_config = dict(
         ],
     ),
     cfg4=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/ur5/urdf/ur5.urdf",
+        urdf="./urdf/rh20t/ur5/urdf/ur5.urdf",
         arm_joint_id=[list(range(6))],
         arm_link_keys=[
             [
@@ -153,7 +153,7 @@ kinematics_config = dict(
         ],
     ),
     cfg5=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/franka/franka.urdf",
+        urdf="./urdf/rh20t/franka/franka_womaterial.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -195,7 +195,7 @@ kinematics_config = dict(
         ],
     ),
     cfg6=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/kuka/model.urdf",
+        urdf="./urdf/rh20t/kuka/model.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -236,7 +236,7 @@ kinematics_config = dict(
         ],
     ),
     cfg7=dict(
-        urdf="/horizon-bucket/robot_lab/users/xuewu.lin/urdf/rh20t/kuka/model.urdf",
+        urdf="./urdf/rh20t/kuka/model.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -420,7 +420,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
     ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
     num_joint = len(scale_shift["scale_shift"]) - 1
     loss_weights = np.array(
-        [[joint_state_loss_weights] * num_joint + [ee_state_loss_weights]],
+        [[joint_state_loss_weights] * num_joint + [ee_state_loss_weights]]
     )
     rh20t_loss_weight = 0.5
     state_loss_weights = loss_weights * 0.2 * rh20t_loss_weight

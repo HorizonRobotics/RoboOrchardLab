@@ -104,6 +104,7 @@ class BaseLmdbManipulationDataset(Dataset):
         encoding_mode: str = "utf-8",
         dataset_name: str = "",
         reset_step: int = 10000,
+        lmdb_kwargs: Optional[dict] = None
     ):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
@@ -117,6 +118,7 @@ class BaseLmdbManipulationDataset(Dataset):
         self.encoding_mode = encoding_mode
         self.dataset_name = dataset_name
         self.reset_step = reset_step
+        self.lmdb_kwargs = lmdb_kwargs if lmdb_kwargs is not None else {}
         self.initialized = False
         if not lazy_init:
             self._init_lmdb()

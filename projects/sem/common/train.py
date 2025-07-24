@@ -54,6 +54,10 @@ class MyBatchProcessor(SimpleBatchProcessor):
 
 def main(args, accelerator):
     if_cluster = os.environ.get("CLUSTER") is not None
+    if accelerator.is_main_process:
+        import shutil
+        shutil.copytree("configs", os.path.join(args.workspace, "configs"))
+
     config = load_config(args.config)
     build_model = config.build_model
     build_dataset = config.build_training_dataset

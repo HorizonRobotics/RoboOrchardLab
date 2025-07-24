@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import sys
 import importlib
 import logging
 import os
@@ -27,7 +28,9 @@ logger = logging.getLogger(__file__)
 
 def load_config(config_file):
     assert config_file.endswith(".py")
-    module_name = os.path.split(config_file)[-1][:-3]
+    config_dir, module_name = os.path.split(config_file)
+    sys.path.insert(0, config_dir)
+    module_name = module_name[:-3]
     spec = importlib.util.spec_from_file_location(module_name, config_file)
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
