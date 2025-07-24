@@ -46,7 +46,7 @@ class TextTemplate(nn.Module):
             "<|im_start|>assistant\n"
         )
 
-    def __call__(self, data):
+    def forward(self, data):
         batch_size, num_cams = data["imgs"].shape[:2]
         image_token = [
             "<|vision_start|><|image_pad|><|vision_end|>"

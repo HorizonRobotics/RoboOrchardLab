@@ -1,5 +1,58 @@
+dataset_config = dict(
+    robotwin1_0=dict(
+        kinematics_config=dict(
+            urdf="./urdf/arx5/arx5_description_isaac.urdf",
+        ),
+        T_base2world=[
+            [0, -1, 0, 0],
+            [1, 0, 0, -0.65],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ],
+        paths=[
+            "./data/robotwin1.0",
+        ],
+    ),
+    robotwin2_0_piper=dict(
+        kinematics_config=dict(
+            urdf="./urdf/robotwin2_dual_arm_piper.urdf",
+            left_arm_link_keys=[
+                "left_link1",
+                "left_link2",
+                "left_link3",
+                "left_link4",
+                "left_link5",
+                "left_link6",
+            ],
+            left_finger_keys=["left_link7"],
+            right_arm_link_keys=[
+                "right_link1",
+                "right_link2",
+                "right_link3",
+                "right_link4",
+                "right_link5",
+                "right_link6",
+            ],
+            right_finger_keys=["right_link7"],
+            left_arm_joint_id=list(range(6)),
+            right_arm_joint_id=list(range(8, 14)),
+        ),
+        T_base2world=[
+            [0, -1, 0, 0],
+            [1, 0, 0, -0.45],
+            [0, 0, 1, 0.75],
+            [0, 0, 0, 1],
+        ],
+        paths=[
+            "./data/robotwin2.0/aloha_piper_27tasks_clean_200",
+            "./data/robotwin2.0/aloha_piper_27tasks_noise_300",
+        ],
+    ),
+)
+
+
 def build_transforms(
-    config, mode, urdf="./urdf/arx5/arx5_description_isaac.urdf"
+    config, mode, kinematics_config, t_base2world
 ):
     import numpy as np
     import torch
@@ -19,35 +72,24 @@ def build_transforms(
         UnsqueezeBatch,
     )
 
-    t_base2world = np.array(
-        [
-            [0, -1, 0, 0],
-            [1, 0, 0, -0.65],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-        ]
-    )
-
     joint_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
     ee_state_loss_weights = [1, 2, 2, 2, 0.2, 0.2, 0.2, 0.2]
-    loss_weights = np.array(
-        [
-            [joint_state_loss_weights] * 6
-            + [ee_state_loss_weights]
-            + [joint_state_loss_weights] * 6
-            + [ee_state_loss_weights]
-        ],
-    )
+    loss_weights = np.array([
+        [joint_state_loss_weights] * 6
+        + [ee_state_loss_weights]
+        + [joint_state_loss_weights] * 6
+        + [ee_state_loss_weights]
+    ])
 
     if mode == "training":
         add_data_relative_items = AddItems(
-            T_base2world=t_base2world,
+            T_base2world=np.array(t_base2world),
             state_loss_weights=loss_weights,
             fk_loss_weight=loss_weights,
         )
     else:
         add_data_relative_items = AddItems(
-            T_base2world=t_base2world,
+            T_base2world=np.array(t_base2world),
         )
 
     state_sampling = SimpleStateSampling(
@@ -70,7 +112,7 @@ def build_transforms(
         )
     )
 
-    kinematics = DualArmKinematics(urdf=urdf)
+    kinematics = DualArmKinematics(**kinematics_config)
 
     scale_shift = AddScaleShift(
         scale_shift=[
@@ -204,17 +246,19 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     )
 
     datasets = []
-    if "robotwin1.0" in dataset_names:
-        data_paths = [
-            "./data/robotwin1.0",
-        ]
-        transforms = build_transforms(config, mode)
+    for dataset_name in dataset_config.keys():
+        if "robotwin" not in dataset_names and dataset_name not in dataset_names:
+            continue
+        transforms = build_transforms(
+            config, mode, dataset_config[dataset_name]['kinematics_config'],
+            dataset_config[dataset_name]['T_base2world'],
+        )
         dataset = RoboTwinLmdbDataset(
-            paths=data_paths,
+            paths=dataset_config[dataset_name]['paths'],
             task_names=None,
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
-            dataset_name="robotwin1.0",
+            dataset_name=dataset_name,
         )
         datasets.append(dataset)
     return datasets

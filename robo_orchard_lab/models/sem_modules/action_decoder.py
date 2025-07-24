@@ -489,13 +489,14 @@ class SEMActionDecoder(nn.Module):
             inputs.get("state_loss_weights", self.state_loss_weights),
         )
         output["loss_noise_mse"] = loss
-        if self.fk_loss_weight is not None:
+        fk_loss_weight = inputs.get("fk_loss_weight", self.fk_loss_weight)
+        if fk_loss_weight is not None:
             fk_pred = self.recompute(pred, inputs)
             fk_loss = self._loss_func(
                 fk_pred,
                 target,
                 pred_mask,
-                inputs.get("fk_loss_weight", self.fk_loss_weight),
+                fk_loss_weight,
             )
             output["loss_fk_mse"] = fk_loss
         return output

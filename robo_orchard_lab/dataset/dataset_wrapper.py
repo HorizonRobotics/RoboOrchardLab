@@ -54,6 +54,9 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
         self.num_batches = 0
         self.batches = {}
 
+    def set_epoch(self, epoch):
+        self._epoch = epoch
+
     def _indices_queue_generator(self):
         n = len(self.data_source)
         generator = np.random.default_rng(seed=self.seed + self._epoch)
