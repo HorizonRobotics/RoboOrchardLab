@@ -212,7 +212,7 @@ class BaseLmdbManipulationDataset(Dataset):
                     uri=os.path.join(self.paths[lmdb_index], "image"),
                     writable=False,
                     encoding_mode=self.encoding_mode,
-                    reset_step=10000,
+                    reset_step=self.reset_step,
                     **self.lmdb_kwargs,
                 )
             if self.load_depth:
@@ -220,7 +220,7 @@ class BaseLmdbManipulationDataset(Dataset):
                     uri=os.path.join(self.paths[lmdb_index], "depth"),
                     writable=False,
                     encoding_mode=self.encoding_mode,
-                    reset_step=10000,
+                    reset_step=self.reset_step,
                     **self.lmdb_kwargs,
                 )
         return lmdb_index, episode_index, step_index
