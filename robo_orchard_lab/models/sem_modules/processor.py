@@ -14,21 +14,11 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 import numpy as np
 import torch
 
-from robo_orchard_lab.dataset.robotwin.transforms import (
-    AddScaleShift,
-    ConvertDataType,
-    DualArmKinematics,
-    GetProjectionMat,
-    ItemSelection,
-    Resize,
-    SimpleStateSampling,
-    ToTensor,
-)
 from robo_orchard_lab.inference.multi_arm_manipulation import (
     MultiArmManipulationInput,
     MultiArmManipulationOutput,
@@ -38,7 +28,7 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixin,
     ProcessorMixinCfg,
 )
-from robo_orchard_lab.utils.build import DelayInitDictType
+from robo_orchard_lab.utils.build import build, DelayInitDictType
 
 __all__ = ["SEMProcessor", "SEMProcessorCfg"]
 
@@ -98,25 +88,19 @@ class SEMProcessor(ProcessorMixin):
 
     def __init__(self, cfg: "SEMProcessorCfg"):
         super().__init__(cfg)
-        self.ts = None
+        self.struction_to_dict = Struct2Dict(
+            load_image=self.cfg.load_image,
+            load_depth=self.cfg.load_depth,
+            cam_names=self.cfg.cam_names
+        )
+        self.transforms = [
+            build(transform) for transform in self.cfg.transforms
+        ]
 
-    def _initialized(self, urdf: str | None):
-        if self.ts is not None:
-            return
-
-        if urdf is None:
-            raise ValueError("Required urdf!")
-
-        self.ts = [
-            Struct2Dict(
-                load_image=self.cfg.load_image,
-                load_depth=self.cfg.load_depth,
-            ),
-        ] + [build(transform) for transform in self.cfg.transforms]
-
-    def pre_process(self, data: MultiArmManipulationInput):
-        self._initialized(data.urdf)
-        for ts_i in self.ts:  # type: ignore
+    def pre_process(self, data: Union[MultiArmManipulationInput, Dict]):
+        if isinstance(data, MultiArmManipulationInput):
+            data = self.struction_to_dict(data)
+        for ts_i in self.transforms:
             data = ts_i(data)
         return data
 
