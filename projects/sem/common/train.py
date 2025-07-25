@@ -56,13 +56,26 @@ def main(args, accelerator):
     if_cluster = os.environ.get("CLUSTER") is not None
     if accelerator.is_main_process:
         import shutil
-        shutil.copytree("configs", os.path.join(args.workspace, "configs"))
+
+        shutil.copytree(
+            "configs",
+            os.path.join(args.workspace, "configs"),
+            dirs_exist_ok=True,
+        )
 
     config = load_config(args.config)
     build_model = config.build_model
     build_dataset = config.build_training_dataset
     build_optimizer = config.build_optimizer
+    build_processors = config.build_processors
     config = config.config
+
+    processors = build_processors(config)
+    for dataset_name, processor in processors.items():
+        with open(
+            os.path.join(args.workspace, f"{dataset_name}_processor.json"), "w"
+        ) as fh:
+            fh.write(processor.cfg.model_dump_json(indent=4))
 
     if args.kwargs is not None:
         if os.path.isfile(args.kwargs):
@@ -74,7 +87,6 @@ def main(args, accelerator):
     if accelerator.is_main_process:
         logger.info("\n" + json.dumps(config, indent=4))
 
-    # save model config
     train_dataset = build_dataset(config)
 
     num_workers = config.get("num_workers", 4)
@@ -84,8 +96,6 @@ def main(args, accelerator):
         pin_memory=True,
         collate_fn=collate_batch_dict,
         persistent_workers=num_workers > 0,
-        # batch_size=config["batch_size"],
-        # shuffle=True,
         batch_sampler=DistributedBatchFlagSampler(
             train_dataset,
             config["batch_size"],

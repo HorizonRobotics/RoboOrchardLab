@@ -32,17 +32,22 @@ config = dict(
     num_workers=8,
     lr=1e-4,
     training_datasets=[
-        "robotwin1_0",
-        "robotwin2_0_piper",
-        "challenge",
-        "challenge_finetune",
-        "challenge_self_collect",
+        # "robotwin1_0",
+        # "robotwin2_0_piper",
+        # "challenge",
+        # "challenge_finetune",
+        # "challenge_self_collect",
+        "horizon_beijing",
+        # "horizon_shanghai",
+        # "agilex",
+        # "rh20t",
+        # "agibot_alpha",
+        # "agibot_beta",
+    ],
+    deploy_datasets=[
         "horizon_beijing",
         "horizon_shanghai",
-        "agilex",
-        "rh20t",
-        "agibot_alpha",
-        "agibot_beta",
+        "robotwin1_0",
     ],
     vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
     checkpoint="./ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
@@ -134,7 +139,7 @@ def build_model(config):
                         valid_threshold=0.5,
                         stride=(28,),
                     ),
-                    dict(type=TextTemplate)
+                    dict(type=TextTemplate),
                 ],
             ),
             backbone_3d=(
@@ -369,5 +374,16 @@ def build_optimizer(config, model):
     return optimizer, lr_scheduler
 
 
-def build_deploy_pipeline(config):
-    pass
+def build_processors(config):
+    from config_agilex_dataset import (
+        build_processors as build_agilex_processors,
+    )
+    from config_robotwin_dataset import (
+        build_processors as build_robotwin_processors,
+    )
+
+    processors = build_agilex_processors(config, config["deploy_datasets"])
+    processors.update(
+        build_robotwin_processors(config, config["deploy_datasets"])
+    )
+    return processors

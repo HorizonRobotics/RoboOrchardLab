@@ -23,6 +23,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from torch.utils.data import Dataset
 
 from robo_orchard_lab.dataset.lmdb.lmdb_wrapper import Lmdb
+from robo_orchard_lab.utils.build import build
 from robo_orchard_lab.utils.misc import as_sequence
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,14 @@ class BaseLmdbManipulationDataset(Dataset):
         encoding_mode: str = "utf-8",
         dataset_name: str = "",
         reset_step: int = 10000,
-        lmdb_kwargs: Optional[dict] = None
+        lmdb_kwargs: Optional[dict] = None,
     ):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
         self.paths = paths
-        self.transforms = as_sequence(transforms)
+        self.transforms = []
+        for transform in as_sequence(transforms):
+            self.transforms.append(build(transform))
         self.interval = interval
         self.load_image = load_image
         self.load_depth = load_depth
