@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import os
+
 import torch
 from torch import nn
 from transformers import (
@@ -130,6 +132,21 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
             ),
             requires_grad=True,
         )
+
+    def save_model(
+        self, directory: str, model_prefix: str = "model", **kwargs
+    ):
+        super().save_model(directory, model_prefix, **kwargs)
+        directory = os.path.join(directory, self.cfg.vlm_pretrain)
+        if self.cfg.save_model_with_vlm:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+            self.vlm.save_pretrained(directory)
+            self.vlm_processor.save_pretrained(directory)
+        elif os.path.isdir(self.cfg.vlm_pretrain):
+            if not os.path.exists(os.path.split(directory)[0]):
+                os.makedirs(os.path.split(directory)[0])
+            os.symlink(os.path.abspath(self.cfg.vlm_pretrain), directory)
 
     def forward(self, inputs):
         if self.data_preprocessor is not None:
@@ -425,3 +442,4 @@ class SEM_Qwen2_5_VLConfig(TorchModuleCfg[SEM_Qwen2_5_VL]):  # noqa: N801
     use_state_dict_with_vlm: bool = False
     load_vlm_checkpoint: bool = True
     with_cot: bool = False
+    save_model_with_vlm: bool = False

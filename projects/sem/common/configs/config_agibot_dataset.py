@@ -218,13 +218,15 @@ def build_transforms(config):
         0.1,
     ]  # Gripper joints: same as base
     l1, l2 = 0.2, 1.8
-    loss_weight = np.array([
-        [base_joint_weights] * 7  # left arm (7)
-        + [gripper_weights] * 1  # left gripper (1)
-        + [base_joint_weights] * 7  # right arm (7)
-        + [gripper_weights] * 1  # right gripper (1)
-        + [lift_weights] * 2  # lift joints (2)
-    ])  # 1, num_joint, 8
+    loss_weight = np.array(
+        [
+            [base_joint_weights] * 7  # left arm (7)
+            + [gripper_weights] * 1  # left gripper (1)
+            + [base_joint_weights] * 7  # right arm (7)
+            + [gripper_weights] * 1  # right gripper (1)
+            + [lift_weights] * 2  # lift joints (2)
+        ]
+    )  # 1, num_joint, 8
 
     add_data_relative_items = AddItems(
         state_loss_weights=loss_weight * l1,

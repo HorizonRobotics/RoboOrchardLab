@@ -64,8 +64,11 @@ class ImageChannelFlip:
 
 
 class AddItems:
-    def __init__(self, **kwargs):
+    def __init__(self, to_numpy=True, **kwargs):
         self.items = copy.deepcopy(kwargs)
+        for k, v in self.items.items():
+            if to_numpy and not isinstance(v, np.ndarray):
+                self.items[k] = np.array(v)
 
     def __call__(self, data):
         for k, v in self.items.items():
@@ -329,9 +332,13 @@ class ConvertDataType:
         for data_name, dtype in self.convert_map.items():
             if data_name not in data and not self.strict:
                 continue
+            if isinstance(data[data_name], list):
+                data[data_name] = torch.tensor(data[data_name])
             if isinstance(data[data_name], np.ndarray):
                 data[data_name] = data[data_name].astype(dtype)
             elif isinstance(data[data_name], torch.Tensor):
+                if isinstance(dtype, str):
+                    dtype = getattr(torch, dtype)
                 data[data_name] = data[data_name].to(dtype)
             else:
                 raise TypeError(

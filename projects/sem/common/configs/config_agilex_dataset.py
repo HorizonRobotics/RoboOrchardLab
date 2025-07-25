@@ -248,7 +248,8 @@ dataset_config = dict(
             # for i in range(12)
             f"data/agilex_collect/agitex_piper_0522_shard_{i}"
             for i in range(13)
-        ] + [
+        ]
+        + [
             f"data/agilex_collect/agilex_old_urdf/old_urdf_0523_shard_{i}"
             for i in range(4)
         ],
@@ -270,7 +271,6 @@ dataset_config = dict(
             "ziploc_slide",
             "twist_off_the_cap",
             "unplug_the_charging_cable",
-
             # exclude three mobile manipulation tasks
             # "wash_pan",
             # "wipe_wine",
@@ -309,59 +309,68 @@ def build_transforms(
     )
 
     if depth_restore:
-        depth_restoration = DepthRestoration()
+        depth_restoration = dict(type=DepthRestoration)
     else:
-        depth_restoration = IdentityTransform()
+        depth_restoration = dict(type=IdentityTransform)
 
     t_base2ego = np.array(
         [[1, 0, 0, 0], [0, 1, 0, 0.3], [0, 0, 1, 0], [0, 0, 0, 1]]
-    )  # noqa: N806
-    t_base2world = np.eye(4)  # noqa: N806
+    ).tolist()  # noqa: N806
+    t_base2world = np.eye(4).tolist()  # noqa: N806
 
     joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
     ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
-    loss_weights = np.array([
-        [joint_state_loss_weights] * 6
-        + [ee_state_loss_weights]
-        + [joint_state_loss_weights] * 6
-        + [ee_state_loss_weights]
-    ])
+    loss_weights = np.array(
+        [
+            [joint_state_loss_weights] * 6
+            + [ee_state_loss_weights]
+            + [joint_state_loss_weights] * 6
+            + [ee_state_loss_weights]
+        ]
+    )
     state_loss_weights = loss_weights * 0.2
     fk_loss_weight = loss_weights * 1.8
+    state_loss_weights = state_loss_weights.tolist()
+    fk_loss_weight = fk_loss_weight.tolist()
 
     if mode == "training":
-        add_data_relative_items = AddItems(
+        add_data_relative_items = dict(
+            type=AddItems,
             state_loss_weights=state_loss_weights,
             fk_loss_weight=fk_loss_weight,
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
         )
     else:
-        add_data_relative_items = AddItems(
+        add_data_relative_items = dict(
+            type=AddItems,
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
         )
 
-    state_sampling = SimpleStateSampling(
+    state_sampling = dict(
+        type=SimpleStateSampling,
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
         use_master_gripper=True,
         use_master_joint=False,
         gripper_indices=[6, 13],
     )
-    resize = Resize(
+    resize = dict(
+        type=Resize,
         dst_wh=config.get("dst_wh", (308, 252)),
     )
-    to_tensor = ToTensor()
-    projection_mat = GetProjectionMat(target_coordinate="ego")
-    convert_dtype = ConvertDataType(
+    to_tensor = dict(type=ToTensor)
+    projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
+    convert_dtype = dict(
+        type=ConvertDataType,
         convert_map=dict(
-            imgs=torch.float32,
-            depths=torch.float32,
-            image_wh=torch.float32,
-            projection_mat=torch.float32,
-            embodiedment_mat=torch.float32,
-        )
+            imgs="float32",
+            depths="float32",
+            image_wh="float32",
+            projection_mat="float32",
+            embodiedment_mat="float32",
+        ),
     )
 
     kinematics_config = dict(
@@ -387,18 +396,20 @@ def build_transforms(
         ],
         finger_keys=[["left_link7"], ["right_link7"]],
     )
-    kinematics = MultiArmKinematics(**kinematics_config)
+    kinematics = dict(type=MultiArmKinematics, **kinematics_config)
 
     if do_calib_to_ext:
-        calib_to_ext = CalibrationToExtrinsic(
+        calib_to_ext = dict(
+            type=CalibrationToExtrinsic,
             calibration=calibration,
             cam_ee_joint_indices=dict(left=5, right=12),
             **kinematics_config,
         )
     else:
-        calib_to_ext = IdentityTransform()
+        calib_to_ext = dict(type=IdentityTransform)
 
-    scale_shift = AddScaleShift(
+    scale_shift = dict(
+        type=AddScaleShift,
         scale_shift=[
             [1.478021398, 0.10237011399999996],
             [1.453678296, 1.4043815520000003],
@@ -414,10 +425,11 @@ def build_transforms(
             [1.3381379620000002, -0.012585846000000012],
             [3.086157592, -0.06803160000000008],
             [0.03857, 0.036329999999999994],
-        ]
+        ],
     )
     if mode == "training":
-        item_selection = ItemSelection(
+        item_selection = dict(
+            type=ItemSelection,
             keys=[
                 "imgs",
                 "depths",
@@ -432,9 +444,10 @@ def build_transforms(
                 "state_loss_weights",
                 "text",
                 "uuid",
-            ]
+            ],
         )
-        joint_state_noise = JointStateNoise(
+        joint_state_noise = dict(
+            type=JointStateNoise,
             noise_range=[
                 [-0.02, 0.02],
                 [-0.02, 0.02],
@@ -467,7 +480,8 @@ def build_transforms(
             item_selection,
         ]
     elif mode == "validation":
-        item_selection = ItemSelection(
+        item_selection = dict(
+            type=ItemSelection,
             keys=[
                 "imgs",
                 "depths",
@@ -480,7 +494,7 @@ def build_transforms(
                 "kinematics",
                 "text",
                 "uuid",
-            ]
+            ],
         )
         transforms = [
             depth_restoration,
@@ -496,7 +510,8 @@ def build_transforms(
             item_selection,
         ]
     elif mode == "deploy":
-        item_selection = ItemSelection(
+        item_selection = dict(
+            type=ItemSelection,
             keys=[
                 "imgs",
                 "depths",
@@ -507,9 +522,9 @@ def build_transforms(
                 "joint_scale_shift",
                 "kinematics",
                 "text",
-            ]
+            ],
         )
-        unsqueeze_batch = UnsqueezeBatch()
+        unsqueeze_batch = dict(type=UnsqueezeBatch)
         transforms = [
             add_data_relative_items,
             state_sampling,
@@ -555,3 +570,35 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         )
         datasets.append(dataset)
     return datasets
+
+
+def build_processors(config, dataset_names):
+    from robo_orchard_lab.models.sem_modules import (
+        SEMProcessor,
+        SEMProcessorCfg,
+    )
+
+    processors = {}
+    for dataset_name, data_config in dataset_config.items():
+        if dataset_name not in dataset_names:
+            continue
+
+        transforms = build_transforms(
+            config,
+            mode="deploy",
+            urdf=data_config["urdf"],
+            calibration=data_config.get("calibration"),
+            depth_restore=config.get("depth_restore", False),
+            do_calib_to_ext=not data_config.get("load_extrinsic", False),
+        )
+        processor = SEMProcessor(
+            SEMProcessorCfg(
+                load_image=True,
+                load_depth=config["with_depth"],
+                valid_action_step=None,
+                cam_names=data_config["cam_names"],
+                transforms=transforms,
+            )
+        )
+        processors[dataset_name] = processor
+    return processors

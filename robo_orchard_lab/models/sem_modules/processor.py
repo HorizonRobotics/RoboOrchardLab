@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import List, Optional, Dict
+
 import numpy as np
 import torch
 
@@ -36,29 +38,39 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixin,
     ProcessorMixinCfg,
 )
+from robo_orchard_lab.utils.build import DelayInitDictType
 
 __all__ = ["SEMProcessor", "SEMProcessorCfg"]
 
 
 class Struct2Dict:
-    def __init__(self, load_image: bool, load_depth: bool):
+    def __init__(
+        self,
+        load_image: bool,
+        load_depth: bool,
+        cam_names: Optional[List[str]] = None,
+    ):
         self.load_image = load_image
         self.load_depth = load_depth
+        self.cam_names = cam_names
 
     def __call__(self, data: MultiArmManipulationInput) -> dict:
         input_data = dict()
 
+        if self.cam_names is None:
+            cam_names = list(data.intrinsic.keys())
+        else:
+            cam_names = self.cam_names
+
         assert data.intrinsic is not None
-        input_data["intrinsic"] = np.stack(tuple(data.intrinsic.values()))
+        input_data["intrinsic"] = np.stack(
+            [data.intrinsic[x] for x in cam_names]
+        )
 
-        assert data.t_world2cam is not None
-        input_data["T_world2cam"] = np.stack(tuple(data.t_world2cam.values()))
-
-        assert data.t_robot2world is not None
-        input_data["T_base2world"] = data.t_robot2world
-
-        if data.t_robot2ego is not None:
-            input_data["T_base2ego"] = data.t_robot2ego
+        if data.t_world2cam is not None:
+            input_data["T_world2cam"] = np.stack(
+                [data.t_world2cam[x] for x in cam_names]
+            )
 
         assert data.history_joint_state is not None
         input_data["joint_state"] = np.stack(data.history_joint_state)
@@ -66,18 +78,18 @@ class Struct2Dict:
 
         if self.load_image:
             assert data.image is not None
-            images = [images[-1] for images in data.image.values()]
+            images = [data.image[x][-1] for x in cam_names]
             input_data["imgs"] = np.stack(images)
 
         if self.load_depth:
             assert data.depth is not None
-            depth = [depth[-1] for depth in data.depth.values()]
+            depth = [data.depth[x][-1] for x in cam_names]
             input_data["depths"] = np.stack(depth)
 
         input_data["text"] = (
             "" if data.instruction is None else data.instruction
         )
-
+        input_data["cam_names"] = cam_names
         return input_data
 
 
@@ -100,43 +112,7 @@ class SEMProcessor(ProcessorMixin):
                 load_image=self.cfg.load_image,
                 load_depth=self.cfg.load_depth,
             ),
-            SimpleStateSampling(
-                hist_steps=self.cfg.hist_steps, pred_steps=self.cfg.pred_steps
-            ),
-            Resize(
-                dst_wh=self.cfg.resize_dst_wh,
-                dst_intrinsic=self.cfg.resize_dst_intrinsic,
-            ),
-            ToTensor(),
-            GetProjectionMat(target_coordinate="base"),
-            AddScaleShift(scale_shift=self.cfg.scale_shift_list),
-            ConvertDataType(
-                convert_map=dict(
-                    imgs=torch.float32,
-                    depths=torch.float32,
-                    image_wh=torch.float32,
-                    projection_mat=torch.float32,
-                    embodiedment_mat=torch.float32,
-                )
-            ),
-            DualArmKinematics(urdf=urdf),
-            ItemSelection(
-                keys=[
-                    "imgs",
-                    "depths",
-                    "image_wh",
-                    "projection_mat",
-                    "embodiedment_mat",
-                    "hist_robot_state",
-                    "pred_robot_state",
-                    "joint_relative_pos",
-                    "joint_scale_shift",
-                    "kinematics",
-                    "text",
-                    "uuid",
-                ]
-            ),
-        ]
+        ] + [build(transform) for transform in self.cfg.transforms]
 
     def pre_process(self, data: MultiArmManipulationInput):
         self._initialized(data.urdf)
@@ -145,9 +121,11 @@ class SEMProcessor(ProcessorMixin):
         return data
 
     def post_process(self, batch, model_outputs) -> MultiArmManipulationOutput:
-        action = model_outputs[0]["pred_actions"][0][
-            : self.cfg.valid_action_step, :, 0
-        ]
+        # only output one trajectory in joint angle format
+        # action shape: num_pred_steps x num_joint
+        action = model_outputs[0]["pred_actions"][0][..., 0]
+        if self.cfg.valid_action_step is not None:
+            action = action[: self.cfg.valid_action_step]
         return MultiArmManipulationOutput(action=action)
 
 
@@ -155,9 +133,6 @@ class SEMProcessorCfg(ProcessorMixinCfg[SEMProcessor]):
     class_type: ClassType_co[SEMProcessor] = SEMProcessor
     load_image: bool = True
     load_depth: bool = True
-    hist_steps: int = 1
-    pred_steps: int = 64
-    resize_dst_wh: tuple[int, int] | list[int]
-    resize_dst_intrinsic: list[list[float]]
-    scale_shift_list: list[list[float]]
-    valid_action_step: int = 32
+    cam_names: Optional[List[str]] = None
+    valid_action_step: Optional[int] = None
+    transforms: Optional[List[DelayInitDictType]] = None

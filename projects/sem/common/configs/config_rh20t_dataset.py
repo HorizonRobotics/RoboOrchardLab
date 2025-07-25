@@ -532,7 +532,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     )
 
     datasets = []
-    for dataset_name, pahts in data_paths.items():
+    for dataset_name, paths in data_paths.items():
         if (
             "rh20t" not in dataset_names
             and f"rh20t-{dataset_name}" not in dataset_names
@@ -545,10 +545,11 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             kinematics_config[dataset_name],
         )
         dataset = RH20TManipulationDataset(
-            paths=data_paths[dataset_name],
+            paths=paths,
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
             dataset_name=f"rh20t-{dataset_name}",
+            num_views=3,
         )
         datasets.append(dataset)
     return datasets

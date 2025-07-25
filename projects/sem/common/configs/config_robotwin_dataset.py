@@ -12,6 +12,22 @@ dataset_config = dict(
         paths=[
             "./data/robotwin1.0",
         ],
+        scale_shift=[
+            [1.12735104, -0.11648428],
+            [1.45046443, 1.35436516],
+            [1.5324732, 1.45750941],
+            [1.80842297, -0.01855904],
+            [1.46318083, 0.16631192],
+            [2.79637467, 0.24332368],
+            [0.0325, 0.0125],
+            [1.12735104, -0.11648428],
+            [1.45046443, 1.35436516],
+            [1.5324732, 1.45750941],
+            [1.80842297, -0.01855904],
+            [1.46318083, 0.16631192],
+            [2.79637467, 0.24332368],
+            [0.0325, 0.0125],
+        ],
     ),
     robotwin2_0_piper=dict(
         kinematics_config=dict(
@@ -47,12 +63,28 @@ dataset_config = dict(
             "./data/robotwin2.0/aloha_piper_27tasks_clean_200",
             "./data/robotwin2.0/aloha_piper_27tasks_noise_300",
         ],
+        scale_shift=[
+            [1.2148041427135468, -0.5527651607990265],
+            [1.5329843759536743, 1.5329843759536743],
+            [1.351477067451924, -1.3455229592509568],
+            [1.8320000171661377, 0.0],
+            [1.2200000286102295, 0.0],
+            [3.1352850198745728, 0.00451505184173584],
+            [0.5, 0.5],
+            [1.257849007844925, 0.5348821580410004],
+            [1.5490366220474243, 1.5490366220474243],
+            [1.355304169934243, -1.341695856768638],
+            [1.8296949863433838, -0.0023050308227539062],
+            [1.2200000286102295, 0.0],
+            [3.130632758140564, 0.00936734676361084],
+            [0.5, 0.5],
+        ],
     ),
 )
 
 
 def build_transforms(
-    config, mode, kinematics_config, t_base2world
+    config, mode, kinematics_config, t_base2world, scale_shift
 ):
     import numpy as np
     import torch
@@ -74,66 +106,58 @@ def build_transforms(
 
     joint_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
     ee_state_loss_weights = [1, 2, 2, 2, 0.2, 0.2, 0.2, 0.2]
-    loss_weights = np.array([
-        [joint_state_loss_weights] * 6
-        + [ee_state_loss_weights]
-        + [joint_state_loss_weights] * 6
-        + [ee_state_loss_weights]
-    ])
+    loss_weights = np.array(
+        [
+            [joint_state_loss_weights] * 6
+            + [ee_state_loss_weights]
+            + [joint_state_loss_weights] * 6
+            + [ee_state_loss_weights]
+        ]
+    ).tolist()
 
     if mode == "training":
-        add_data_relative_items = AddItems(
-            T_base2world=np.array(t_base2world),
+        add_data_relative_items = dict(
+            type="AddItems",
+            T_base2world=t_base2world,
             state_loss_weights=loss_weights,
             fk_loss_weight=loss_weights,
         )
     else:
-        add_data_relative_items = AddItems(
-            T_base2world=np.array(t_base2world),
+        add_data_relative_items = dict(
+            type="AddItems",
+            T_base2world=t_base2world,
         )
 
-    state_sampling = SimpleStateSampling(
+    state_sampling = dict(
+        type="SimpleStateSampling",
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
     )
-    resize = Resize(
+    resize = dict(
+        type=Resize,
         dst_wh=config.get("dst_wh", (308, 252)),
     )
-    img_channel_flip = ImageChannelFlip([2, 1, 0])
-    to_tensor = ToTensor()
-    projection_mat = GetProjectionMat(target_coordinate="base")
-    convert_dtype = ConvertDataType(
+    img_channel_flip = dict(type=ImageChannelFlip, output_channel=[2, 1, 0])
+    to_tensor = dict(type=ToTensor)
+    projection_mat = dict(type=GetProjectionMat, target_coordinate="base")
+    convert_dtype = dict(
+        type=ConvertDataType,
         convert_map=dict(
-            imgs=torch.float32,
-            depths=torch.float32,
-            image_wh=torch.float32,
-            projection_mat=torch.float32,
-            embodiedment_mat=torch.float32,
-        )
+            imgs="float32",
+            depths="float32",
+            image_wh="float32",
+            projection_mat="float32",
+            embodiedment_mat="float32",
+        ),
     )
 
-    kinematics = DualArmKinematics(**kinematics_config)
+    kinematics = dict(type=DualArmKinematics, **kinematics_config)
 
-    scale_shift = AddScaleShift(
-        scale_shift=[
-            [1.12735104, -0.11648428],
-            [1.45046443, 1.35436516],
-            [1.5324732, 1.45750941],
-            [1.80842297, -0.01855904],
-            [1.46318083, 0.16631192],
-            [2.79637467, 0.24332368],
-            [0.0325, 0.0125],
-            [1.12735104, -0.11648428],
-            [1.45046443, 1.35436516],
-            [1.5324732, 1.45750941],
-            [1.80842297, -0.01855904],
-            [1.46318083, 0.16631192],
-            [2.79637467, 0.24332368],
-            [0.0325, 0.0125],
-        ]
-    )
+    scale_shift = dict(type=AddScaleShift, scale_shift=scale_shift)
+
     if mode == "training":
-        item_selection = ItemSelection(
+        item_selection = dict(
+            type=ItemSelection,
             keys=[
                 "imgs",
                 "depths",
@@ -148,9 +172,10 @@ def build_transforms(
                 "state_loss_weights",
                 "text",
                 "uuid",
-            ]
+            ],
         )
-        joint_state_noise = JointStateNoise(
+        joint_state_noise = dict(
+            type=JointStateNoise,
             noise_range=[
                 [-0.02, 0.02],
                 [-0.02, 0.02],
@@ -182,7 +207,8 @@ def build_transforms(
             item_selection,
         ]
     elif mode == "validation":
-        item_selection = ItemSelection(
+        item_selection = dict(
+            type=ItemSelection,
             keys=[
                 "imgs",
                 "depths",
@@ -195,7 +221,7 @@ def build_transforms(
                 "kinematics",
                 "text",
                 "uuid",
-            ]
+            ],
         )
         transforms = [
             add_data_relative_items,
@@ -210,7 +236,8 @@ def build_transforms(
             item_selection,
         ]
     elif mode == "deploy":
-        item_selection = ItemSelection(
+        item_selection = dict(
+            type=ItemSelection,
             keys=[
                 "imgs",
                 "depths",
@@ -221,9 +248,9 @@ def build_transforms(
                 "joint_scale_shift",
                 "kinematics",
                 "text",
-            ]
+            ],
         )
-        unsqueeze_batch = UnsqueezeBatch()
+        unsqueeze_batch = dict(type=UnsqueezeBatch)
         transforms = [
             add_data_relative_items,
             state_sampling,
@@ -247,14 +274,20 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
 
     datasets = []
     for dataset_name in dataset_config.keys():
-        if "robotwin" not in dataset_names and dataset_name not in dataset_names:
+        if (
+            "robotwin" not in dataset_names
+            and dataset_name not in dataset_names
+        ):
             continue
         transforms = build_transforms(
-            config, mode, dataset_config[dataset_name]['kinematics_config'],
-            dataset_config[dataset_name]['T_base2world'],
+            config,
+            mode,
+            dataset_config[dataset_name]["kinematics_config"],
+            dataset_config[dataset_name]["T_base2world"],
+            dataset_config[dataset_name]["scale_shift"],
         )
         dataset = RoboTwinLmdbDataset(
-            paths=dataset_config[dataset_name]['paths'],
+            paths=dataset_config[dataset_name]["paths"],
             task_names=None,
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
@@ -262,3 +295,33 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         )
         datasets.append(dataset)
     return datasets
+
+
+def build_processors(config, dataset_names):
+    from robo_orchard_lab.models.sem_modules import (
+        SEMProcessor,
+        SEMProcessorCfg,
+    )
+
+    processors = {}
+    for dataset_name, data_config in dataset_config.items():
+        if dataset_name not in dataset_names:
+            continue
+
+        transforms = build_transforms(
+            config,
+            "deploy",
+            dataset_config[dataset_name]["kinematics_config"],
+            dataset_config[dataset_name]["T_base2world"],
+            dataset_config[dataset_name]["scale_shift"],
+        )
+        processor = SEMProcessor(
+            SEMProcessorCfg(
+                load_image=True,
+                load_depth=config["with_depth"],
+                valid_action_step=None,
+                transforms=transforms,
+            )
+        )
+        processors[dataset_name] = processor
+    return processors
