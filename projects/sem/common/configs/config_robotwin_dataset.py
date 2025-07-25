@@ -117,19 +117,19 @@ def build_transforms(
 
     if mode == "training":
         add_data_relative_items = dict(
-            type="AddItems",
+            type=AddItems,
             T_base2world=t_base2world,
             state_loss_weights=loss_weights,
             fk_loss_weight=loss_weights,
         )
     else:
         add_data_relative_items = dict(
-            type="AddItems",
+            type=AddItems,
             T_base2world=t_base2world,
         )
 
     state_sampling = dict(
-        type="SimpleStateSampling",
+        type=SimpleStateSampling,
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
     )
