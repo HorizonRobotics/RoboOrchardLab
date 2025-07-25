@@ -70,12 +70,14 @@ def main(args, accelerator):
     build_processors = config.build_processors
     config = config.config
 
-    processors = build_processors(config)
-    for dataset_name, processor in processors.items():
-        with open(
-            os.path.join(args.workspace, f"{dataset_name}_processor.json"), "w"
-        ) as fh:
-            fh.write(processor.cfg.model_dump_json(indent=4))
+    # export data processors
+    if accelerator.is_main_process:
+        processors = build_processors(config)
+        for dataset_name, processor in processors.items():
+            with open(
+                os.path.join(args.workspace, f"{dataset_name}_processor.json"), "w"
+            ) as fh:
+                fh.write(processor.cfg.model_dump_json(indent=4))
 
     if args.kwargs is not None:
         if os.path.isfile(args.kwargs):
@@ -101,6 +103,7 @@ def main(args, accelerator):
             config["batch_size"],
             drop_last=True,
         ),
+        in_order=False,
     )
 
     model = build_model(config)

@@ -589,7 +589,7 @@ def build_processors(config, dataset_names):
             urdf=data_config["urdf"],
             calibration=data_config.get("calibration"),
             depth_restore=config.get("depth_restore", False),
-            do_calib_to_ext=not data_config.get("load_extrinsic", False),
+            do_calib_to_ext=True,
         )
         processor = SEMProcessor(
             SEMProcessorCfg(
