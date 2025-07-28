@@ -161,6 +161,34 @@ class SimpleStateSampling:
         return data
 
 
+class UpSampleJointState:
+    def __init__(self, pred_steps, hist_steps=None):
+        self.pred_steps = pred_steps
+        self.hist_steps = hist_steps
+
+    def __call__(self, data):
+        joint_state = torch.cat(
+            [data["hist_joint_state"][-1:], data["pred_joint_state"]]
+        )  # steps x num_joint
+        joint_state = joint_state.T[None]  # 1 x num_joint x steps
+
+        joint_state = torch.nn.functional.interpolate(
+            joint_state, self.pred_steps + 1, mode="linear", align_corners=True
+        )
+        data["pred_joint_state"] = joint_state[0].T[1:]
+        if (
+            self.hist_steps is not None
+            and data["hist_joint_state"].shape[0] != self.hist_steps
+        ):
+            data["hist_joint_state"] = torch.nn.functional.interpolate(
+                data["hist_joint_state"].T[None],
+                self.hist_steps,
+                mode="linear",
+                align_corners=True,
+            )[0].T
+        return data
+
+
 class Resize:
     def __init__(self, dst_wh, dst_intrinsic=None):
         self.dst_wh = dst_wh

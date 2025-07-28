@@ -14,10 +14,9 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from typing import List, Optional, Dict, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
-import torch
 
 from robo_orchard_lab.inference.multi_arm_manipulation import (
     MultiArmManipulationInput,
@@ -28,7 +27,7 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixin,
     ProcessorMixinCfg,
 )
-from robo_orchard_lab.utils.build import build, DelayInitDictType
+from robo_orchard_lab.utils.build import DelayInitDictType, build
 
 __all__ = ["SEMProcessor", "SEMProcessorCfg"]
 
@@ -91,7 +90,7 @@ class SEMProcessor(ProcessorMixin):
         self.struction_to_dict = Struct2Dict(
             load_image=self.cfg.load_image,
             load_depth=self.cfg.load_depth,
-            cam_names=self.cfg.cam_names
+            cam_names=self.cfg.cam_names,
         )
         self.transforms = [
             build(transform) for transform in self.cfg.transforms

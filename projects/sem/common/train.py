@@ -75,7 +75,8 @@ def main(args, accelerator):
         processors = build_processors(config)
         for dataset_name, processor in processors.items():
             with open(
-                os.path.join(args.workspace, f"{dataset_name}_processor.json"), "w"
+                os.path.join(args.workspace, f"{dataset_name}_processor.json"),
+                "w",
             ) as fh:
                 fh.write(processor.cfg.model_dump_json(indent=4))
 
@@ -103,7 +104,7 @@ def main(args, accelerator):
             config["batch_size"],
             drop_last=True,
         ),
-        in_order=False,
+        # in_order=False,
     )
 
     model = build_model(config)

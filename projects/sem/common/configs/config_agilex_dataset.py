@@ -289,7 +289,6 @@ def build_transforms(
     do_calib_to_ext=False,
 ):
     import numpy as np
-    import torch
 
     from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
         AddItems,
@@ -359,6 +358,12 @@ def build_transforms(
     resize = dict(
         type=Resize,
         dst_wh=config.get("dst_wh", (308, 252)),
+        dst_intrinsic=[
+            [291.31466499988414, 0.0, 151.90650584751774, 0.0],
+            [0.0, 317.15939794199295, 131.32947211181488, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     )
     to_tensor = dict(type=ToTensor)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
@@ -444,6 +449,7 @@ def build_transforms(
                 "state_loss_weights",
                 "text",
                 "uuid",
+                "subtask",
             ],
         )
         joint_state_noise = dict(
@@ -494,6 +500,7 @@ def build_transforms(
                 "kinematics",
                 "text",
                 "uuid",
+                "subtask",
             ],
         )
         transforms = [
@@ -545,6 +552,9 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
     )
+    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
+        InstructionReader,
+    )
 
     datasets = []
     for dataset_name, data_config in dataset_config.items():
@@ -558,6 +568,11 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             depth_restore=config.get("depth_restore", False),
             do_calib_to_ext=not data_config.get("load_extrinsic", False),
         )
+        instruction_reader = dict(
+            type=InstructionReader,
+            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
+            instruction_path="./data/instructions/task2instruction.json",
+        )
         dataset = HorizonManipulationLmdbDataset(
             paths=data_config["data_paths"],
             lazy_init=lazy_init or mode != "training",
@@ -567,6 +582,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             task_names=data_config.get("task_names"),
             load_extrinsic=data_config.get("load_extrinsic", False),
             load_calibration=data_config.get("load_calibration", False),
+            instruction_reader=instruction_reader,
         )
         datasets.append(dataset)
     return datasets

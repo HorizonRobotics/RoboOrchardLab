@@ -128,8 +128,7 @@ class BaseLmdbManipulationDataset(Dataset):
 
     def _check_valid(self, index_data):
         if (self.task_names is not None) and (
-            index_data["task_name"] not in self.task_names
-            # index_data.task_name not in self.task_names
+            index_data.task_name not in self.task_names
         ):
             return False
         return True
@@ -155,8 +154,7 @@ class BaseLmdbManipulationDataset(Dataset):
             for episode_idx in idx_lmdb.keys():
                 if episode_idx == "__len__":
                     continue
-                data = idx_lmdb.get(episode_idx)
-                # data = BaseIndexData.model_validate(idx_lmdb.get(episode_idx))
+                data = BaseIndexData.model_validate(idx_lmdb.get(episode_idx))
 
                 if (self._check_valid(data)) and (
                     self.num_episode_ is None
@@ -164,8 +162,7 @@ class BaseLmdbManipulationDataset(Dataset):
                 ):
                     lmdb_indices.append(i)
                     episode_indices.append(episode_idx)
-                    num_steps.append(data["num_steps"])
-                    # num_steps.append(data.num_steps)
+                    num_steps.append(data.num_steps)
                     current_num_episode += 1
 
         self.lmdb_indices = lmdb_indices

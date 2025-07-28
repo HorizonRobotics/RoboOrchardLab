@@ -143,8 +143,6 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         self.default_space = default_space
         self.load_instructions(instructions)
         self.instruction_keys = instruction_keys
-        # self.visualize(0)
-        # import pdb; pdb.set_trace()
 
     def load_instructions(self, instructions):
         if instructions is None:
