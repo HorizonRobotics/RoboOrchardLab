@@ -31,18 +31,20 @@ config = dict(
     save_step_freq=5000,
     num_workers=8,
     lr=1e-4,
+    training_with_subtask=False,
+    with_cot=False,
     training_datasets=[
-        # "robotwin1_0",
-        # "robotwin2_0_piper",
-        # "challenge",
-        # "challenge_finetune",
-        # "challenge_self_collect",
+        "robotwin1_0",
+        "robotwin2_0_piper",
+        "challenge",
+        "challenge_finetune",
+        "challenge_self_collect",
         "horizon_beijing",
-        # "horizon_shanghai",
-        # "agilex",
-        # "rh20t",
-        # "agibot_alpha",
-        # "agibot_beta",
+        "horizon_shanghai",
+        "agilex",
+        "rh20t",
+        "agibot_alpha",
+        "agibot_beta",
     ],
     deploy_datasets=[
         "horizon_beijing",
@@ -50,7 +52,7 @@ config = dict(
         "robotwin1_0",
     ],
     vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
-    checkpoint="./ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
+    # checkpoint="./ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
 )
 
 
@@ -122,7 +124,7 @@ def build_model(config):
     model = SEM_Qwen2_5_VL(
         cfg=SEM_Qwen2_5_VLConfig(
             use_state_dict_with_vlm=False,
-            with_cot=False,
+            with_cot=config["with_cot"],
             vlm_pretrain=config["vlm_pretrain"],
             data_preprocessor=dict(
                 type=BaseDataPreprocessor,
@@ -139,7 +141,10 @@ def build_model(config):
                         valid_threshold=0.5,
                         stride=(28,),
                     ),
-                    dict(type=TextTemplate),
+                    dict(
+                        type=TextTemplate,
+                        with_subtask=config["training_with_subtask"],
+                    ),
                 ],
             ),
             backbone_3d=(

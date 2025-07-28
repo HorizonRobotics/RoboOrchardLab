@@ -110,25 +110,22 @@ def build_transforms(config):
         Resize,
         SimpleStateSampling,
         ToTensor,
+        UpSampleJointState,
     )
 
     state_sampling = SimpleStateSampling(
-        hist_steps=config["hist_steps"],
-        pred_steps=config["pred_steps"],
+        hist_steps=config["hist_steps"] // 3 + 1,
+        pred_steps=config["pred_steps"] // 3 + 1,
         gripper_indices=[7, 15],  # AgiBot gripper indices
     )
 
-    dst_wh = config.get("dst_wh", (308, 252))
-    cx, cy = dst_wh[0] // 2, dst_wh[1] // 2
-    resize = Resize(
-        dst_wh=dst_wh,
-        dst_intrinsic=[
-            [291.31466499988414, 0.0, cx, 0.0],
-            [0.0, 317.15939794199295, cy, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
+    joint_upsample = UpSampleJointState(
+        pred_steps=config["pred_steps"],
+        hist_steps=config["hist_steps"],
     )
+
+    dst_wh = config.get("dst_wh", (308, 252))
+    resize = Resize(dst_wh=dst_wh)
 
     to_tensor = ToTensor()
     projection_mat = GetProjectionMat(target_coordinate="base")
@@ -239,6 +236,7 @@ def build_transforms(config):
         state_sampling,
         resize,
         to_tensor,
+        joint_upsample,
         projection_mat,
         scale_shift,
         convert_dtype,
@@ -255,7 +253,6 @@ def build_datasets(
     lazy_init=True,
     lmdb_kwargs=None,
     mode="training",
-    task_info_reader=None,
 ):
     """Build AgiBot datasets for training."""
     assert mode == "training", "only support training mode"
@@ -269,6 +266,9 @@ def build_datasets(
     from robo_orchard_lab.dataset.agibot.agibot_lmdb_dataset import (
         AgiBotLmdbDataset,
     )
+    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
+        InstructionReader,
+    )
 
     train_datasets = []
     transforms = build_transforms(config)
@@ -280,13 +280,18 @@ def build_datasets(
         for dataset_root in dataset_roots:
             shard_paths.extend(find_agibot_shards(dataset_root))
 
+        instruction_reader = dict(
+            type=InstructionReader,
+            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
+            instruction_path="./data/instructions/task2instruction.json",
+        )
         agibot_dataset = AgiBotLmdbDataset(
             paths=shard_paths,
             lazy_init=lazy_init,
             transforms=transforms,
             cam_names=None,
             dataset_name=name,
-            task_info_reader=task_info_reader,
+            task_info_reader=instruction_reader,
         )
         train_datasets.append(agibot_dataset)
     return train_datasets

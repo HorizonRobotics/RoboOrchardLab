@@ -14,7 +14,6 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import json
 import logging
 import os
 
@@ -24,8 +23,10 @@ import torch
 from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
+    BaseIndexData,
     BaseLmdbManipulationDataset,
 )
+from robo_orchard_lab.utils.build import build
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         load_ee_state=False,
         bgr2rgb=False,
         depth_scale=1000,
+        instruction_reader=None,
         **kwargs,
     ):
         super().__init__(
@@ -106,21 +108,30 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         self.load_calibration = load_calibration
         self.bgr2rgb = bgr2rgb
         self.depth_scale = depth_scale
+        self.instruction_reader = build(instruction_reader)
         # self.visualize(0, interval=5)
         # import pdb; pdb.set_trace()
+        # all_tasks = set()
+        # for i in range(self.num_episode):
+        #     index = self.cumsum_steps[i] - 1
+        #     lmdb_index, episode_index, step_index = self._get_indices(index)
+        #     idx_data = BaseIndexData.model_validate(
+        #         self.idx_lmdbs[lmdb_index].get(episode_index)
+        #     )
+        #     if idx_data.task_name is not None:
+        #         all_tasks.add(idx_data.task_name)
+        #     else:
+        #         all_tasks.add(idx_data.uuid.split("/")[0])
 
-    def load_instructions(self, instructions):
-        if instructions is None:
-            self.instructions = self.DEFAULT_INSTRUCTIONS
-        elif os.path.isfile(instructions):
-            assert instructions.endswith(".json")
-            self.instructions = json.load(open(instructions, "r"))
-        else:
-            assert isinstance(instructions, dict)
-            self.instructions = instructions
-
-    def get_instruction(self, lmdb_index, uuid):
-        meta = self.meta_lmdbs[lmdb_index][f"{uuid}/meta_data"]
+    def get_instruction(self, lmdb_index, data, by_reader=True):
+        if self.instruction_reader is not None and by_reader:
+            return self.instruction_reader.get_instruction(
+                data["uuid"],
+                data["task_name"],
+                data["step_index"],
+                return_subtask=True,
+            )
+        meta = self.meta_lmdbs[lmdb_index][f"{data['uuid']}/meta_data"]
         instructions = meta.get("instruction", "")
         if isinstance(instructions, str):
             text = instructions
@@ -212,8 +223,10 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
     def __getitem__(self, index):
         lmdb_index, episode_index, step_index = self._get_indices(index)
 
-        idx_data = self.idx_lmdbs[lmdb_index][episode_index]
-        uuid = idx_data["uuid"]
+        idx_data = BaseIndexData.model_validate(
+            self.idx_lmdbs[lmdb_index].get(episode_index)
+        )
+        uuid = idx_data.uuid
         if self.cam_names is not None:
             cam_names = self.cam_names
         else:
@@ -227,6 +240,7 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         data = dict(
             uuid=uuid,
             step_index=step_index,
+            task_name=idx_data.task_name,
             cam_names=cam_names,
             joint_state=np.array(joint_state),
         )
@@ -249,7 +263,7 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         if self.load_calibration:
             data.update(self.get_calibration(lmdb_index, data))
 
-        data.update(self.get_instruction(lmdb_index, uuid))
+        data.update(self.get_instruction(lmdb_index, data))
 
         for transform in self.transforms:
             if transform is None:
@@ -401,7 +415,7 @@ class RH20TManipulationDataset(HorizonManipulationLmdbDataset):
         self.load_extrinsic = True
 
     def _check_valid(self, index_data):
-        if index_data["num_steps"] > 2000:
+        if index_data["num_steps"] > 900:
             return False
         return super()._check_valid(index_data)
 
@@ -510,8 +524,10 @@ class RH20TManipulationDataset(HorizonManipulationLmdbDataset):
     def __getitem__(self, index):
         lmdb_index, episode_index, step_index = self._get_indices(index)
 
-        idx_data = self.idx_lmdbs[lmdb_index][episode_index]
-        uuid = idx_data["uuid"]
+        idx_data = BaseIndexData.model_validate(
+            self.idx_lmdbs[lmdb_index].get(episode_index)
+        )
+        uuid = idx_data.uuid
         if self.cam_names is not None:
             cam_names = self.cam_names
         else:
@@ -538,9 +554,10 @@ class RH20TManipulationDataset(HorizonManipulationLmdbDataset):
             uuid=uuid,
             step_index=step_index,
             cam_names=cam_names,
+            task_name=idx_data.task_name,
             intrinsic=intrinsics,
             extrinsic=extrinsics,
-            wrist_cam=idx_data["wrist_cam"],
+            wrist_cam=idx_data.wrist_cam,
             joint_state=np.array(joint_state),
             ee_state=np.array(ee_state),
         )
@@ -552,7 +569,7 @@ class RH20TManipulationDataset(HorizonManipulationLmdbDataset):
         if self.load_depth:
             data.update(self.get_depths(lmdb_index, data))
 
-        data.update(self.get_instruction(lmdb_index, uuid))
+        data.update(self.get_instruction(lmdb_index, data))
 
         for transform in self.transforms:
             if transform is None:

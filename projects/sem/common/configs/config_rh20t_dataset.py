@@ -411,6 +411,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
         Resize,
         SimpleStateSampling,
         ToTensor,
+        UpSampleJointState,
     )
 
     t_base2ego = np.eye(4)
@@ -440,12 +441,18 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
         )
 
     state_sampling = SimpleStateSampling(
-        hist_steps=config["hist_steps"],
-        pred_steps=config["pred_steps"],
+        hist_steps=config["hist_steps"] // 3 + 1,
+        pred_steps=config["pred_steps"] // 3 + 1,
         use_master_gripper=True,
         use_master_joint=False,
         gripper_indices=[6, 13],
     )
+
+    joint_upsample = UpSampleJointState(
+        pred_steps=config["pred_steps"],
+        hist_steps=config["hist_steps"],
+    )
+
     resize = Resize(
         dst_wh=config.get("dst_wh", (308, 252)),
     )
@@ -480,6 +487,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
                 "state_loss_weights",
                 "text",
                 "uuid",
+                "subtask",
             ]
         )
         transforms = [
@@ -487,6 +495,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
             state_sampling,
             resize,
             to_tensor,
+            joint_upsample,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -507,6 +516,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
                 "kinematics",
                 "text",
                 "uuid",
+                "subtask",
             ]
         )
         transforms = [
@@ -514,6 +524,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
             state_sampling,
             resize,
             to_tensor,
+            joint_upsample,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -530,6 +541,9 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         RH20TManipulationDataset,
     )
+    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
+        InstructionReader,
+    )
 
     datasets = []
     for dataset_name, paths in data_paths.items():
@@ -544,12 +558,18 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             scale_shift_config[dataset_name],
             kinematics_config[dataset_name],
         )
+        instruction_reader = dict(
+            type=InstructionReader,
+            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
+            instruction_path="./data/instructions/task2instruction.json",
+        )
         dataset = RH20TManipulationDataset(
             paths=paths,
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
             dataset_name=f"rh20t-{dataset_name}",
             num_views=3,
+            instruction_reader=instruction_reader,
         )
         datasets.append(dataset)
     return datasets

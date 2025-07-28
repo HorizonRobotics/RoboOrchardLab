@@ -39,8 +39,9 @@ __all__ = ["TextTemplate", "SEM_Qwen2_5_VL", "SEM_Qwen2_5_VLConfig"]
 
 
 class TextTemplate(nn.Module):
-    def __init__(self):
+    def __init__(self, with_subtask=True):
         super().__init__()
+        self.with_subtask = with_subtask
         self.template = (
             "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
             "<|im_start|>user\n{image_token}\nYou are a robot. "
@@ -61,7 +62,7 @@ class TextTemplate(nn.Module):
             )
             for instruction in instructions
         ]
-        if "subtask" in data:
+        if self.with_subtask and "subtask" in data:
             for i, subtask in enumerate(data["subtask"]):
                 if subtask is not None and len(subtask) > 0:
                     text[i] += f"{subtask}\n"

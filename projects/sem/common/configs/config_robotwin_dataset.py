@@ -87,7 +87,6 @@ def build_transforms(
     config, mode, kinematics_config, t_base2world, scale_shift
 ):
     import numpy as np
-    import torch
 
     from robo_orchard_lab.dataset.robotwin.transforms import (
         AddItems,
