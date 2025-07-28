@@ -111,17 +111,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         self.instruction_reader = build(instruction_reader)
         # self.visualize(0, interval=5)
         # import pdb; pdb.set_trace()
-        # all_tasks = set()
-        # for i in range(self.num_episode):
-        #     index = self.cumsum_steps[i] - 1
-        #     lmdb_index, episode_index, step_index = self._get_indices(index)
-        #     idx_data = BaseIndexData.model_validate(
-        #         self.idx_lmdbs[lmdb_index].get(episode_index)
-        #     )
-        #     if idx_data.task_name is not None:
-        #         all_tasks.add(idx_data.task_name)
-        #     else:
-        #         all_tasks.add(idx_data.uuid.split("/")[0])
 
     def get_instruction(self, lmdb_index, data, by_reader=True):
         if self.instruction_reader is not None and by_reader:
@@ -415,7 +404,7 @@ class RH20TManipulationDataset(HorizonManipulationLmdbDataset):
         self.load_extrinsic = True
 
     def _check_valid(self, index_data):
-        if index_data["num_steps"] > 900:
+        if index_data.num_steps > 900:
             return False
         return super()._check_valid(index_data)
 
