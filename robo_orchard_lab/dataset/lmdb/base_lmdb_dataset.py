@@ -149,6 +149,10 @@ class BaseLmdbManipulationDataset(Dataset):
         lmdb_indices = []
         episode_indices = []
         num_steps = []
+        task_statistics = {
+            "num_episode": {},
+            "num_steps": {},
+        }
         current_num_episode = 0
         for i, idx_lmdb in enumerate(self.idx_lmdbs):
             for episode_idx in idx_lmdb.keys():
@@ -164,16 +168,26 @@ class BaseLmdbManipulationDataset(Dataset):
                     episode_indices.append(episode_idx)
                     num_steps.append(data.num_steps)
                     current_num_episode += 1
+                    
+                    if data.task_name not in task_statistics["num_episode"]:
+                        task_statistics["num_episode"][data.task_name] = 0
+                        task_statistics["num_steps"][data.task_name] = 0
+                    task_statistics["num_episode"][data.task_name] += 1
+                    task_statistics["num_steps"][data.task_name] += (
+                        data.num_steps
+                    )
 
         self.lmdb_indices = lmdb_indices
         self.episode_indices = episode_indices
         self.num_steps = np.array(num_steps)
         self.cumsum_steps = np.cumsum(num_steps)
         self.num_episode = len(num_steps)
+        self.task_statistics = task_statistics
         self.initialized = True
         logger.info(
             f"{self.dataset_name} dataset length: {self.__len__()}, "
-            f"number of episode: {self.num_episode}"
+            f"number of episode: {self.num_episode}, "
+            f"task_statistics: {self.task_statistics}"
         )
 
     def __len__(self):

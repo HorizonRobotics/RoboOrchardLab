@@ -18,7 +18,7 @@
 config = dict(
     hist_steps=1,
     pred_steps=64,
-    chunk_size=8,
+    chunk_size=4,
     embed_dims=256,
     with_depth=True,
     with_depth_loss=True,
