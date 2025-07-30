@@ -21,6 +21,7 @@ from .layers import (
     RotaryAttention,
     RotaryEmbedding,
     ScalarEmbedder,
+    TemporalJointGraphAttention,
     UpsampleHead,
 )
 from .processor import SEMProcessor, SEMProcessorCfg

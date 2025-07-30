@@ -336,7 +336,7 @@ class TemporalJointGraphAttention(nn.Module):
         M, T_k = key.shape[1:3]  # noqa: N806
         q = self.q_proj(query)
         k = self.k_proj(key)
-        if value is not None:
+        if value is None:
             value = key
         v = self.v_proj(value)
 
