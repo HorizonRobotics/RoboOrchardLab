@@ -18,6 +18,7 @@ import os
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from transformers import (
     AutoProcessor,
     Qwen2_5_VLConfig,
@@ -226,7 +227,10 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         batch_size, num_cams, _, h, w = inputs["imgs"].shape
         vlm_outputs = vlm_outputs["hidden_states"][1:]
 
-        vlm_outputs = self.foward_feat_mapping(vlm_outputs)
+        vlm_outputs = checkpoint(
+            self.foward_feat_mapping, vlm_outputs, use_reentrant=False
+        )
+        # vlm_outputs = self.foward_feat_mapping(vlm_outputs)
         vlm_outputs = vlm_outputs.to(torch.float32)
 
         img_feature_mask = self.vlm.config.image_token_id == vlm_input_ids
