@@ -149,8 +149,8 @@ def main(args, accelerator):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str)
     parser.add_argument("--workspace", type=str, default="./workspace")
-    parser.add_argument("--config", type=str, default="./config_bip3d_det.py")
     parser.add_argument("--kwargs", type=str, default=None)
     args = parser.parse_args()
 

@@ -120,7 +120,7 @@ class RotaryEmbedding(nn.Module):
         position_ids = position_ids.to(torch.int32)
         cos = self.cos.to(x)[position_ids]
         sin = self.sin.to(x)[position_ids]
-        if x.dim() == 4:
+        while x.dim() > cos.dim():
             cos = cos.unsqueeze(1)
             sin = sin.unsqueeze(1)  # b 1 n c
         x = (x * cos) + (rotate_half(x) * sin)
@@ -348,7 +348,6 @@ class TemporalJointGraphAttention(nn.Module):
             0, 2, 1, 3
         )  # b,h,m*tk,c
 
-        num_head = q.shape[1]
         q = self.temporal_position_encoder(q, temporal_pos_q)
         k = self.temporal_position_encoder(k, temporal_pos_k)
 
@@ -369,7 +368,7 @@ class TemporalJointGraphAttention(nn.Module):
                 float("-inf"),
                 attn,
             )
-        attn = attn.reshape(B, num_head, T_q * N, T_k * M)
+        attn = attn.reshape(B, self.num_head, T_q * N, T_k * M)
 
         attn = attn.softmax(dim=-1)
         x = (attn @ v).transpose(1, 2)
