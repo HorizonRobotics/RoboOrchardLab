@@ -51,10 +51,17 @@ config = dict(
         "horizon_shanghai",
         "robotwin1_0",
     ],
-    # vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
-    # checkpoint="./ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
 )
+
+
+# v1.0
+# config.update(
+#     embed_dims=512,
+#     decoder_layers=8,
+#     vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
+#     checkpoint="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/sem_alldata_dim512_layer8_tempjointattn-20250722-122221.403819.safetensors",  # pretrain
+# )
 
 
 def build_model(config):
