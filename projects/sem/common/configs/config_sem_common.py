@@ -198,7 +198,7 @@ def build_model(config):
             decoder=dict(
                 type=SEMActionDecoder,
                 embed_dims=embed_dims,
-                num_parallel_training_sample=4,
+                # num_parallel_training_sample=4,
                 # use_immiscible_noise=True,
                 head=head,
                 img_cross_attn=dict(
