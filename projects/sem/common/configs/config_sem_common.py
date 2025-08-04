@@ -51,7 +51,8 @@ config = dict(
         "horizon_shanghai",
         "robotwin1_0",
     ],
-    vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
+    # vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
+    vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     # checkpoint="./ckpt/sem_all_data_fixbug_softmax_resume3-20250710-155416.603413_ckpt22.safetensors",
 )
 
@@ -84,6 +85,7 @@ def build_model(config):
         SEM_Qwen2_5_VLConfig,
         SEMActionDecoder,
         SEMRobotStateEncoder,
+        TemporalJointGraphAttention,
         TextTemplate,
         UpsampleHead,
     )
@@ -107,10 +109,12 @@ def build_model(config):
 
     decoder_operation_order = [
         "t_norm",
-        "joint_self_attn",
+        # "joint_self_attn",
+        # "gate_msa",
+        # "norm",
+        # "temp_cross_attn",
+        "temp_joint_attn",
         "gate_msa",
-        "norm",
-        "temp_cross_attn",
         "norm",
         "img_cross_attn",
         "norm",
@@ -187,9 +191,17 @@ def build_model(config):
             decoder=dict(
                 type=SEMActionDecoder,
                 embed_dims=embed_dims,
+                num_parallel_training_sample=4,
+                # use_immiscible_noise=True,
                 head=head,
                 img_cross_attn=dict(
                     type=RotaryAttention,
+                    embed_dims=embed_dims,
+                    num_heads=8,
+                    max_position_embeddings=32,
+                ),
+                temp_joint_attn=dict(
+                    type=TemporalJointGraphAttention,
                     embed_dims=embed_dims,
                     num_heads=8,
                     max_position_embeddings=32,
@@ -357,7 +369,7 @@ def build_optimizer(config, model):
             other_params.append(p)
     optimizer = optim.AdamW(
         [
-            {"params": vlm_params, "lr": base_lr * 0.1},
+            # {"params": vlm_params, "lr": base_lr * 0.1},
             {"params": bit16_params},
             {"params": other_params},
         ],
