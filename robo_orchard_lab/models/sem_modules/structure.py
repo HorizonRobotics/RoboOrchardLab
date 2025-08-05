@@ -128,12 +128,14 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
                 for _ in range(len(self.vlm.model.layers))
             ]
         )
-        self.weight = torch.nn.Parameter(
-            torch.linspace(
-                0, 3, len(self.vlm.model.layers), dtype=torch.bfloat16
-            ),
-            requires_grad=True,
-        )
+        temperature = 3
+        half_layers = len(self.vlm.model.layers) // 2  # the highlighted layer
+        weight = torch.cat([
+            torch.linspace(0.1, 1, half_layers),
+            torch.linspace(1, 0.1, len(self.vlm.model.layers) - half_layers),
+        ])
+        weight = weight.to(dtype=torch.bfloat16) * temperature
+        self.weight = torch.nn.Parameter(weight, requires_grad=True)
 
     def save_model(
         self, directory: str, model_prefix: str = "model", **kwargs
@@ -397,7 +399,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
     def load_state_dict(self, state_dict, strict=True, **kwargs):
         if self.use_state_dict_with_vlm:
             return super().load_state_dict(
-                self, state_dict, strict=strict, **kwargs
+                state_dict, strict=strict, **kwargs
             )
         filtered_state_dict = {
             k: v for k, v in state_dict.items() if not k.startswith("vlm.")
