@@ -368,7 +368,7 @@ class TemporalJointGraphAttention(nn.Module):
                 float("-inf"),
                 attn,
             )
-        attn = attn.reshape(B, self.num_head, T_q * N, T_k * M)
+        attn = attn.reshape(B, self.num_heads, T_q * N, T_k * M)
 
         attn = attn.softmax(dim=-1)
         x = (attn @ v).transpose(1, 2)
