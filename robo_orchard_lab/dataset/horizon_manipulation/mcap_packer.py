@@ -92,7 +92,7 @@ def get_frequency(timestamp, prefix="", window_size=3):
     freq = 1 / time_diff
     logger.info(
         f"{prefix:<50} - "
-        f"duration: {time[-1] - time[0]:.2f}s, "
+        f"duration: {timestamp[-1] - timestamp[0]:.2f}s, "
         + f"min frequency: {freq.min():.1f}Hz, "
         + f"mean frequency: {freq.mean():.1f}Hz"
     )
@@ -142,7 +142,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         self.date_prefix = date_prefix
 
     def calibration_process(self, calibration_dict):
-        for camera, calib in self.calibration_dict.items():
+        for camera, calib in calibration_dict.items():
             calibration_dict[camera] = np.linalg.inv(pose_to_mat(calib))
         return calibration_dict
 
