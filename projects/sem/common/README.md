@@ -1,6 +1,8 @@
 # Training
 ## Local run
 ```bash
+cd projects/sem/common
+
 # single gpu
 python3 train.py --config configs/config_sem_common.py $@
 
