@@ -29,6 +29,37 @@ dataset_config = dict(
             [0.0325, 0.0125],
         ],
     ),
+    robotwin2_0=dict(
+        kinematics_config=dict(
+            urdf="./urdf/arx5/arx5_description_isaac.urdf",
+        ),
+        T_base2world=[
+            [0, -1, 0, 0],
+            [1, 0, 0, -0.65],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ],
+        paths=[
+            "./data/robotwin2.0/aloha_agilex_demo_clean",
+            "./data/robotwin2.0/aloha_agilex_demo_randomized",
+        ],
+        scale_shift=[
+            [1.12735104, -0.11648428],
+            [1.45046443, 1.35436516],
+            [1.5324732, 1.45750941],
+            [1.80842297, -0.01855904],
+            [1.46318083, 0.16631192],
+            [2.79637467, 0.24332368],
+            [0.5, 0.5],
+            [1.12735104, -0.11648428],
+            [1.45046443, 1.35436516],
+            [1.5324732, 1.45750941],
+            [1.80842297, -0.01855904],
+            [1.46318083, 0.16631192],
+            [2.79637467, 0.24332368],
+            [0.5, 0.5],
+        ],
+    ),
     robotwin2_0_piper=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_piper.urdf",
