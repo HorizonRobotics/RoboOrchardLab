@@ -35,6 +35,7 @@ config = dict(
     with_cot=False,
     training_datasets=[
         "robotwin1_0",
+        "robotwin2_0",
         "robotwin2_0_piper",
         "challenge",
         "challenge_finetune",
@@ -49,7 +50,7 @@ config = dict(
     deploy_datasets=[
         "horizon_beijing",
         "horizon_shanghai",
-        "robotwin1_0",
+        "robotwin2_0",
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
 )
@@ -198,8 +199,6 @@ def build_model(config):
             decoder=dict(
                 type=SEMActionDecoder,
                 embed_dims=embed_dims,
-                # num_parallel_training_sample=4,
-                # use_immiscible_noise=True,
                 head=head,
                 img_cross_attn=dict(
                     type=RotaryAttention,
