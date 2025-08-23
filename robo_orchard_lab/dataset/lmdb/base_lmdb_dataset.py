@@ -168,7 +168,7 @@ class BaseLmdbManipulationDataset(Dataset):
                     episode_indices.append(episode_idx)
                     num_steps.append(data.num_steps)
                     current_num_episode += 1
-                    
+
                     if data.task_name not in task_statistics["num_episode"]:
                         task_statistics["num_episode"][data.task_name] = 0
                         task_statistics["num_steps"][data.task_name] = 0

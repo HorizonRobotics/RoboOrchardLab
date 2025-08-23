@@ -64,6 +64,7 @@ exclude = [
     "dummy/*",
     "*.pyi",
     "*_pb2.py",
+    "*agibot*"
 ]
 
 # Same as Black.

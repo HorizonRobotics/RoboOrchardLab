@@ -14,7 +14,6 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import copy
 import importlib
 import logging
 import os
@@ -22,8 +21,8 @@ import os
 import numpy as np
 import requests
 import torch
-
 from robo_orchard_core.utils.config import load_config_class
+
 from robo_orchard_lab.models.mixin import ModelMixin
 from robo_orchard_lab.utils.path import in_cwd
 
@@ -42,7 +41,9 @@ def load_config(config_file):
     return config
 
 
-def download_job_ckpt_processor(ckpt_url, processor_name, output_dir="./model"):
+def download_job_ckpt_processor(
+    ckpt_url, processor_name, output_dir="./model"
+):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
@@ -50,7 +51,9 @@ def download_job_ckpt_processor(ckpt_url, processor_name, output_dir="./model"):
         ckpt_url = ckpt_url[:-1]
     model_url = f"{ckpt_url}/model.safetensors"
     model_config_url = f"{ckpt_url}/model.config.json"
-    processor_url = '/'.join(ckpt_url.split('/')[:-2] + [f"{processor_name}.json"])
+    processor_url = "/".join(
+        ckpt_url.split("/")[:-2] + [f"{processor_name}.json"]
+    )
     print(
         f"model_ckpt: {model_url}\n"
         f"model_config: {model_config_url}\n"
@@ -68,21 +71,25 @@ def download_job_ckpt_processor(ckpt_url, processor_name, output_dir="./model"):
 
 
 class SEMPolicy:
-    def __init__(self, config, processor=None, vlm_ckpt_dir=None, urdf_dir=None):
+    def __init__(
+        self, config, processor=None, vlm_ckpt_dir=None, urdf_dir=None
+    ):
         if processor is None:
             processor = "processor"
         if config.startswith("http"):
             download_job_ckpt_processor(
                 ckpt_url=config,
                 processor_name=processor,
-                output_dir="./sem_eval_model"
+                output_dir="./sem_eval_model",
             )
             config = "./sem_eval_model"
         logger.info(f"model config: {config}, processor: {processor}")
 
         target_vlm_ckpt_dir = os.path.join(config, "ckpt")
         target_urdf_dir = os.path.join(config, "urdf")
-        if vlm_ckpt_dir is not None and not os.path.exists(target_vlm_ckpt_dir):
+        if vlm_ckpt_dir is not None and not os.path.exists(
+            target_vlm_ckpt_dir
+        ):
             os.symlink(vlm_ckpt_dir, target_vlm_ckpt_dir)
         if urdf_dir is not None and not os.path.exists(target_urdf_dir):
             os.symlink(urdf_dir, target_urdf_dir)

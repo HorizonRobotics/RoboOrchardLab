@@ -1,3 +1,19 @@
+# Project RoboOrchard
+#
+# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
 import argparse
 import json
 import logging
@@ -7,17 +23,19 @@ import re
 import subprocess
 
 import torch
+
 from robo_orchard_lab.utils import log_basic_config
 
 bash_command_template = (
     "export CUDA_VISIBLE_DEVICES={gpu_id} \n"
-    "python3 script/eval_policy.py --config sem_policy/deploy_policy.yml "
+    "python3 script/eval_policy.py --config sem_robotwin_policy/deploy_policy.yml "  # noqa: E501
     "  --overrides "
     "  --task_config {task_config} "
     "  --task_name {task_name} "
     "  --vlm_ckpt_dir {vlm_ckpt_dir} "
     "  --urdf_dir {urdf_dir} "
     "  --model_config {model_config} "
+    "  --model_processor {model_processor} "
     "  --test_num {test_num}"
 )
 
@@ -41,6 +59,7 @@ def eval_tasks(gpu_id, task_names, args, results=None):
             vlm_ckpt_dir=args.vlm_ckpt_dir,
             urdf_dir=args.urdf_dir,
             model_config=args.model_config,
+            model_processor=args.model_processor,
             test_num=args.test_num,
         )
         with open(log_file, "w", encoding="utf-8") as f:
@@ -59,7 +78,7 @@ def eval_tasks(gpu_id, task_names, args, results=None):
                     break
         else:
             logger.info(
-                f"Fail to eval task[{task_name}] with returncode {ret.returncode}"
+                f"Fail to eval task[{task_name}] with returncode {ret.returncode}"  # noqa: E501
             )
     return results
 
@@ -74,6 +93,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task_config", type=str)
     parser.add_argument("--model_config", type=str)
+    parser.add_argument(
+        "--model_processor", type=str, default="robotwin2_0_processor"
+    )
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--vlm_ckpt_dir", type=str, default=None)
     parser.add_argument("--urdf_dir", type=str, default=None)

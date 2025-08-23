@@ -173,7 +173,7 @@ if __name__ == "__main__":
         ],
         "sem": [
             "robo_orchard_lab[bip3d]",
-            "diffusers",
+            "diffusers<=0.32.2",
             "lmdb",
             "pytorch-kinematics",
             "h5py",
@@ -187,7 +187,6 @@ if __name__ == "__main__":
             "robo_orchard_schemas==0.1.1",
         ],
         "aux_think": [
-            "transformers<=4.37.2",
             "tokenizers",
             "peft<=0.15.2",
             "markdown2[all]",
