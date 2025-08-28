@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import os
+from typing import Optional
 
 import torch
 from torch import nn
@@ -113,6 +114,15 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
                 self.vlm.visual.eval()
                 self.vlm.visual.requires_grad_(False)
 
+        origin_num_layers = len(self.vlm.model.layers)
+        if (
+            self.cfg.num_vlm_layers is not None
+            and self.cfg.num_vlm_layers >= 0
+        ):
+            self.vlm.model.layers = self.vlm.model.layers[
+                : self.cfg.num_vlm_layers
+            ]
+
         self.vlm_processor = AutoProcessor.from_pretrained(
             vlm_pretrain, use_fast=True
         )
@@ -125,19 +135,17 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
                     bias=True,
                     dtype=torch.bfloat16,
                 )
-                for _ in range(len(self.vlm.model.layers))
+                for _ in range(len(self.vlm.model.layers) + 1)
             ]
         )
         temperature = 3
-        half_layers = len(self.vlm.model.layers) // 2  # the highlighted layer
+        highlighted_layer = origin_num_layers // 2  # the highlighted layer
         weight = torch.cat(
             [
-                torch.linspace(0.1, 1, half_layers),
-                torch.linspace(
-                    1, 0.1, len(self.vlm.model.layers) - half_layers
-                ),
+                torch.linspace(0.1, 1, highlighted_layer + 1),
+                torch.linspace(1, 0.1, origin_num_layers - highlighted_layer),
             ]
-        )
+        )[: len(self.vlm.model.layers) + 1]
         weight = weight.to(dtype=torch.bfloat16) * temperature
         self.weight = torch.nn.Parameter(weight, requires_grad=True)
 
@@ -231,7 +239,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
             vlm_input_ids = vlm_inputs["input_ids"]
 
         batch_size, num_cams, _, h, w = inputs["imgs"].shape
-        vlm_outputs = vlm_outputs["hidden_states"][1:]
+        vlm_outputs = vlm_outputs["hidden_states"]
 
         vlm_outputs = checkpoint(
             self.foward_feat_mapping, vlm_outputs, use_reentrant=False
@@ -452,3 +460,4 @@ class SEM_Qwen2_5_VLConfig(TorchModuleCfg[SEM_Qwen2_5_VL]):  # noqa: N801
     load_vlm_checkpoint: bool = True
     with_cot: bool = False
     save_model_with_vlm: bool = False
+    num_vlm_layers: Optional[int] = None

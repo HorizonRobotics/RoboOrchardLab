@@ -56,12 +56,10 @@ config = dict(
 )
 
 
-# v1.0
+# v2.0
 # config.update(
-#     embed_dims=512,
-#     decoder_layers=8,
-#     vlm_pretrain="./ckpt/qwen_25_3B_agibot_rh20t_agilex_multi_size",
-#     checkpoint="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/sem_alldata_dim512_layer8_tempjointattn-20250722-122221.403819.safetensors",  # pretrain  # noqa: E501
+#     num_vlm_layers=0,
+#     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-08-25/16-58/sem_alldata_layers0_resume2-20250825-153143.959699-COPY/output/checkpoints/checkpoint_15/model.safetensors",  # pretrain  # noqa: E501
 # )
 
 
@@ -138,6 +136,7 @@ def build_model(config):
             use_state_dict_with_vlm=False,
             with_cot=config["with_cot"],
             vlm_pretrain=config["vlm_pretrain"],
+            num_vlm_layers=config.get("num_vlm_layers"),
             data_preprocessor=dict(
                 type=BaseDataPreprocessor,
                 # input image should in BGR convention, it will be converted to RGB here  # noqa: E501
