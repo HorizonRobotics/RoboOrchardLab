@@ -25,7 +25,6 @@ from robo_orchard_lab.dataset.experimental.mcap.batch_decoder.base import (
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.batch_camera import (  # noqa: E501
     BatchCameraData,
     BatchCameraDataEncoded,
-    CameraDataConfigMixin,
     FgCameraCompressedImages,
     ToBatchCameraDataConfig,
     ToBatchCameraDataEncodedConfig,
@@ -79,9 +78,7 @@ class McapBatch2BatchCameraData(McapBatchDecoder[BatchCameraData]):
     def __init__(self, config: McapBatch2BatchCameraDataConfig):
         super().__init__()
         self._cfg = config
-        self._msg_cvt = ToBatchCameraDataConfig(
-            pix_fmt=config.pix_fmt,
-        )()
+        self._msg_cvt = ToBatchCameraDataConfig()()
         self._required_topics = self._required_topics = config.required_topics
 
     def require_topics(self) -> set[str]:
@@ -136,7 +133,6 @@ class McapBatch2BatchCameraDataEncodedConfig(
 
 class McapBatch2BatchCameraDataConfig(
     McapBatchDecoderConfig[McapBatch2BatchCameraData],
-    CameraDataConfigMixin[McapBatch2BatchCameraData],
     CameraDataSourceMixin[McapBatch2BatchCameraData],
 ):
     class_type: type[McapBatch2BatchCameraData] = McapBatch2BatchCameraData

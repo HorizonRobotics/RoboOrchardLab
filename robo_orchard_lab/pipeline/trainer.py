@@ -16,9 +16,8 @@
 
 import logging
 import weakref
-from dataclasses import dataclass
 from inspect import signature
-from typing import Any, Dict, Iterable, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 import deprecated
 import torch
@@ -34,7 +33,6 @@ from robo_orchard_lab.pipeline.hook_based_trainer import (
     ValidationHookConfig as ValidationConfig,
 )
 from robo_orchard_lab.pipeline.hooks.mixin import (
-    PipelineHookArgs,
     PipelineHooks,
 )
 
@@ -42,75 +40,6 @@ __all__ = ["SimpleTrainer"]
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class TrainerState:
-    """A class to manage the state of the training process.
-
-    Attributes:
-        epoch (int): The current epoch in the training process.
-        step (int): The current step within the current epoch.
-        global_step (int): The total number of steps taken across all epochs.
-    """
-
-    epoch: int = 0
-    step: int = 0
-    global_step: int = 0
-
-    def reset(self) -> None:
-        """Resets the training state to initial values."""
-        self.epoch = 0
-        self.step = 0
-        self.global_step = 0
-
-    def state_dict(self) -> Dict[str, int]:
-        """Returns the current state as a dictionary.
-
-        Returns:
-            Dict[str, int]: A dictionary containing the current epoch, step,
-            and global_step.
-        """
-        return dict(
-            epoch=self.epoch,
-            step=self.step,
-            global_step=self.global_step,
-        )
-
-    def load_state_dict(self, input: Dict[str, int]) -> None:
-        """Loads the state from a dictionary.
-
-        Args:
-            input (Dict[str, int]): A dictionary containing the epoch, step,
-            and global_step to load.
-        """
-        self.epoch = input["epoch"]
-        self.step = input["step"]
-        self.global_step = input["global_step"]
-
-    def update_step(self) -> None:
-        """Increments the step and global_step by 1."""
-        self.step += 1
-        self.global_step += 1
-
-    def update_epoch(self) -> None:
-        """Increments the epoch by 1 and resets the step to 0."""
-        self.epoch += 1
-        self.step = 0
-
-    def sync_pipeline_hook_arg(self, hook_args: PipelineHookArgs) -> None:
-        """Synchronizes the training state with the provided hook arguments.
-
-        The hook arguments are updated with the current epoch, step, and
-        global_step.
-
-        Args:
-            hook_args (PipelineHookArgs): The hook arguments to synchronize
-            with.
-        """
-        hook_args.epoch_id = self.epoch
-        hook_args.step_id = self.step
-        hook_args.global_step_id = self.global_step
 
 
 @deprecated.deprecated(

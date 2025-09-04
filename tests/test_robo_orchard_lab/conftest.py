@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 import os
+import tempfile
 
 import pytest
 
@@ -36,3 +37,9 @@ def PROJECT_ROOT() -> str:
 @pytest.fixture(scope="module")
 def ROBO_ORCHARD_TEST_WORKSPACE() -> str:
     return os.environ["ROBO_ORCHARD_TEST_WORKSPACE"]
+
+
+@pytest.fixture(scope="session")
+def tmp_local_folder():
+    with tempfile.TemporaryDirectory(dir=os.path.abspath("./")) as temp_dir:
+        yield temp_dir

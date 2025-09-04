@@ -154,7 +154,7 @@ PipelineHookOrConfigType = PipelineHooksConfig | PipelineHooks
 
 
 class HookBasedTrainer:
-    """A trainer class that uses hooks to manage the training process.
+    """An NN trainer class that uses hooks to manage the training process.
 
     The data loader, model, optimizer, and learning rate scheduler are
     prepared using the `Accelerator` instance, which provides
@@ -223,6 +223,21 @@ class HookBasedTrainer:
             will start from scratch.
     """
 
+    hooks: PipelineHooks
+    """All hooks to be used during training."""
+    accelerator: Accelerator
+    """The `Accelerator` instance managing distributed training."""
+
+    dataloader: DataLoader
+    """The data loader for feeding batches to the model during training."""
+    model: torch.nn.Module
+    """The model to be trained."""
+    optimizer: AcceleratedOptimizer
+    """The optimizer after being prepared by the `Accelerator`."""
+    lr_scheduler: AcceleratedScheduler
+    """The learning rate scheduler after being prepared by the
+    `Accelerator`."""
+
     def __init__(
         self,
         accelerator: Accelerator,
@@ -231,7 +246,11 @@ class HookBasedTrainer:
         batch_processor: BatchProcessorMixin,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-        hooks: PipelineHookOrConfigType | Iterable[PipelineHookOrConfigType],
+        hooks: (
+            PipelineHookOrConfigType
+            | Iterable[PipelineHookOrConfigType]
+            | None
+        ) = None,
         max_step: int | None = None,
         max_epoch: int | None = None,
         grad_clip: GradientClippingHookConfig | None = None,
@@ -250,19 +269,22 @@ class HookBasedTrainer:
             raise ValueError(
                 "max_epoch = {} < 1 is not allowed".format(max_epoch)
             )
-
+        if hooks is None:
+            hooks = []
         self.accelerator = accelerator
         user_hooks = PipelineHooks.from_hooks(hooks)
         self.max_step = max_step
         self.max_epoch = max_epoch
 
         # prepare using accelerator
-        self.model: torch.nn.Module = accelerator.prepare(model)
-        self.dataloader: DataLoader = accelerator.prepare(dataloader)
-        self.optimizer: AcceleratedOptimizer = accelerator.prepare(optimizer)
-        self.lr_scheduler: AcceleratedScheduler = accelerator.prepare(
-            lr_scheduler
+        self.dataloader, self.model, self.optimizer, self.lr_scheduler = (
+            accelerator.prepare(dataloader, model, optimizer, lr_scheduler)
         )
+        self.dataloader: DataLoader = self.dataloader
+        self.model: torch.nn.Module = self.model
+        self.optimizer: AcceleratedOptimizer = self.optimizer
+        self.lr_scheduler: AcceleratedScheduler = self.lr_scheduler
+
         self.trainer_progress_state = TrainerProgressState()
         accelerator.register_for_checkpointing(self.trainer_progress_state)
 

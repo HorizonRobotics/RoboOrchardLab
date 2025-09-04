@@ -16,18 +16,20 @@
 from __future__ import annotations
 import pickle
 from dataclasses import dataclass
-from typing import Type
+from typing import Sequence
 
 import pytest
 import torch
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from robo_orchard_lab.dataset.transforms import (
+    ClassType,
     ConcatDictTransform,
     ConcatDictTransformConfig,
     DictTransform,
     DictTransformConfig,
 )
+from robo_orchard_lab.utils.state import State
 
 
 @dataclass
@@ -102,9 +104,14 @@ DummyTransformType = (
 class DummyTransformConfig(DictTransformConfig[DummyTransformType]):
     """Configuration for the DummyTransform."""
 
-    class_type: Type[DummyTransformType] = DummyTransform
+    class_type: ClassType[DummyTransformType] = DummyTransform
 
     add_value: int
+
+    input_columns: dict[str, str] | Sequence[str] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+    )
 
 
 class TestDictTransforms:
@@ -167,7 +174,8 @@ class TestDictTransforms:
 
     def test_transform_input_mapping(self):
         cfg = DummyTransformConfig(
-            add_value=10, input_column_mapping={"input_value": "value"}
+            add_value=10,
+            input_column_mapping={"input_value": "value"},
         )
         transform = DummyTransform(cfg)
         src = {"input_value": 5}
@@ -269,3 +277,18 @@ class TestConcatDictTransform:
         ts_bytes = pickle.dumps(transform)
         transform_recovered = pickle.loads(ts_bytes)
         print(transform_recovered._transforms[0].tensor)
+
+    def test_getstate_no_mixin_cls(self):
+        cfg = ConcatDictTransformConfig(
+            transforms=[
+                DummyTransformConfig(add_value=10),
+                DummyTransformConfig(add_value=20),
+            ]
+        )
+        transform = cfg()
+        transform._transforms[0].tensor = torch.tensor([1, 2, 3])  # type: ignore
+
+        state = transform.__getstate__()
+        print("state: ", state)
+        for st in state.state["transforms"]:
+            assert isinstance(st, State)

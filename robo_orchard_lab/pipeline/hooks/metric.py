@@ -25,6 +25,7 @@ from typing import (
     Tuple,
 )
 
+from robo_orchard_core.utils.config import ClassType
 from torchmetrics import Metric
 
 from robo_orchard_lab.pipeline.hooks.mixin import (
@@ -252,7 +253,7 @@ class MetricTracker(PipelineHooks):
 
 
 class MetricTrackerConfig(PipelineHooksConfig[MetricTracker]):
-    class_type: type[MetricTracker] = MetricTracker
+    class_type: ClassType[MetricTracker] = MetricTracker
 
     metric_entrys: Sequence[MetricEntry] | MetricEntry
     """Single or multiple metric entries to update."""

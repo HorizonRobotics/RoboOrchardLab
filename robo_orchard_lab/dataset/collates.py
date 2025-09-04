@@ -13,16 +13,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-
-from typing import Dict
+from __future__ import annotations
+from abc import ABCMeta, abstractmethod
+from typing import Any, Dict, Sequence, TypeVar
 
 import numpy as np
 import torch
+from robo_orchard_core.utils.config import (
+    ClassConfig,
+    ClassType,
+    load_from,
+)
 
 from robo_orchard_lab.utils.misc import stack_batch
 
+__all__ = [
+    "Collator",
+    "CollatorConfig",
+    "CollatorT_co",
+    "collate_batch_dict",
+]
 
-def collate_batch_dict(batch):
+
+def collate_batch_dict(batch: Sequence[dict]) -> dict[str, Any]:
     output = dict()
     assert all([isinstance(x, Dict) for x in batch])
     for key in batch[0].keys():
@@ -50,3 +63,30 @@ def collate_batch_dict(batch):
         else:
             output[key] = elements
     return output
+
+
+class Collator(metaclass=ABCMeta):
+    """Base class for collators that process batches of data."""
+
+    cfg: CollatorConfig
+    InitFromConfig: bool = True
+
+    @abstractmethod
+    def __call__(self, batch: Sequence[dict]) -> dict[str, Any]:
+        """Process a batch of data and return a collated dictionary."""
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    @classmethod
+    def from_config(cls, config_path: str) -> Collator:
+        """Load a Collator from a configuration file."""
+        cfg = load_from(config_path, ensure_type=CollatorConfig)
+        return cfg()
+
+
+CollatorT_co = TypeVar("CollatorT_co", bound=Collator, covariant=True)
+
+
+class CollatorConfig(ClassConfig[CollatorT_co]):
+    """Configuration class for Collator."""
+
+    class_type: ClassType[CollatorT_co]

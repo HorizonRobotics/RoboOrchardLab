@@ -27,6 +27,7 @@ from robo_orchard_lab.dataset.datatypes.camera import (
     BatchCameraData,
     BatchCameraDataEncoded,
     Distortion,
+    ImageMode,
 )
 
 
@@ -40,13 +41,13 @@ class TestBatchCameraData:
                 sensor_data=torch.rand(
                     size=(2, 12, 11, 3), dtype=torch.float32
                 ),
-                pix_fmt="bgr",
+                pix_fmt=ImageMode.BGR,
             ),
             BatchCameraData(
                 sensor_data=torch.rand(
                     size=(2, 12, 11, 3), dtype=torch.float32
                 ),
-                pix_fmt="bgr",
+                pix_fmt=ImageMode.BGR,
                 # with intrinsic matrices
                 intrinsic_matrices=torch.tensor(
                     [
@@ -63,7 +64,7 @@ class TestBatchCameraData:
                 sensor_data=torch.rand(
                     size=(2, 12, 11, 3), dtype=torch.float32
                 ),
-                pix_fmt="bgr",
+                pix_fmt=ImageMode.BGR,
                 # with distortion
                 distortion=Distortion(
                     model="plumb_bob",

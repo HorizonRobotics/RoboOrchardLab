@@ -18,8 +18,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
-import cv2
-import numpy as np
 import torch
 from foxglove_schemas_protobuf.CameraCalibration_pb2 import (
     CameraCalibration as FgCameraCalibration,
@@ -37,13 +35,13 @@ from robo_orchard_lab.dataset.datatypes.camera import (
     Distortion,
 )
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
-    ClassConfig,
     MessageConverterConfig,
     MessageConverterStateless,
 )
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.frame_transform import (  # noqa: E501
     ToBatchFrameTransformConfig,
 )
+from robo_orchard_lab.transforms.image import ImageDecodeConfig
 
 __all__ = [
     "FgCameraCompressedImages",
@@ -51,7 +49,6 @@ __all__ = [
     "ToBatchCameraDataEncoded",
     "ToBatchCameraDataConfig",
     "ToBatchCameraDataEncodedConfig",
-    "CameraDataConfigMixin",
 ]
 
 
@@ -227,30 +224,18 @@ class ToBatchCameraData(
         """Initialize the converter."""
         if cfg is None:
             cfg = ToBatchCameraDataConfig()
-        if cfg.pix_fmt is None:
-            cfg.pix_fmt = "bgr"
 
         self._cfg = cfg
         self._to_encoded = ToBatchCameraDataEncodedConfig()()
 
-        def decode(data: bytes, format: str) -> torch.Tensor:
-            """Decode the image data."""
-            return torch.from_numpy(
-                cv2.imdecode(
-                    np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED
-                )
-            )
-
-        self._decoder = decode
+        self._decode_transform = ImageDecodeConfig(
+            input_columns=["image"], backend=self._cfg.backend
+        )()
 
     def convert(self, src: FgCameraCompressedImages) -> BatchCameraData:
-        ret = self._to_encoded.convert(src).decode(
-            self._decoder, pix_fmt=self._cfg.pix_fmt
-        )
-        if self._cfg.pix_fmt == "rgb":
-            # Convert BGR to RGB if needed
-            ret.sensor_data = ret.sensor_data[..., ::-1]
-        return BatchCameraData(**ret.__dict__)
+        ret = self._to_encoded.convert(src)
+
+        return self._decode_transform.transform(image=ret)["image"]
 
 
 T = TypeVar("T")
@@ -264,27 +249,11 @@ class ToBatchCameraDataEncodedConfig(
     class_type: type[ToBatchCameraDataEncoded] = ToBatchCameraDataEncoded
 
 
-class CameraDataConfigMixin(ClassConfig[T]):
-    pix_fmt: Literal["rgb", "bgr", "depth"] | None = None
-    """Pixel format for the input images.
-
-    For openCV implementation, color images are expected to be in BGR format.
-    For PIL implementation, color images are expected to be in RGB format.
-
-    pix_fmt should be "depth" for depth images, which are expected to be in
-    single channel format (e.g., float32 or int32 for depth values).
-
-    Note:
-        CameraMsgs2BatchCameraData does not check the pixel format of the
-        input images. It only sets the pixel format in the output.
-
-    """
-
-
 class ToBatchCameraDataConfig(
     MessageConverterConfig[ToBatchCameraData],
-    CameraDataConfigMixin[ToBatchCameraData],
 ):
     """Configuration class for CameraMsgs2BatchCameraData."""
 
     class_type: type[ToBatchCameraData] = ToBatchCameraData
+
+    backend: Literal["pil", "cv2"] = "cv2"

@@ -404,9 +404,8 @@ def build_model(config):
 
 
 def build_transforms(config):
-    import torch
-
     from robo_orchard_lab.dataset.robotwin.transforms import (
+        AddItems,
         AddScaleShift,
         ConvertDataType,
         DualArmKinematics,
@@ -418,11 +417,22 @@ def build_transforms(config):
         ToTensor,
     )
 
-    state_sampling = SimpleStateSampling(
+    add_data_relative_items = dict(
+        type=AddItems,
+        T_base2world=[
+            [0, -1, 0, 0],
+            [1, 0, 0, -0.65],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ],
+    )
+    state_sampling = dict(
+        type=SimpleStateSampling,
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
     )
-    resize = Resize(
+    resize = dict(
+        type=Resize,
         dst_wh=(320, 256),
         dst_intrinsic=[
             [358.6422, 0.0000, 160.0000, 0.0000],
@@ -431,16 +441,17 @@ def build_transforms(config):
             [0.0000, 0.0000, 0.0000, 1.0000],
         ],
     )
-    to_tensor = ToTensor()
-    projection_mat = GetProjectionMat(target_coordinate="base")
-    convert_dtype = ConvertDataType(
+    to_tensor = dict(type=ToTensor)
+    projection_mat = dict(type=GetProjectionMat, target_coordinate="base")
+    convert_dtype = dict(
+        type=ConvertDataType,
         convert_map=dict(
-            imgs=torch.float32,
-            depths=torch.float32,
-            image_wh=torch.float32,
-            projection_mat=torch.float32,
-            embodiedment_mat=torch.float32,
-        )
+            imgs="float32",
+            depths="float32",
+            image_wh="float32",
+            projection_mat="float32",
+            embodiedment_mat="float32",
+        ),
     )
 
     if config["scale_shift_version"] == "default":
@@ -480,11 +491,13 @@ def build_transforms(config):
     else:
         raise NotImplementedError
 
-    kinematics = DualArmKinematics(urdf=config["urdf"])
-    scale_shift = AddScaleShift(
+    kinematics = dict(type=DualArmKinematics, urdf=config["urdf"])
+    scale_shift = dict(
+        type=AddScaleShift,
         scale_shift=scale_shift_list,
     )
-    joint_state_noise = JointStateNoise(
+    joint_state_noise = dict(
+        type=JointStateNoise,
         noise_range=[
             [-0.02, 0.02],
             [-0.02, 0.02],
@@ -502,7 +515,8 @@ def build_transforms(config):
             [-0.0, 0.0],
         ],
     )
-    item_selection = ItemSelection(
+    item_selection = dict(
+        type=ItemSelection,
         keys=[
             "imgs",
             "depths",
@@ -516,9 +530,10 @@ def build_transforms(config):
             "kinematics",
             "text",
             "uuid",
-        ]
+        ],
     )
     train_transforms = [
+        add_data_relative_items,
         state_sampling,
         resize,
         to_tensor,
@@ -530,6 +545,7 @@ def build_transforms(config):
         item_selection,
     ]
     val_transforms = [
+        add_data_relative_items,
         state_sampling,
         resize,
         to_tensor,
@@ -599,3 +615,23 @@ def build_optimizer(config, model):
         ]
     )
     return optimizer, lr_scheduler
+
+
+def build_processor(config):
+    from robo_orchard_lab.dataset.robotwin.transforms import UnsqueezeBatch
+    from robo_orchard_lab.models.sem_modules import (
+        SEMProcessor,
+        SEMProcessorCfg,
+    )
+
+    transforms = build_transforms(config)[1]
+    transforms.append(dict(type=UnsqueezeBatch))
+    processor = SEMProcessor(
+        SEMProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            transforms=transforms,
+        )
+    )
+    return processor

@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import os
+import re
 import subprocess
 import warnings
 
@@ -40,7 +41,20 @@ LICENSE_HEADER = """# Project RoboOrchard
 # permissions and limitations under the License.
 """
 
+
 HORIZON_CI = os.environ.get("HORIZON_CI", default="0") == "1"
+"""If HORIZON_CI is set to 1, it means we are in the CI environment.
+In this case, we will replace the github dependencies with the internal
+gitlab url.
+"""
+
+ROBO_ORCHARD_USE_LOCAL = (
+    os.environ.get("ROBO_ORCHARD_USE_LOCAL", default="0") == "1"
+)
+"""If ROBO_ORCHARD_USE_LOCAL is set to 1, it means we are in the local
+development environment. Any robo_orchard_xxx dependencies will be replaced
+with the local path of the package.
+"""
 
 
 class VersionPostfixNotExist(Exception):  # noqa: N818
@@ -140,6 +154,51 @@ def wrap_github_dependency(
         )
 
 
+def handle_local_dependency(
+    dependencies: list[str] | dict[str, list[str]],
+    base_dir: str = os.path.dirname(PYTHON_BASE_DIR),
+):
+    if not ROBO_ORCHARD_USE_LOCAL:
+        return dependencies
+
+    def replace_local_dependency(dep: str) -> str:
+        if not dep.startswith("robo_orchard_"):
+            return dep
+        if dep.startswith(PROJECT_NAME):
+            return dep  # do not replace the current package itself
+
+        # extract full package name from the dependency str.
+        # the dependency str could be 'robo_orchard_xxx==xxx',
+        # 'robo_orchard_xxx@xxx',  'robo_orchard_xxx',
+        # 'robo_orchard_xxx>xxx', or 'robo_orchard_xxx<xxx'.
+        match = re.match(r"robo_orchard_(\w+)([<>=@].*)?", dep)
+        assert match, f"Invalid dependency format: {dep}"
+        package_name = "robo_orchard_" + match.group(1)
+        package_full_path = os.path.join(
+            base_dir,
+            package_name,
+        )
+        if not os.path.exists(package_full_path):
+            raise FileNotFoundError(
+                f"Local package {package_full_path} does not exist!"
+            )
+        # extend the dependenty to 'robo_orchard_xxx @ file://{package_full_path}'
+        ret = f"{package_name}@file://{package_full_path}"
+        return ret
+
+    if isinstance(dependencies, list):
+        return [replace_local_dependency(dep) for dep in dependencies]
+    elif isinstance(dependencies, dict):
+        for k, v in dependencies.items():
+            dependencies[k] = [replace_local_dependency(dep) for dep in v]
+        return dependencies
+    else:
+        raise TypeError(
+            "dependencies should be a list or a dict, "
+            f"but got {type(dependencies)}"
+        )
+
+
 if __name__ == "__main__":
     install_requires = [
         "pydantic",
@@ -159,14 +218,17 @@ if __name__ == "__main__":
         "duckdb-engine",
         "fsspec",
         "sortedcontainers",
+        "numpydantic",
         # use git url to install the latest version.
         # This is for non-release version only.
-        "robo_orchard_core==0.2.0",
+        # "robo_orchard_core==0.2.0",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@91e63d39ac652e4789fb11bd86b53d65abb9f64c",
     ]
     # optional dependencies
     extras_require = {
         "bip3d": [
             "transformers<=4.49.0",
+            "peft>=0.17.0",
             "terminaltables",
             "pytorch3d",
             "ninja",
@@ -188,7 +250,7 @@ if __name__ == "__main__":
         ],
         "aux_think": [
             "tokenizers",
-            "peft<=0.15.2",
+            "peft",
             "markdown2[all]",
             "scikit-learn>=1.2.2",
             "opencv-python",
@@ -211,9 +273,13 @@ if __name__ == "__main__":
             "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp]"
         ],
     }
+    install_requires = wrap_github_dependency(install_requires)
+    install_requires = handle_local_dependency(install_requires)
+    extras_require = wrap_github_dependency(extras_require)
+    extras_require = handle_local_dependency(extras_require)
 
     setup(
         version=get_version(),
-        install_requires=wrap_github_dependency(install_requires),
-        extras_require=wrap_github_dependency(extras_require),
+        install_requires=install_requires,
+        extras_require=extras_require,
     )

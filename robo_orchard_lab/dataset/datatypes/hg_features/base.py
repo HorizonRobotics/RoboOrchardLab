@@ -49,6 +49,18 @@ class FeatureDecodeMixin(metaclass=ABCMeta):
 
 
 class TypedDictFeatureDecode(FeatureDecodeMixin):
+    """Helper class for decoding typed dictionary features.
+
+    This class uses `_dict` as the feature decoding schema to decode the
+    example value. User should extend this class and set the `_dict`
+    attribute to represent the schema.
+
+    Note that `_dict` will not be included in the serialized output, and
+    also not be used in the initialization of the class. You should
+    initialize `_dict` in `__post_init__` or in the class body.
+
+    """
+
     _dict: dict = field(init=False, repr=False)
     _decode_type: type = field(init=False, repr=False)
     decode: bool = True
@@ -71,6 +83,10 @@ class RODataFeature(metaclass=ABCMeta):
 
     User should implement the `pa_type` property and `encode_example` method
     to define the specific feature type and how to encode example values.
+
+    This class does not include `decode_example` method, as it is not
+    required for all features. If you need to decode the example values,
+    you can inherit from `FeatureDecodeMixin`.
 
     """
 
@@ -106,6 +122,10 @@ class RODictDataFeature(RODataFeature):
     composed of multiple fields. The user should define the `_dict` attribute
     as a dictionary mapping field names to features. The keys of the dictionary
     are the field names, and the values are the features.
+
+    This class does not include `decode_example` method, as it is not
+    required for all features. If you need to decode the example values,
+    you can inherit from `DictFeatureDecodeMixin`.
 
     """
 

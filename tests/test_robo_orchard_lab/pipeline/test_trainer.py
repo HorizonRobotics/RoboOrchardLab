@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 
+from dataclasses import dataclass
 from typing import Optional
 
 import pytest
@@ -31,7 +32,21 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
     PipelineHookArgs,
     PipelineHooks,
 )
-from robo_orchard_lab.pipeline.trainer import TrainerState
+
+
+@dataclass
+class TrainerState:
+    """A class to manage the state of the training process.
+
+    Attributes:
+        epoch (int): The current epoch in the training process.
+        step (int): The current step within the current epoch.
+        global_step (int): The total number of steps taken across all epochs.
+    """
+
+    epoch: int = 0
+    step: int = 0
+    global_step: int = 0
 
 
 class DummyPipelineHook(PipelineHooks):

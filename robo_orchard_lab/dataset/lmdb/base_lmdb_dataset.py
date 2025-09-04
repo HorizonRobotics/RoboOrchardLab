@@ -110,9 +110,7 @@ class BaseLmdbManipulationDataset(Dataset):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
         self.paths = paths
-        self.transforms = []
-        for transform in as_sequence(transforms):
-            self.transforms.append(build(transform))
+        self.transforms = [build(x) for x in as_sequence(transforms)]
         self.interval = interval
         self.load_image = load_image
         self.load_depth = load_depth

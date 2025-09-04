@@ -33,6 +33,31 @@ __all__ = [
 ]
 
 
+class CachedIndexDataset:
+    def __init__(self, dataset: HFDataset):
+        self._dataset = dataset
+        self._cache = {}
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+    def _cache_chunk(self, index: int) -> None:
+        """Cache a chunk of the dataset at the given index."""
+        min_idx = max(0, index - 100)
+        max_idx = min(len(self._dataset), index + 100)
+        sliced_dataset = self._dataset.__getitems__(
+            [i for i in range(min_idx, max_idx)]
+        )
+        for i, row in enumerate(sliced_dataset):
+            self._cache[min_idx + i] = row
+
+    def __getitem__(self, index: int) -> dict:
+        """Get the item at the given index, caching if necessary."""
+        if index not in self._cache:
+            self._cache_chunk(index)
+        return self._cache[index]
+
+
 def sec2nanosec(sec: float) -> int:
     """Convert seconds to nanoseconds."""
     return int(sec) * 1000000000 + int((sec - int(sec)) * 1000000000)
@@ -87,7 +112,7 @@ class MultiRowSampler(ClassInitFromConfigMixin, metaclass=ABCMeta):
     @abstractmethod
     def sample_row_idx(
         self,
-        index_dataset: HFDataset,
+        index_dataset: HFDataset | CachedIndexDataset,
         index: int,
     ) -> dict[str, list[int | None]]:
         """Sample a list of row indices from the index dataset.
@@ -133,8 +158,8 @@ class IndexFrameCache:
     """Cache for frames indexed by their timestamps.
 
     Note that the cached frame should be in the same episode,
-    and the
-    timestamp_min and timestamp_max should be defined in the frame.
+    and the timestamp_min and timestamp_max should be defined
+    in the frame.
     """
 
     def __init__(self):
@@ -193,9 +218,10 @@ class IndexFrameCache:
         if min_idx >= max_idx:
             return None
         max_idx -= 1
-        return self._frame_ts_min_list[min_idx][1], self._frame_ts_max_list[
-            max_idx
-        ][1]  # type: ignore
+        return (
+            self._frame_ts_min_list[min_idx][1],
+            self._frame_ts_max_list[max_idx][1],
+        )  # type: ignore
 
 
 class DeltaTimestampSampler(MultiRowSampler):
@@ -231,7 +257,7 @@ class DeltaTimestampSampler(MultiRowSampler):
         return self.cfg.column_delta_ts
 
     def sample_row_idx(
-        self, index_dataset: HFDataset, index: int
+        self, index_dataset: HFDataset | CachedIndexDataset, index: int
     ) -> dict[str, list[int | None]]:
         cur_row = index_dataset[index]
         cache = self._prepare_cache(index_dataset, index)
@@ -267,10 +293,25 @@ class DeltaTimestampSampler(MultiRowSampler):
 
     def _prepare_cache(
         self,
-        index_dataset: HFDataset,
+        index_dataset: HFDataset | CachedIndexDataset,
         index: int,
         cache: IndexFrameCache | None = None,
     ) -> IndexFrameCache:
+        """Prepare the cache for the given index.
+
+        This function relies on the assumption that the index_dataset
+        is ordered by episode_index and timestamp.
+
+        """
+
+        def check_idx(row: dict, idx: int) -> None:
+            # Not used because select will change idx.
+            if row["index"] != idx:
+                raise ValueError(
+                    f"Row index {row['index']} does not match the expected "
+                    f"index {idx}."
+                )
+
         if cache is None:
             cache = IndexFrameCache()
         cur_row = index_dataset[index]
@@ -278,6 +319,7 @@ class DeltaTimestampSampler(MultiRowSampler):
         cur_episode = cur_row["episode_index"]
         cur_ts_delta_max = cur_row["timestamp_max"] + self._ts_delta_max
         cur_ts_delta_min = cur_row["timestamp_min"] + self._ts_delta_min
+
         # generate index cache
         prev_idx = index - 1
         while prev_idx >= 0:

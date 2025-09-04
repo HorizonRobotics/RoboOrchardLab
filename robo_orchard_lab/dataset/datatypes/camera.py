@@ -16,15 +16,18 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Callable, Literal
 
 import datasets as hg_datasets
 from robo_orchard_core.datatypes.camera_data import (
     BatchCameraData as _BatchCameraData,
     BatchCameraDataEncoded as _BatchCameraDataEncoded,
     BatchCameraInfo as _BatchCameraInfo,
+    BatchImageData,
     Distortion as _Distortion,
+    ImageMode,
 )
+from robo_orchard_core.utils.torch_utils import Device
 
 from robo_orchard_lab.dataset.datatypes.geometry import (
     BatchFrameTransformFeature,
@@ -42,12 +45,14 @@ from robo_orchard_lab.dataset.datatypes.hg_features.tensor import (
 )
 
 __all__ = [
+    "ImageMode",
     "DistortionFeature",
     "Distortion",
     "BatchCameraInfoFeature",
     "BatchCameraInfo",
     "BatchCameraDataEncodedFeature",
     "BatchCameraDataEncoded",
+    "BatchImageData",
     "BatchCameraDataFeature",
     "BatchCameraData",
 ]
@@ -138,6 +143,13 @@ class BatchCameraDataEncoded(BatchCameraInfo, _BatchCameraDataEncoded):
         check_fields_consistency(cls, ret.pa_type)
         return ret
 
+    def decode(
+        self,
+        decoder: Callable[[bytes, str], BatchImageData],
+        device: Device = "cpu",
+    ) -> BatchCameraData:
+        return BatchCameraData(**super().decode(decoder, device).__dict__)
+
 
 @hg_dataset_feature
 @dataclass
@@ -203,3 +215,6 @@ class BatchCameraDataFeature(BatchCameraInfoFeature):
                 ),
             }
         )
+
+    def encode_example(self, value: BatchCameraData) -> Any:
+        return super().encode_example(value.__dict__)

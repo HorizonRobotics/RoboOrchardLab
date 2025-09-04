@@ -230,7 +230,7 @@ class MyInferencePipeline(InferencePipelineMixin[Source, Target]):
 
         model = ModelMixin.load_model(
             directory=directory,
-            load_model=True,
+            load_weight=True,
             strict=strict,
             device=device,
             model_prefix=model_prefix,

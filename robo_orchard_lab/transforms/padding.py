@@ -15,31 +15,37 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-import functools
-from typing import Literal, Sequence, Type
+from typing import Literal, Sequence
 
 from pydantic import Field
 
-from robo_orchard_lab.transforms.base import DictTransform, DictTransformConfig
+from robo_orchard_lab.transforms.base import (
+    ClassType,
+    DictTransform,
+    DictTransformConfig,
+)
+
+__all__ = [
+    "PaddingList",
+    "PaddingListConfig",
+]
 
 
-class Padding(DictTransform):
-    cfg: PaddingConfig
+class PaddingList(DictTransform):
+    """A transform that applies padding to input lists.
 
-    def __init__(self, cfg: PaddingConfig) -> None:
+    This transform supports padding input lists by replacing None values in the
+    head and tail of the list with the first and last non-None values found in
+    the list, respectively.
+
+    """
+
+    cfg: PaddingListConfig
+    is_variadic: bool = True
+
+    def __init__(self, cfg: PaddingListConfig) -> None:
         super().__init__()
         self.cfg = cfg
-
-    @functools.cached_property
-    def input_columns(self) -> list[str]:
-        self._input_columns = list(self.cfg.input_columns)
-        return self._input_columns
-
-    @functools.cached_property
-    def output_columns(self) -> list[str]:
-        """The output columns are the same as the input columns."""
-        self._output_columns = self.input_columns
-        return self._output_columns
 
     def transform(self, **kwargs) -> dict:
         """Apply padding to the input columns.
@@ -86,7 +92,7 @@ class Padding(DictTransform):
         return ret
 
 
-class PaddingConfig(DictTransformConfig[Padding]):
+class PaddingListConfig(DictTransformConfig[PaddingList]):
     """Configuration class for Padding transform.
 
     This configuration defines the padding size and the padding value.
@@ -94,7 +100,7 @@ class PaddingConfig(DictTransformConfig[Padding]):
 
     """
 
-    class_type: Type[Padding] = Padding
+    class_type: ClassType[PaddingList] = PaddingList
 
     input_columns: Sequence[str] = Field(
         description="The input columns to apply padding to.",
@@ -109,4 +115,4 @@ class PaddingConfig(DictTransformConfig[Padding]):
 
     """
 
-    check_return_columns: bool = True
+    check_return_columns: bool = False

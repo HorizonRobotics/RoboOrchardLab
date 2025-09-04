@@ -16,23 +16,35 @@
 
 
 from __future__ import annotations
+import copy
 import functools
 import inspect
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass, is_dataclass
-from typing import Any, Generic, Sequence, Type
+from dataclasses import is_dataclass
+from typing import Sequence
 
-import torch
-from pydantic import BaseModel, Field
-from robo_orchard_core.datatypes.adaptor import (
-    ClassInitFromConfigMixin,
-)
+from pydantic import AliasChoices, BaseModel, Field
 from robo_orchard_core.utils.config import (
     ClassConfig,
+    ClassType,
+    Config,
+    ConfigInstanceOf,
+    load_from,
 )
 from typing_extensions import TypeVar
 
+from robo_orchard_lab.utils.state import (
+    State,
+    StateList,
+    StateSaveLoadMixin,
+    obj2state,
+    state2obj,
+)
+
 __all__ = [
+    "Config",
+    "ClassType",
+    "ConfigInstanceOf",
     "DictTransform",
     "DictTransformType",
     "DictTransformConfig",
@@ -40,60 +52,8 @@ __all__ = [
     "ConcatDictTransformConfig",
 ]
 
-CONFIG_NAME = "config.json"
-STATE_NAME = "state.pkl"
-PARAMETERS_NAME = "parameters.pkl"
 
-
-@dataclass
-class TransformState:
-    """The state dataclass when pickling a transform."""
-
-    state: dict[str, Any]
-    """The state of the transform. It should be picklable."""
-
-    config: ClassConfig
-    """The configuration of the transform. """
-
-    parameters: dict[str, torch.Tensor] | None = None
-    """The parameters of the transform. It should be picklable.
-
-    Different from the state which including runtime information,
-    the parameters are the static information such as NN parameters.
-
-    The parameters should be a dictionary mapping parameter names
-    to tensors. If the transform does not have any parameters,
-    this can be None.
-
-    """
-
-    save_to_path: str | None = None
-    """The path to save the state of the transform as independent folder.
-    If this is set, the state will be saved to this path. Otherwise, the state
-    will be a part of the parent object state.
-
-    This is useful for transforms that need to save their state to structured
-    files not just a single file.
-    """
-
-
-class StateList(list):
-    """A dataclass to hold a list of TransformState objects."""
-
-    save_to_path: bool
-    """Whether to save the state of the transforms to a separate path."""
-
-    def __init__(self, *args, save_to_path: bool = False) -> None:
-        """Initialize the TransformStateList with a list of TransformState."""
-        super().__init__(*args)
-        self.save_to_path = save_to_path
-        """The path to save the state of the transform as independent folder.
-        If this is set, the state will be saved to this path. Otherwise,
-        the state will be a part of the parent object state.
-        """
-
-
-class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
+class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
     """A class that defines the interface for transforming a dict.
 
     The dict is usually a row in a dataset, and the transform
@@ -118,6 +78,8 @@ class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
 
     """
 
+    InitFromConfig: bool = True
+
     cfg: DictTransformConfig
 
     @abstractmethod
@@ -137,22 +99,31 @@ class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
 
         """
         mapped_input = row.copy()
-        for src_name, dst_name in self.cfg.input_column_mapping.items():
-            if src_name not in mapped_input:
-                raise ValueError(
-                    f"Input column {src_name} not found in row dict."
-                )
-            mapped_input[dst_name] = mapped_input.pop(src_name)
+        # mapping input columns if needed
+        if isinstance(self.cfg.input_columns, dict):
+            for src_name, dst_name in self.cfg.input_columns.items():
+                if src_name not in mapped_input:
+                    raise ValueError(
+                        f"Input column {src_name} not found in row dict."
+                    )
+                mapped_input[dst_name] = mapped_input.pop(src_name)
 
+        # take columns that required by the transform
         ts_input = {}
         for col in self.input_columns:
-            if col not in mapped_input:
+            if (
+                col not in mapped_input
+                and not self.cfg.missing_input_columns_as_none
+            ):
                 raise KeyError(f"Input column `{col}` not found in row dict.")
-            ts_input[col] = mapped_input[col]
+            ts_input[col] = mapped_input.get(col, None)
 
         columns_after = self.transform(**ts_input)
         if isinstance(columns_after, BaseModel):
-            columns_after = columns_after.model_dump(mode="python")
+            columns_after = {
+                k: getattr(columns_after, k)
+                for k in columns_after.model_fields
+            }
         elif is_dataclass(columns_after):
             columns_after = {
                 field.name: getattr(columns_after, field.name)
@@ -182,8 +153,10 @@ class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
                 )
             if src_name in columns_after:
                 columns_after[dst_name] = columns_after.pop(src_name)
-
-        ret = row.copy()
+        if self.cfg.keep_input_columns:
+            ret = row.copy()
+        else:
+            ret = {}
         ret.update(columns_after)
         return ret
 
@@ -195,49 +168,72 @@ class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
         for the transformation. The transform method will be called
         with these columns as keyword arguments.
 
-        By default this property uses the signature of the
-        `transform` method to determine the input columns. If you
-        need to customize the input columns, you should override this
-        property in your subclass.
+        The input columns are determined by the signature of the
+        `transform` method, and if the `input_columns` configuration
+        is set, it will be used as well to determine the input columns.
 
         """
         # use inspect to get the parameters of the transform method
-        sig = inspect.signature(self.transform)
         self._input_columns = []
-        for param in sig.parameters.values():
-            if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
-                self._input_columns.append(param.name)
-            elif param.kind == inspect.Parameter.VAR_POSITIONAL:
-                # we cannot infer the input columns from *args
-                raise NotImplementedError(
-                    "Cannot determine input columns for "
-                    f"{self.__class__.__name__}. *args is not supported."
-                )
-            elif param.kind == inspect.Parameter.VAR_KEYWORD:
-                raise NotImplementedError(
-                    "Cannot determine input columns for "
-                    f"{self.__class__.__name__}. **kwargs is not supported."
-                )
-            else:
-                raise NotImplementedError(
-                    f"Cannot determine input columns for "
-                    f"{self.__class__.__name__}. Parameter kind {param.kind} "
-                    "is not supported."
-                )
 
+        def get_input_from_signature() -> list[str]:
+            ret = []
+            sig = inspect.signature(self.transform)
+            for param in sig.parameters.values():
+                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                    ret.append(param.name)
+                elif param.kind == inspect.Parameter.VAR_POSITIONAL:
+                    continue
+                elif param.kind == inspect.Parameter.VAR_KEYWORD:
+                    continue
+                else:
+                    continue
+            return ret
+
+        self._input_columns = get_input_from_signature()
+        if isinstance(self.cfg.input_columns, dict):
+            # if input_columns is a dict, we need to use the values as
+            # input columns
+            self._input_columns += list(self.cfg.input_columns.values())
+        elif isinstance(self.cfg.input_columns, (list, tuple)):
+            # if input_columns is a list or tuple, we use it directly
+            self._input_columns += list(self.cfg.input_columns)
+        else:
+            raise TypeError(
+                f"Expected input_columns to be a dict, list, tuple or None, "
+                f"but got {type(self.cfg.input_columns)}."
+            )
+        # handle duplicate columns
+        self._input_columns = list(set(self._input_columns))
         return self._input_columns
 
     @functools.cached_property
     def mapped_input_columns(self) -> list[str]:
-        """The input columns that this transform requires for column mapping."""  # noqa: E501
+        """The input columns that this transform requires for column mapping.
+
+        If no mapping is required, this will be the same as input_columns.
+
+        """
 
         old_input_columns = self.input_columns
-        inverted_mapping = {
-            v: k for k, v in self.cfg.input_column_mapping.items()
-        }
-        mapped_input_columns = [
-            inverted_mapping.get(col, col) for col in old_input_columns
-        ]
+
+        if isinstance(self.cfg.input_columns, dict):
+            inverted_mapping = {
+                v: k for k, v in self.cfg.input_columns.items()
+            }
+            mapped_input_columns = [
+                inverted_mapping.get(col, col) for col in old_input_columns
+            ]
+        elif isinstance(self.cfg.input_columns, (list, tuple)):
+            mapped_input_columns = list(self.cfg.input_columns)
+        elif self.cfg.input_columns is None:
+            mapped_input_columns = old_input_columns
+        else:
+            raise TypeError(
+                f"Expected input_columns to be a dict, list, tuple or None, "
+                f"but got {type(self.cfg.input_columns)}."
+            )
+
         self._mapped_input_columns = mapped_input_columns
         return self._mapped_input_columns
 
@@ -294,7 +290,13 @@ class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
         self._mapped_output_columns = mapped_output_columns
         return self._mapped_output_columns
 
-    def __getstate__(self) -> TransformState:
+    def __repr__(self) -> str:
+        ret = f"{self.__class__.__name__}("
+        ret += f"cfg={self.cfg.to_dict(exclude_defaults=True)}"
+        ret += ")"
+        return ret
+
+    def __getstate__(self) -> State:
         """Return the state of the object for pickling."""
         state = self.__dict__.copy()
         # Remove any cached properties to avoid pickling issues
@@ -307,16 +309,55 @@ class DictTransform(ClassInitFromConfigMixin, metaclass=ABCMeta):
             state.pop(key, None)
 
         config = state.pop("cfg")
+        state = obj2state(state)
 
-        return TransformState(
-            state=state, config=config, parameters=None, save_to_path=None
+        return State(
+            state=state,
+            config=config,
+            parameters=None,
+            save_to_path=None,
+            class_type=type(self),
         )
 
-    def __setstate__(self, state: TransformState) -> None:
+    def __setstate__(self, state: State) -> None:
         """Set the state of the object from the unpickled state."""
         self.cfg = state.config  # type: ignore
         self.__dict__.update(state.parameters or {})
-        self.__dict__.update(state.state)
+        self.__dict__.update(state2obj(state.state))
+
+    def __add__(
+        self, other: DictTransform | ConcatDictTransform
+    ) -> ConcatDictTransform:
+        """Concatenate another DictTransform to this one.
+
+        This will modify the current configuration to include the transforms
+        from the other configuration.
+        """
+        if not isinstance(other, DictTransform):
+            raise TypeError(
+                "Can only concatenate DictTransform or "
+                "ConcatDictTransform objects."
+            )
+        if not isinstance(self, ConcatDictTransform):
+            # if self is not a ConcatDictTransform, we need to create one
+            new_transform = ConcatDictTransform.__new__(ConcatDictTransform)
+            new_transform.cfg = ConcatDictTransformConfig(
+                transforms=[self.cfg],
+                input_columns=None,
+            )
+            new_transform._transforms = [self]
+        else:
+            new_transform = copy.copy(self)
+        new_transform += other
+        return new_transform
+
+    @classmethod
+    def from_config(
+        cls: type[DictTransformType], config_path: str
+    ) -> DictTransformType:
+        """Load a DictTransform from a configuration file."""
+        cfg = load_from(config_path, ensure_type=DictTransformConfig)
+        return cfg()
 
 
 DictTransformType = TypeVar(
@@ -325,11 +366,25 @@ DictTransformType = TypeVar(
 
 
 class DictTransformConfig(ClassConfig[DictTransformType]):
-    class_type: Type[DictTransformType]
+    class_type: ClassType[DictTransformType]
 
-    input_column_mapping: dict[str, str] = Field(default_factory=dict)
+    input_columns: dict[str, str] | Sequence[str] = Field(
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+    )
     """The input columns that need to be mapped to fit
-    the transform's input_columns."""
+    the transform's input_columns, or a list of input columns
+    as extra input columns.
+
+    If this is a dict, it should map the source column names
+    to the destination column names, and the destination column names
+    will be used as the input columns for the transform.
+
+    """
+
+    missing_input_columns_as_none: bool = Field(default=False)
+    """If True, missing input columns will be set to None.
+
+    If False, an error will be raised if any input column is missing."""
 
     output_column_mapping: dict[str, str] = Field(default_factory=dict)
     """The output columns that the transform will produce.
@@ -349,16 +404,72 @@ class DictTransformConfig(ClassConfig[DictTransformType]):
     configuration, this should be set to False to avoid runtime errors.
     """
 
+    keep_input_columns: bool = True
+    """Whether to keep the input columns in the output dict.
+
+    If this is set to True, the input columns will be included in the
+    output dict. If this is set to False, the input columns will be
+    removed from the output dict.
+    """
+
+    # overload + operator to return concat
+    def __add__(
+        self, other: DictTransformConfig | ConcatDictTransformConfig
+    ) -> ConcatDictTransformConfig:
+        """Concatenate two DictTransformConfig objects.
+
+        This will create a new ConcatDictTransformConfig object that
+        combines the transforms from both configurations.
+        """
+        if not isinstance(other, DictTransformConfig):
+            raise TypeError(
+                "Can only concatenate DictTransformConfig objects."
+            )
+        if not isinstance(self, ConcatDictTransformConfig):
+            # if self is not a ConcatDictTransformConfig, we need to create one
+            new_cfg = ConcatDictTransformConfig(
+                transforms=[self],
+                input_columns=None,
+            )
+        else:
+            new_cfg = self.model_copy(deep=False)
+        new_cfg += other
+        return new_cfg
+
 
 class ConcatDictTransform(DictTransform):
-    cfg: ConcatDictTransformConfig[DictTransform]
+    cfg: ConcatDictTransformConfig
 
-    def __init__(self, cfg: ConcatDictTransformConfig[DictTransform]) -> None:
+    def __init__(self, cfg: ConcatDictTransformConfig) -> None:
+        super().__init__()
         self.cfg = cfg
 
         self._transforms = [
             t() for t in self.cfg.transforms
         ]  # Instantiate all transforms
+
+    def __getitem__(self, index: int) -> DictTransform:
+        return self._transforms[index]
+
+    def __iadd__(
+        self, other: DictTransform | ConcatDictTransform
+    ) -> ConcatDictTransform:
+        """Concatenate another DictTransform to this one.
+
+        This will modify the current configuration to include the transforms
+        from the other configuration.
+        """
+        if not isinstance(other, DictTransform):
+            raise TypeError(
+                "Can only concatenate DictTransform or "
+                "ConcatDictTransform objects."
+            )
+        if isinstance(other, ConcatDictTransform):
+            self._transforms.extend(other._transforms)
+        else:
+            self._transforms.append(other)
+        self.cfg += other.cfg
+        return self
 
     @property
     def input_columns(self) -> list[str]:
@@ -423,29 +534,60 @@ class ConcatDictTransform(DictTransform):
             row = transform(row)
         return row
 
-    def __getstate__(self) -> TransformState:
-        state = dict(
-            # use StateList to enable pickling the transforms separately
-            transforms=StateList(self._transforms, save_to_path=True)
+    def __getstate__(self) -> State:
+        state = obj2state(
+            dict(
+                # use StateList to enable pickling the transforms separately
+                transforms=StateList(self._transforms, save_to_path=True)
+            )
         )
-        return TransformState(
+        return State(
             state=state,
             config=self.cfg,
             save_to_path=None,
+            class_type=type(self),
         )
 
-    def __setstate__(self, state: TransformState) -> None:
+    def __setstate__(self, state: State) -> None:
         """Set the state of the object from the unpickled state."""
         self.cfg = state.config  # type: ignore
-        self._transforms = state.state["transforms"]
+        self._transforms = state2obj(state.state["transforms"])
 
 
 class ConcatDictTransformConfig(
-    DictTransformConfig[ConcatDictTransform], Generic[DictTransformType]
+    DictTransformConfig[ConcatDictTransform],
 ):
-    class_type: Type[ConcatDictTransform] = ConcatDictTransform
+    class_type: ClassType[ConcatDictTransform] = ConcatDictTransform
 
-    transforms: Sequence[DictTransformConfig[DictTransformType]] = Field(
-        min_length=1,
-    )
+    transforms: Sequence[
+        ConfigInstanceOf[DictTransformConfig[DictTransform]]
+    ] = Field(min_length=1)
+
     """A sequence of transforms to apply to the input columns."""
+
+    input_columns: None = None
+    """Input columns are not used in ConcatDictTransform, as the input columns
+    are determined by the transforms themselves. This should be set to None.
+    """
+
+    def __getitem__(self, item):
+        return self.transforms[item]
+
+    # overload += operator
+    def __iadd__(
+        self, other: DictTransformConfig | ConcatDictTransformConfig
+    ) -> ConcatDictTransformConfig:
+        """Concatenate two DictTransformConfig objects in place.
+
+        This will modify the current configuration to include the transforms
+        from the other configuration.
+        """
+        if not isinstance(other, DictTransformConfig):
+            raise TypeError(
+                "Can only concatenate DictTransformConfig objects."
+            )
+        if isinstance(other, ConcatDictTransformConfig):
+            self.transforms = list(self.transforms) + list(other.transforms)
+        else:
+            self.transforms = list(self.transforms) + [other]
+        return self

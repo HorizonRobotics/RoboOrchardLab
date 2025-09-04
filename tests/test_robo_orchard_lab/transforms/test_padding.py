@@ -20,7 +20,9 @@ from robo_orchard_lab.dataset.robot.dataset import ROMultiRowDataset
 from robo_orchard_lab.dataset.robot.row_sampler import (
     DeltaTimestampSamplerConfig,
 )
-from robo_orchard_lab.transforms.padding import PaddingConfig
+from robo_orchard_lab.transforms.padding import (
+    PaddingListConfig as PaddingConfig,
+)
 
 
 class TestPadding:

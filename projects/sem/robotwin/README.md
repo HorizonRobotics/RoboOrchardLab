@@ -123,17 +123,6 @@ accelerate launch  \
     --workspace /job_data \
     --config ${CONFIG}
 
-# eval with single-gpu (for CVPR-Challenge-2025-Round2 branch)
-# for the evaluation of robotwin2.0, please refer to sem/robotwin/sem_policy
-eval_tasks="blocks_stack_three"
-python3 robotwin_eval.py \
-    --config config_sem_robotwin.py \
-    --task_name ${eval_tasks} \
-    --camera_type D435 \
-    --checkpoint path/to/checkpoint \
-    --robotwin_dir path/to/robotwin_repo \
-    --num_test 3
-
 # eval with single-gpu (for Robotwin2.0 master branch)
 # following instruction in ./sem_policy/README.md
 ```

@@ -28,6 +28,7 @@ __all__ = [
     "ConvertDataType",
     "ImageChannelFlip",
     "ItemSelection",
+    "JointStateNoise",
     "SimpleStateSampling",
     "Resize",
     "ToTensor",

@@ -211,7 +211,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
     @staticmethod
     def load_model(
         directory: str,
-        load_model: bool = True,
+        load_weight: bool = True,
         strict: bool = True,
         device: str = "cpu",
         model_prefix: str = "model",
@@ -241,14 +241,14 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         occurs within a context where the **ORCHARD_LAB_CHECKPOINT_DIRECTORY**
         environment variable is temporarily set to the `directory` path.
 
-        If `load_model` is True, the method proceeds to load the model's
+        If `load_weight` is True, the method proceeds to load the model's
         weights (state dictionary) from a ".safetensors" file (e.g.,
         "model.safetensors") located in the same directory.
 
         Args:
             directory: The path to the directory containing the model's
                 configuration file and, if applicable, the state dictionary file.
-            load_model: If True (default), the model's state dictionary is
+            load_weight: If True (default), the model's state dictionary is
                 loaded from the ".safetensors" file. If False, the model is
                 initialized from the configuration but weights are not loaded.
             strict: A boolean indicating whether to strictly enforce that the keys
@@ -270,7 +270,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
             FileNotFoundError: If the specified `directory` does not exist,
                 or if the configuration file (`{model_prefix}.config.json`)
                 or the state dictionary file (`{model_prefix}.safetensors}`,
-                when `load_model` is True) is not found in the directory.
+                when `load_weight` is True) is not found in the directory.
             ValueError: If the Hugging Face Hub URI is invalid.
         """  # noqa: E501
 
@@ -293,7 +293,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         ):
             model = cfg()
 
-        if not load_model:
+        if not load_weight:
             return model
 
         ckpt_path = os.path.join(directory, f"{model_prefix}.safetensors")

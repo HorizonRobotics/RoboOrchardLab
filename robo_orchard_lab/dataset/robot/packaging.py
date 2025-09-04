@@ -449,8 +449,8 @@ class DatasetPackaging:
         episodes: Iterable[EpisodePackaging],
         dataset_path: str,
         dataset_info: hg_datasets.DatasetInfo | None = None,
-        writer_batch_size: int = 8,
-        max_shard_size: str | int = "2GB",
+        writer_batch_size: int = 1024,
+        max_shard_size: str | int = "8GB",
         split: hg_datasets.Split | None = None,
         force_overwrite: bool = False,
     ):
@@ -465,7 +465,7 @@ class DatasetPackaging:
                 If None, use the default dataset info.
             writer_batch_size (int): The batch size for writing the arrow file.
                 This may affect the performance of packaging or reading the
-                dataset later. Default is 8.
+                dataset later. Default is 1024.
             max_shard_size (str | int | None): The maximum size of each shard.
                 If None, no sharding will be applied. This can be a string
                 like '10GB' or an integer representing the size in bytes.
@@ -557,11 +557,19 @@ class EpisodeData:
     """Data for an episode information which is used for packaging."""
 
     frame_num: int | None = None
-    """The total number of frames in the episode."""
+    """The total number of frames in the episode.
+
+    No need to set this field during packaging, it will be updated
+    automatically during packaging.
+    """
     prev_episode_index: int | None = None
     """The index of the previous episode in the dataset."""
     dataset_begin_index: int | None = None
-    """The index of the first dataset item in this episode."""
+    """The index of the first dataset item in this episode.
+
+    No need to set this field during packaging, it will be updated
+    automatically during packaging.
+    """
 
 
 @dataclass

@@ -55,6 +55,7 @@ def main(args, accelerator):
     build_model = config.build_model
     build_dataset = config.build_dataset
     build_optimizer = config.build_optimizer
+    build_processor = config.build_processor
     config = config.config
 
     if args.kwargs is not None:
@@ -66,6 +67,13 @@ def main(args, accelerator):
 
     if accelerator.is_main_process:
         logger.info("\n" + json.dumps(config, indent=4))
+
+    processor = build_processor(config)
+    with open(
+        os.path.join(args.workspace, "robotwin2_0_processor.json"),
+        "w",
+    ) as fh:
+        fh.write(processor.cfg.model_dump_json(indent=4))
 
     model = build_model(config)
     # save model config
@@ -125,23 +133,19 @@ def main(args, accelerator):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", type=str, default="./workspace")
-    parser.add_argument("--logging_dir", type=str, default=None)
-    parser.add_argument("--config", type=str, default="./config_bip3d_det.py")
+    parser.add_argument(
+        "--config", type=str, default="./config_sem_robotwin.py"
+    )
     parser.add_argument("--kwargs", type=str, default=None)
     args = parser.parse_args()
 
-    if args.logging_dir is None:
-        args.logging_dir = os.path.join(args.workspace, "logs")
-
-    os.makedirs(args.workspace, exist_ok=True)
-    os.makedirs(args.logging_dir, exist_ok=True)
-
+    workspace_root = args.workspace
+    os.makedirs(workspace_root, exist_ok=True)
     accelerator = Accelerator(
-        log_with="tensorboard",
         step_scheduler_with_optimizer=False,
         project_config=ProjectConfiguration(
-            project_dir=args.workspace,
-            logging_dir=args.logging_dir,
+            project_dir=workspace_root,
+            logging_dir=os.path.join(workspace_root, "logs"),
             automatic_checkpoint_naming=True,
             total_limit=3,
         ),
@@ -149,7 +153,6 @@ if __name__ == "__main__":
             use_seedable_sampler=True,
         ),
     )
-    accelerator.init_trackers("tensorboard")
     log_basic_config(
         format="%rank %(asctime)s %(levelname)s %(filename)s:%(lineno)d | %(message)s",  # noqa: E501
         level=logging.INFO,

@@ -21,6 +21,8 @@ import os
 import numpy as np
 import torch
 
+from robo_orchard_lab.utils.build import build
+
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
 
@@ -48,6 +50,8 @@ class SEMPolicy:
 
         # Build transforms (only validation needed for deployment)
         _, self.transforms = self._build_transforms()
+        if self.transforms is not None:
+            self.transforms = [build(x) for x in self.transforms]
         # Build model
         self.model = self._build_model()
 

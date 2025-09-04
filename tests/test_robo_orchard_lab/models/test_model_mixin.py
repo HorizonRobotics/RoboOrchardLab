@@ -208,7 +208,7 @@ class TestModelMixin:
         save_path = os.path.join(temp_dir, "config_only")
         model.save_model(save_path)
 
-        initialized_model = ModelMixin.load_model(save_path, load_model=False)
+        initialized_model = ModelMixin.load_model(save_path, load_weight=False)
 
         assert isinstance(initialized_model, SimpleModel)
         assert model.cfg.model_dump() == initialized_model.cfg.model_dump()
