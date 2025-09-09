@@ -1,10 +1,10 @@
 {
     "job_name": "sem_alldata",
     "workspace_folder": "submit-sem",
-    "docker_image": "docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-opensource",
+    "docker_image": "docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250907",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
-    "num_workers": 3,
+    "num_workers": 2,
     "gpu_per_worker": 8,
     "wall_time": 14400,
     "cmd": [

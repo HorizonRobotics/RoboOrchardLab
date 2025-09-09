@@ -1,7 +1,7 @@
 {
     "job_name": "eval_robotwin2.0_sem",
     "workspace_folder": "submit-sem-robotwin-eval",
-    "docker_image": "docker.hobot.cc/dlp/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-20250620",
+    "docker_image": "docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250907",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,
