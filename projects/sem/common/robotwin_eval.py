@@ -102,6 +102,8 @@ if __name__ == "__main__":
     parser.add_argument("--test_num", type=int, default=100)
     args = parser.parse_args()
 
+    logger.info("\n" + json.dumps(vars(args), indent=4))
+
     task_names = args.task_names
     all_task_names = [
         x[:-3]
