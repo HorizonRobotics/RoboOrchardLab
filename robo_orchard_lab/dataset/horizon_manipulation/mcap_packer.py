@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import copy
 import glob
 import json
 import logging
@@ -64,7 +65,7 @@ def pose_to_mat(pose):
     if isinstance(pose, dict):
         x, y, z = pose["position"]
         qx, qy, qz, w = pose["orientation"]
-    else:
+    elif hasattr(pose, "position"):
         x, y, z = pose.position.x, pose.position.y, pose.position.z
         qx, qy, qz, w = (
             pose.orientation.x,
@@ -72,6 +73,15 @@ def pose_to_mat(pose):
             pose.orientation.z,
             pose.orientation.w,
         )
+    else:
+        x, y, z = pose.translation.x, pose.translation.y, pose.translation.z
+        qx, qy, qz, w = (
+            pose.rotation.x,
+            pose.rotation.y,
+            pose.rotation.z,
+            pose.rotation.w,
+        )
+
     trans = np.array([x, y, z])
     rot = Rotation.from_quat([qx, qy, qz, w], scalar_first=False).as_matrix()
     ret = np.eye(4)
@@ -120,7 +130,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         input_path,
         output_path,
         urdf,
-        calibration_dict,
+        calibration_dict=None,
         task_names=None,
         user_names=None,
         static_threshold: float = 1e-3,
@@ -134,13 +144,15 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         self.task_names = task_names
         self.user_names = user_names
         self.chain = pk.build_chain_from_urdf(open(urdf, "rb").read())
-        self.episodes = self.input_path_handler(input_path)
         self.static_threshold = static_threshold
         self.head_time_to_filter = head_time_to_filter
         self.tile_time_to_filter = tile_time_to_filter
         self.date_prefix = date_prefix
+        self.episodes = self.input_path_handler(input_path)
 
     def calibration_process(self, calibration_dict):
+        if calibration_dict is None:
+            return None
         for camera, calib in calibration_dict.items():
             calibration_dict[camera] = np.linalg.inv(pose_to_mat(calib))
         return calibration_dict
@@ -227,6 +239,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                 f"/observation/cameras/{x}/depth_image/camera_info"
                 for x in cameras
             ]
+            image_extrinsic_topic = ["/tf_static"]
             left_joint_topic = "/observation/robot_state/left/joint"
             right_joint_topic = "/observation/robot_state/right/joint"
             left_master_joint_topic = (
@@ -243,6 +256,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                 + image_intrinsic_topics
                 + depth_topics
                 + depth_intrinsic_topics
+                + image_extrinsic_topic
                 + [
                     left_joint_topic,
                     right_joint_topic,
@@ -252,6 +266,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                 + [left_master_joint_topic, right_master_joint_topic]
             )
 
+            image_extrinsic = {}
             images = {}
             for t in image_topics:
                 images[t] = {
@@ -289,6 +304,20 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
             reader = make_reader(
                 open(mcap, "rb"), decoder_factories=[DecoderFactory()]
             )
+
+            image_frame_ids = set()
+            for (
+                _schema,
+                _channel,
+                _message,
+                ros_msg,
+            ) in reader.iter_decoded_messages(
+                topics=image_topics, log_time_order=True
+            ):
+                image_frame_ids.add(ros_msg.header.frame_id)
+                if len(image_frame_ids) == len(image_topics):
+                    break
+
             for (
                 _schema,
                 channel,
@@ -297,7 +326,11 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
             ) in reader.iter_decoded_messages(
                 topics=all_useful_topics, log_time_order=True
             ):
-                time = (ros_msg.header.stamp.sec, ros_msg.header.stamp.nanosec)
+                if hasattr(ros_msg, "header"):
+                    time = (
+                        ros_msg.header.stamp.sec,
+                        ros_msg.header.stamp.nanosec,
+                    )
                 topic = channel.topic
                 if topic in images:
                     images[topic]["data"].append(ros_msg.data)
@@ -331,6 +364,18 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                     depths[dpt_topic]["intrinsic"] = np.array(
                         ros_msg.p
                     ).reshape(3, 4)
+                elif topic in image_extrinsic_topic:
+                    for tf in ros_msg.transforms:
+                        if tf.child_frame_id in image_frame_ids:
+                            extrinsic = np.linalg.inv(
+                                pose_to_mat(tf.transform)
+                            )
+                            if "middle" in tf.child_frame_id:
+                                image_extrinsic["middle"] = extrinsic
+                            elif "left" in tf.child_frame_id:
+                                image_extrinsic["left"] = extrinsic
+                            elif "right" in tf.child_frame_id:
+                                image_extrinsic["right"] = extrinsic
 
             for data in [images, depths, joints, ee_poses]:
                 for t in data:
@@ -387,13 +432,15 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                     prefix=t,
                 )
 
+            if self.calibration_dict is not None:
+                image_extrinsic = copy.deepcopy(self.calibration_dict)
             extrinsic = {
-                "left": self.calibration_dict["left"]
-                @ np.linalg.inv(left_ee_pose),
-                "right": self.calibration_dict["right"]
+                "left": image_extrinsic["left"] @ np.linalg.inv(left_ee_pose),
+                "right": image_extrinsic["right"]
                 @ np.linalg.inv(right_ee_pose),
-                "middle": np.copy(self.calibration_dict["right"]),
+                "middle": np.copy(image_extrinsic["middle"]),
             }
+
             intrinsic = {}
             for cam, t in zip(cameras, image_topics, strict=False):
                 intrinsic[cam] = images[t]["intrinsic"]
