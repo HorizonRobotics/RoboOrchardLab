@@ -24,6 +24,9 @@ import torch
 from robo_orchard_core.utils.config import load_config_class
 
 from robo_orchard_lab.models.mixin import ModelMixin
+from robo_orchard_lab.models.sem_modules.processor import (
+    MultiArmManipulationInput,
+)
 from robo_orchard_lab.utils.path import in_cwd
 
 current_file_path = os.path.abspath(__file__)
@@ -111,21 +114,21 @@ class SEMPolicy:
         self.take_action_cnt = 0
 
     def data_preprocess(self, obs, instruction):
-        images = []
-        depths = []
-        T_world2cam = []  # noqa: N806
-        intrinsic = []
-        for camera_data in obs["observation"].values():
-            images.append(camera_data["rgb"])
-            depths.append(camera_data["depth"] / 1000)
+        images = {}
+        depths = {}
+        t_world2cam = {}
+        intrinsic = {}
+        for cam_name, camera_data in obs["observation"].items():
+            images[cam_name] = [camera_data["rgb"]]
+            depths[cam_name] = [camera_data["depth"] / 1000]
 
             _tmp = np.eye(4)
             _tmp[:3] = camera_data["extrinsic_cv"]
-            T_world2cam.append(_tmp)
+            t_world2cam[cam_name] = _tmp
 
             _tmp = np.eye(4)
             _tmp[:3, :3] = camera_data["intrinsic_cv"]
-            intrinsic.append(_tmp)
+            intrinsic[cam_name] = _tmp
 
         joint_state = []
         joint_action = obs["joint_action"]
@@ -136,15 +139,15 @@ class SEMPolicy:
             + [joint_action["right_gripper"]]
         )
         joint_state.append(joint_action)
-        data = dict(
-            intrinsic=np.stack(intrinsic),
-            T_world2cam=np.stack(T_world2cam),
-            step_index=len(joint_state) - 1,
-            joint_state=np.stack(joint_state),
+
+        data = MultiArmManipulationInput(
+            image=images,
+            depth=depths,
+            intrinsic=intrinsic,
+            t_world2cam=t_world2cam,
+            history_joint_state=joint_state,
+            instruction=instruction,
         )
-        data["imgs"] = np.stack(images)
-        data["depths"] = np.stack(depths)
-        data["text"] = instruction
         data = self.processor.pre_process(data)
         return data
 

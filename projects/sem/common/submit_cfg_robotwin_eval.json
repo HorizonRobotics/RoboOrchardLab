@@ -5,7 +5,7 @@
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,
-    "gpu_per_worker": 2,
+    "gpu_per_worker": 8,
     "wall_time": 14400,
     "cmd": [
         "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
@@ -13,11 +13,12 @@
         "ln -s /horizon-bucket/robot_lab2/users/tianwei.lin/data/robotwin2/assets assets",
         "python3 robotwin_eval.py \\",
         "  --task_config demo_clean \\",
-        "  --task_names place_empty_cup,stack_blocks_three,beat_block_hammer,handover_block \\",
-        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-08-09/14-02/sem_robotwin2_tempjoint_originvlm_newweightinit-20250809-140220.982428/output/checkpoints/checkpoint_10' \\",
+        "  --task_names place_empty_cup,adjust_bottle,stack_blocks_three,beat_block_hammer,handover_mic,blocks_ranking_rgb,blocks_ranking_size,lift_pot,open_laptop,open_microwave,place_cans_plasticbox,rotate_qrcode,move_pillbottle_pad,stack_bowls_three,dump_bin_bigbin,place_dual_shoes \\",
+        "  --model_config '/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/sem_v2_202508' \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
         "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
-        "  --test_num 2"
+        "  --model_processor robotwin2_0_processor \\",
+        "  --test_num 50"
     ],
     "to_upload": [
         "robo_orchard_lab",
@@ -29,6 +30,6 @@
         "robotwin/script"
     ],
     "job_password": "1227",
-    "queue_name": "project-amd-l20-robot-lab-bcloud",
+    "queue_name": "project-l20-robot-lab-tcloud",
     "project_id": "Robot-lab"
 }

@@ -45,6 +45,12 @@ dataset_config = dict(
             [0.0325, 0.0125],
         ],
         num_joint=14,
+        cam_names=[
+            "front_camera",
+            "head_camera",
+            "left_camera",
+            "right_camera",
+        ],
     ),
     robotwin2_0=dict(
         kinematics_config=dict(
@@ -77,6 +83,12 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
+        cam_names=[
+            "front_camera",
+            "head_camera",
+            "left_camera",
+            "right_camera",
+        ],
     ),
     robotwin2_0_ur5_wsg=dict(
         kinematics_config=dict(
@@ -128,6 +140,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
+        cam_names=["head_camera", "left_camera", "right_camera"],
     ),
     robotwin2_0_arx_x5a=dict(
         kinematics_config=dict(
@@ -179,6 +192,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
+        cam_names=["head_camera", "left_camera", "right_camera"],
     ),
     robotwin2_0_franka_panda=dict(
         kinematics_config=dict(
@@ -234,6 +248,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=16,
+        cam_names=["head_camera", "left_camera", "right_camera"],
     ),
     robotwin2_0_piper=dict(
         kinematics_config=dict(
@@ -286,6 +301,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
+        cam_names=["head_camera", "left_camera", "right_camera"],
     ),
 )
 
@@ -516,6 +532,7 @@ def build_processors(config, dataset_names):
                 load_depth=config["with_depth"],
                 valid_action_step=None,
                 transforms=transforms,
+                cam_names=data_config["cam_names"],
             )
         )
         processors[dataset_name] = processor
