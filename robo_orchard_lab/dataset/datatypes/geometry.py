@@ -20,14 +20,13 @@ from typing import Literal
 
 import datasets as hg_datasets
 from robo_orchard_core.datatypes.geometry import (
-    BatchFrameTransform as _BatchFrameTransform,
-    BatchPose as _BatchPose,
-    BatchTransform3D as _BatchTransform3D,
+    BatchFrameTransform,
+    BatchPose,
+    BatchTransform3D,
 )
 
 from robo_orchard_lab.dataset.datatypes.hg_features import (
     RODictDataFeature,
-    ToDataFeatureMixin,
     TypedDictFeatureDecode,
     check_fields_consistency,
     hg_dataset_feature,
@@ -46,14 +45,19 @@ __all__ = [
 ]
 
 
-class BatchTransform3D(_BatchTransform3D, ToDataFeatureMixin):
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchTransform3DFeature:
-        ret = BatchTransform3DFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+@classmethod
+def _batch_transform_3d_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchTransform3DFeature:
+    """A class for 3D transforms with dataset feature support."""
+    ret = BatchTransform3DFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
+
+
+BatchTransform3D.dataset_feature = (  # type: ignore
+    _batch_transform_3d_dataset_feature
+)
 
 
 @hg_dataset_feature
@@ -86,14 +90,16 @@ class BatchTransform3DFeature(RODictDataFeature, TypedDictFeatureDecode):
         self._dict.update(state)
 
 
-class BatchPose(_BatchPose, ToDataFeatureMixin):
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchPoseFeature:
-        ret = BatchPoseFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+@classmethod
+def _batch_pose_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchPoseFeature:
+    ret = BatchPoseFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
+
+
+BatchPose.dataset_feature = _batch_pose_dataset_feature  # type: ignore
 
 
 @hg_dataset_feature
@@ -112,14 +118,18 @@ class BatchPoseFeature(BatchTransform3DFeature):
         self._dict["frame_id"] = hg_datasets.Value("string")
 
 
-class BatchFrameTransform(_BatchFrameTransform, ToDataFeatureMixin):
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchFrameTransformFeature:
-        ret = BatchFrameTransformFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+@classmethod
+def _batch_frame_transform_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchFrameTransformFeature:
+    ret = BatchFrameTransformFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
+
+
+BatchFrameTransform.dataset_feature = (  # type: ignore
+    _batch_frame_transform_dataset_feature
+)
 
 
 @hg_dataset_feature

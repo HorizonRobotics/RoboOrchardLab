@@ -35,11 +35,60 @@ config = dict(
     data_path="./data/lmdb",
     urdf="./urdf/arx5/arx5_description_isaac.urdf",
     multi_task=False,
-    # task_names=["blocks_stack_three"],
-    scale_shift_version="single_task_blocks_stack_three",
     task_names=["place_empty_cup"],
-    # scale_shift_version="default",
 )
+
+
+# For horizon-released real-world data
+# https://huggingface.co/datasets/HorizonRobotics/Real-World-Dataset
+# config.update(
+#     urdf="./urdf/piper_description_dualarm.urdf",
+#     img_channel_flip=True,
+#     scale_shift=[
+#         [1.478021398, 0.10237011399999996],
+#         [1.453678296, 1.4043815520000003],
+#         [1.553963852, -1.5014923],
+#         [1.86969153, -0.0010728060000000372],
+#         [1.3381379620000002, -0.012585846000000012],
+#         [3.086157592, -0.06803160000000008],
+#         [0.03857, 0.036329999999999994],
+#         [1.478021398, 0.10237011399999996],
+#         [1.453678296, 1.4043815520000003],
+#         [1.553963852, -1.5014923],
+#         [1.86969153, -0.0010728060000000372],
+#         [1.3381379620000002, -0.012585846000000012],
+#         [3.086157592, -0.06803160000000008],
+#         [0.03857, 0.036329999999999994],
+#     ],
+#     kinematics_config=dict(
+#         left_arm_joint_id=list(range(6)),
+#         right_arm_joint_id=list(range(8, 14)),
+#         left_arm_link_keys=[
+#             "left_link1",
+#             "left_link2",
+#             "left_link3",
+#             "left_link4",
+#             "left_link5",
+#             "left_link6",
+#         ],
+#         right_arm_link_keys=[
+#             "right_link1",
+#             "right_link2",
+#             "right_link3",
+#             "right_link4",
+#             "right_link5",
+#             "right_link6",
+#         ],
+#         left_finger_keys=["left_link7"],
+#         right_finger_keys=["right_link7"],
+#     ),
+#     T_base2world=[
+#         [1, 0, 0, 0],
+#         [0, 1, 0, 0],
+#         [0, 0, 1, 0],
+#         [0, 0, 0, 1.],
+#     ],
+# )
 
 
 def build_model(config):
@@ -403,13 +452,16 @@ def build_model(config):
     return model
 
 
-def build_transforms(config):
+def build_transforms(config, calibration=None):
     from robo_orchard_lab.dataset.robotwin.transforms import (
         AddItems,
         AddScaleShift,
+        CalibrationToExtrinsic,
         ConvertDataType,
         DualArmKinematics,
         GetProjectionMat,
+        IdentityTransform,
+        ImageChannelFlip,
         ItemSelection,
         JointStateNoise,
         Resize,
@@ -419,12 +471,15 @@ def build_transforms(config):
 
     add_data_relative_items = dict(
         type=AddItems,
-        T_base2world=[
-            [0, -1, 0, 0],
-            [1, 0, 0, -0.65],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-        ],
+        T_base2world=config.get(
+            "T_base2world",
+            [
+                [0, -1, 0, 0],
+                [1, 0, 0, -0.65],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ],
+        ),
     )
     state_sampling = dict(
         type=SimpleStateSampling,
@@ -441,6 +496,12 @@ def build_transforms(config):
             [0.0000, 0.0000, 0.0000, 1.0000],
         ],
     )
+    if config.get("img_channel_flip"):
+        img_channel_flip = dict(
+            type=ImageChannelFlip, output_channel=[2, 1, 0]
+        )
+    else:
+        img_channel_flip = dict(type=IdentityTransform)
     to_tensor = dict(type=ToTensor)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="base")
     convert_dtype = dict(
@@ -453,26 +514,9 @@ def build_transforms(config):
             embodiedment_mat="float32",
         ),
     )
-
-    if config["scale_shift_version"] == "default":
-        scale_shift_list = [
-            [1.12735104, -0.11648428],
-            [1.45046443, 1.35436516],
-            [1.5324732, 1.45750941],
-            [1.80842297, -0.01855904],
-            [1.46318083, 0.16631192],
-            [2.79637467, 0.24332368],
-            [0.0325, 0.0125],
-            [1.12735104, -0.11648428],
-            [1.45046443, 1.35436516],
-            [1.5324732, 1.45750941],
-            [1.80842297, -0.01855904],
-            [1.46318083, 0.16631192],
-            [2.79637467, 0.24332368],
-            [0.0325, 0.0125],
-        ]
-    elif config["scale_shift_version"] == "single_task_blocks_stack_three":
-        scale_shift_list = [
+    scale_shift_list = config.get(
+        "scale_shift",
+        [
             [0.82115489, 0.00280333],
             [1.26673863, 1.26673677],
             [1.38083194, 1.38080194],
@@ -487,11 +531,14 @@ def build_transforms(config):
             [0.13566405, 0.05423572],
             [0.90747011, 0.05119371],
             [0.425, 0.575],
-        ]
-    else:
-        raise NotImplementedError
+        ],  # defalut scale shift for robotwin2.0 example single task
+    )
 
-    kinematics = dict(type=DualArmKinematics, urdf=config["urdf"])
+    kinematics = dict(
+        type=DualArmKinematics,
+        urdf=config["urdf"],
+        **config.get("kinematics_config", {}),
+    )
     scale_shift = dict(
         type=AddScaleShift,
         scale_shift=scale_shift_list,
@@ -532,11 +579,23 @@ def build_transforms(config):
             "uuid",
         ],
     )
+
+    if calibration is not None:
+        calib_to_ext = dict(
+            type=CalibrationToExtrinsic,
+            calibration=calibration,
+            **config.get("kinematics_config", {}),
+        )
+    else:
+        calib_to_ext = dict(type=IdentityTransform)
+
     train_transforms = [
         add_data_relative_items,
         state_sampling,
         resize,
+        img_channel_flip,
         to_tensor,
+        calib_to_ext,
         projection_mat,
         scale_shift,
         joint_state_noise,
@@ -548,7 +607,9 @@ def build_transforms(config):
         add_data_relative_items,
         state_sampling,
         resize,
+        img_channel_flip,
         to_tensor,
+        calib_to_ext,
         projection_mat,
         scale_shift,
         convert_dtype,
@@ -624,7 +685,7 @@ def build_processor(config):
         SEMProcessorCfg,
     )
 
-    transforms = build_transforms(config)[1]
+    transforms = build_transforms(config, config.get("calibration"))[1]
     transforms.append(dict(type=UnsqueezeBatch))
     processor = SEMProcessor(
         SEMProcessorCfg(

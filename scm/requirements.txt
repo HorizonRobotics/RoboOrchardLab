@@ -52,3 +52,6 @@ setuptools>=77.0.3
 
 # numpy
 numpy<2
+
+# ray
+ray[default]

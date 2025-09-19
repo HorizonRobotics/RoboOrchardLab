@@ -124,8 +124,12 @@ class ShardedIndiceSampler(IndiceTableSampler):
     :class:`~torch.utils.data.DataLoader` sampler, and load a subset of the
     original dataset that is exclusive to it.
 
-    .. note::
-        Dataset is assumed to be of constant size.
+    Note:
+        * Dataset is assumed to be of constant size.
+        * If you are using `accelerate` for distributed training, you
+          should not use this sampler, as `accelerate` will automatically
+          handle the data sharding!
+
 
     Args:
         indices (Table | list[int] | str | torch.Tensor | np.ndarray | int):
@@ -136,7 +140,7 @@ class ShardedIndiceSampler(IndiceTableSampler):
             it is treated as the length of the dataset, and the indices
             will be generated as a range from 0 to length-1.
         num_shards (int): Number of shards to divide the dataset into.
-        index (int): Index of the current shard.
+        shard_id (int): Index of the current shard.
         contiguous (bool, optional): If True, then the dataset will be split
             into contiguous chunks. If False, then the dataset will be split
             into non-contiguous chunks. Default: True.
@@ -151,7 +155,7 @@ class ShardedIndiceSampler(IndiceTableSampler):
         self,
         indices: Table | list[int] | str | torch.Tensor | np.ndarray | int,
         num_shards: int,
-        index: int,
+        shard_id: int,
         contiguous: bool = True,
         shuffle: bool = False,
         generator: torch.Generator | None = None,
@@ -162,13 +166,13 @@ class ShardedIndiceSampler(IndiceTableSampler):
             dataset_len = len(indices)
         else:
             dataset_len = indices
-        if not 0 <= index < num_shards:
-            raise ValueError("index should be in [0, num_shards-1]")
+        if not 0 <= shard_id < num_shards:
+            raise ValueError("shard_id should be in [0, num_shards-1]")
         if contiguous:
             div = dataset_len // num_shards
             mod = dataset_len % num_shards
-            start = div * index + min(index, mod)
-            end = start + div + (1 if index < mod else 0)
+            start = div * shard_id + min(shard_id, mod)
+            end = start + div + (1 if shard_id < mod else 0)
             sliced_indices = (
                 indices[start:end]
                 if not isinstance(indices, int)
@@ -179,11 +183,13 @@ class ShardedIndiceSampler(IndiceTableSampler):
                 [
                     indices[i]
                     for i in np.arange(
-                        index, len(indices), num_shards, dtype=np.uint64
+                        shard_id, len(indices), num_shards, dtype=np.uint64
                     )
                 ]
                 if not isinstance(indices, int)
-                else np.arange(index, dataset_len, num_shards, dtype=np.uint64)
+                else np.arange(
+                    shard_id, dataset_len, num_shards, dtype=np.uint64
+                )
             )
         super().__init__(
             sliced_indices,  # type: ignore

@@ -27,4 +27,6 @@ class TestRoboTwinEnv:
                 check_task_init=False,  # for fast initialization
             )
         )
+        env.reset()
         assert env is not None
+        assert env._task is not None

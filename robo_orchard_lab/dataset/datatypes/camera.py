@@ -16,25 +16,23 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import datasets as hg_datasets
 from robo_orchard_core.datatypes.camera_data import (
-    BatchCameraData as _BatchCameraData,
-    BatchCameraDataEncoded as _BatchCameraDataEncoded,
-    BatchCameraInfo as _BatchCameraInfo,
+    BatchCameraData,
+    BatchCameraDataEncoded,
+    BatchCameraInfo,
     BatchImageData,
-    Distortion as _Distortion,
+    Distortion,
     ImageMode,
 )
-from robo_orchard_core.utils.torch_utils import Device
 
 from robo_orchard_lab.dataset.datatypes.geometry import (
     BatchFrameTransformFeature,
 )
 from robo_orchard_lab.dataset.datatypes.hg_features import (
     RODictDataFeature,
-    ToDataFeatureMixin,
     TypedDictFeatureDecode,
     check_fields_consistency,
     hg_dataset_feature,
@@ -58,16 +56,17 @@ __all__ = [
 ]
 
 
-class Distortion(_Distortion, ToDataFeatureMixin):
+@classmethod
+def _distortion_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> DistortionFeature:
     """A class for distortion parameters with dataset feature support."""
+    ret = DistortionFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
 
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> DistortionFeature:
-        ret = DistortionFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+
+Distortion.dataset_feature = _distortion_dataset_feature
 
 
 @hg_dataset_feature
@@ -92,16 +91,16 @@ class DistortionFeature(RODictDataFeature, TypedDictFeatureDecode):
         }
 
 
-class BatchCameraInfo(_BatchCameraInfo, ToDataFeatureMixin):
-    """A class for batch camera info with dataset feature support."""
+@classmethod
+def _camera_info_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchCameraInfoFeature:
+    ret = BatchCameraInfoFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
 
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchCameraInfoFeature:
-        ret = BatchCameraInfoFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+
+BatchCameraInfo.dataset_feature = _camera_info_dataset_feature
 
 
 @hg_dataset_feature
@@ -132,23 +131,18 @@ class BatchCameraInfoFeature(RODictDataFeature, TypedDictFeatureDecode):
         }
 
 
-class BatchCameraDataEncoded(BatchCameraInfo, _BatchCameraDataEncoded):
-    """A class for batch camera data with dataset feature support."""
+@classmethod
+def _camera_data_encoded_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchCameraDataEncodedFeature:
+    ret = BatchCameraDataEncodedFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
 
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchCameraDataEncodedFeature:
-        ret = BatchCameraDataEncodedFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
 
-    def decode(
-        self,
-        decoder: Callable[[bytes, str], BatchImageData],
-        device: Device = "cpu",
-    ) -> BatchCameraData:
-        return BatchCameraData(**super().decode(decoder, device).__dict__)
+BatchCameraDataEncoded.dataset_feature = (  # type: ignore
+    _camera_data_encoded_dataset_feature
+)
 
 
 @hg_dataset_feature
@@ -179,16 +173,16 @@ class BatchCameraDataEncodedFeature(BatchCameraInfoFeature):
         )
 
 
-class BatchCameraData(BatchCameraInfo, _BatchCameraData):
-    """A class for batch camera data with dataset feature support."""
+@classmethod
+def _camera_data_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchCameraDataFeature:
+    ret = BatchCameraDataFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
 
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchCameraDataFeature:
-        ret = BatchCameraDataFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+
+BatchCameraData.dataset_feature = _camera_data_dataset_feature  # type: ignore
 
 
 @hg_dataset_feature

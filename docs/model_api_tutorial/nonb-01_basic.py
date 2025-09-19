@@ -120,18 +120,3 @@ print(subprocess.check_output(["tree", output_dir]).decode())
 
 loaded_model = ModelMixin.load_model(output_dir)
 print("Model loaded:", loaded_model)
-
-# %%
-# Integrating with Hugging Face Accelerator
-# ---------------------------------------------------------
-# :py:class:`~robo_orchard_lab.models.mixin.ModelMixin` provides a pre-built hook, ``accelerator_save_state_pre_hook``,
-# for seamless integration with the 🤗 Accelerate training library.
-#
-
-from accelerate import Accelerator
-
-accelerator = Accelerator()
-
-accelerator.register_save_state_pre_hook(
-    SimpleNet.accelerator_save_state_pre_hook
-)

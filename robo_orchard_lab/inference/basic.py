@@ -18,10 +18,7 @@ from typing import Any, TypeVar
 
 import pydantic
 import torch
-from robo_orchard_core.utils.config import (
-    CallableType,
-    ClassType_co,  # noqa: F401
-)
+from robo_orchard_core.utils.config import CallableType
 
 from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.inference.mixin import (

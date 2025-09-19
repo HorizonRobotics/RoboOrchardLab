@@ -13,15 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import numpy as np
+import torch
 
-from robo_orchard_lab.inference.multi_arm_manipulation import (
-    MultiArmManipulationInput,
-    MultiArmManipulationOutput,
-)
 from robo_orchard_lab.inference.processor import (
     ClassType_co,
     ProcessorMixin,
@@ -30,6 +27,67 @@ from robo_orchard_lab.inference.processor import (
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 
 __all__ = ["SEMProcessor", "SEMProcessorCfg"]
+
+TENSOR_TYPE = np.ndarray | torch.Tensor
+
+
+@dataclass
+class MultiArmManipulationInput:
+    """Data structure for inputs to a multi-arm manipulation pipeline.
+
+    This class defines the expected inputs for a robotics policy that may use
+    various modalities like vision, proprioception, and language instructions.
+    """
+
+    image: dict[str, list[TENSOR_TYPE]] | None = None
+    """A dictionary mapping camera names to lists of RGB images.
+    Allows for multiple viewpoints."""
+
+    depth: dict[str, list[TENSOR_TYPE]] | None = None
+    """A dictionary mapping camera names to lists of depth maps."""
+
+    intrinsic: dict[str, TENSOR_TYPE] | None = None
+    """A dictionary mapping camera names to their intrinsic
+    parameter matrices."""
+
+    t_world2cam: dict[str, TENSOR_TYPE] | None = None
+    """A dictionary mapping camera names to their world-to-camera
+    transformation matrices (e.g., extrinsic parameters)."""
+
+    t_robot2world: TENSOR_TYPE | None = None
+    """The transformation from the robot's base frame to the
+    world coordinate frame."""
+
+    t_robot2ego: TENSOR_TYPE | None = None
+    """The transformation from the robot's base frame to an
+    egocentric frame, if applicable."""
+
+    history_joint_state: list[TENSOR_TYPE] | None = None
+    """A list of past joint states, representing the
+    robot's proprioceptive history."""
+
+    history_ee_pose: list[TENSOR_TYPE] | None = None
+    """A list of past end-effector poses."""
+
+    instruction: str | None = None
+    """A natural language command or goal for the task."""
+
+    urdf: str | None = None
+    """The URDF (Unified Robot Description Format) of the robot as a
+    string, describing its kinematic and dynamic properties."""
+
+
+@dataclass
+class MultiArmManipulationOutput:
+    """Data structure for outputs from a multi-arm manipulation pipeline.
+
+    This class encapsulates the results produced by the inference pipeline,
+    primarily the predicted action for the robot.
+    """
+
+    action: TENSOR_TYPE
+    """The predicted action tensor. This could represent target joint
+    positions, end-effector velocities, or another action space format."""
 
 
 class Struct2Dict:
@@ -92,9 +150,11 @@ class SEMProcessor(ProcessorMixin):
             load_depth=self.cfg.load_depth,
             cam_names=self.cfg.cam_names,
         )
-        self.transforms = [
-            build(transform) for transform in self.cfg.transforms
-        ]
+        self.transforms = (
+            [build(transform) for transform in self.cfg.transforms]
+            if self.cfg.transforms is not None
+            else []
+        )
 
     def pre_process(self, data: Union[MultiArmManipulationInput, Dict]):
         if isinstance(data, MultiArmManipulationInput):

@@ -188,12 +188,12 @@ class RotaryAttention(nn.Module):
         k = k.reshape(B, M, self.num_heads, -1).permute(0, 2, 1, 3)
         v = v.reshape(B, M, self.num_heads, -1).permute(0, 2, 1, 3)  # b,h,m,c
 
-        if query_pos is not None:
-            q = self.position_encoder(q, query_pos)
-        if key_pos is not None:
-            k = self.position_encoder(k, key_pos)
+        q, k = self.apply_position_encode(q, query_pos, k, key_pos)
 
-        attn = torch.einsum("bhnc,bhmc->bhnm", q, k) * self.scale
+        attn = (q @ k.permute(0, 1, 3, 2)) * self.scale
+        # Equivalent Implementation
+        # attn = torch.einsum("bhnc,bhmc->bhnm", q, k) * self.scale
+
         if attn_mask is not None:
             if attn_mask.dim() == 3 and attn_mask.shape[0] == B:
                 attn_mask = attn_mask.unsqueeze(1)
@@ -210,6 +210,13 @@ class RotaryAttention(nn.Module):
         x = self.proj(x)
         x = x + identity
         return x
+
+    def apply_position_encode(self, q, query_pos, k, key_pos):
+        if query_pos is not None:
+            q = self.position_encoder(q, query_pos)
+        if key_pos is not None:
+            k = self.position_encoder(k, key_pos)
+        return q, k
 
 
 class JointGraphAttention(nn.Module):
@@ -274,7 +281,11 @@ class JointGraphAttention(nn.Module):
             query_pos = query_pos.tile(B // query_pos.shape[0], 1, 1, 1, 1)
 
         q = q[:, :, :, None] * query_pos
-        attn = torch.einsum("bhnmc,bhmc->bhnm", q, k) * self.scale
+
+        attn = (q * k.unsqueeze(2)).sum(-1) * self.scale
+        # Equivalent Implementation
+        # attn = torch.einsum("bhnmc,bhmc->bhnm", q, k) * self.scale
+
         attn = attn.softmax(dim=-1).type_as(v)
         x = (attn @ v).transpose(1, 2)
         x = x.reshape(B, N, C)
@@ -406,6 +417,9 @@ class AdaRMSNorm(nn.RMSNorm):
 
     def forward(self, x, c):
         x = super().forward(x)
+        return self.apply_ada_func(x, c)
+
+    def apply_ada_func(self, x, c):
         dims = x.shape[-1]
         ada_scale_shift = self.adaLN_modulation(c).unflatten(-1, (dims, -1))
         if ada_scale_shift.dim() != 4:

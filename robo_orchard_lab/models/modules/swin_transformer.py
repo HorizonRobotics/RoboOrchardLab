@@ -623,23 +623,27 @@ class ShiftWindowMSA(nn.Module):
                 query, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2)
             )
 
-            # calculate attention mask for SW-MSA
-            img_mask = torch.zeros((1, H_pad, W_pad, 1), device=query.device)
-            h_slices = (
-                slice(0, -self.window_size),
-                slice(-self.window_size, -self.shift_size),
-                slice(-self.shift_size, None),
-            )
-            w_slices = (
-                slice(0, -self.window_size),
-                slice(-self.window_size, -self.shift_size),
-                slice(-self.shift_size, None),
-            )
             cnt = 0
-            for h in h_slices:
-                for w in w_slices:
-                    img_mask[:, h, w, :] = cnt
+            img_mask_patches = []
+            for h in [
+                H_pad - self.window_size,
+                self.window_size - self.shift_size,
+                self.shift_size,
+            ]:
+                img_mask_patches.append([])
+                for w in [
+                    W_pad - self.window_size,
+                    self.window_size - self.shift_size,
+                    self.shift_size,
+                ]:
+                    img_mask_patches[-1].append(torch.ones([h, w]) * cnt)
                     cnt += 1
+            img_mask = torch.cat(
+                [torch.cat(x, dim=1) for x in img_mask_patches], dim=0
+            )
+            img_mask = (
+                img_mask.unsqueeze(-1).unsqueeze(0).to(device=query.device)
+            )
 
             # nW, window_size, window_size, 1
             mask_windows = self.window_partition(img_mask)

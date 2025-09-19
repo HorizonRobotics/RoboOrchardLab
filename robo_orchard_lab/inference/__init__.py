@@ -14,15 +14,17 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""Inference pipeline components and utilities.
+
+The inference pipeline focuses on the data processing and model
+inference parts, and can be used in various scenarios. The inference
+pipeline is a more generic concept than policy, which is
+used to interact with the environment.
+"""
+
 from .basic import InferencePipeline, InferencePipelineCfg
 from .mixin import (
     ClassType_co,
     InferencePipelineMixin,
     InferencePipelineMixinCfg,
-)
-from .multi_arm_manipulation import (
-    MultiArmManipulationInput,
-    MultiArmManipulationOutput,
-    MultiArmManipulationPipeline,
-    MultiArmManipulationPipelineCfg,
 )

@@ -15,10 +15,12 @@
 # permissions and limitations under the License.
 
 import abc
+import logging
 import os
 from typing import Generic, TypeVar, get_args
 
 import torch
+from accelerate import Accelerator
 from robo_orchard_core.utils.config import (
     ClassConfig,
     ClassInitFromConfigMixin,
@@ -37,6 +39,7 @@ from robo_orchard_lab.utils.path import (
 
 __all__ = ["InferencePipelineMixin", "InferencePipelineMixinCfg"]
 
+logger = logging.getLogger(__name__)
 
 InputType = TypeVar("InputType")
 OutputType = TypeVar("OutputType")
@@ -131,6 +134,33 @@ class MyInferencePipeline(InferencePipelineMixin[Source, Target]):
         """  # noqa: E501
         pass
 
+    def accelerator_register_all_hooks(
+        self, accelerator: Accelerator
+    ) -> list[torch.utils.hooks.RemovableHandle]:
+        """Register all necessary hooks to the given Hugging Face Accelerator.
+
+        Args:
+            accelerator (Accelerator): The Hugging Face Accelerator instance.
+        """
+        raise NotImplementedError(
+            "This method is not ready for use."
+            "We plan to remove this method as inference pipelines "
+            "are not expected to be used with accelerate."
+        )
+
+        for hook in accelerator._save_model_state_pre_hook.keys():
+            if hook == self.accelerator_save_state_pre_hook:
+                logger.warning(
+                    f"accelerator_save_state_pre_hook of {self}"
+                    " is already registered."
+                )
+                return []
+        return [
+            accelerator.register_save_state_pre_hook(
+                self.accelerator_save_state_pre_hook
+            )
+        ]
+
     def accelerator_save_state_pre_hook(
         self,
         models: list[torch.nn.Module],
@@ -150,6 +180,11 @@ class MyInferencePipeline(InferencePipelineMixin[Source, Target]):
                 (unused in this implementation).
             output_dir (str): The directory where the state is being saved.
         """
+        raise NotImplementedError(
+            "This method is not ready for use."
+            "We plan to remove this method as inference pipelines "
+            "are not expected to be used with accelerate."
+        )
         with open(
             os.path.join(output_dir, "inference.config.json"), "w"
         ) as fh:

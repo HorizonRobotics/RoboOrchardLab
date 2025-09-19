@@ -85,7 +85,7 @@ class RODataset(TorchDataset):
             metadata to actual metadata objects when accessing the dataset.
             If True, the `episode`, `task`, `robot`, and `instruction` fields
             will be added and the corresponding index fields will be removed.
-            Defaults to True.
+            Defaults to False.
 
     """
 

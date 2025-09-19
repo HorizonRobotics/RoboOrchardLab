@@ -38,6 +38,7 @@ def mock_accelerator():
 
     # Mock wait_for_everyone method (used for synchronization)
     accelerator.wait_for_everyone = MagicMock()
+    accelerator._models = []  # Ensure _models attribute exists
 
     return accelerator
 

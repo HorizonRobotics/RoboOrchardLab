@@ -137,11 +137,6 @@ def main(args, accelerator):
     model = build_model(config)
     train_dataset, val_dataset = build_dataset(config, lazy_init=True)
 
-    # save model config
-    accelerator.register_save_state_pre_hook(
-        model.accelerator_save_state_pre_hook
-    )
-
     num_workers = config.get("num_workers", 4)
     if not config.get("eval_only"):
         train_dataloader = torch.utils.data.DataLoader(

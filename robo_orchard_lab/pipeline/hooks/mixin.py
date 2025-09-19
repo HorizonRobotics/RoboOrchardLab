@@ -22,8 +22,10 @@ from typing import (
     Iterable,
     Literal,
     Optional,
+    Protocol,
     Type,
     TypeAlias,
+    runtime_checkable,
 )
 
 import torch
@@ -32,6 +34,7 @@ from accelerate.scheduler import AcceleratedScheduler
 from robo_orchard_core.utils.config import (
     ClassConfig,
     ClassInitFromConfigMixin,
+    ClassType,
 )
 from robo_orchard_core.utils.hook import (
     HookContext,
@@ -42,12 +45,33 @@ from robo_orchard_core.utils.string import add_indentation
 from typing_extensions import Self, TypeVar
 
 __all__ = [
+    "ClassType",
     "HookContext",
     "PipelineHooks",
     "PipelineHookArgs",
     "PipelineHookChanelType",
     "PipelineHooksConfig",
+    "ModelOutput",
+    "ModelOutputHasLossKeys",
 ]
+
+
+@runtime_checkable
+class ModelOutput(Protocol):
+    """A protocol representing a model output that contains key-value pairs."""
+
+    def __getitem__(self, key: str) -> Any: ...
+
+    def keys(self) -> Iterable[Any]: ...
+
+    def items(self) -> tuple[Any, Any]: ...
+
+    def values(self) -> Iterable[Any]: ...
+
+
+@runtime_checkable
+class ModelOutputHasLossKeys(ModelOutput, Protocol):
+    def loss_keys(self) -> Iterable[str]: ...
 
 
 @dataclass
@@ -69,11 +93,19 @@ class PipelineHookArgs:
     start_epoch: int = 0
     start_step: int = 0
     dataloader: Optional[Iterable] = None
+    model: Optional[torch.nn.Module] = None
     optimizer: Optional[torch.optim.Optimizer] = None
     lr_scheduler: Optional[AcceleratedScheduler] = None
     batch: Optional[Any] = None
-    model_outputs: Optional[Any] = None
+    model_outputs: Optional[ModelOutput] = None
     reduce_loss: Optional[torch.Tensor] = None
+    """The average loss across all processes, if applicable.
+
+    If the model output loss, the loss will be reduced (averaged)
+    across all processes after the forward pass. So the value is
+    different from the loss returned by the model, which is the
+    loss for the current process only for backward computation.
+    """
 
     def copy_with_updates(self, **kwargs):
         """Create a copy of the current instance with updated attributes.
@@ -117,7 +149,7 @@ class PipelineHooks(ClassInitFromConfigMixin):
 
     """
 
-    def __init__(self, cfg: PipelineHooksConfig | None = None):
+    def __init__(self):
         self.hooks: dict[
             PipelineHookChanelType, HookContextChannel[PipelineHookArgs]
         ] = {}
@@ -188,10 +220,12 @@ class PipelineHooks(ClassInitFromConfigMixin):
     @classmethod
     def from_hooks(
         cls: Type[Self],
-        hooks: Self
-        | PipelineHooksConfig
-        | Iterable[Self | PipelineHooksConfig]
-        | None,
+        hooks: (
+            Self
+            | PipelineHooksConfig
+            | Iterable[Self | PipelineHooksConfig]
+            | None
+        ),
     ) -> Self:
         """Create a new instance of the class from a list of hooks.
 

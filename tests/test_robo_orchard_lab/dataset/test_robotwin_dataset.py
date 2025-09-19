@@ -110,5 +110,65 @@ def test_robotwin_lmdb_data(
         assert key in data
 
 
+def test_calib_to_ext_transform(
+    PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str
+):
+    urdf = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/robo_orchard_lab_projects_ut/"
+        "sem_robotwin/urdf/arx5_description_isaac.urdf",
+    )
+    os.chdir(PROJECT_ROOT)
+
+    import torch
+
+    from robo_orchard_lab.dataset.robotwin.transforms import (
+        CalibrationToExtrinsic,
+    )
+
+    calib_to_ext = CalibrationToExtrinsic(
+        urdf=urdf,
+        calibration=dict(
+            middle={
+                "position": [
+                    -0.010783568385050412,
+                    -0.2559182030838615,
+                    0.5173197227547938,
+                ],
+                "orientation": [
+                    -0.6344593881273598,
+                    0.6670669773214551,
+                    -0.2848079166270871,
+                    0.2671467447131103,
+                ],
+            },
+            left={
+                "position": [-0.0693628, 0.04614798, 0.02938585],
+                "orientation": [
+                    -0.13265687,
+                    0.13223542,
+                    -0.6930087,
+                    0.69615791,
+                ],
+            },
+            right={
+                "position": [-0.0693628, 0.04614798, 0.02938585],
+                "orientation": [
+                    -0.13265687,
+                    0.13223542,
+                    -0.6930087,
+                    0.69615791,
+                ],
+            },
+        ),
+        cam_ee_joint_indices=dict(left=5, right=12),
+        cam_names=["left", "middle", "right"],
+    )
+    data = dict(hist_joint_state=torch.zeros([1, 14]))
+    data = calib_to_ext(data)
+    assert "T_world2cam" in data
+    assert data["T_world2cam"].shape == (3, 4, 4)
+
+
 if __name__ == "__main__":
     pytest.main(["-s", __file__])

@@ -20,12 +20,11 @@ from typing import Literal
 
 import datasets as hg_datasets
 from robo_orchard_core.datatypes.joint_state import (
-    BatchJointsState as _BatchJointsState,
+    BatchJointsState,
 )
 
 from robo_orchard_lab.dataset.datatypes.hg_features import (
     RODictDataFeature,
-    ToDataFeatureMixin,
     TypedDictFeatureDecode,
     check_fields_consistency,
     hg_dataset_feature,
@@ -40,20 +39,19 @@ __all__ = [
 ]
 
 
-class BatchJointsState(_BatchJointsState, ToDataFeatureMixin):
-    """Batch joint states of robot.
+@classmethod
+def _batch_joints_state_dataset_feature(
+    cls, dtype: Literal["float32", "float64"] = "float32"
+) -> BatchJointsStateFeature:
+    """A class for joint states with dataset feature support."""
+    ret = BatchJointsStateFeature(dtype=dtype)
+    check_fields_consistency(cls, ret.pa_type)
+    return ret
 
-    This class extends the base BatchJointsState and provides methods
-    to encode and decode joint states for dataset storage.
-    """
 
-    @classmethod
-    def dataset_feature(
-        cls, dtype: Literal["float32", "float64"] = "float32"
-    ) -> BatchJointsStateFeature:
-        ret = BatchJointsStateFeature(dtype=dtype)
-        check_fields_consistency(cls, ret.pa_type)
-        return ret
+BatchJointsState.dataset_feature = (  # type: ignore
+    _batch_joints_state_dataset_feature
+)
 
 
 @hg_dataset_feature

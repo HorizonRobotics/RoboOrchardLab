@@ -267,6 +267,7 @@ def test_save_raises_error_if_dir_not_empty(
         pytest.fail("save() raised DirectoryNotEmptyError unexpectedly.")
 
 
+@pytest.mark.skip("This test is no longer applicable after code refactor.")
 def test_accelerator_save_hook(test_pipeline: MyTestPipeline, tmp_path):
     """Tests the pre-hook for Hugging Face Accelerate's save_state."""
     output_dir = tmp_path / "accelerator_output"

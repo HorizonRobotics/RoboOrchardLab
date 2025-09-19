@@ -23,9 +23,10 @@ import pytest
 import torch
 
 from robo_orchard_lab.dataset.datatypes import (
+    BatchFrameTransformGraph,
     BatchJointsState,
-    BatchJointsStateFeature,
 )
+from robo_orchard_lab.dataset.datatypes.geometry import BatchFrameTransform
 from robo_orchard_lab.dataset.robot.dataset import (
     ConcatRODataset,
     RODataset,
@@ -95,7 +96,8 @@ class DummyEpisodePackaging(EpisodePackaging):
         return hg_datasets.Features(
             {
                 "data": hg_datasets.Value("string"),
-                "joints": BatchJointsStateFeature(),
+                "joints": BatchJointsState.dataset_feature(),
+                "tf_graph": BatchFrameTransformGraph.dataset_feature(),
             }
         )
 
@@ -111,7 +113,16 @@ class DummyEpisodePackaging(EpisodePackaging):
                     ),
                     "joints": BatchJointsState(
                         position=torch.rand(size=(3, 5)),
-                        # velocity=random.rand(7),
+                    ),
+                    "tf_graph": BatchFrameTransformGraph(
+                        tf_list=[
+                            BatchFrameTransform(
+                                xyz=torch.rand(size=(3, 3)),
+                                quat=torch.rand(size=(3, 4)),
+                                parent_frame_id="0",
+                                child_frame_id="1",
+                            ),
+                        ],
                     ),
                 },
                 instruction=instruction,
@@ -443,6 +454,7 @@ class TestDataset:
         multi_row = dataset.__getitems__([0, 1, 2])
         assert isinstance(multi_row, list)
         assert isinstance(multi_row[0]["joints"], BatchJointsState)
+        assert isinstance(multi_row[0]["tf_graph"], BatchFrameTransformGraph)
 
         if index2meta:
             assert isinstance(multi_row[0]["episode"], Episode)

@@ -13,26 +13,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-
-from . import (
-    dataset,
-    distributed,
-    inference,
-    models,
-    pipeline,
-    utils,
-)
-from .version import __full_version__, __git_hash__, __version__
-
-
-def _set_env():
-    import os
-
-    from accelerate.utils import check_cuda_p2p_ib_support
-
-    if not check_cuda_p2p_ib_support():
-        os.environ["NCCL_P2P_DISABLE"] = "1"
-        os.environ["NCCL_IB_DISABLE"] = "1"
-
-
-_set_env()

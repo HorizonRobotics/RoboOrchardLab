@@ -76,10 +76,6 @@ def main(args, accelerator):
         fh.write(processor.cfg.model_dump_json(indent=4))
 
     model = build_model(config)
-    # save model config
-    accelerator.register_save_state_pre_hook(
-        model.accelerator_save_state_pre_hook
-    )
 
     train_dataset, _ = build_dataset(config, lazy_init=True)
 

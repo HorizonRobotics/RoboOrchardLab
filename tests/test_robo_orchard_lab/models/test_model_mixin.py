@@ -14,7 +14,6 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import json
 import os
 import tempfile
 
@@ -133,7 +132,7 @@ class TestModelMixin:
 
         save_path = os.path.join(temp_dir, "tied_model")
 
-        model.save_model(save_path, allow_shared_tensor=True)
+        model.save_model(save_path)
 
         loaded_model = ModelMixin.load_model(save_path, device="cpu")
         loaded_model.eval()
@@ -159,20 +158,7 @@ class TestModelMixin:
 
         # 2. Save the model with the shared tensor handling enabled
         save_path = os.path.join(temp_dir, "nested_tied_model")
-        model.save_model(save_path, allow_shared_tensor=True)
-
-        # 3. Verify that the shared keys map was created correctly
-        shared_keys_map_path = os.path.join(
-            save_path, "model.shared_keys.json"
-        )
-        assert os.path.exists(shared_keys_map_path)
-        with open(shared_keys_map_path, "r") as f:
-            shared_map = json.load(f)
-
-        expected_map = {
-            "decoder.projection.weight": "encoder.embedding.weight"
-        }
-        assert shared_map == expected_map, "The shared key map is incorrect."
+        model.save_model(save_path)
 
         # 4. Load the model using the standard method
         loaded_model = ModelMixin.load_model(

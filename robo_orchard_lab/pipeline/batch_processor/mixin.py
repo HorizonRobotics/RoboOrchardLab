@@ -37,6 +37,9 @@ class BatchProcessorMixin(ABC):
     ) -> None:
         """Executes the batch processing pipeline.
 
+        The processed outputs and loss (if applicable) are stored in the
+        `on_batch_hook_args` workspace.
+
         Args:
             pipeline_hooks (PipelineHooks): The pipeline hooks to be triggered
                 during batch processing.

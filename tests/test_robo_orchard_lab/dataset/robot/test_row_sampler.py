@@ -24,6 +24,7 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
     IndexFrameCache,
     time_range_match_frame,
 )
+from robo_orchard_lab.dataset.robotwin.transforms import EpisodeSamplerConfig
 
 
 class TestIndexFrameCache:
@@ -135,3 +136,62 @@ class TestDeltaTimestampSampler:
         for data, should_be_none in zip(joints, is_none_expected, strict=True):
             assert (data is None) is should_be_none
         print(joints)
+
+
+class TestEpisodeSampler:
+    @pytest.mark.parametrize(
+        "cfg, is_true_expected",
+        [
+            (
+                EpisodeSamplerConfig(
+                    target_columns=["joints"],
+                ),
+                [True, False],
+            ),
+            (
+                EpisodeSamplerConfig(
+                    target_columns=["actions"],
+                ),
+                [False, True],
+            ),
+            (
+                EpisodeSamplerConfig(
+                    target_columns=["joints", "actions"],
+                ),
+                [True, True],
+            ),
+        ],
+    )
+    def test_sample_episode_indices(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+        cfg: EpisodeSamplerConfig,
+        is_true_expected: list[bool],
+    ):
+        path = os.path.join(
+            ROBO_ORCHARD_TEST_WORKSPACE,
+            "robo_orchard_workspace/datasets/horizon_aloha/arrow_dataset_4episode",
+        )
+        dataset = ROMultiRowDataset(
+            dataset_path=path,
+            row_sampler=cfg,
+        )
+
+        print(len(dataset))
+        data_idx = 0
+        target_columns = cfg.target_columns
+        for col in target_columns:
+            assert (
+                len(dataset[data_idx][col])
+                == dataset[data_idx]["episode"].frame_num
+            )
+
+        for col, should_be_true in zip(
+            ["joints", "actions"], is_true_expected, strict=True
+        ):
+            assert isinstance(dataset[data_idx][col], list) is should_be_true
+            if isinstance(dataset[data_idx][col], list):
+                assert (
+                    len(dataset[data_idx][col])
+                    == dataset[data_idx]["episode"].frame_num
+                ) is should_be_true

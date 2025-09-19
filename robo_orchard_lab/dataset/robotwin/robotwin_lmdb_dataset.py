@@ -183,17 +183,18 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
                     f"{uuid}/{cam_name}/{step_index}"
                 ]
                 if isinstance(image, bytes):
-                    image = np.ndarray(
-                        shape=(1, len(image)), dtype=np.uint8, buffer=image
-                    )
+                    image = np.frombuffer(image, np.uint8)
                 image = cv2.imdecode(image, cv2.IMREAD_UNCHANGED)
                 images.append(image)
             if self.load_depth:
+                depth = self.depth_lmdbs[lmdb_index][
+                    f"{uuid}/{cam_name}/{step_index}"
+                ]
+                if isinstance(depth, bytes):
+                    depth = np.frombuffer(depth, np.uint8)
                 depth = (
                     cv2.imdecode(
-                        self.depth_lmdbs[lmdb_index][
-                            f"{uuid}/{cam_name}/{step_index}"
-                        ],
+                        depth,
                         cv2.IMREAD_ANYDEPTH | cv2.IMREAD_UNCHANGED,
                     )
                     / 1000
@@ -201,11 +202,14 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
                 depths.append(depth)
 
             _tmp = np.eye(4)
-            _tmp[:3] = _T_world2cam[cam_name][step_index]
+            if _T_world2cam[cam_name].ndim == 3:  # for dynamic camera
+                _tmp[:3] = _T_world2cam[cam_name][step_index][:3]
+            else:  # ndim == 2, for fixed camera
+                _tmp[:3] = _T_world2cam[cam_name][:3]
             T_world2cam.append(_tmp)
 
             _tmp = np.eye(4)
-            _tmp[:3, :3] = _intrinsic[cam_name]
+            _tmp[:3, :3] = _intrinsic[cam_name][:3, :3]
             intrinsic.append(_tmp)
 
         if self.load_image:
@@ -221,6 +225,8 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         ee_state = self.meta_lmdbs[lmdb_index][
             f"{uuid}/observation/robot_state/cartesian_position"
         ]
+        if ee_state.ndim == 3:
+            ee_state = ee_state.reshape(ee_state.shape[0], -1)
 
         data = dict(
             uuid=uuid,
@@ -239,7 +245,11 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
             data["depths"] = depths
 
         instructions = self.meta_lmdbs[lmdb_index][f"{uuid}/instructions"]
-        if instructions is None or self.instruction_keys is None:
+        if instructions is None:
+            meta_data = self.meta_lmdbs[lmdb_index][f"{uuid}/meta_data"]
+            instructions = meta_data.get("instruction")
+
+        if instructions is None:
             instructions = self.instructions.get(
                 task_name,
                 self.DEFAULT_INSTRUCTIONS["others"],
@@ -285,7 +295,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         videoWriter = None  # noqa: N806
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         uuid = self.__getitem__(start_idx)["uuid"]
-        file = os.path.join(output_path, f"{uuid}.mp4")
+        file = os.path.join(output_path, f"{uuid.replace('/', '-')}.mp4")
 
         logger.info(f"episode start_idx: {start_idx}, end_idx: {end_idx}")
         logger.info(f"video save path: {file}")

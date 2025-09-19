@@ -22,24 +22,28 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    overload,
 )
 
 import torch
 from accelerate import Accelerator
-from torchvision.transforms import Compose
+from typing_extensions import deprecated
 
 from robo_orchard_lab.pipeline.batch_processor.mixin import BatchProcessorMixin
 from robo_orchard_lab.pipeline.hooks.mixin import (
     PipelineHookArgs,
     PipelineHooks,
 )
-from robo_orchard_lab.utils import as_sequence
 
 __all__ = [
     "LossNotProvidedError",
     "SimpleBatchProcessor",
     "BatchProcessorFromCallable",
 ]
+
+
+class DeprecatedError(Exception):
+    pass
 
 
 logger = logging.getLogger(__name__)
@@ -55,6 +59,22 @@ class LossNotProvidedError(Exception):
 class SimpleBatchProcessor(BatchProcessorMixin):
     """A processor for handling batches in a training or inference pipeline."""
 
+    @overload
+    def __init__(self, need_backward: bool = True): ...
+
+    @overload
+    @deprecated(
+        "transforms is not supported anymore. "
+        "If you want to transform the input batch, "
+        "please implement it in the forward function or "
+        "in the data pipeline."
+    )
+    def __init__(
+        self,
+        need_backward: bool = True,
+        transforms: Optional[Callable | Sequence[Callable]] = None,
+    ): ...
+
     def __init__(
         self,
         need_backward: bool = True,
@@ -66,11 +86,17 @@ class SimpleBatchProcessor(BatchProcessorMixin):
             need_backward (bool): Whether backward computation is needed.
                 If True, the loss should be provided during the forward pass.
 
-            transforms (Optional[Callable | Sequence[Callable]]): A callable
-                or a sequence of callables for transforming the batch.
         """
+
+        if transforms is not None:
+            raise DeprecatedError(
+                "transforms is not supported anymore. "
+                "If you want to transform the input batch, "
+                "please implement it in the forward function or "
+                "in the data pipeline."
+            )
+
         self.need_backward = need_backward
-        self.transform = Compose(as_sequence(transforms))
 
         self._is_prepared = False
         self.accelerator: Optional[Accelerator] = None
@@ -135,7 +161,7 @@ class SimpleBatchProcessor(BatchProcessorMixin):
                 - The first element is the model's outputs. It can be any type
                   that the model produces, such as a tensor, a list of tensors,
                   or a dictionary.
-                - The second element is an optional reduced loss tensor. This
+                - The second element is an optional loss tensor. This
                   is used during training when backward computation is required.
                   If loss is not applicable (e.g., during inference), this value
                   can be `None`.
@@ -165,34 +191,34 @@ class SimpleBatchProcessor(BatchProcessorMixin):
     ) -> None:
         self._initialize(accelerator=on_batch_hook_args.accelerator)
         batch = on_batch_hook_args.batch
-        # transform the batch
-        ts_batch = self.transform(batch)
-
         with pipeline_hooks.begin(
             "on_model_forward",
-            arg=on_batch_hook_args.copy_with_updates(batch=ts_batch),
+            arg=on_batch_hook_args.copy_with_updates(batch=batch),
         ) as on_forward_hook_args:
             self.accelerator = on_forward_hook_args.accelerator
-            outputs, reduce_loss = self.forward(
-                model=model,
-                batch=ts_batch,
-            )
+            outputs, loss = self.forward(model=model, batch=batch)
             on_forward_hook_args.model_outputs = outputs
+            reduce_loss: torch.Tensor | None = loss
+            if self.accelerator.num_processes > 1 and loss is not None:
+                reduce_loss = self.accelerator.reduce(loss, reduction="mean")  # type: ignore
+
             on_forward_hook_args.reduce_loss = reduce_loss
 
         if self.need_backward:
-            if reduce_loss is None:
+            if loss is None:
                 raise LossNotProvidedError()
 
             with pipeline_hooks.begin(
                 "on_model_backward",
                 arg=on_batch_hook_args.copy_with_updates(
-                    batch=ts_batch,
+                    batch=batch,
                     model_outputs=outputs,
                     reduce_loss=reduce_loss,
                 ),
             ) as on_backward_hook_args:
-                on_backward_hook_args.accelerator.backward(reduce_loss)
+                on_backward_hook_args.accelerator.backward(loss)
+
+            # all reduce to get the average loss
 
         on_batch_hook_args.model_outputs = outputs
         on_batch_hook_args.reduce_loss = reduce_loss
@@ -209,13 +235,35 @@ class BatchProcessorFromCallable(
     performing model inference or training.
     """
 
+    @overload
+    def __init__(self, forward_fn: forward_fn_type): ...
+
+    @overload
+    @deprecated(
+        "transforms is not supported anymore. "
+        "If you want to transform the input batch, "
+        "please implement it in the forward function or "
+        "in the data pipeline."
+    )
+    def __init__(
+        self,
+        forward_fn: forward_fn_type,
+        need_backward: bool = True,
+        transforms: Optional[Callable | Sequence[Callable]] = None,
+    ): ...
+
     def __init__(
         self,
         forward_fn: forward_fn_type,
         need_backward: bool = True,
         transforms: Optional[Callable | Sequence[Callable]] = None,
     ) -> None:
-        super().__init__(need_backward=need_backward, transforms=transforms)
+        if transforms is not None:
+            super().__init__(
+                need_backward=need_backward, transforms=transforms
+            )
+        else:
+            super().__init__(need_backward=need_backward)
 
         self._forward_fn = forward_fn
 

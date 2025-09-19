@@ -205,7 +205,8 @@ if __name__ == "__main__":
         "torch>=2.4.0",
         "torchvision>=0.19.0",
         "numpy<2",  # dependencies may not be compatible with numpy 2.x
-        "accelerate",
+        "accelerate>=1.10.1",
+        "safetensors>=0.6.2",
         "tqdm",
         "deprecated",
         "timeout-decorator",
@@ -216,13 +217,14 @@ if __name__ == "__main__":
         "datasets>=4.0.0",
         "sqlalchemy",
         "duckdb-engine",
+        "duckdb<=1.3.2",
         "fsspec",
         "sortedcontainers",
         "numpydantic",
         # use git url to install the latest version.
         # This is for non-release version only.
         # "robo_orchard_core==0.2.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@91e63d39ac652e4789fb11bd86b53d65abb9f64c",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@4db93ac971a1b17c1c393bbf38ed4760baa6ee4d",
     ]
     # optional dependencies
     extras_require = {
@@ -235,7 +237,7 @@ if __name__ == "__main__":
         ],
         "sem": [
             "robo_orchard_lab[bip3d]",
-            "diffusers<=0.32.2",
+            "diffusers",
             "lmdb",
             "pytorch-kinematics",
             "h5py",
@@ -249,6 +251,7 @@ if __name__ == "__main__":
             "robo_orchard_schemas==0.1.1",
         ],
         "aux_think": [
+            "transformers",
             "tokenizers",
             "peft",
             "markdown2[all]",

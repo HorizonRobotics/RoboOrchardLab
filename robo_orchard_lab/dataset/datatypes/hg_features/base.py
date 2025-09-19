@@ -17,7 +17,7 @@
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import datasets as hg_datasets
 import pyarrow as pa
@@ -30,7 +30,7 @@ __all__ = [
     "RODictDataFeature",
     "TypedDictFeatureDecode",
     "FeatureDecodeMixin",
-    "ToDataFeatureMixin",
+    # "ToDataFeatureMixin",
     "hg_dataset_feature",
     "check_fields_consistency",
     "guess_hg_features",
@@ -117,8 +117,8 @@ class RODataFeature(metaclass=ABCMeta):
 class RODictDataFeature(RODataFeature):
     """A feature that is composed of a dictionary of features.
 
-    This class provide a easy way to define a feature that is a dictionary
-    of features. It is useful for defining complex features that are
+    This class does not inherit from `dict` but use `dict` to define features.
+    It is useful for defining complex features that are
     composed of multiple fields. The user should define the `_dict` attribute
     as a dictionary mapping field names to features. The keys of the dictionary
     are the field names, and the values are the features.
@@ -154,19 +154,16 @@ class RODictDataFeature(RODataFeature):
         return self._dict.values()
 
 
-class ToDataFeatureMixin(metaclass=ABCMeta):
-    """Mixin class for features that can be converted to a pyarrow DataType."""
+@runtime_checkable
+class ToDataFeatureMixin(Protocol):
+    """Protocol for features that can be converted to a pyarrow DataType."""
 
     @classmethod
-    @abstractmethod
-    def dataset_feature(cls) -> RODataFeature:
-        raise NotImplementedError(
-            "Subclasses must implement dataset_feature method."
-        )
+    def dataset_feature(cls) -> RODataFeature: ...
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get the value of the feature by key."""
-        return getattr(self, key, default)
+        ...
 
 
 RODataFeatureType = TypeVar("RODataFeatureType", bound=RODataFeature)

@@ -21,13 +21,14 @@ import os
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, TypeAlias
 
 import gymnasium as gym
 import numpy as np
 import yaml
 from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_core.utils.logging import LoggerManager
+from typing_extensions import Literal
 
 if TYPE_CHECKING:
     from envs._base_task import Base_Task
@@ -35,17 +36,20 @@ if TYPE_CHECKING:
 
 logger = LoggerManager().get_child(__name__)
 
+InstructionType: TypeAlias = Literal["seen", "unseen"]
+
 
 @dataclass
 class RoboTwinEnvStepReturn(EnvStepReturn[dict[str, Any] | None, bool]):
     observations: dict[str, Any] | None
+    terminated: bool
     rewards: bool
     """The rewards is a boolean indicating whether the task was successful."""
     truncated: bool
     """Whether the episode was truncated due to reaching the step limit."""
 
 
-class RoboTwinEnv(EnvBase[RoboTwinEnvStepReturn]):
+class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
     """RoboTwin environment.
 
     This class provides RoboTwin environment with robo_orchard_core interface.
@@ -53,10 +57,16 @@ class RoboTwinEnv(EnvBase[RoboTwinEnvStepReturn]):
     environment variable to the path of the RoboTwin package.
 
 
+    After initialization, you need to call `reset()` to create the environment.
+
     """
 
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
+
+    def _check_and_update_seed(self):
+        instructions = None
+        task = None
         from description.utils.generate_episode_instructions import (
             generate_episode_descriptions,
         )
@@ -77,8 +87,10 @@ class RoboTwinEnv(EnvBase[RoboTwinEnvStepReturn]):
                 self.cfg.seed += 1
                 task, success = self._check_expert_traj()
             assert task is not None
-            self._instructions = generate_episode_descriptions(
-                self.cfg.task_name, [task.info["info"]]
+            instructions = generate_episode_descriptions(
+                self.cfg.task_name,
+                [task.info["info"]],
+                max_descriptions=self.cfg.max_instruction_num,
             )[0]
         else:
             if self.cfg.check_task_init:
@@ -94,25 +106,43 @@ class RoboTwinEnv(EnvBase[RoboTwinEnvStepReturn]):
                         f"with seed {self.cfg.seed}. Please try a different "
                         "seed or check the task configuration."
                     )
-                self._instructions = generate_episode_descriptions(
-                    self.cfg.task_name, [task.info["info"]]
+                instructions = generate_episode_descriptions(
+                    self.cfg.task_name,
+                    [task.info["info"]],
+                    max_descriptions=self.cfg.max_instruction_num,
                 )[0]
             else:
                 task = self._create_task()
-                self._instructions = None
+                instructions = None
 
-        assert task is not None
-        self._task = task
-        self.reset(clear_cache=False)
+        return task, instructions
 
     @property
-    def instructions(self) -> dict | None:
+    def current_seed(self) -> int:
+        """The current seed of the environment."""
+        return self.cfg.seed
+
+    @property
+    def instructions(self) -> dict | None | str:
         """The instructions for the environment.
 
         This property is only valid if the environment is initialized
         with `check_expert=True` or `check_task_init=True`.
+
+        If in eval_mode, return the instruction from the task, usually
+        a string, otherwise the returned instruction is a dictionary
+        containing multiple instructions, with maximum number specified
+        by `max_instruction_num`.
+
         """
-        return self._instructions
+        if self.cfg.eval_mode:
+            assert self._instructions is not None
+            # random pick one in unseen instructions
+            eval_instruction_type: InstructionType = "unseen"
+            return np.random.choice(self._instructions[eval_instruction_type])
+
+        else:
+            return self._instructions
 
     def _create_task(self) -> Base_Task:
         with in_robotwin_workspace():
@@ -170,37 +200,76 @@ class RoboTwinEnv(EnvBase[RoboTwinEnvStepReturn]):
                     "Action should be a 1-D array, "
                     f"but got {action.ndim} dimensions."
                 )
-
+        # the take_action method will do internal check if reach step limit
+        # or task is successful. Either case, the task will not take further
+        # actions.
         self._task.take_action(action)
 
+        # when reach step limit, truncated is True
         if self._task.take_action_cnt >= self._task.step_lim:  # type: ignore
             truncated = True
         else:
             truncated = False
 
+        # robotwin env does not have a concept of done.
+        # when a task is evaluated as success, the task does not
+        # take further actions anymore. We consider the episode
+        # is done when the task is successful.
+        if self._task.eval_success:
+            terminated = True
+        else:
+            terminated = False
+
         return RoboTwinEnvStepReturn(
             observations=self._task.get_obs(),
             rewards=self._task.eval_success,
-            terminated=None,
+            terminated=terminated,
             truncated=truncated,
             info=self._task.info,
         )
 
     def reset(
-        self, env_ids: Sequence[int] | None = None, clear_cache: bool = False
-    ):
-        """Reset the environment."""
+        self,
+        env_ids: Sequence[int] | None = None,
+        seed: int | None = None,
+        clear_cache: bool = False,
+    ) -> tuple[dict[str, Any] | None, dict]:
+        """Reset the environment.
+
+        If the environment has not been reset before, or the seed is
+        different from the previous one, the environment will be re-created
+        and check the seed.
+
+        Warning:
+            RoboTwin does not use local RandomGenerator, when the environment
+            is re-created, the seed will be set to the one in the config
+            for both numpy and torch. This may affect the randomness of other
+            parts of the code!
+            This is a BUG in RoboTwin!
+
+        """
 
         self.close(clear_cache=clear_cache)
+        if not hasattr(self, "_task") or (
+            seed is not None and seed != self.cfg.seed
+        ):
+            task, instructions = self._check_and_update_seed()
+            assert task is not None
+            self._task = task
+            self._instructions = instructions
+
         with in_robotwin_workspace():
             task_config = self.cfg.get_task_config()
             self._task.setup_demo(**task_config)  # type: ignore
 
+        return self._task.get_obs(), self._task.info
+
     def close(self, clear_cache: bool = True):
         """Close the environment."""
-        self._task.close_env(clear_cache=clear_cache)
-        if self._task.render_freq > 0:
-            self._task.viewer.close()
+        if hasattr(self, "_task") and self._task is not None:
+            self._task.close_env(clear_cache=clear_cache)
+            if self._task.render_freq > 0:
+                self._task.viewer.close()
 
     @property
     def num_envs(self) -> int:
@@ -245,7 +314,11 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """The name of the task to run, e.g., 'place_object_scale'."""
 
     seed: int = 0
-    """The random seed for the environment."""
+    """The random seed for the environment.
+
+    If eval_mode is True, the seed will be changed in `__post_init__` to
+    `100000 * (1 + seed)` to match the implementation in RoboTwin.
+    """
 
     episode_id: int = 0
     """The episode ID for the environment, used for logging and tracking."""
@@ -256,6 +329,10 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     If true, the environment will attempt to run the task with given seed
     to check if the task can be completed successfully using the expert
     trajectory. If fails, new seed will be generated and used.
+
+    This field is used to make sure that the environment can be recorded
+    successfully using the expert trajectory for imitation learning.
+
     """
 
     check_task_init: bool = True
@@ -289,6 +366,29 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             raise FileNotFoundError(
                 f"Task configuration file {task_config_path} does not exist."
             )
+
+        # check that check_expert or check_task_init can not be both True
+        if self.check_expert and self.check_task_init:
+            raise ValueError(
+                "check_expert and check_task_init can not be both True."
+            )
+
+        if self.eval_mode and self.check_expert is False:
+            logger.info(
+                "Set check_expert from False to True for eval_mode."
+                "This is to make sure the environment can successfully "
+                "be initialized and completed using expert trajectory."
+            )
+            self.check_expert = True
+            self.check_task_init = False
+
+        if self.eval_mode and self.seed < 100000:
+            new_seed = 100000 * (1 + self.seed)
+            logger.info(
+                f"Eval mode is on, changing seed from {self.seed} "
+                f"to {new_seed}"
+            )
+            self.seed = new_seed
 
     @property
     def task_config_path(self) -> str:
@@ -396,6 +496,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         task_args["embodiment_name"] = embodiment_name
 
         # update attributes in self
+
         task_args["seed"] = self.seed
         task_args["now_ep_num"] = self.episode_id
         task_args["eval_mode"] = self.eval_mode

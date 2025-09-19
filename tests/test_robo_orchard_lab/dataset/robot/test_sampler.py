@@ -62,7 +62,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(10)),
             num_shards=3,
-            index=0,
+            shard_id=0,
             shuffle=False,
         )
         assert len(sampler) == 4  # 0, 3, 6, 9
@@ -70,7 +70,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(10)),
             num_shards=3,
-            index=1,
+            shard_id=1,
             shuffle=False,
         )
         assert len(sampler) == 3  # 1, 4, 7
@@ -78,7 +78,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(10)),
             num_shards=3,
-            index=2,
+            shard_id=2,
             shuffle=False,
         )
         assert len(sampler) == 3  # 2, 5, 8
@@ -86,7 +86,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(5)),
             num_shards=2,
-            index=0,
+            shard_id=0,
             shuffle=False,
         )
         assert len(sampler) == 3  # 0, 2, 4
@@ -94,7 +94,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(5)),
             num_shards=2,
-            index=1,
+            shard_id=1,
             shuffle=False,
         )
         assert len(sampler) == 2  # 1, 3
@@ -102,7 +102,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             [],
             num_shards=2,
-            index=0,
+            shard_id=0,
             shuffle=False,
         )
         assert len(sampler) == 0
@@ -111,7 +111,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(10)),
             num_shards=3,
-            index=0,
+            shard_id=0,
             shuffle=False,
         )
         indices = list(sampler)
@@ -120,7 +120,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(10)),
             num_shards=3,
-            index=1,
+            shard_id=1,
             shuffle=False,
         )
         indices = list(sampler)
@@ -129,7 +129,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(10)),
             num_shards=3,
-            index=2,
+            shard_id=2,
             shuffle=False,
         )
         indices = list(sampler)
@@ -139,7 +139,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(1, 11)),
             num_shards=3,
-            index=0,
+            shard_id=0,
             contiguous=False,
             shuffle=False,
         )
@@ -149,7 +149,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(1, 11)),
             num_shards=3,
-            index=1,
+            shard_id=1,
             shuffle=False,
             contiguous=False,
         )
@@ -159,7 +159,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             list(range(1, 11)),
             num_shards=3,
-            index=2,
+            shard_id=2,
             shuffle=False,
             contiguous=False,
         )
@@ -169,7 +169,7 @@ class TestShardedIndiceSampler:
         sampler = ShardedIndiceSampler(
             11,
             num_shards=3,
-            index=0,
+            shard_id=0,
             contiguous=False,
             shuffle=False,
         )

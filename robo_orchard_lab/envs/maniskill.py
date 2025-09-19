@@ -32,7 +32,7 @@ logger = LoggerManager().get_child(__name__)
 ManiSkillEnvReturn: TypeAlias = EnvStepReturn[dict[str, Any], torch.Tensor]
 
 
-class ManiSkillEnv(EnvBase[ManiSkillEnvReturn]):
+class ManiSkillEnv(EnvBase[dict[str, Any], torch.Tensor]):
     """The ManiSkill environment base class.
 
     This class is the base class for all ManiSkill environments. It provides
@@ -50,7 +50,6 @@ class ManiSkillEnv(EnvBase[ManiSkillEnvReturn]):
             cfg (ManiSkillEnvCfg): The configuration for the environment.
         """
         self.cfg = cfg
-
         self.env = self.cfg.make_env()
 
     def step(
@@ -75,7 +74,7 @@ class ManiSkillEnv(EnvBase[ManiSkillEnvReturn]):
                 )
             options["env_idx"] = env_ids
 
-        self.env.reset(seed=seed, options=options)
+        return self.env.reset(seed=seed, options=options)
 
     def close(self):
         return self.env.close()
