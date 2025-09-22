@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import copy
 import logging
 import os
 from typing import Optional
@@ -124,6 +125,14 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         # Define standard camera order: hands first, head last
         self.expected_cam_types = ["hand_left", "hand_right", "head"]
         self.task_info_reader = build(task_info_reader)
+        self.default_head_extrinsic = {
+            'rotation_matrix': [
+                [-0.012095615235643373, -0.7550696190766631, 0.62648361453548],
+                [-0.9983866721384036, 0.0069178206274664745, -0.012049245641575354],
+                [0.006845824637032414, -0.6280098898502815, -0.7550385050769443]
+            ],
+            'translation_vector': [0.4789254482265342, -0.016017166523894975, 1.0054549286501653]
+        }
 
     def _load_images_consistent(self, cam_names, uuid, step_index, lmdb_index):
         """Load images with consistent 3-camera format."""
@@ -302,6 +311,8 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
 
         # Load camera parameters
         _T_cam2world = self.meta_lmdbs[lmdb_index][f"{uuid}/extrinsic"]
+        if _T_cam2world["head"][0]["translation_vector"][1] > 0.2:
+            _T_cam2world["head"] = copy.deepcopy(self.default_head_extrinsic)
         _intrinsic = self.meta_lmdbs[lmdb_index][f"{uuid}/intrinsic"]
 
         # Load images and depths with consistent 3-camera format
@@ -475,7 +486,7 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         videoWriter = None
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         uuid = self.__getitem__(start_idx)["uuid"]
-        file = os.path.join(output_path, f"{uuid.replace('/', '-')}.mp4")
+        file = os.path.join(output_path, f"{self.dataset_name}-{uuid.replace('/', '-')}.mp4")
 
         logger.info(f"episode start_idx: {start_idx}, end_idx: {end_idx}")
         logger.info(f"video save path: {file}")
@@ -486,6 +497,8 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
             if self.interval is not None:
                 i = i // self.interval
             data = self.__getitem__(i)
+
+            logger.info(f"text: {data.get('text')}, subtask: {data.get('subtask')}")
 
             link_poses = []
             if "hist_robot_state" in data:
@@ -505,9 +518,6 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
                     vis_depths.transpose(1, 0, 2, 3), vis_imgs.shape
                 )
                 vis_imgs = np.concatenate([vis_imgs, vis_depths], axis=0)
-
-            # cv2.imwrite(f"vis_data_fold_towel/{episode_index}.png", vis_imgs)
-            # return
 
             if videoWriter is None:
                 videoWriter = cv2.VideoWriter(

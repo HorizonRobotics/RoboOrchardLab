@@ -47,8 +47,7 @@ config = dict(
         "horizon_shanghai",
         "agilex",
         # "rh20t",
-        "agibot_alpha",
-        "agibot_beta",
+        "agibot",
     ],
     deploy_datasets=[
         "horizon_beijing",

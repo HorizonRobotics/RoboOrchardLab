@@ -17,21 +17,13 @@
 import glob
 import logging
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
 
-
-data_paths = dict(
-    agibot_alpha=[
-        "./data/agibot/AgiBotWorld-Alpha-250414_34fd7cd4_lmdb",
-    ],
-    agibot_beta=[
-        "./data/agibot/AgiBotWorld-Beta-250412-2496da_lmdb",
-    ],
-)
 
 kinematics_config = dict(
     agibot=dict(
@@ -92,26 +84,82 @@ agibot_scale_shift = [
 ]
 
 
-def find_agibot_shards(dataset_root):
-    """Find all valid AgiBot shard directories."""
-    all_shard_paths = glob.glob(os.path.join(dataset_root, "*", "shard_*"))
+# 打包失败的数据。包括1. 缺少外参；2. 缺少某个摄像头数据；3. tar包不完整。
+failed_task_id = [
+    580,
+    608,
+    679,
+    790,
+    710,
+    622,
+    660,
+    735,
+    549,
+    705,
+    753,
+    536,
+    578,
+    730,
+    782,
+    554,
+    731,
+    727,
+    475,
+    620,
+    749,
+]
 
-    valid_paths = []
+# 灵巧手数据，先排除在外。
+dexterous_hands_task_ids = [
+    475,
+    536,
+    547,
+    548,
+    549,
+    554,
+    577,
+    578,
+    591,
+    595,
+    608,
+    620,
+    622,
+    660,
+    679,
+    705,
+    710,
+    727,
+    730,
+    731,
+    749,
+    753,
+]
 
-    for path in all_shard_paths:
-        valid = True
-        for subdir in ["index", "meta", "depth", "image"]:
-            if not os.path.isfile(os.path.join(path, subdir, "data.mdb")):
-                valid = False
-                logger.warning(
-                    f"Skipping invalid shard: {path}, missing '{subdir}/data.mdb'"
-                )
+data_root = "./data/agibot/AgiBotWorld-Beta-250412-2496da_lmdb_20250723"
+task_dirs = list(Path(data_root).glob("*/"))
+invalid_task_ids = set(failed_task_id + dexterous_hands_task_ids)
+
+valid_task_dirs = []
+for task_dir in task_dirs:
+    task_name = int(task_dir.name)
+    if task_name in invalid_task_ids:
+        continue
+    valid_task_dirs.append(task_dir)
+valid_task_dirs.sort()
+
+data_paths = {}
+for task_dir in valid_task_dirs:
+    data_paths[f"agibot_{task_dir.name}"] = []
+    for data_dir in task_dir.glob("shard_*/"):
+        content = os.listdir(data_dir)
+        valid_flag = True
+        for x in ["image", "meta", "depth", "index"]:
+            if x not in content:
+                valid_flag = False
                 break
-        if valid:
-            valid_paths.append(path)
-    logger.info(f"Found {len(valid_paths)} valid AgiBot dataset shards.")
-    valid_paths.sort()
-    return valid_paths
+        if valid_flag:
+            data_paths[f"agibot_{task_dir.name}"].append(data_dir)
+    data_paths[f"agibot_{task_dir.name}"].sort()
 
 
 def build_transforms(config):
@@ -208,6 +256,8 @@ def build_transforms(config):
             "subtask",
             "state_loss_weights",
             "fk_loss_weight",
+            "T_world2cam",
+            "intrinsic",
         ]
     )
 
@@ -272,13 +322,6 @@ def build_datasets(
 ):
     """Build AgiBot datasets for training."""
     assert mode == "training", "only support training mode"
-    valid = False
-    for name in ["agibot", "agibot_alpha", "agibot_beta"]:
-        if name in dataset_names:
-            valid = True
-            break
-    if not valid:
-        return []
     from robo_orchard_lab.dataset.agibot.agibot_lmdb_dataset import (
         AgiBotLmdbDataset,
     )
@@ -286,28 +329,40 @@ def build_datasets(
         InstructionReader,
     )
 
-    train_datasets = []
     transforms = build_transforms(config)
-    for name, dataset_roots in data_paths.items():
-        if "agibot" not in dataset_names and name not in dataset_names:
-            continue
-
-        shard_paths = []
-        for dataset_root in dataset_roots:
-            shard_paths.extend(find_agibot_shards(dataset_root))
-
-        instruction_reader = dict(
-            type=InstructionReader,
-            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-            instruction_path="./data/instructions/task2instruction.json",
-        )
+    instruction_reader = dict(
+        type=InstructionReader,
+        lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
+        instruction_path="./data/instructions/task2instruction.json",
+    )
+    interval = 2
+    if "agibot" in dataset_names:
+        all_data_paths = []
+        for data_path in data_paths.values():
+            all_data_paths.extend(data_path)
         agibot_dataset = AgiBotLmdbDataset(
-            paths=shard_paths,
+            paths=all_data_paths,
             lazy_init=lazy_init,
             transforms=transforms,
             cam_names=None,
-            dataset_name=name,
+            dataset_name="agibot",
             task_info_reader=instruction_reader,
+            interval=interval,
         )
-        train_datasets.append(agibot_dataset)
+        train_datasets = [agibot_dataset]
+    else:
+        train_datasets = []
+        for name, data_path in data_paths.items():
+            if name not in dataset_names:
+                continue
+            agibot_dataset = AgiBotLmdbDataset(
+                paths=data_path,
+                lazy_init=lazy_init,
+                transforms=transforms,
+                cam_names=None,
+                dataset_name=name,
+                task_info_reader=instruction_reader,
+                interval=interval,
+            )
+            train_datasets.append(agibot_dataset)
     return train_datasets
