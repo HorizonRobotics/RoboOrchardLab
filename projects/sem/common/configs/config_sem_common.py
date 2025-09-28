@@ -69,6 +69,8 @@ config = dict(
 
 
 def build_model(config):
+    import copy
+
     from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
     from diffusers.schedulers.scheduling_dpmsolver_multistep import (
         DPMSolverMultistepScheduler,
@@ -117,6 +119,12 @@ def build_model(config):
         num_output_layers=2,
         out_dim=state_dims,
     )
+    with_mobile = config.get("with_mobile", False)
+    if with_mobile:
+        mobile_head = copy.deepcopy(head)
+        mobile_head.update(out_dim=2)
+    else:
+        mobile_head = None
 
     decoder_operation_order = [
         "t_norm",
@@ -204,6 +212,8 @@ def build_model(config):
                 type=SEMActionDecoder,
                 embed_dims=embed_dims,
                 head=head,
+                with_mobile=with_mobile,
+                mobile_head=mobile_head,
                 img_cross_attn=dict(
                     type=RotaryAttention,
                     embed_dims=embed_dims,
