@@ -151,15 +151,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str)
     parser.add_argument("--workspace", type=str, default="./workspace")
+    parser.add_argument("--logging_dir", type=str, default=None)
     parser.add_argument("--kwargs", type=str, default=None)
     args = parser.parse_args()
 
-    workspace_root = args.workspace
+    if args.logging_dir is None:
+        args.logging_dir = os.path.join(args.workspace, "logs")
+
+    os.makedirs(args.workspace, exist_ok=True)
+    os.makedirs(args.logging_dir, exist_ok=True)
     accelerator = Accelerator(
+        log_with="tensorboard",
         step_scheduler_with_optimizer=False,
         project_config=ProjectConfiguration(
-            project_dir=workspace_root,
-            logging_dir=os.path.join(workspace_root, "logs"),
+            project_dir=args.workspace,
+            logging_dir=args.logging_dir,
             automatic_checkpoint_naming=True,
             total_limit=3,
         ),
@@ -167,6 +173,9 @@ if __name__ == "__main__":
             use_seedable_sampler=True,
         ),
     )
+    accelerator.init_trackers("tensorboard")
+    logger.info(f"Save config to workspace dir {args.workspace}")
+
     log_basic_config(
         format="%rank %(asctime)s %(levelname)s %(filename)s:%(lineno)d | %(message)s",  # noqa: E501
         level=logging.INFO,

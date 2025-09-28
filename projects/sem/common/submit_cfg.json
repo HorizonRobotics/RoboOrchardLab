@@ -15,7 +15,7 @@
         "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH"
     ],
     "python_launcher": "accelerate",
-    "python_executable": "train.py --workspace /job_data --config configs/config_sem_common.py",
+    "python_executable": "train.py --workspace /job_data --logging_dir /job_tboard --config configs/config_sem_common.py",
     "to_upload": [
         "robo_orchard_lab",
         "projects/sem/common/configs",
