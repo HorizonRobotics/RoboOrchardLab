@@ -241,39 +241,108 @@ dataset_config = dict(
         cam_names=["left", "middle", "right"],
         load_extrinsic=True,
     ),
-    horizon_shanghai=dict(
+    # Before re-calibration, Firmware version 1.6.5
+    horizon_shanghai_0804=dict(
         data_paths=[
-            "./data/horizon_shanghai/agilex_two_fold_towel_0623",
-            "./data/horizon_shanghai/agilex_place_to_slot_0624",
-            "./data/horizon_shanghai/agilex_place_to_slot_0626",
-            "./data/horizon_shanghai/agilex_collect_bottles_01_0708",
-            "./data/horizon_shanghai/agilex_collect_bottles_02_0708",
-            "./data/horizon_shanghai/agilex_collect_bottles_03_0708",
-            "./data/horizon_shanghai/agilex_collect_bottles_0711",
-            "./data/horizon_shanghai/agilex_empty_cup_place_01_0710",
-            "./data/horizon_shanghai/agilex_empty_cup_place_02_0710",
+            "./data/horizon_shanghai/agilex_empty_cup_place_2025_08_13",
+            "./data/horizon_shanghai/agilex_empty_cup_place_2025_08_19",
+            "./data/horizon_shanghai/agilex_place_shoe_2025_08_21",
+            "./data/horizon_shanghai/agilex_place_shoe_2025_08_27",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_05",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_07",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_08",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_12",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_27",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_28",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_09_01",
+            "./data/horizon_shanghai/agilex_place_to_slot_2025_09_02",
+            "./data/horizon_shanghai/agilex_put_bottles_dustbin_2025_08_20",
+            "./data/horizon_shanghai/agilex_put_bottles_dustbin_2025_08_21",
+            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_14",
+            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_15",
+            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_18",
+            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_26",
+            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_27",
+            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_15",
+            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_18",
+            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_19",
+            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_20",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_04",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_06",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_07",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_08",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_11",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_13",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_14",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_22",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_25",
+            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_26",
         ],
-        calibration=all_calibrations["horizon_shanghai"],
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "middle", "right"],
+        task_names=[
+            "empty_cup_place",
+            "place_shoe",
+            "place_to_slot",
+            "put_bottles_dustbin",
+            "stack_blocks_three",
+            "stack_bowls_three",
+            "two_fold_towel",
+        ],
         load_extrinsic=True,
     ),
+    # After re-calibration, Firmware version 1.8.0
+    horizon_shanghai_0909=dict(
+        data_paths=[
+            "./data/horizon_shanghai/lmdb_dataset_empty_cup_place_2025_09_09",
+            "./data/horizon_shanghai/lmdb_dataset_place_shoe_2025_09_11",
+            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_15",
+            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_16",
+            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_17",
+            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_18",
+            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_22",
+            "./data/horizon_shanghai/lmdb_dataset_put_bottles_dustbin_2025_09_11",
+            "./data/horizon_shanghai/lmdb_dataset_stack_block_two_2025_09_17",
+            "./data/horizon_shanghai/lmdb_dataset_stack_blocks_three_2025_09_10",
+            "./data/horizon_shanghai/lmdb_dataset_stack_bowls_three_2025_09_09",
+            "./data/horizon_shanghai/lmdb_dataset_stack_bowls_three_2025_09_10",
+            "./data/horizon_shanghai/lmdb_dataset_two_fold_towel_2025_09_12",
+            "./data/horizon_shanghai/lmdb_dataset_two_fold_towel_2025_09_23",
+        ],
+        urdf="./urdf/piper_description_dualarm_new.urdf",
+        cam_names=["left", "middle", "right"],
+        task_names=[
+            "empty_cup_place",
+            "place_shoe",
+            "place_to_slot",
+            "put_bottles_dustbin",
+            "stack_blocks_three",
+            "stack_bowls_three",
+            "two_fold_towel",
+        ],
+        load_extrinsic=True,
+    ),
+    # Agilex External Dataset
     agilex=dict(
         data_paths=[
-            # f"./data/agilex_collect/agilex_data_0624_shard_{i}"
-            # for i in range(12)
-            f"data/agilex_collect/agitex_piper_0522_shard_{i}"
-            for i in range(13)
-        ]
-        + [
-            f"data/agilex_collect/agilex_old_urdf/old_urdf_0523_shard_{i}"
-            for i in range(4)
+            "./data/agilex_collect/lmdb_dataset_buss_table",
+            "./data/agilex_collect/lmdb_dataset_fold_towel",
+            "./data/agilex_collect/lmdb_dataset_hand_out",
+            "./data/agilex_collect/lmdb_dataset_make_coffee",
+            "./data/agilex_collect/lmdb_dataset_move_chair",
+            "./data/agilex_collect/lmdb_dataset_pick_larger_value",
+            "./data/agilex_collect/lmdb_dataset_plug_charger",
+            "./data/agilex_collect/lmdb_dataset_pour_water",
+            "./data/agilex_collect/lmdb_dataset_sort_toy_by_color",
+            "./data/agilex_collect/lmdb_dataset_spell_yes",
+            "./data/agilex_collect/lmdb_dataset_twist_off_the_cap",
+            "./data/agilex_collect/lmdb_dataset_unplug_the_charging_cable",
+            "./data/agilex_collect/lmdb_dataset_wash_pan",
+            "./data/agilex_collect/lmdb_dataset_wipe_wine",
+            "./data/agilex_collect/lmdb_dataset_ziploc_slide",
         ],
-        load_extrinsic=False,
-        # load_calibration=True,
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "mid", "right"],
-        calibration=all_calibrations["horizon_beijing"],
         task_names=[
             "fold_towel",
             "pour_water",
@@ -287,11 +356,12 @@ dataset_config = dict(
             "ziploc_slide",
             "twist_off_the_cap",
             "unplug_the_charging_cable",
-            # exclude three mobile manipulation tasks
-            # "wash_pan",
-            # "wipe_wine",
-            # "move_chair",
+            "wash_pan",
+            "wipe_wine",
+            "move_chair",
         ],
+        calibration=all_calibrations["horizon_beijing"],
+        load_extrinsic=True,
     ),
 )
 
@@ -587,7 +657,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         instruction_reader = dict(
             type=InstructionReader,
             lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-            instruction_path="./data/instructions/task2instruction.json",
+            instruction_path="./data/instructions/task2instruction_0928.json",
         )
         dataset = HorizonManipulationLmdbDataset(
             paths=data_config["data_paths"],
@@ -601,6 +671,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             instruction_reader=instruction_reader,
         )
         datasets.append(dataset)
+
     return datasets
 
 
