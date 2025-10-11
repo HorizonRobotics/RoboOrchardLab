@@ -64,6 +64,7 @@ class SEMActionDecoder(nn.Module):
         mobile_head=None,
         mobile_traj_state_dims=2,
         mobile_loss_weight=1.0,
+        async_inference_plugin=None,
     ):
         super().__init__()
         self.feature_level = as_sequence(feature_level)
@@ -78,6 +79,7 @@ class SEMActionDecoder(nn.Module):
         self.with_mobile = with_mobile
         self.mobile_traj_state_dims = mobile_traj_state_dims
         self.mobile_loss_weight = mobile_loss_weight
+        self.async_inference_plugin = build(async_inference_plugin)
 
         self.robot_encoder = build(robot_encoder)
         if operation_order is None:
@@ -320,6 +322,30 @@ class SEMActionDecoder(nn.Module):
                         joint_relative_pos,
                         noisy_mobile_traj,
                     )
+                    if self.async_inference_plugin is not None:
+                        if (
+                            "remaining_actions" in inputs
+                            and inputs["remaining_actions"].size > 0
+                            and "delay_horizon" in inputs
+                            and inputs["delay_horizon"] > 0
+                        ):
+                            remaining_actions = (
+                                inputs["remaining_actions"][
+                                    :, : inputs["delay_horizon"], ...
+                                ]
+                                .to(pred)
+                                .unsqueeze(-1)
+                            )
+                            remaining_actions = self.apply_scale_shift(
+                                remaining_actions,
+                                joint_scale_shift,
+                                inverse=False,
+                            )
+                            pred = self.async_inference_plugin(
+                                pred,
+                                remaining_actions,
+                                inputs["delay_horizon"],
+                            )
                     noisy_action = self.test_noise_scheduler.step(
                         pred[..., :1], t, noisy_action[..., :1]
                     ).prev_sample

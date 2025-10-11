@@ -615,6 +615,8 @@ def build_transforms(
                 "joint_scale_shift",
                 "kinematics",
                 "text",
+                "remaining_actions",
+                "delay_horizon",
             ],
         )
         unsqueeze_batch = dict(type=UnsqueezeBatch)

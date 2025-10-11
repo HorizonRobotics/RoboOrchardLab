@@ -76,6 +76,12 @@ class MultiArmManipulationInput:
     """The URDF (Unified Robot Description Format) of the robot as a
     string, describing its kinematic and dynamic properties."""
 
+    remaining_actions: TENSOR_TYPE | None = None
+    """The remaining actions from last pred, if rtc is used."""
+
+    delay_horizon: int | None = None
+    """The number of time steps to delay action execution, if rtc is used."""
+
 
 @dataclass
 class MultiArmManipulationOutput:
@@ -137,6 +143,15 @@ class Struct2Dict:
             "" if data.instruction is None else data.instruction
         )
         input_data["cam_names"] = cam_names
+
+        if data.remaining_actions is not None:
+            if data.delay_horizon is None:
+                raise ValueError(
+                    "delay_horizon must be provided when remaining_actions is given."  # noqa: E501
+                )
+            input_data["remaining_actions"] = data.remaining_actions
+            input_data["delay_horizon"] = data.delay_horizon
+
         return input_data
 
 
