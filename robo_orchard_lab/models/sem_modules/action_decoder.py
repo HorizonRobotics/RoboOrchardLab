@@ -630,7 +630,11 @@ class SEMActionDecoder(nn.Module):
     def _loss_func(self, pred, target, pred_mask, weight=None):
         error = torch.square(pred - target)
         if weight is not None:
-            error = error * error.new_tensor(weight)
+            if isinstance(weight, torch.Tensor):
+                weight = weight.to(error)
+            else:
+                weight = error.new_tensor(weight)
+            error = error * weight
         if pred_mask is not None:
             error = error[pred_mask]
             if error.shape[0] == 0:

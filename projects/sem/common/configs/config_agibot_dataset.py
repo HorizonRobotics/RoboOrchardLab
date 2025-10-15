@@ -348,6 +348,7 @@ def build_datasets(
             dataset_name="agibot",
             task_info_reader=instruction_reader,
             interval=interval,
+            reset_step=1000,
         )
         train_datasets = [agibot_dataset]
     else:

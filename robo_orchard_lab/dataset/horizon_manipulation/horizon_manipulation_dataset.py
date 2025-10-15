@@ -109,8 +109,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         self.bgr2rgb = bgr2rgb
         self.depth_scale = depth_scale
         self.instruction_reader = build(instruction_reader)
-        # self.visualize(0, interval=5)
-        # import pdb; pdb.set_trace()
 
     def get_instruction(self, lmdb_index, data, by_reader=True):
         if self.instruction_reader is not None and by_reader:
@@ -192,6 +190,10 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
 
         T_world2cam = []  # noqa: N806
         for cam_name in data["cam_names"]:
+            # TODO
+            if cam_name not in extrinsics:
+                assert cam_name == "mid" and "middle" in extrinsics
+                cam_name = "middle"
             _ext = extrinsics[cam_name]
             if _ext.ndim == 3:
                 _ext = _ext[data["step_index"]]

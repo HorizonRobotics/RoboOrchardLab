@@ -83,6 +83,7 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         lmdb_kwargs=None,
         dataset_name="",
         task_info_reader: Optional[TaskInfoReader] = None,
+        **kwargs,
     ):
         # Filter out invalid paths before calling the parent constructor.
         valid_paths = []
@@ -116,6 +117,7 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
             lazy_init=lazy_init,
             num_episode=num_episode,
             dataset_name=dataset_name,
+            **kwargs,
             # task_info_reader=task_info_reader,
         )
         self.cam_names = cam_names

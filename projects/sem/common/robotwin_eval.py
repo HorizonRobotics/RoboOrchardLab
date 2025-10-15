@@ -141,6 +141,7 @@ if __name__ == "__main__":
         results = dict(results)
     else:
         results = eval_tasks(0, task_names_allocated[0], args)
+    results = dict(sorted(results.items()))
     mean_success_rate = sum(list(results.values())) / len(results)
     results["num_tasks"] = len(results)
     results["mean"] = mean_success_rate

@@ -29,7 +29,7 @@ config = dict(
     max_step=int(1e5),
     step_log_freq=50,
     save_step_freq=5000,
-    num_workers=8,
+    num_workers=16,
     lr=1e-4,
     training_with_subtask=False,
     with_cot=False,
@@ -66,6 +66,14 @@ config = dict(
 # config.update(
 #     num_vlm_layers=0,
 #     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-08-25/16-58/sem_alldata_layers0_resume2-20250825-153143.959699-COPY/output/checkpoints/checkpoint_15/model.safetensors",  # pretrain  # noqa: E501
+# )
+
+# v3.0
+# config.update(
+#     num_vlm_layers=1,
+#     freeze_vlm=False,
+#     checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-09-30/14-53/sem_v3_nomobile-20250930-145313.591034/output/checkpoints/checkpoint_40/model.safetensors",   # pretrain  # noqa: E501
+#     checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/yun01.du/plat_gpu/2025-10-03/23-21/sem_v3.0_with_mobile_traj-20251003-232109.677152/output/checkpoints/checkpoint_40/model.safetensors",  # pretrain with mobile trajectory prediction  # noqa: E501
 # )
 
 
@@ -147,10 +155,11 @@ def build_model(config):
 
     model = SEM_Qwen2_5_VL(
         cfg=SEM_Qwen2_5_VLConfig(
-            use_state_dict_with_vlm=False,
             with_cot=config["with_cot"],
             vlm_pretrain=config["vlm_pretrain"],
             num_vlm_layers=config.get("num_vlm_layers"),
+            freeze_vlm=config.get("freeze_vlm", True),
+            use_state_dict_with_vlm=not config.get("freeze_vlm", True),
             data_preprocessor=dict(
                 type=BaseDataPreprocessor,
                 # input image should in BGR convention, it will be converted to RGB here  # noqa: E501
@@ -388,12 +397,16 @@ def build_optimizer(config, model):
             bit16_params.append(p)
         else:
             other_params.append(p)
+    optim_params = [
+        {"params": bit16_params},
+        {"params": other_params},
+    ]
+    if len(vlm_params) > 0:
+        optim_params.append(
+            {"params": vlm_params, "lr": base_lr * 0.1},
+        )
     optimizer = optim.AdamW(
-        [
-            # {"params": vlm_params, "lr": base_lr * 0.1},
-            {"params": bit16_params},
-            {"params": other_params},
-        ],
+        optim_params,
         lr=base_lr,
         weight_decay=config.get("weight_decay", 0.0005),
     )

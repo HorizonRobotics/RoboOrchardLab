@@ -45,7 +45,7 @@ def load_config(config_file):
 
 
 def download_job_ckpt_processor(
-    ckpt_url, processor_name, output_dir="./model"
+    ckpt_url, processor_name, output_dir="./model", model_prefix="model"
 ):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -53,7 +53,7 @@ def download_job_ckpt_processor(
     while ckpt_url.endswith("/"):
         ckpt_url = ckpt_url[:-1]
     model_url = f"{ckpt_url}/model.safetensors"
-    model_config_url = f"{ckpt_url}/model.config.json"
+    model_config_url = f"{ckpt_url}/{model_prefix}.config.json"
     processor_url = "/".join(
         ckpt_url.split("/")[:-2] + [f"{processor_name}.json"]
     )
@@ -64,6 +64,10 @@ def download_job_ckpt_processor(
     )
     for url in [model_url, model_config_url, processor_url]:
         file_name = os.path.join(output_dir, url.split("/")[-1])
+        if url.endswith("config.json"):
+            file_name = file_name.replace(
+                f"{model_prefix}.config.json", "model.config.json"
+            )
         if os.path.exists(file_name):
             continue
         with requests.get(url, stream=True) as r:
@@ -75,7 +79,12 @@ def download_job_ckpt_processor(
 
 class SEMPolicy:
     def __init__(
-        self, config, processor=None, vlm_ckpt_dir=None, urdf_dir=None
+        self,
+        config,
+        processor=None,
+        vlm_ckpt_dir=None,
+        urdf_dir=None,
+        model_prefix="model",
     ):
         if processor is None:
             processor = "processor"
@@ -84,6 +93,7 @@ class SEMPolicy:
                 ckpt_url=config,
                 processor_name=processor,
                 output_dir="./sem_eval_model",
+                model_prefix=model_prefix,
             )
             config = "./sem_eval_model"
         logger.info(f"model config: {config}, processor: {processor}")
@@ -166,6 +176,7 @@ def get_model(usr_args):  # from your deploy_policy.yml
         usr_args["model_processor"],
         usr_args["vlm_ckpt_dir"],
         usr_args["urdf_dir"],
+        usr_args["model_prefix"],
     )
     return policy
 

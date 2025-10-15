@@ -85,9 +85,11 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         self.neck_3d = build(self.cfg.neck_3d)
         self.input_2d = self.cfg.input_2d
         self.input_3d = self.cfg.input_3d
-        self.use_state_dict_with_vlm = (
-            self.cfg.use_state_dict_with_vlm and self.cfg.freeze_vlm
-        )
+        self.use_state_dict_with_vlm = self.cfg.use_state_dict_with_vlm
+        if not self.use_state_dict_with_vlm:
+            assert self.cfg.freeze_vlm, (
+                "The VLM's state_dict must be saved when it is not frozen."
+            )
         self.with_cot = self.cfg.with_cot
 
         vlm_pretrain = self.cfg.vlm_pretrain
@@ -109,7 +111,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
             self.vlm.eval()
             self.vlm.requires_grad_(False)
         else:
-            self.vlm.model.gradient_checkpointing_enable()
+            # self.vlm.model.gradient_checkpointing_enable()
             if self.cfg.freeze_vision:
                 self.vlm.visual.eval()
                 self.vlm.visual.requires_grad_(False)

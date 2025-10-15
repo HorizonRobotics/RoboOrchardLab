@@ -196,7 +196,7 @@ dataset_config = dict(
         ],
         calibration=all_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_old.urdf",
-        cam_names=["left", "front", "right"],
+        cam_names=["left", "right", "front"],
         load_extrinsic=False,
         depth_restore=True,
     ),
@@ -206,7 +206,7 @@ dataset_config = dict(
         ],
         calibration=all_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "front", "right"],
+        cam_names=["left", "right", "front"],
         load_extrinsic=False,
     ),
     challenge_self_collect=dict(
@@ -216,7 +216,7 @@ dataset_config = dict(
         ],
         calibration=all_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "middle", "right"],
+        cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_beijing=dict(
@@ -238,7 +238,7 @@ dataset_config = dict(
         ],
         calibration=all_calibrations["horizon_beijing"],
         urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "middle", "right"],
+        cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     # Before re-calibration, Firmware version 1.6.5
@@ -279,7 +279,7 @@ dataset_config = dict(
             "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_26",
         ],
         urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "middle", "right"],
+        cam_names=["left", "right", "middle"],
         task_names=[
             "empty_cup_place",
             "place_shoe",
@@ -310,7 +310,7 @@ dataset_config = dict(
             "./data/horizon_shanghai/lmdb_dataset_two_fold_towel_2025_09_23",
         ],
         urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "middle", "right"],
+        cam_names=["left", "right", "middle"],
         task_names=[
             "empty_cup_place",
             "place_shoe",
@@ -342,7 +342,7 @@ dataset_config = dict(
             "./data/agilex_collect/lmdb_dataset_ziploc_slide",
         ],
         urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "mid", "right"],
+        cam_names=["left", "right", "mid"],
         task_names=[
             "fold_towel",
             "pour_water",

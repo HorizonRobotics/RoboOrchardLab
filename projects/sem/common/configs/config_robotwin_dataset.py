@@ -47,9 +47,9 @@ dataset_config = dict(
         num_joint=14,
         cam_names=[
             "front_camera",
-            "head_camera",
             "left_camera",
             "right_camera",
+            "head_camera",
         ],
     ),
     robotwin2_0=dict(
@@ -85,9 +85,9 @@ dataset_config = dict(
         num_joint=14,
         cam_names=[
             "front_camera",
-            "head_camera",
             "left_camera",
             "right_camera",
+            "head_camera",
         ],
     ),
     robotwin2_0_ur5_wsg=dict(
@@ -140,7 +140,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
-        cam_names=["head_camera", "left_camera", "right_camera"],
+        cam_names=["left_camera", "right_camera", "head_camera"],
     ),
     robotwin2_0_arx_x5a=dict(
         kinematics_config=dict(
@@ -192,7 +192,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
-        cam_names=["head_camera", "left_camera", "right_camera"],
+        cam_names=["left_camera", "right_camera", "head_camera"],
     ),
     robotwin2_0_franka_panda=dict(
         kinematics_config=dict(
@@ -248,7 +248,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=16,
-        cam_names=["head_camera", "left_camera", "right_camera"],
+        cam_names=["left_camera", "right_camera", "head_camera"],
     ),
     robotwin2_0_piper=dict(
         kinematics_config=dict(
@@ -301,7 +301,7 @@ dataset_config = dict(
             [0.5, 0.5],
         ],
         num_joint=14,
-        cam_names=["head_camera", "left_camera", "right_camera"],
+        cam_names=["left_camera", "right_camera", "head_camera"],
     ),
 )
 
@@ -502,6 +502,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
             dataset_name=dataset_name,
+            cam_names=data_config["cam_names"],
         )
         datasets.append(dataset)
     return datasets
