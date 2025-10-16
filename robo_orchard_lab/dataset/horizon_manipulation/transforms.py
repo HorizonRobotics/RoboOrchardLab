@@ -168,11 +168,11 @@ class SimpleStateSampling:
             ]
         else:
             idx = step_index
-            while not mask[idx]:
+            while idx > 0 and not mask[idx]:
                 idx -= 1
             if idx < 0:
                 idx = step_index + 1
-                while not mask[idx]:
+                while idx < len(mask) and not mask[idx]:
                     idx += 1
             hist_state = state[max(0, idx - hist_steps) : idx]
         if hist_state.shape[0] != hist_steps:
@@ -585,7 +585,7 @@ class MultiArmKinematics:
         )
         robot_states = robot_states.reshape(self.num_keys, -1, 7)
 
-        results = robot_states.split(split_size)
+        results = list(robot_states.split(split_size))
         for i in range(self.num_arms):
             if results[i * 2 + 1].shape[0] > 1:
                 results[i * 2 + 1] = results[i * 2 + 1].mean(
