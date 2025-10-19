@@ -23,6 +23,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from torch.utils.data import Dataset
 
 from robo_orchard_lab.dataset.lmdb.lmdb_wrapper import Lmdb
+from robo_orchard_lab.distributed.utils import get_dist_info
 from robo_orchard_lab.utils.build import build
 from robo_orchard_lab.utils.misc import as_sequence
 
@@ -182,11 +183,13 @@ class BaseLmdbManipulationDataset(Dataset):
         self.num_episode = len(num_steps)
         self.task_statistics = task_statistics
         self.initialized = True
-        logger.info(
-            f"{self.dataset_name} dataset length: {self.__len__()}, "
-            f"number of episode: {self.num_episode}, "
-            f"task_statistics: {self.task_statistics}"
-        )
+        dist_info = get_dist_info()
+        if dist_info.rank == 0:
+            logger.info(
+                f"{self.dataset_name} dataset length: {self.__len__()}, "
+                f"number of episode: {self.num_episode}, "
+                f"task_statistics: {self.task_statistics}"
+            )
 
     def __len__(self):
         if not self.initialized:
