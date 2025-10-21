@@ -67,6 +67,8 @@ h5py==3.13.0
 ```
 
 ## Prepare the data
+### 1. Simulation Data from Robotwin
+
 
 First, run RoboTwin to obtain the expert data from the simulation.
 
@@ -101,6 +103,36 @@ projects/sem/robotwin
         ├──index
         └──meta
 ```
+
+### 2. Real-World Data from Real Robot
+
+For recording MCAP data from a physical robot, we have developed a ROS2-based recording [toolkit](https://github.com/HorizonRobotics/robo_orchard_data_recorder/tree/master/example/) along with an [Example](https://github.com/HorizonRobotics/robo_orchard_data_recorder/tree/master/example/challenge_cup). Feel free to try them out.
+
+The `mcap_lmdb_packer` and `mcap_arrow_packer` scripts require topic names to be configured based on your MCAP recording setup. You can refer to the [data_recorder_config](https://github.com/HorizonRobotics/robo_orchard_data_recorder/blob/master/example/challenge_cup/gen_data_recorder_config.py#L41) in the recording tool for an example.
+
+#### 2.1 Pack from Mcap Data to Lmdb Dataset
+```bash
+python3 -m robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_lmdb_packer \
+    --input_path stack_bowls_three/episode_2025_09_10*/*.mcap \
+    --output_path ./stack_bowls_three_lmdb_dataset \
+    --urdf piper_description_dualarm.urdf \
+    --image_scale_factor 0.5
+```
+
+For more usage examples, please refer to the [unit_test](tests/test_robo_orchard_lab/dataset/test_robotwin_dataset.py).
+
+#### 2.2 Pack from Mcap Data to Arrow Dataset
+
+```bash
+python3 -m robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_arrow_packer \
+    --input_path stack_bowls_three/episode_2025_09_10*/*.mcap \
+    --output_path ./stack_bowls_three_arrow_dataset \
+    --urdf piper_description_dualarm.urdf \
+    --image_scale_factor 0.5
+```
+
+For more usage examples, please refer to the [unit_test](tests/test_robo_orchard_lab/dataset/test_robotwin_dataset.py).
+
 
 ## Run
 

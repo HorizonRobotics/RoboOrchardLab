@@ -307,6 +307,12 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
                 data.get("hist_robot_state", [None])[-1],
                 **kwargs,
             )
+            if "depths" in data.keys():
+                vis_depths = self.depth_visualize(data["depths"])
+                vis_depths = np.reshape(
+                    vis_depths.transpose(1, 0, 2, 3), vis_imgs.shape
+                )
+                vis_imgs = np.concatenate([vis_imgs, vis_depths], axis=0)
 
             if videoWriter is None:
                 videoWriter = cv2.VideoWriter(  # noqa: N806
@@ -404,3 +410,27 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         if channel_conversion:
             vis_imgs = vis_imgs[..., ::-1]
         return vis_imgs
+
+    @staticmethod
+    def depth_visualize(depth, min_depth=0.01, max_depth=1.2, mode="bwr"):
+        import matplotlib.pyplot as plt
+
+        mask = depth > 0
+        cmap = plt.cm.get_cmap(mode, 256)
+        cmap = np.array([cmap(i) for i in range(256)])[:, :3] * 255
+        cmap = cmap[::-1]
+
+        depth_shape = depth.shape
+        if max_depth is None:
+            max_depth = depth.max()
+        if min_depth is None:
+            min_depth = depth.min()
+
+        depth = (depth - min_depth) / (max_depth - min_depth)
+        index = np.int32(depth * 255)
+        index = np.clip(index, a_min=0, a_max=255)
+        depth_color = cmap[index].reshape(*depth_shape, 3)
+        depth_color = np.where(mask[..., None], depth_color, 0)
+        depth_color = np.uint8(depth_color)
+
+        return depth_color
