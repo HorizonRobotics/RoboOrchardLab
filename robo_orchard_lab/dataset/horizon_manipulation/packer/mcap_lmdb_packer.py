@@ -77,11 +77,16 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
             pack_config: Configuration parameters for packaging.
         """
         super().__init__(input_path, output_path, **kwargs)
-        self.episodes = self.input_path_handler(input_path)
+        self.episodes_meta = self.input_path_handler(input_path)
         self.pack_config = pack_config
         self.urdf_path = urdf_path
 
-    def input_path_handler(self, input_paths):
+        # Load URDF and Initialize Kinematic Chain
+        self.chain = KinematicChain.from_content(
+            open(self.urdf_path, "r").read().encode("utf-8"), "urdf"
+        )
+
+    def input_path_handler(self, input_path):
         """Scans input paths to find and validate episode data.
 
         This method takes a comma-separated string of glob patterns, finds all
@@ -89,53 +94,43 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
         metadata files (`episode_meta.json`).
 
         Args:
-            input_paths (str): A string containing one or more glob patterns,
+            input_path (str): A string containing one or more glob patterns,
                 separated by commas.
 
         Returns:
             list: A sorted list where each element is a list containing the
                 path, user, task name, and date for a valid episode.
         """
-        episodes = []
-        input_paths = input_paths.strip().split(",")
-        logger.info(f"input_paths: {input_paths}")
-        for input_path in input_paths:
-            input_files = glob.glob(input_path)
+        episodes_meta = []
+        input_path_list = input_path.strip().split(",")
+        logger.info(f"input_paths: {input_path_list}")
+
+        for path_pattern in input_path_list:
+            input_files = glob.glob(path_pattern)
             for input_file in input_files:
-                path = "/" + os.path.join(*input_file.split("/")[:-1])
-                date = input_file.split("/")[-2]
+                episode_path = os.path.dirname(input_file)
+                date = os.path.basename(episode_path)
                 meta = json.load(
-                    open(os.path.join(path, "episode_meta.json"), "r")
+                    open(os.path.join(episode_path, "episode_meta.json"), "r")
                 )
                 user = meta["user_name"]
                 task = meta["task_name"]
-                episodes.append([path, user, task, date])
-        episodes.sort()
-        logger.info(f"Found {len(episodes)} potential episodes.")
-        return episodes
+                episodes_meta.append([episode_path, user, task, date])
+
+        episodes_meta.sort()
+        logger.info(f"Found {len(episodes_meta)} potential episodes.")
+        return episodes_meta
 
     def forward_kinematics(self, joint_states: BatchJointsState):
         """Computes the forward kinematics for the dual-arm robot.
 
-        This method takes the joint positions for the left and right arms and
-        calculates the poses of all links in the kinematic chain, including the
-        end-effectors.
-
         Args:
-            left_joint (np.ndarray): An array of joint positions for the left
-                arm, shaped (N, 7).
-            right_joint (np.ndarray): An array of joint positions for the right
-                arm, shaped (N, 7).
+            joint_states (BatchJointsState): A batch of combined joint states
+                for both arms, typically shaped (N, 14) for 7 DOF per arm.
 
         Returns:
-            dict: A dictionary mapping link names to their corresponding poses
-                as transformation matrices.
+            dict: end-effector poses (BatchFrameTransform) for both arms.
         """
-        # Load URDF and Initialize Kinematic Chain
-        chain = KinematicChain.from_content(
-            open(self.urdf_path, "r").read().encode("utf-8"), "urdf"
-        )
-
         position = joint_states.position
 
         position_urdf = torch.zeros((joint_states.batch_size, 16))
@@ -146,7 +141,7 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
         position_urdf[:, 14] = position[:, 13] / 2
         position_urdf[:, 15] = -position[:, 13] / 2
 
-        link_poses = chain.forward_kinematics(position_urdf)
+        link_poses = self.chain.forward_kinematics(position_urdf)
         left_ee_pose: Transform3D_M = link_poses["left_gripper_base"]
         right_ee_pose: Transform3D_M = link_poses["right_gripper_base"]
 
@@ -173,11 +168,11 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
         stores the results in the configured LMDB databases.
         """
         num_valid_ep = 0
-        for ep_id, ep in enumerate(self.episodes):
-            path, user, task_name, date = ep
+        for ep_id, episode_meta in enumerate(self.episodes_meta):
+            episode_path, user, task_name, date = episode_meta
             uuid = f"{task_name}/{user}/{date}"
             logger.info(f"Start processing episode: {uuid}")
-            mcap_path = glob.glob(os.path.join(path, "*.mcap"))[0]
+            mcap_path = glob.glob(os.path.join(episode_path, "*.mcap"))[0]
 
             pack_config: PackConfig = self.pack_config
             parse_config: McapParseConfig = pack_config.PARSE_CONFIG
@@ -231,7 +226,7 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
 
             # Load episode metadata
             meta = json.load(
-                open(os.path.join(path, "episode_meta.json"), "r")
+                open(os.path.join(episode_path, "episode_meta.json"), "r")
             )
             meta.update(
                 uuid=uuid,
@@ -262,7 +257,7 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
             master_right = batch_joint_dict[parse_config.MASTER_RIGHT_JOINT]
             master_right.timestamps = master_left.timestamps
             action_states = BatchJointsState.concat(
-                [slave_left, slave_right], dim=1
+                [master_left, master_right], dim=1
             )
 
             # --- Camera Data ---
@@ -355,8 +350,8 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
 
             num_valid_ep += 1
             logger.info(
-                f"finish process [{ep_id + 1}/{len(self.episodes)}] {uuid}, "
-                f"num_steps:{num_steps} \n"
+                f"finish process [{ep_id + 1}/{len(self.episodes_meta)}] "
+                f"{uuid}, num_steps:{num_steps} \n"
             )
         self.index_pack_file.write("__len__", num_valid_ep)
         self.close()
@@ -368,8 +363,6 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
 
 if __name__ == "__main__":
     import argparse
-
-    from robo_orchard_lab.utils import log_basic_config
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str)
@@ -419,9 +412,5 @@ if __name__ == "__main__":
         output_path=args.output_path,
         urdf_path=args.urdf_path,
         pack_config=pack_config,
-    )
-    log_basic_config(
-        format="%(asctime)s %(levelname)s:%(lineno)d %(message)s",
-        level=logging.INFO,
     )
     packer()

@@ -343,7 +343,7 @@ def parse_mcap(parse_config: McapParseConfig, mcap_path: str):
 
         ns_list = []
         for ts in ts_list:
-            ns_list.append(ts.sec * 1e9 + ts.nanosec)
+            ns_list.append(int(ts.sec * 1e9) + int(ts.nanosec))
         return ns_list
 
     joint_topics = [

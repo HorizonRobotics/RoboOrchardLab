@@ -118,19 +118,12 @@ class McapEpisodePackaging(EpisodePackaging):
     def forward_kinematics(self, joint_states: BatchJointsState):
         """Computes the forward kinematics for the dual-arm robot.
 
-        This method takes the joint positions for the left and right arms and
-        calculates the poses of all links in the kinematic chain, including the
-        end-effectors.
-
         Args:
-            left_joint (np.ndarray): An array of joint positions for the left
-                arm, shaped (N, 7).
-            right_joint (np.ndarray): An array of joint positions for the right
-                arm, shaped (N, 7).
+            joint_states (BatchJointsState): A batch of combined joint states
+                for both arms, typically shaped (N, 14) for 7 DOF per arm.
 
         Returns:
-            dict: A dictionary mapping link names to their corresponding poses
-                as transformation matrices.
+            dict: end-effector poses (BatchFrameTransform) for both arms.
         """
         # Load URDF and Initialize Kinematic Chain
         chain = KinematicChain.from_content(
@@ -323,7 +316,7 @@ class McapEpisodePackaging(EpisodePackaging):
         master_right = self.batch_joint_dict[parse_config.MASTER_RIGHT_JOINT]
         master_right.timestamps = master_left.timestamps
         action_states = BatchJointsState.concat(
-            [slave_left, slave_right], dim=1
+            [master_left, master_right], dim=1
         )
 
         # --- Camera Data ---
@@ -392,29 +385,31 @@ def make_dataset_from_mcap(
     """
 
     episodes_meta = []
-    input_paths = input_path.strip().split(",")
+    input_path_list = input_path.strip().split(",")
+    logger.info(f"input_paths: {input_path_list}")
 
-    for path_pattern in input_paths:
-        for input_file in glob.glob(path_pattern):
-            path, date = os.path.split(os.path.dirname(input_file))
-
-            mcap_path = os.path.join(path, date)
+    for path_pattern in input_path_list:
+        input_files = glob.glob(path_pattern)
+        for input_file in input_files:
+            episode_path = os.path.dirname(input_file)
+            date = os.path.basename(episode_path)
             meta = json.load(
-                open(os.path.join(mcap_path, "episode_meta.json"), "r")
+                open(os.path.join(episode_path, "episode_meta.json"), "r")
             )
             user = meta["user_name"]
             task = meta["task_name"]
-            episodes_meta.append([mcap_path, user, task, date])
+            episodes_meta.append([episode_path, user, task, date])
 
     episodes_meta.sort()
     logger.info(f"Found {len(episodes_meta)} potential episodes.")
+
     episodes = []
-    for path, user, task, date in episodes_meta:
+    for episode_path, user, task_name, date in episodes_meta:
         try:
             packer = McapEpisodePackaging(
-                episode_path=path,
+                episode_path=episode_path,
                 user=user,
-                task_name=task,
+                task_name=task_name,
                 date=date,
                 urdf_path=urdf_path,
                 pack_config=pack_config,
@@ -426,7 +421,9 @@ def make_dataset_from_mcap(
                     f"Skipping {packer.uuid} has 0 steps after processing."
                 )
         except Exception:
-            logger.error(f"Failed to process episode at {path}", exc_info=True)
+            logger.error(
+                f"Failed to process episode at {episode_path}", exc_info=True
+            )
 
     if not episodes:
         logger.error("No valid episodes found to package. Aborting.")
@@ -475,9 +472,6 @@ if __name__ == "__main__":
         help="Overwrite the output directory if it exists.",
     )
     args = parser.parse_args()
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-    )
 
     parse_config = McapParseConfig(
         CAMERAS=["middle", "left", "right"],
