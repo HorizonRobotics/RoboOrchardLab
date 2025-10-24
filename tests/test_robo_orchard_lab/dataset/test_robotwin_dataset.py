@@ -21,6 +21,219 @@ import tempfile
 import pytest
 
 
+def test_mcap_to_lmdb_packer(
+    PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str
+):
+    """Test the MCAP to LMDB data packer script.
+
+    This test runs the mcap_to_lmdb_packer.py script on a sample
+    MCAP episode and verifies that the process completes successfully.
+    """
+    # Define paths to test data and URDF file
+    test_data_path = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/datasets/mcap/episode_2025_09_09-17_55_56/episode_2025_09_09-17_55_56_0.mcap",
+    )
+    urdf_path = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/urdf/piper_description_dualarm.urdf",
+    )
+
+    # Change to the project root directory to ensure correct script paths
+    os.chdir(PROJECT_ROOT)
+
+    with tempfile.TemporaryDirectory() as workspace_root:
+        # Construct the command to run the packer script
+        lmdb_dataset_path = os.path.join(workspace_root, "lmdb_dataset1")
+
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_lmdb_packer import (  # noqa: E501
+            McapLmdbDataPacker,
+        )
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.utils import (  # noqa: E501
+            PackConfig,
+        )
+
+        pack_config = PackConfig()
+
+        packer = McapLmdbDataPacker(
+            input_path=test_data_path,
+            output_path=lmdb_dataset_path,
+            urdf_path=urdf_path,
+            pack_config=pack_config,
+        )
+        packer()
+
+        # Verify that output directories have been created
+        assert os.path.isdir(os.path.join(lmdb_dataset_path, "meta"))
+        assert os.path.isdir(os.path.join(lmdb_dataset_path, "image"))
+        assert os.path.isdir(os.path.join(lmdb_dataset_path, "depth"))
+        assert os.path.isdir(os.path.join(lmdb_dataset_path, "index"))
+
+
+def test_mcap_to_arrow_packer(
+    PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str
+):
+    """Test the MCAP to Arrow data packer script.
+
+    This test runs the mcap_to_arrow_packer.py script on a sample
+    MCAP episode and verifies that the process completes successfully.
+    """
+    # Define paths to test data and URDF file
+    test_data_path = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/datasets/mcap/episode_2025_09_09-17_55_56/episode_2025_09_09-17_55_56_0.mcap",
+    )
+    urdf_path = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/urdf/piper_description_dualarm.urdf",
+    )
+
+    os.chdir(PROJECT_ROOT)
+
+    with tempfile.TemporaryDirectory() as workspace_root:
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_arrow_packer import (  # noqa E501
+            make_dataset_from_mcap,
+        )
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.utils import (  # noqa E501
+            PackConfig,
+        )
+
+        pack_config = PackConfig()
+        arrow_dataset_path = os.path.join(workspace_root, "arrow_dataset1")
+        make_dataset_from_mcap(
+            input_path=test_data_path,
+            output_path=arrow_dataset_path,
+            urdf_path=urdf_path,
+            pack_config=pack_config,
+            force_overwrite=True,
+        )
+
+        # Verify that Arrow dataset files have been created
+        import glob
+
+        assert os.path.isfile(
+            os.path.join(arrow_dataset_path, "dataset_info.json")
+        )
+        assert len(glob.glob(os.path.join(arrow_dataset_path, "*.arrow"))) > 0
+        assert len(glob.glob(os.path.join(arrow_dataset_path, "*.duckdb"))) > 0
+
+
+def test_dataset_consistency(
+    PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str
+):
+    test_data_path = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/datasets/mcap/episode_2025_09_09-17_55_56/episode_2025_09_09-17_55_56_0.mcap",
+    )
+    urdf_path = os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/urdf/piper_description_dualarm.urdf",
+    )
+
+    os.chdir(PROJECT_ROOT)
+
+    import numpy as np
+
+    from robo_orchard_lab.dataset.robot.dataset import ROMultiRowDataset
+    from robo_orchard_lab.dataset.robotwin.transforms import (
+        ArrowDataParse,
+        EpisodeSamplerConfig,
+    )
+
+    with tempfile.TemporaryDirectory() as workspace_root:
+        # Construct the command to run the Arrow packer script
+        arrow_dataset_path = os.path.join(workspace_root, "arrow_dataset2")
+        lmdb_dataset_path = os.path.join(workspace_root, "lmdb_dataset2")
+
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_lmdb_packer import (  # noqa E501
+            McapLmdbDataPacker,
+        )
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.utils import (  # noqa E501
+            PackConfig,
+        )
+
+        pack_config = PackConfig()
+        packer = McapLmdbDataPacker(
+            input_path=test_data_path,
+            output_path=lmdb_dataset_path,
+            urdf_path=urdf_path,
+            pack_config=pack_config,
+        )
+        packer()
+
+        from robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_arrow_packer import (  # noqa E501
+            make_dataset_from_mcap,
+        )
+
+        make_dataset_from_mcap(
+            input_path=test_data_path,
+            output_path=arrow_dataset_path,
+            urdf_path=urdf_path,
+            pack_config=pack_config,
+            force_overwrite=True,
+        )
+
+        print(f"lmdb_dataset_path is {lmdb_dataset_path}")
+        print(f"arrow_dataset_path is {arrow_dataset_path}")
+
+        # build arrow_dataset
+        data_parser = ArrowDataParse(
+            cam_names=["left", "middle", "right"],
+            load_image=True,
+            load_depth=True,
+            load_extrinsic=True,
+            depth_scale=1000,
+        )
+        joint_sampler = EpisodeSamplerConfig(
+            target_columns=["joints", "actions"]
+        )
+        arrow_dataset = ROMultiRowDataset(
+            dataset_path=arrow_dataset_path, row_sampler=joint_sampler
+        )
+        arrow_dataset.set_transform(data_parser)
+
+        # build lmdb_dataset
+        from robo_orchard_lab.dataset.robotwin.robotwin_lmdb_dataset import (
+            RoboTwinLmdbDataset,
+        )
+
+        lmdb_dataset = RoboTwinLmdbDataset(
+            paths=[lmdb_dataset_path],
+            cam_names=["left", "middle", "right"],
+            task_names=["empty_cup_place"],
+            load_image=True,
+            load_depth=True,
+        )
+
+        # Assert data consistency between lmdb_dataset and arrow_dataset
+        for idx in range(0, len(lmdb_dataset), 100):
+            lmdb_dataitem = lmdb_dataset[idx]
+            mcap_dataitem = arrow_dataset[idx]
+
+            assert np.array_equal(lmdb_dataitem["imgs"], mcap_dataitem["imgs"])
+            assert np.array_equal(
+                lmdb_dataitem["depths"], mcap_dataitem["depths"]
+            )
+            assert np.array_equal(
+                lmdb_dataitem["intrinsic"], mcap_dataitem["intrinsic"]
+            )
+            assert lmdb_dataitem["step_index"] == mcap_dataitem["step_index"]
+            assert lmdb_dataitem["text"] == mcap_dataitem["text"]
+            assert np.array_equal(
+                lmdb_dataitem["joint_state"].astype(np.float32),
+                mcap_dataitem["joint_state"].astype(np.float32),
+            )
+
+            assert (
+                abs(
+                    lmdb_dataitem["T_world2cam"].astype(np.float32)
+                    - mcap_dataitem["T_world2cam"].astype(np.float32)
+                ).max()
+                < 1e-6
+            )
+            print(f"idx is {idx}, assert pass")
+
+
 def test_robotwin_lmdb_data_packer(
     PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str
 ):

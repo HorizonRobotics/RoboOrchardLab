@@ -22,9 +22,5 @@ pipeline is a more generic concept than policy, which is
 used to interact with the environment.
 """
 
-from .basic import InferencePipeline, InferencePipelineCfg
-from .mixin import (
-    ClassType_co,
-    InferencePipelineMixin,
-    InferencePipelineMixinCfg,
-)
+from .basic import *
+from .mixin import *

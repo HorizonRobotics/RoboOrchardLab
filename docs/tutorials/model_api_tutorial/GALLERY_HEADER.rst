@@ -3,7 +3,6 @@
 Model API Tutorials
 ====================================
 
-
 This tutorial guides you through using the **RoboOrchardLab** ``ModelMixin`` API to build, save, and load your PyTorch models in a standardized and reproducible way.
 
 The core idea behind ``ModelMixin`` is to **tightly couple a model's architecture (Configuration) with its learned weights (State Dictionary)**.

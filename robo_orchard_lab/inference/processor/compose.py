@@ -34,7 +34,9 @@ class ComposeProcessor(ProcessorMixin):
 
     def __init__(self, cfg: "ComposeProcessorCfg"):
         super().__init__(cfg)
-        self.processors = [cfg_i() for cfg_i in self.cfg.processors]
+        self.processors: list[ProcessorMixin] = [
+            cfg_i() for cfg_i in self.cfg.processors
+        ]
 
     def pre_process(self, data):
         """Applies the `pre_process` method of each processor in sequence.
@@ -51,22 +53,10 @@ class ComposeProcessor(ProcessorMixin):
             data = ts.pre_process(data)
         return data
 
-    def post_process(self, batch, model_outputs):
-        """Applies the `post_process` method of each processor in sequence.
-
-        The output of one processor becomes the input to the next. The order of
-        processors is the same as in `pre_process`.
-
-        Args:
-            batch: The transformed batch.
-            model_outputs: The initial raw output from the model.
-
-        Returns:
-            The model outputs after being transformed by all processors.
-        """
+    def post_process(self, model_outputs, model_input):
         # Apply post-processing in reverse order of pre-processing
         for ts in reversed(self.processors):
-            model_outputs = ts.post_process(batch, model_outputs)
+            model_outputs = ts.post_process(model_outputs, model_input)
         return model_outputs
 
 

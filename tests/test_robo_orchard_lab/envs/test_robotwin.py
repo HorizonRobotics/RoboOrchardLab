@@ -14,7 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from robo_orchard_lab.envs.robotwin import RoboTwinEnv, RoboTwinEnvCfg
+from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
 
 
 class TestRoboTwinEnv:

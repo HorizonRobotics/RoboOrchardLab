@@ -13,15 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-
 import copy
-import json
 from typing import Dict
 
 import pytest
 import torch
 import torch.nn as nn
 
+from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.inference import (
     ClassType_co,
     InferencePipeline,
@@ -75,7 +74,7 @@ class DummyProcessor(ProcessorMixin):
         data["input_data"] = data["input_data"] + 1
         return data
 
-    def post_process(self, batch, model_outputs: OutputDict) -> OutputDict:
+    def post_process(self, model_outputs: OutputDict, batch) -> OutputDict:
         # Add a value during post-processing
         model_outputs["output_data"] = model_outputs["output_data"] + 10
         return model_outputs
@@ -120,72 +119,45 @@ def deterministic_setup():
         torch.backends.cudnn.benchmark = False
 
 
-@pytest.fixture(scope="function")
-def dummy_model() -> DummyModel:
-    """Provides an instance of DummyModel."""
-    return DummyModel(cfg=DummyModelCfg())
+# @pytest.fixture(scope="function")
+# def dummy_model() -> DummyModel:
+#     """Provides an instance of DummyModel."""
+#     return DummyModel(cfg=DummyModelCfg())
 
 
 @pytest.fixture(scope="function")
 def test_pipeline_cfg() -> MyTestPipelineCfg:
     """Provides an instance of MyTestPipelineCfg."""
-    return MyTestPipelineCfg()
+    return MyTestPipelineCfg(model=DummyModelCfg())
 
 
 @pytest.fixture(scope="function")
-def test_pipeline(
-    dummy_model: DummyModel, test_pipeline_cfg: MyTestPipelineCfg
-) -> MyTestPipeline:
+def test_pipeline(test_pipeline_cfg: MyTestPipelineCfg) -> MyTestPipeline:
     """Provides a fully initialized MyTestPipeline instance."""
-    return MyTestPipeline(model=dummy_model, cfg=test_pipeline_cfg)
+    return MyTestPipeline(cfg=test_pipeline_cfg)
 
 
 # ---- 3. Test Cases ----
 
 
-def test_subclass_init_raises_error():
-    """Tests that subclassing InferencePipelineMixin without type args raises a ValueError."""  # noqa: E501
-    with pytest.raises(ValueError, match="should have two type arguments"):
-
-        class _BadPipeline(InferencePipelineMixin):
-            def __call__(self, data):
-                return data
-
-
-def test_subclass_init_success():
-    """Tests that a correctly subclassed pipeline has its type attributes set."""  # noqa: E501
-    assert MyTestPipeline.input_type == InputDict
-    assert MyTestPipeline.output_type == OutputDict
-
-
-def test_pipeline_initialization(
-    test_pipeline: MyTestPipeline, dummy_model: DummyModel
-):
+def test_pipeline_initialization(test_pipeline: MyTestPipeline):
     """Tests if the pipeline and its components are initialized correctly."""  # noqa: E501
-    assert test_pipeline.model is dummy_model
+    # assert test_pipeline.model is dummy_model
+    assert isinstance(test_pipeline, MyTestPipeline)
+    assert isinstance(test_pipeline.model, DummyModel)
     assert isinstance(test_pipeline.cfg, MyTestPipelineCfg)
     assert isinstance(test_pipeline.processor, DummyProcessor)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_pipeline_to_device(test_pipeline: MyTestPipeline):
-    """Tests moving the pipeline to a different device."""
-    # Initial device should be CPU
-    assert test_pipeline.device == torch.device("cpu")
-
-    # Move to CUDA
-    test_pipeline.to(torch.device("cuda:0"))
-    assert test_pipeline.device == torch.device("cuda:0")
-    assert next(test_pipeline.model.parameters()).device == torch.device(
-        "cuda:0"
+@pytest.mark.parametrize("with_collator", [True, False])
+def test_pipeline_call_with_collator(with_collator: bool):
+    test_pipeline = MyTestPipeline(
+        cfg=MyTestPipelineCfg(
+            model=DummyModelCfg(),
+            batch_size=1,
+            collate_fn=collate_batch_dict if with_collator else None,
+        )
     )
-
-
-def test_pipeline_call(test_pipeline: MyTestPipeline):
-    """Tests the end-to-end inference call.
-
-    This is an integration test for the core logic.
-    """
     # 1. Create raw input data
     raw_input = {"input_data": torch.randn(1, 10)}
 
@@ -210,6 +182,76 @@ def test_pipeline_call(test_pipeline: MyTestPipeline):
 
     assert "output_data" in output
     assert torch.allclose(output["output_data"], expected_final_output)
+    if with_collator:
+        expected_final_output = expected_final_output.unsqueeze(0)
+        assert output["output_data"].shape == expected_final_output.shape
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 3])
+def test_pipeline_batched(batch_size):
+    batch_size = batch_size
+    test_pipeline = MyTestPipeline(
+        cfg=MyTestPipelineCfg(model=DummyModelCfg(), batch_size=batch_size)
+    )
+    raw_input = [{"input_data": torch.randn(1, 10)} for _ in range(3)]
+    batched_input = []
+    for i in range(0, len(raw_input), batch_size):
+        batch = torch.stack(
+            [item["input_data"] for item in raw_input[i : i + batch_size]],
+            dim=0,
+        )
+        batched_input.append(batch)
+    # 3. Perform the call
+    output = list(test_pipeline(raw_input))
+
+    # 4. Verify the steps
+    # 4.1. pre_process: should add 1
+    pre_processed_data = [i + 1 for i in batched_input]
+
+    # 4.2. model forward: linear transform and multiply by 2
+    # We need the model's weight to calculate the expected output
+    model = test_pipeline.model
+    with torch.no_grad():
+        expected_model_output = [
+            model.linear(i) * 2 for i in pre_processed_data
+        ]
+
+    # 4.3. post_process: should add 10
+    expected_final_output = [i + 10 for i in expected_model_output]
+
+    for o, e_o in zip(output, expected_final_output, strict=True):
+        assert "output_data" in o
+        assert torch.allclose(o["output_data"], e_o)
+
+
+def test_pipeline_call_dataset_like(test_pipeline: MyTestPipeline):
+    # 1. Create raw input data
+    raw_input = [{"input_data": torch.randn(1, 10)} for _ in range(3)]
+
+    # 2. Get a reference to the original data to check transformations
+    original_data = [i["input_data"].clone() for i in raw_input]
+
+    # 3. Perform the call
+    output = list(test_pipeline(raw_input))
+
+    # 4. Verify the steps
+    # 4.1. pre_process: should add 1
+    pre_processed_data = [i + 1 for i in original_data]
+
+    # 4.2. model forward: linear transform and multiply by 2
+    # We need the model's weight to calculate the expected output
+    model = test_pipeline.model
+    with torch.no_grad():
+        expected_model_output = [
+            model.linear(i) * 2 for i in pre_processed_data
+        ]
+
+    # 4.3. post_process: should add 10
+    expected_final_output = [i + 10 for i in expected_model_output]
+
+    for o, e_o in zip(output, expected_final_output, strict=True):
+        assert "output_data" in o
+        assert torch.allclose(o["output_data"], e_o)
 
 
 def test_pipeline_save_and_load(test_pipeline: MyTestPipeline, tmp_path):
@@ -265,32 +307,3 @@ def test_save_raises_error_if_dir_not_empty(
         test_pipeline.save(str(save_dir), required_empty=False)
     except DirectoryNotEmptyError:
         pytest.fail("save() raised DirectoryNotEmptyError unexpectedly.")
-
-
-@pytest.mark.skip("This test is no longer applicable after code refactor.")
-def test_accelerator_save_hook(test_pipeline: MyTestPipeline, tmp_path):
-    """Tests the pre-hook for Hugging Face Accelerate's save_state."""
-    output_dir = tmp_path / "accelerator_output"
-    output_dir.mkdir()
-
-    # The hook doesn't use these arguments, so we can pass empty lists
-    test_pipeline.accelerator_save_state_pre_hook(
-        models=[], weights=[], output_dir=str(output_dir)
-    )
-
-    # Check if the config file was created
-    config_path = output_dir / "inference.config.json"
-    assert config_path.is_file()
-
-    # Check the content of the config file
-    with open(config_path, "r") as f:
-        data = json.load(f)
-    assert (
-        data["class_type"]
-        == "test_robo_orchard_lab.inference.test_inference:MyTestPipeline"
-    )
-
-    assert (
-        data["processor"]["class_type"]
-        == "test_robo_orchard_lab.inference.test_inference:DummyProcessor"
-    )

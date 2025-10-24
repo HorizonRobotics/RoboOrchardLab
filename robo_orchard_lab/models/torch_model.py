@@ -32,7 +32,6 @@ from safetensors.torch import (
 )
 from typing_extensions import deprecated
 
-from robo_orchard_lab.utils import set_env
 from robo_orchard_lab.utils.huggingface import download_repo
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
@@ -287,7 +286,8 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         directory: str,
         load_weight: bool = True,
         strict: bool = True,
-        device: str = "cpu",
+        device: str | None = "cpu",
+        device_map: str | dict[str, int | str | torch.device] | None = None,
         model_prefix: str = "model",
         load_impl: Literal["native", "accelerate"] = "accelerate",
     ) -> TorchModelMixin:
@@ -313,29 +313,44 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         This method first loads the model's configuration from a JSON file
         (e.g., "model.config.json") found in the given directory. It then
         instantiates the model using this configuration. The instantiation
-        occurs within a context where the **ORCHARD_LAB_CHECKPOINT_DIRECTORY**
-        environment variable is temporarily set to the `directory` path.
+        occurs within a context where the current working directory is set to
+        the specified directory.
 
         If `load_weight` is True, the method proceeds to load the model's
         weights (state dictionary) from a ".safetensors" file (e.g.,
         "model.safetensors") located in the same directory.
 
         Args:
-            directory: The path to the directory containing the model's
-                configuration file and, if applicable, the state dictionary file.
-            load_weight: If True (default), the model's state dictionary is
-                loaded from the ".safetensors" file. If False, the model is
-                initialized from the configuration but weights are not loaded.
-            strict: A boolean indicating whether to strictly enforce that the keys
+            directory (str): The path to the directory containing the model's
+                configuration file and state dictionary file.
+            device (str|None, optional): The device (e.g., "cpu", "cuda:0")
+                onto which the model's state dictionary should be loaded.
+                Passed to `load_file` for loading the safetensors file.
+                Defaults to "cpu".
+            device_map (str | dict[str, int | str | torch.device] | None, optional):
+                A device map to specify how to distribute the model's
+                layers across multiple devices. This parameter is only used
+                when `load_impl` is "accelerate". `device` and `device_map`
+                cannot be both specified. Defaults to None.
+            strict (bool, optional): Whether to strictly enforce that the keys
                 in `state_dict` match the keys returned by this module's
                 `state_dict()` function. Passed to `model.load_state_dict()`.
                 Defaults to True.
-            device: The device (e.g., "cpu", "cuda:0") onto which the model's
-                state dictionary should be loaded. Passed to `load_file` for
-                loading the safetensors file. Defaults to "cpu".
-            model_prefix: The prefix for the configuration and state dictionary
-                files. For example, if "model", files will be sought as
-                "model.config.json" and "model.safetensors". Defaults to "model".
+            model_prefix (str, optional): The prefix for the configuration
+                and state dictionary files. For example, if "model", files
+                will be sought as "model.config.json" and "model.safetensors".
+                Defaults to "model".
+            load_impl (Literal["native", "accelerate"], optional): The
+                implementation to use for loading the model weights:
+
+                  - "native": Uses the native PyTorch loading mechanism via
+                    `safetensors.torch.load_file`.
+                  - "accelerate": Uses Hugging Face Accelerate's
+                    `load_checkpoint_and_dispatch`, which supports
+                    advanced features like device mapping and offloading.
+
+                Defaults to "accelerate".
+
 
         Returns:
             torch.nn.Module: An instance of the model (typed as "ModelMixin" or a subclass),
@@ -362,22 +377,78 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         with open(config_file, "r") as f:
             cfg: TorchModuleCfg = load_config_class(f.read())  # type: ignore
 
-        with (
-            in_cwd(directory),
-            set_env(ORCHARD_LAB_CHECKPOINT_DIRECTORY=directory),
-        ):
+        with in_cwd(directory):
             model: TorchModelMixin = cfg()
 
-        if not load_weight:
-            return model
+        if load_weight:
+            model.load_weights(
+                directory=directory,
+                strict=strict,
+                device=device,
+                device_map=device_map,
+                model_prefix=model_prefix,
+                load_impl=load_impl,
+            )
+        return model
 
-        def load_impl_native():
+    def load_weights(
+        self,
+        directory: str,
+        device: str | None = "cpu",
+        device_map: str | dict[str, int | str | torch.device] | None = None,
+        strict: bool = True,
+        model_prefix: str = "model",
+        load_impl: Literal["native", "accelerate"] = "accelerate",
+    ):
+        """Loads pretrained weights from a directory.
+
+        Unlike `load_model`, this method only loads the model's weights
+        from a specified directory into the existing model instance. It does
+        not modify the model's architecture or configuration.
+
+        Args:
+            directory (str): The path to the directory containing the model's
+                configuration file and state dictionary file.
+            device (str|None, optional): The device (e.g., "cpu", "cuda:0")
+                onto which the model's state dictionary should be loaded.
+                Passed to `load_file` for loading the safetensors file.
+                Defaults to "cpu".
+            device_map (str | dict[str, int | str | torch.device] | None, optional):
+                A device map to specify how to distribute the model's
+                layers across multiple devices. This parameter is only used
+                when `load_impl` is "accelerate". `device` and `device_map`
+                cannot be both specified. Defaults to None.
+            strict (bool, optional): Whether to strictly enforce that the keys
+                in `state_dict` match the keys returned by this module's
+                `state_dict()` function. Passed to `model.load_state_dict()`.
+                Defaults to True.
+            model_prefix (str, optional): The prefix for the configuration
+                and state dictionary files. For example, if "model", files
+                will be sought as "model.config.json" and "model.safetensors".
+                Defaults to "model".
+            load_impl (Literal["native", "accelerate"], optional): The
+                implementation to use for loading the model weights:
+
+                  - "native": Uses the native PyTorch loading mechanism via
+                    `safetensors.torch.load_file`.
+                  - "accelerate": Uses Hugging Face Accelerate's
+                    `load_checkpoint_and_dispatch`, which supports
+                    advanced features like device mapping and offloading.
+
+                Defaults to "accelerate".
+
+        """  # noqa: E501
+
+        if load_impl == "native":
+            if device_map is not None:
+                raise ValueError(
+                    "device_map is not supported when load_impl is 'native'."
+                )
             ckpt_path = os.path.join(directory, f"{model_prefix}.safetensors")
             if not os.path.exists(ckpt_path):
                 raise FileNotFoundError(f"{ckpt_path} does not exists!")
-
             missing, unexpected = safetensors_load_model(
-                model, filename=ckpt_path, device=device, strict=strict
+                self, filename=ckpt_path, strict=strict
             )
             if len(missing) > 0:
                 logger.warning(
@@ -389,29 +460,34 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
                     f"Some unexpected weights are found when "
                     f"loading state_dict from {ckpt_path}: {unexpected}"
                 )
-
-            return model
-
-        if load_impl == "native":
-            return load_impl_native()
         elif load_impl == "accelerate":
-            from accelerate import load_checkpoint_in_model
+            from accelerate import load_checkpoint_and_dispatch
 
+            if device is not None and device_map is not None:
+                raise ValueError(
+                    "Only one of device or device_map can be specified."
+                )
             ckpt_path = os.path.join(directory, f"{model_prefix}.safetensors")
             if os.path.exists(ckpt_path):
-                # if the safetensors file exists, `load_checkpoint_in_model`
+                # if the safetensors exists, `load_checkpoint_and_dispatch`
                 # is compatible with the native implementation.
-                load_checkpoint_in_model(model, ckpt_path, strict=strict)
+                load_checkpoint_and_dispatch(
+                    self, ckpt_path, strict=strict, device_map=device_map
+                )
             else:
-                load_checkpoint_in_model(model, directory, strict=strict)
-            model = model.to(device=device)
-            return model
+                load_checkpoint_and_dispatch(
+                    self, directory, strict=strict, device_map=device_map
+                )
 
         else:
             raise ValueError(
                 f"Invalid load_impl: {load_impl}, "
                 f"expected 'native' or 'accelerate'."
             )
+        # safe to call this because for accelerate, either device or
+        # device_map can be None.
+        if device is not None:
+            self.to(device=device)
 
 
 ModelMixin = TorchModelMixin

@@ -19,10 +19,10 @@
   </a>
 </div>
 
-
 ## Prepare pre-trained weights
 
 The current project adopts the SEM-GroundingDINO architecture, utilizing GroundingDINO-tiny as the pre-trained model.
+
 ```bash
 cd projects/sem/robotwin
 mkdir ckpt
@@ -66,8 +66,10 @@ requests==2.32.3
 h5py==3.13.0
 ```
 
-
 ## Prepare the data
+### 1. Simulation Data from Robotwin
+
+
 First, run RoboTwin to obtain the expert data from the simulation.
 
 ```bash
@@ -75,8 +77,10 @@ git clone https://github.com/RoboTwin-Platform/RoboTwin.git
 cd RoboTwin
 git checkout e71140e9734e69686daa420a9be8b75a20ff4587  # TODO: Support the latest version
 ```
+
 Follow the instructions in the RobotWin code repository to download the required assets and generate data.
 Then, use the following command to package the data into LMDB format for training.
+
 ```bash
 cd path/to/robo_orchard_lab
 
@@ -89,6 +93,7 @@ python robo_orchard_lab/dataset/robotwin/robotwin_packer.py \
 ```
 
 Make sure the resulting data path is as follows:
+
 ```text
 projects/sem/robotwin
 └──data
@@ -99,9 +104,40 @@ projects/sem/robotwin
         └──meta
 ```
 
+### 2. Real-World Data from Real Robot
+
+For recording MCAP data from a physical robot, we have developed a ROS2-based recording [toolkit](https://github.com/HorizonRobotics/robo_orchard_data_recorder/tree/master/example/) along with an [Example](https://github.com/HorizonRobotics/robo_orchard_data_recorder/tree/master/example/challenge_cup). Feel free to try them out.
+
+The `mcap_lmdb_packer` and `mcap_arrow_packer` scripts require topic names to be configured based on your MCAP recording setup. You can refer to the [data_recorder_config](https://github.com/HorizonRobotics/robo_orchard_data_recorder/blob/master/example/challenge_cup/gen_data_recorder_config.py#L41) in the recording tool for an example.
+
+#### 2.1 Pack from Mcap Data to Lmdb Dataset
+```bash
+python3 -m robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_lmdb_packer \
+    --input_path stack_bowls_three/episode_2025_09_10*/*.mcap \
+    --output_path ./stack_bowls_three_lmdb_dataset \
+    --urdf piper_description_dualarm.urdf \
+    --image_scale_factor 0.5
+```
+
+For more usage examples, please refer to the [unit_test](tests/test_robo_orchard_lab/dataset/test_robotwin_dataset.py).
+
+#### 2.2 Pack from Mcap Data to Arrow Dataset
+
+```bash
+python3 -m robo_orchard_lab.dataset.horizon_manipulation.packer.mcap_arrow_packer \
+    --input_path stack_bowls_three/episode_2025_09_10*/*.mcap \
+    --output_path ./stack_bowls_three_arrow_dataset \
+    --urdf piper_description_dualarm.urdf \
+    --image_scale_factor 0.5
+```
+
+For more usage examples, please refer to the [unit_test](tests/test_robo_orchard_lab/dataset/test_robotwin_dataset.py).
+
+
 ## Run
 
 Update the [URDF file directory in the config](./config_sem_robotwin.py#L21) to use the URDF provided by RoboTwin.
+
 ```bash
 cd projects/sem/robotwin
 CONFIG=config_sem_robotwin.py
@@ -127,6 +163,107 @@ accelerate launch  \
 # following instruction in ./sem_policy/README.md
 ```
 
+## Deploy
+
+### Export data processor
+
+You can directly use the processor saved during the training phase(refer to [link](train.py#73)), or manually export the processor using the following command.
+
+```python
+from config_sem_robotwin import config, build_processor
+processor = build_processor(config)
+
+with open(f"{output_path}/processor.json")), "w") as fh:
+    fh.write(processor.cfg.model_dump_json(indent=4))
+```
+
+For the preprocessing of real-world deployment, the camera extrinsic parameters `T_world2cam` cannot be obtained directly.
+We provide a preprocessing function that calculates the extrinsic parameters online through calibration.
+The processor can be exported as follow:
+
+```python
+from config_sem_robotwin import config, build_processor
+config.update(
+    calibration=dict(  # example calibration
+        middle={
+            "position": [
+                -0.010783568385050412,
+                -0.2559182030838615,
+                0.5173197227547938,
+            ],
+            "orientation": [
+                -0.6344593881273598,
+                0.6670669773214551,
+                -0.2848079166270871,
+                0.2671467447131103,
+            ],
+        },
+        left={
+            "position": [-0.0693628, 0.04614798, 0.02938585],
+            "orientation": [
+                -0.13265687,
+                0.13223542,
+                -0.6930087,
+                0.69615791,
+            ],
+        },
+        right={
+            "position": [-0.0693628, 0.04614798, 0.02938585],
+            "orientation": [
+                -0.13265687,
+                0.13223542,
+                -0.6930087,
+                0.69615791,
+            ],
+        },
+    )
+)
+processor = build_processor(config)
+
+with open(f"{output_path}/processor.json"), "w") as fh:
+    fh.write(processor.cfg.model_dump_json(indent=4))
+```
+
+For more details, see the class [CalibrationToExtrinsic](../../../robo_orchard_lab/dataset/robotwin/transforms.py#L699).
+
+### Export ONNX
+
+```bash
+cd projects/sem/robotwin
+
+python3 onnx_scripts/export_onnx.py \
+    --config config_sem_robotwin.py \
+    --model model/save/dir \  # ModelMixin export directory, containing model.safetensors and model.config.json
+    --output_path "./test_onnx_model" \
+    --num_joint 14 \  # Exporting models with dynamic dimensions is not currently supported
+    --validate
+```
+
+### Inference
+
+Next, the ONNX model or torch model can be initialized and invoked as follows:
+
+```python
+import sys
+
+from robo_orchard_core.utils.config import load_config_class
+from robo_orchard_lab.models.mixin import ModelMixin
+from robo_orchard_lab.utils.path import in_cwd
+
+sys.path.append("projects/sem/robotwin/onnx_scripts")  # if use onnx model
+model = ModelMixin.load_model(output_path, load_weight=False)
+
+processor_cfg = load_config_class(
+    open(f"{output_path}/processor.json").read()
+)
+with in_cwd(output_path):
+    processor = processor_cfg()
+
+# init data dict with imgs, depths, text, intrinsic, joint_state
+data = processor.pre_process(data)
+model_outs = model(data)
+actions = processor.post_process(model_outs, data).action
+```
 
 ## Deploy
 
@@ -234,6 +371,6 @@ Training Configuration: 2 machines × 8 GPUs (100k steps for all tasks).
 |----------------|-------------|----------------|---------------|--------------------------|-----------------|--------------|------------------|-------------------------------|-----------------|------------|-------------------|-------------------------|-------------|---------|
 | **SEM**            | 97.0±1.4    | 96.7±1.2       | 69.0±5.1      | 76.3±2.6 / 89.7±1.7      | 56.3±4.2        | 56.3±5.3     | 51.7±2.6         | 98.0±0.8 / 60.7±0.5           | 87.0±2.2        | 98.7±0.5   | 73.3±0.9          | 12.3±4.8 / 6.0±1.6      | 88.3±1.2    | 69.8±2.7|
 
-
 ## :handshake: Acknowledgement
+
 [RoboTwin](https://github.com/TianxingChen/RoboTwin)

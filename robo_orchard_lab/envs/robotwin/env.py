@@ -30,6 +30,11 @@ from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
+from robo_orchard_lab.envs.robotwin.obs import (
+    get_joints,
+    get_observation_cams,
+)
+
 if TYPE_CHECKING:
     from envs._base_task import Base_Task
 
@@ -37,6 +42,8 @@ if TYPE_CHECKING:
 logger = LoggerManager().get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
+
+__all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
 
 
 @dataclass
@@ -221,7 +228,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             terminated = False
 
         return RoboTwinEnvStepReturn(
-            observations=self._task.get_obs(),
+            observations=self._get_obs(),
             rewards=self._task.eval_success,
             terminated=terminated,
             truncated=truncated,
@@ -248,6 +255,10 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             This is a BUG in RoboTwin!
 
         """
+        if env_ids is not None:
+            raise NotImplementedError(
+                "RoboTwinEnv does not support env_ids in reset()."
+            )
 
         self.close(clear_cache=clear_cache)
         if not hasattr(self, "_task") or (
@@ -262,7 +273,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             task_config = self.cfg.get_task_config()
             self._task.setup_demo(**task_config)  # type: ignore
 
-        return self._task.get_obs(), self._task.info
+        return self._get_obs(), self._task.info
 
     def close(self, clear_cache: bool = True):
         """Close the environment."""
@@ -270,6 +281,27 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             self._task.close_env(clear_cache=clear_cache)
             if self._task.render_freq > 0:
                 self._task.viewer.close()
+
+    def _get_joint_state_names(self: RoboTwinEnv) -> list[str]:
+        ret_names = []
+        ret_names.extend(self._task.robot.left_arm_joints_name)
+        ret_names.append(self._task.robot.left_gripper_name["base"])
+        ret_names.extend(self._task.robot.right_arm_joints_name)
+        ret_names.append(self._task.robot.right_gripper_name["base"])
+        return ret_names
+
+    def _get_obs(self) -> dict[str, Any] | None:
+        ret = self._task.get_obs()
+
+        if self.cfg.format_datatypes:
+            ret["joints"] = get_joints(
+                ret, joint_names=self._get_joint_state_names()
+            )
+            ret.pop("joint_action", None)
+            ret["cameras"] = get_observation_cams(ret)
+            ret.pop("observation")
+
+        return ret
 
     @property
     def num_envs(self) -> int:
@@ -359,6 +391,18 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     max_instruction_num: int = 10
     """The maximum number of instructions to generate for the env."""
+
+    format_datatypes: bool = False
+    """whether to format obs as robo_orchard datatypes.
+
+    If true, the observation will be formatted as:
+        - "joints": dict of joint name to joint position. This key will
+            replace the original "joint_action" key.
+        - "cameras": dict of camera name to camera image. This key will
+            replace the original "observation" key.
+        - other keys in the original observation will be kept.
+
+    """
 
     def __post_init__(self):
         task_config_path = self.task_config_path

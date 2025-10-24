@@ -25,16 +25,6 @@ from typing import Sequence
 import torch
 from torch import nn
 
-try:
-    from transformers import (
-        AutoTokenizer,
-        BertConfig,
-        BertModel as HFBertModel,
-    )
-except ImportError:
-    AutoTokenizer = None
-    HFBertModel = None
-
 
 def generate_masks_with_special_tokens_and_transfer_map(
     tokenized, special_tokens_list
@@ -139,6 +129,8 @@ class BertModel(nn.Module):
         self.max_tokens = max_tokens
         self.pad_to_max = pad_to_max
         self.return_tokenized = return_tokenized
+
+        from transformers import AutoTokenizer
 
         if AutoTokenizer is None:
             raise RuntimeError(
@@ -246,6 +238,11 @@ class BertEncoder(nn.Module):
         use_checkpoint: bool = False,
     ):
         super().__init__()
+        from transformers import (
+            BertConfig,
+            BertModel as HFBertModel,
+        )
+
         if BertConfig is None:
             raise RuntimeError(
                 "transformers is not installed, please install it by: "

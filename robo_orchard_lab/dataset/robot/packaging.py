@@ -477,6 +477,8 @@ class DatasetPackaging:
                 already exists. Default is False.
         """
 
+        dataset_path = os.path.abspath(os.path.expanduser(dataset_path))
+
         if os.path.exists(dataset_path):
             if not force_overwrite:
                 raise FileExistsError(

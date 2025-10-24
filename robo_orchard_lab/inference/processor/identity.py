@@ -46,7 +46,7 @@ class IdentityProcessor(ProcessorMixin):
         """
         return data
 
-    def post_process(self, batch, model_outputs):
+    def post_process(self, model_outputs, _):
         """Returns the model outputs without modification."""
         return model_outputs
 

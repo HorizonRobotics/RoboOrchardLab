@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 import abc
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from robo_orchard_core.utils.config import (
     ClassConfig,
@@ -24,6 +24,7 @@ from robo_orchard_core.utils.config import (
 )
 
 __all__ = [
+    "ClassType_co",
     "ProcessorMixin",
     "ProcessorMixinType_co",
     "ProcessorMixinCfg",
@@ -48,7 +49,7 @@ class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
         self.cfg = cfg
 
     @abc.abstractmethod
-    def pre_process(self, data):
+    def pre_process(self, data) -> Any:
         """Transforms raw data into a model-ready format.
 
         Subclasses must implement this method to handle the conversion of
@@ -62,7 +63,8 @@ class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
         """
         pass
 
-    def post_process(self, batch, model_outputs):
+    # Should place optional arguments after required ones!!
+    def post_process(self, model_outputs, model_input: Any = None):
         """Transforms model output into a user-friendly format.
 
         This method can be overridden by subclasses to convert the raw tensor
@@ -73,12 +75,15 @@ class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
         outputs as is.
 
         Args:
-            batch: The transformed batch.
             model_outputs: The raw output from the model's forward pass.
+            model_input: The transformed batch as model input. For some
+                processors, this may be needed for context during
+                post-processing.
 
         Returns:
             The post-processed, user-friendly output.
         """
+
         return model_outputs
 
 

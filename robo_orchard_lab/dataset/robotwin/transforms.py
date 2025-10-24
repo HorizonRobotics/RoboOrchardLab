@@ -260,25 +260,21 @@ class ArrowDataParse:
         """Parse camera extrinsic matrices from the data."""
         T_world2cam = []  # noqa: N806
         for cam_name in self.cam_names:
-            frame_id = f"{cam_name}"
-            cam_extrinsic = data[frame_id].pose
+            frame_id = data[cam_name].frame_id
+            cam_extrinsic = data[cam_name].pose
 
             assert cam_extrinsic.parent_frame_id == "world"
-            assert cam_extrinsic.child_frame_id == frame_id
+            assert (
+                cam_extrinsic.child_frame_id == frame_id
+                or cam_extrinsic.child_frame_id == cam_name
+            )
 
-            xyz = cam_extrinsic.xyz
-            quat_wxyz = cam_extrinsic.quat  # quat is wxyz
-            rotation_matrix = Rotation.from_quat(
-                quat_wxyz, scalar_first=True
-            ).as_matrix()
-            extrinsic = np.eye(4, dtype=np.float64)
-            extrinsic[:3, :3] = rotation_matrix
-            extrinsic[:3, 3] = xyz
+            extrinsic = np.linalg.inv(
+                data[cam_name].pose.as_Transform3D_M().get_matrix()[0].numpy()
+            )
             T_world2cam.append(extrinsic)
 
-        T_world2cam = np.stack(T_world2cam)  # noqa: N806
-        T_world2cam = np.linalg.inv(T_world2cam)  # noqa: N806
-
+        T_world2cam = np.stack(T_world2cam).astype(np.float64)  # noqa: N806
         return {"T_world2cam": T_world2cam}
 
     def __call__(self, data):

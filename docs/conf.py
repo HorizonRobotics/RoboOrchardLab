@@ -41,7 +41,7 @@ CUR_DIR = os.path.abspath(os.path.dirname(__file__))
 with_comment = os.environ.get("DOC_WITH_COMMENT", "0") == "1"
 # -- Project information -----------------------------------------------------
 
-project = "RoboOrchard Lab"
+project = "RoboOrchardLab"
 copyright = "2024-2025, Horizon Robotics Developers"
 author = "Horizon Robotics Developers"
 
@@ -155,9 +155,16 @@ if with_comment:
 
 gallery_dict = OrderedDict()
 # accelerate building docs
-if os.environ.get("ROBO_ORCHARD_LAB_NO_TUTORIALS", "0") != "1":
-    gallery_dict["trainer_tutorial"] = [{"path": "trainer_tutorial/"}]
-    gallery_dict["model_api_tutorial"] = [{"path": "model_api_tutorial/"}]
+if os.environ.get("ROBO_ORCHARD_NO_TUTORIALS", "0") != "1":
+    gallery_dict["trainer_tutorial"] = [
+        {"path": "tutorials/trainer_tutorial/"}
+    ]
+    gallery_dict["model_api_tutorial"] = [
+        {"path": "tutorials/model_api_tutorial/"}
+    ]
+    gallery_dict["dataset_tutorial"] = [
+        {"path": "tutorials/dataset_tutorial/"}
+    ]
 
 build_gallery_dict = OrderedDict()
 examples_dirs = []
@@ -215,11 +222,7 @@ sphinx_gallery_conf = {
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path .
-exclude_patterns = [
-    "**/nonb**.ipynb",
-    "trainer_tutorial/GALLERY_HEADER.rst",
-    "model_api_tutorial/GALLERY_HEADER.rst",
-]
+exclude_patterns = ["**/nonb**.ipynb", "tutorials/**/*.rst"]
 
 
 suppress_warnings = [
@@ -235,10 +238,10 @@ templates_path = ["_templates"]
 
 html_context = {
     "current_version_id": os.getenv(
-        "ROBO_ORCHARD_LAB_DOCS_CURRENT_VERSION_ID", "master"
+        "ROBO_ORCHARD_DOCS_CURRENT_VERSION_ID", "master"
     ),
     "versions_json_url": os.getenv(
-        "ROBO_ORCHARD_LAB_DOCS_VERSIONS_JSON",
+        "ROBO_ORCHARD_DOCS_VERSIONS_JSON",
         "https://horizonrobotics.github.io/robot_lab/robo_orchard/lab/version.json",
     ),
 }
@@ -345,14 +348,14 @@ html_static_path = ["_static"]
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = "RoboOrchard Lab"
+htmlhelp_basename = "RoboOrchardLab"
 
 
 # -- Options for manual page output ------------------------------------------
 
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
-man_pages = [(master_doc, "RoboOrchard Lab", "Documentation", [author], 1)]
+man_pages = [(master_doc, "RoboOrchardLab", "Documentation", [author], 1)]
 
 # -- Extension configuration -------------------------------------------------
 
