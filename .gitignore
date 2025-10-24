@@ -27,6 +27,16 @@ build/
 coverage.xml
 .mypy_cache
 
+## ro dataset
+*.arrow
+state.json
+dataset_info.json
+*.duckdb
+*.sqlite
+
+## lmdb dataset
+*.lmdb
+
 # torch
 *.pth*
 *.pt
@@ -81,6 +91,7 @@ dummy/
 *.swp
 *~
 .~lock.*
+*.lock
 
 ## macOS dir files
 .DS_Store
