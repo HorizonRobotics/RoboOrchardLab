@@ -15,24 +15,26 @@
 
 
 <div align="center" style="line-height: 3;">
-  <a href=" https://horizonrobotics.github.io/robot_lab/Aux-Think" target="_blank" style="margin: 2px;">
+  <a href="https://horizonrobotics.github.io/robot_lab/aux-think" target="_blank" style="margin: 2px;">
     <img alt="Homepage" src="https://img.shields.io/badge/Homepage-green" style="display: inline-block; vertical-align: middle;"/>
   </a>
   <a href="https://arxiv.org/abs/2505.11886" target="_blank" style="margin: 2px;">
     <img alt="Paper" src="https://img.shields.io/badge/Paper-Arxiv-red" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+  <a href="https://huggingface.co/HorizonRobotics/Aux-Think" target="_blank" style="margin: 2px;">
+    <img alt="Model" src="https://img.shields.io/badge/Model-HuggingFace-yellow" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+  <a href="https://huggingface.co/datasets/HorizonRobotics/Aux-Think" target="_blank" style="margin: 2px;">
+    <img alt="Dataset" src="https://img.shields.io/badge/Dataset-HuggingFace-yellow" style="display: inline-block; vertical-align: middle;"/>
   </a>
 </div>
 
 ## Introduction
 Aux-Think internalizes Chain-of-Thought (CoT) only during training, enabling efficient Vision-Language Navigation without explicit reasoning at inference, and achieving strong performance with minimal data.
 
-![](https://horizonrobotics.github.io/robot_lab/aux-think/stats/x3.png)
+![](https://horizonrobotics.github.io/robot_lab/aux-think/stats/pipeline.png)
 
 
-## TODO
-- [x] Release code.
-- [ ] Release model weights.
-- [ ] Release training instruction and dataset. (in August 2025)
 
 ## Installation
 
@@ -142,7 +144,7 @@ To stop the inference, run:
 @article{wang2025think,
   title={Aux-Think: Exploring Reasoning Strategies for Data-Efficient Vision-Language Navigation},
   author={Wang, Shuo and Wang, Yongcai and Li, Wanting and Cai, Xudong and Wang, Yucheng and Chen, Maiyue and Wang, Kaihui and Su, Zhizhong and Li, Deying and Fan, Zhaoxin},
-  journal={arXiv preprint arXiv:2505.11886},
+  journal={Advances in Neural Information Processing Systems},
   year={2025}
 }
 ```
