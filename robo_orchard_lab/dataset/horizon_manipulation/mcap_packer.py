@@ -134,8 +134,8 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         task_names=None,
         user_names=None,
         static_threshold: float = 1e-3,
-        head_time_to_filter: float = 4,
-        tile_time_to_filter: float = 4,
+        head_time_to_filter: float = None,
+        tile_time_to_filter: float = None,
         date_prefix: str = None,
         **kwargs,
     ):
@@ -147,7 +147,10 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         self.static_threshold = static_threshold
         self.head_time_to_filter = head_time_to_filter
         self.tile_time_to_filter = tile_time_to_filter
-        self.date_prefix = date_prefix
+        if date_prefix is not None:
+            self.date_prefix = date_prefix.strip().split(",")
+        else:
+            self.date_prefix = date_prefix
         self.episodes = self.input_path_handler(input_path)
 
     def calibration_process(self, calibration_dict):
@@ -181,9 +184,8 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                         path = os.path.join(task_path, ep)
                         time = ep.replace("episode_", "")
 
-                        if (
-                            self.date_prefix is not None
-                            and not time.startswith(self.date_prefix)
+                        if self.date_prefix is not None and not any(
+                            [time.startswith(x) for x in self.date_prefix]
                         ):
                             continue
                         episodes.append([path, user, task, time])
@@ -205,6 +207,52 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         return link_poses_dict
 
     def _pack(self):
+        cameras = ["middle", "left", "right"]
+        image_topics = [
+            f"/observation/cameras/{x}/color_image/image_raw" for x in cameras
+        ]
+        image_intrinsic_topics = [
+            f"/observation/cameras/{x}/color_image/camera_info"
+            for x in cameras
+        ]
+        depth_topics = [
+            f"/observation/cameras/{x}/depth_image/image_raw" for x in cameras
+        ]
+        depth_intrinsic_topics = [
+            f"/observation/cameras/{x}/depth_image/camera_info"
+            for x in cameras
+        ]
+        image_extrinsic_topic = ["/tf_static"]
+        left_joint_topic = "/observation/robot_state/left/joint"
+        right_joint_topic = "/observation/robot_state/right/joint"
+        left_master_joint_topic = "/observation/robot_state/left_master/joint"
+        right_master_joint_topic = (
+            "/observation/robot_state/right_master/joint"
+        )
+        left_ee_topic = "/observation/robot_state/left/end_pose"
+        right_ee_topic = "/observation/robot_state/right/end_pose"
+
+        frame_id_extrinsic_map = {
+            "middle_camera_color_optical_frame/left_base_link": "middle",
+            "left_camera_color_optical_frame/left_end_effector": "left",
+            "right_camera_color_optical_frame/right_end_effector": "right",
+        }
+
+        all_useful_topics = (
+            image_topics
+            + image_intrinsic_topics
+            + depth_topics
+            + depth_intrinsic_topics
+            + image_extrinsic_topic
+            + [
+                left_joint_topic,
+                right_joint_topic,
+                left_ee_topic,
+                right_ee_topic,
+            ]
+            + [left_master_joint_topic, right_master_joint_topic]
+        )
+
         num_valid_ep = 0
         for ep_id, ep in enumerate(self.episodes):
             path, user, task_name, time = ep
@@ -221,50 +269,6 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
             )
             assert user == meta["user_name"]
             assert task_name == meta["task_name"]
-
-            cameras = ["middle", "left", "right"]
-            image_topics = [
-                f"/observation/cameras/{x}/color_image/image_raw"
-                for x in cameras
-            ]
-            image_intrinsic_topics = [
-                f"/observation/cameras/{x}/color_image/camera_info"
-                for x in cameras
-            ]
-            depth_topics = [
-                f"/observation/cameras/{x}/depth_image/image_raw"
-                for x in cameras
-            ]
-            depth_intrinsic_topics = [
-                f"/observation/cameras/{x}/depth_image/camera_info"
-                for x in cameras
-            ]
-            image_extrinsic_topic = ["/tf_static"]
-            left_joint_topic = "/observation/robot_state/left/joint"
-            right_joint_topic = "/observation/robot_state/right/joint"
-            left_master_joint_topic = (
-                "/observation/robot_state/left_master/joint"
-            )
-            right_master_joint_topic = (
-                "/observation/robot_state/right_master/joint"
-            )
-            left_ee_topic = "/observation/robot_state/left/end_pose"
-            right_ee_topic = "/observation/robot_state/right/end_pose"
-
-            all_useful_topics = (
-                image_topics
-                + image_intrinsic_topics
-                + depth_topics
-                + depth_intrinsic_topics
-                + image_extrinsic_topic
-                + [
-                    left_joint_topic,
-                    right_joint_topic,
-                    left_ee_topic,
-                    right_ee_topic,
-                ]
-                + [left_master_joint_topic, right_master_joint_topic]
-            )
 
             image_extrinsic = {}
             images = {}
@@ -304,19 +308,6 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
             reader = make_reader(
                 open(mcap, "rb"), decoder_factories=[DecoderFactory()]
             )
-
-            image_frame_ids = set()
-            for (
-                _schema,
-                _channel,
-                _message,
-                ros_msg,
-            ) in reader.iter_decoded_messages(
-                topics=image_topics, log_time_order=True
-            ):
-                image_frame_ids.add(ros_msg.header.frame_id)
-                if len(image_frame_ids) == len(image_topics):
-                    break
 
             for (
                 _schema,
@@ -366,16 +357,13 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                     ).reshape(3, 4)
                 elif topic in image_extrinsic_topic:
                     for tf in ros_msg.transforms:
-                        if tf.child_frame_id in image_frame_ids:
+                        frame_id = f"{tf.child_frame_id}/{tf.header.frame_id}"
+                        if frame_id in frame_id_extrinsic_map:
+                            camera_name = frame_id_extrinsic_map[frame_id]
                             extrinsic = np.linalg.inv(
                                 pose_to_mat(tf.transform)
                             )
-                            if "middle" in tf.child_frame_id:
-                                image_extrinsic["middle"] = extrinsic
-                            elif "left" in tf.child_frame_id:
-                                image_extrinsic["left"] = extrinsic
-                            elif "right" in tf.child_frame_id:
-                                image_extrinsic["right"] = extrinsic
+                            image_extrinsic[camera_name] = extrinsic
 
             for data in [images, depths, joints, ee_poses]:
                 for t in data:
@@ -630,6 +618,7 @@ if __name__ == "__main__":
     parser.add_argument("--urdf", type=str)
     parser.add_argument("--user_names", type=str, default=None)
     parser.add_argument("--task_names", type=str, default=None)
+    parser.add_argument("--date_prefix", type=str, default=None)
     args = parser.parse_args()
 
     if args.task_names is None:
@@ -643,6 +632,7 @@ if __name__ == "__main__":
         urdf=args.urdf,
         task_names=task_names,
         user_names=args.user_names,
+        date_prefix=args.date_prefix,
         calibration_dict={
             "left": {
                 "position": [
