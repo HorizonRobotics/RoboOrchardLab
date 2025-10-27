@@ -36,6 +36,7 @@ bash_command_template = (
     "  --urdf_dir {urdf_dir} "
     "  --model_config {model_config} "
     "  --model_processor {model_processor} "
+    "  --model_prefix {model_prefix} "
     "  --test_num {test_num}"
 )
 
@@ -60,6 +61,7 @@ def eval_tasks(gpu_id, task_names, args, results=None):
             urdf_dir=args.urdf_dir,
             model_config=args.model_config,
             model_processor=args.model_processor,
+            model_prefix=args.model_prefix,
             test_num=args.test_num,
         )
         with open(log_file, "w", encoding="utf-8") as f:
@@ -96,6 +98,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_processor", type=str, default="robotwin2_0_processor"
     )
+    parser.add_argument("--model_prefix", type=str, default="model")
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--vlm_ckpt_dir", type=str, default=None)
     parser.add_argument("--urdf_dir", type=str, default=None)

@@ -1,5 +1,5 @@
 {
-    "job_name": "eval_robotwin2.0_sem",
+    "job_name": "eval_robotwin3.0_sem",
     "workspace_folder": "submit-sem-robotwin-eval",
     "docker_image": "docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250918",
     "input_bucket": "robot_lab,robot_lab2",
@@ -14,10 +14,11 @@
         "python3 robotwin_eval.py \\",
         "  --task_config demo_clean \\",
         "  --task_names place_empty_cup,adjust_bottle,stack_blocks_three,beat_block_hammer,handover_mic,blocks_ranking_rgb,blocks_ranking_size,lift_pot,open_laptop,open_microwave,place_cans_plasticbox,rotate_qrcode,move_pillbottle_pad,stack_bowls_three,dump_bin_bigbin,place_dual_shoes \\",
-        "  --model_config '/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/sem_v2_202508' \\",
+        "  --model_config 'http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-09-30/14-53/sem_v3_nomobile-20250930-145313.591034/output/checkpoints/checkpoint_40/' \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
         "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
         "  --model_processor robotwin2_0_processor \\",
+        "  --model_prefix model_0 \\",
         "  --test_num 50"
     ],
     "to_upload": [
@@ -30,6 +31,6 @@
         "robotwin/script"
     ],
     "job_password": "1227",
-    "queue_name": "project-l20-robot-lab-tcloud",
+    "queue_name": "project-4090-robot-lab-bcloud-bj",
     "project_id": "Robot-lab"
 }
