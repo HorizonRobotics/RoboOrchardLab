@@ -22,5 +22,6 @@ pipeline is a more generic concept than policy, which is
 used to interact with the environment.
 """
 
+from . import processor
 from .basic import *
 from .mixin import *

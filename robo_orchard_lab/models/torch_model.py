@@ -35,6 +35,7 @@ from typing_extensions import deprecated
 from robo_orchard_lab.utils.huggingface import download_repo
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
+    abspath,
     in_cwd,
     is_empty_directory,
 )
@@ -367,7 +368,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         if directory.startswith("hf://"):
             directory = download_repo(directory, repo_type="model")
 
-        directory = os.path.abspath(directory)
+        directory = abspath(directory)
 
         if not os.path.exists(directory):
             raise FileNotFoundError(f"checkpoint {directory} does not exists!")

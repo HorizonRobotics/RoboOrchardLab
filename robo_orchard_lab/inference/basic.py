@@ -26,7 +26,11 @@ from typing import (
 )
 
 import torch
-from robo_orchard_core.utils.config import CallableType, ConfigInstanceOf
+from robo_orchard_core.utils.config import (
+    CallableType,
+    ClassType_co,
+    ConfigInstanceOf,
+)
 from torch.utils.data import Dataset
 
 from robo_orchard_lab.dataset.collates import collate_batch_dict
@@ -220,6 +224,8 @@ class InferencePipelineCfg(
     settings for data handling, including the processor, collate function, and
     device transfer function.
     """  # noqa: E501
+
+    class_type: ClassType_co[InferencePipelineType_co] = InferencePipeline
 
     processor: ConfigInstanceOf[ProcessorMixinCfg] | None = None
     """The configuration for the data processor. """

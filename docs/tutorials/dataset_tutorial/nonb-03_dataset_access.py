@@ -32,7 +32,8 @@ require observation or action history.
 We will also demonstrate how to visualize image modalities.
 
 Before moving to this tutorial, it's helpful to understand the
-specific core data types (like ``BatchJointsStateFeature`` or ``BatchCameraDataEncodedFeature``)
+specific core data types (like :py:class:`~robo_orchard_lab.dataset.datatypes.joint_state.BatchJointsStateFeature` or
+:py:class:`~robo_orchard_lab.dataset.datatypes.camera.BatchCameraDataEncodedFeature`)
 that we use. These are defined in our `core data types tutorial <https://horizonrobotics.github.io/robot_lab/robo_orchard/core/master/build/gallery/tutorials/datatypes/index.html>`__.
 """
 
@@ -127,7 +128,7 @@ dataset2_path = "data2"
 # This is the main entry point for most users. :py:class:`~robo_orchard_lab.dataset.robot.dataset.RODataset`
 # provides a standard PyTorch-style `Dataset` interface.
 #
-# We set `meta_index2meta=True`, which is a key feature. This tells the
+# We set ``meta_index2meta=True``, which is a key feature. This tells the
 # dataset to **automatically** resolve the integer indices (like `task_index`)
 # in the Arrow file into the full, rich metadata objects (like the task
 # description) from the DuckDB database.
@@ -141,8 +142,8 @@ pprint.pprint(dataset.frame_dataset.features)
 # %%
 # Accessing a Single Sample
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# When you index the `RODataset`, you get a single dictionary representing
-# one complete timestep.
+# When you index the :py:class:`~robo_orchard_lab.dataset.robot.dataset.RODataset`,
+# you get a single dictionary representing one complete timestep.
 
 sample = dataset[100]  # Let's grab the 100th frame
 
@@ -150,8 +151,8 @@ print(f"Type of a single sample: {type(sample)}")
 print(f"Keys in the sample: {sample.keys()}")
 
 # %%
-# Because we set `meta_index2meta=True`, the metadata keys (`instruction`,
-# `task`, `episode`) contain the *actual data* from DuckDB, not just indices.
+# Because we set ``meta_index2meta=True``, the metadata keys (`instruction`,
+# `task`, `episode`) contain the actual data from DuckDB, not just indices.
 print("--- Example of Resolved Metadata ---")
 print(f"Instruction: {sample['instruction']}")
 print(f"Task Info: {sample['task']}")
@@ -167,8 +168,8 @@ print(f"Joints: {sample['joints']}")
 # Visualizing Image Modalities
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 # The data for `left` (the left wrist camera) is loaded according to the
-# `BatchCameraDataEncodedFeature` type. This feature typically decodes
-# the raw (e.g., JPEG) bytes from the Arrow file into a `PIL.Image` object
+# :py:class:`~robo_orchard_lab.dataset.datatypes.camera.BatchCameraDataEncodedFeature` type.
+# This feature typically decodes the raw (e.g., JPEG) bytes from the Arrow file into a `PIL.Image` object
 # or a raw `bytes` buffer.
 #
 # Let's visualize it.
@@ -215,14 +216,16 @@ print(f"Type of first joint entry: {type(all_joints[0])}")
 # ---------------------------------------------
 # For tasks like Imitation Learning, a model needs to see not just the
 # current state, but also a *history* of observations and a *future*
-# of actions. `ROMultiRowDataset` handles this.
+# of actions. :py:class:`~robo_orchard_lab.dataset.robot.dataset.ROMultiRowDataset`
+# handles this.
 #
-# We must provide a `row_sampler` configuration. Here, we use
-# `DeltaTimestampSamplerConfig` to sample data based on time.
+# We must provide a ``row_sampler`` configuration. Here, we use
+# :py:class:`~robo_orchard_lab.dataset.robot.row_sampler.DeltaTimestampSamplerConfig`
+# to sample data based on time.
 
 # %%
 # This configuration asks for 32 `joints` samples.
-# The timestamps are relative to the *anchor* timestep (t=0).
+# The timestamps are relative to the anchor timestep (t=0).
 #
 # range(32) -> i = 0 to 31
 #
@@ -233,7 +236,7 @@ print(f"Type of first joint entry: {type(all_joints[0])}")
 # i=31: t + (31-1)/25 = t + 1.2s (30 steps *after* anchor)
 #
 # This setup is common for behavior cloning (e.g., 1 observation, 31 actions).
-timestamps = [0.0 + 1.0 / 25 * (i - 1) for i in range(32)]
+timestamps = [0.0 + 1.0 / 25 * i for i in range(32)]
 delta_timestamps_config = DeltaTimestampSamplerConfig(
     column_delta_ts={"joints": timestamps},
     tolerance=0.01,  # Allow 10ms tolerance in timestamp matching
@@ -296,7 +299,7 @@ print(f"  Injected 'dataset_index': {sample_a['dataset_index']}")
 # %%
 # Sample 2: From the second dataset (index >= len(dataset_stack))
 #
-sample_b_index = len(dataset1) + 50  # 50th sample from the *second* dataset
+sample_b_index = len(dataset1) + 50  # 50th sample from the second dataset
 sample_b = concat_dataset[sample_b_index]
 
 # The `dataset_index` should be 1

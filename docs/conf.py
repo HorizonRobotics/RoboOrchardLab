@@ -156,14 +156,14 @@ if with_comment:
 gallery_dict = OrderedDict()
 # accelerate building docs
 if os.environ.get("ROBO_ORCHARD_NO_TUTORIALS", "0") != "1":
+    gallery_dict["dataset_tutorial"] = [
+        {"path": "tutorials/dataset_tutorial/"}
+    ]
     gallery_dict["trainer_tutorial"] = [
         {"path": "tutorials/trainer_tutorial/"}
     ]
-    gallery_dict["model_api_tutorial"] = [
-        {"path": "tutorials/model_api_tutorial/"}
-    ]
-    gallery_dict["dataset_tutorial"] = [
-        {"path": "tutorials/dataset_tutorial/"}
+    gallery_dict["model_zoo_tutorial"] = [
+        {"path": "tutorials/model_zoo_tutorial/"}
     ]
 
 build_gallery_dict = OrderedDict()

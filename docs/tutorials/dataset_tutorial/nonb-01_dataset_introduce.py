@@ -81,35 +81,38 @@ sensor readings and actions with highly varied characteristics:
 
 The challenge, as demonstrated by the image, is that this data is a mix of:
 
-1.  Queryable static **Metadata** (Robot, Task).
+1. Queryable static **Metadata** (Robot, Task).
 
-2.  **High-Bandwidth**, large-storage streams (Images).
+2. **High-Bandwidth**, large-storage streams (Images).
 
-3.  **High-Frequency**, small-payload streams (Joints, Torques).
+3. **High-Frequency**, small-payload streams (Joints, Torques).
 
 Community Solutions
 ----------------------------------------
 
-The data you just saw is collection data. It is typically stored in formats like **ROS bags** or **MCAP**,
+The data you just saw is collection data. It is typically stored in formats like
+`ROS bags <https://docs.ros.org/en/humble/Tutorials/Beginner-CLI-Tools/Recording-And-Playing-Back-Data/Recording-And-Playing-Back-Data.html>`__ or
+`MCAP <https://mcap.dev/>`__,
 optimized for high-fidelity, streaming recording.
 
 However, for model training, we need training data that is optimized for high-speed **random access**, **batching**,
-and **seamless integration with deep learning frameworks** like PyTorch and Hugging Face datasets.
+and **seamless integration with deep learning frameworks** like `PyTorch <https://pytorch.org/>`__
+and `Hugging Face datasets <https://huggingface.co/docs/datasets/index>`__.
 
 This creates a critical gap. The community has tried to bridge this,
 most notably with the `LeRobot Dataset <https://docs.phospho.ai/learn/lerobot-dataset>`__ format.
 While a valuable standard, it introduces several key limitations when faced with complex data like the stream above:
 
-1. **Performance Bottlenecks**: LeRobot's reliance on Parquet requires a time- and disk-intensive conversion to
+1. **Performance Bottlenecks**: LeRobot's reliance on Parquet requires a time and disk intensive conversion to
 Apache Arrow every time it's loaded by the datasets library.
 
-1. **No Native Multi-frequency Support**: Its flat-table structure cannot natively store multi-frequency signals,
+2. **No Native Multi-frequency Support**: Its flat-table structure cannot natively store multi-frequency signals,
 forcing users to downsample (losing data) or create sparse, bloated tables.
 
-1. **Crude Metadata**: Using flat JSON files for metadata is slow and scales poorly.
+3. **Crude Metadata**: Using flat JSON files for metadata is slow and scales poorly.
 It is impossible to query or filter large datasets without loading them entirely.
 
-1. **Loss of Visualization Fidelity**: The conversion process often breaks the round-trip back to powerful
+4. **Loss of Visualization Fidelity**: The conversion process often breaks the round-trip back to powerful
 visualizers like Foxglove.
 
 This is why we created the **RoboOrchard Dataset**. It is designed specifically to solve these

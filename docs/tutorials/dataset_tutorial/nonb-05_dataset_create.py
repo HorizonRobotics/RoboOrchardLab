@@ -285,7 +285,7 @@ print(f"--- Verifying directory tree at {OUTPUT_DATASET_PATH} ---")
 for root, _, files in os.walk(OUTPUT_DATASET_PATH):
     level = root.replace(OUTPUT_DATASET_PATH, "").count(os.sep)
     indent = " " * 4 * (level)
-    print(f"{indent}{OUTPUT_DATASET_PATH}/")
+    print(f"{indent}{OUTPUT_DATASET_PATH}")
     sub_indent = " " * 4 * (level + 1)
     for f in files:
         print(f"{sub_indent}{f}")

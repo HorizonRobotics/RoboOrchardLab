@@ -27,6 +27,7 @@ from robo_orchard_lab.models.mixin import TorchModelMixin, TorchModuleCfg
 from robo_orchard_lab.utils.huggingface import download_repo
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
+    abspath,
     in_cwd,
     is_empty_directory,
 )
@@ -251,6 +252,8 @@ class InferencePipelineMixin(
         """  # noqa: E501
         if directory.startswith("hf://"):
             directory = download_repo(directory, repo_type="model")
+
+        directory = abspath(directory)
 
         with in_cwd(directory):
             cfg = load_from(

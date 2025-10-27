@@ -20,16 +20,19 @@
 ==========================================================
 """
 
+# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
+
 # %%
 # Core concepts
 # ---------------------------------------------------------
 # Before we begin, let's understand the two key classes:
 #
-# 1. :py:class:`~robo_orchard_lab.models.mixin.TorchModuleCfg`: This is a specialized configuration class designed to define all the necessary parameters for a PyTorch ``nn.Module``,
-# such as layer counts, dimensions, activation functions, etc. Your model will be instantiated from it.
+# 1. :py:class:`~robo_orchard_lab.models.torch_model.TorchModuleCfg`: This is a specialized configuration class designed to define all the necessary parameters for
+# a PyTorch :py:class:`~torch.nn.module.Module`, such as layer counts, dimensions, activation functions, etc. Your model will be instantiated from it.
 #
-# 2. :py:class:`~robo_orchard_lab.models.mixin.ModelMixin`: This is a mixin class. Your custom model class should inherit from it.
-# It provides the essential ``save_model`` and ``load_model`` methods.
+# 2. :py:class:`~robo_orchard_lab.models.torch_model.TorchModelMixin`: This is a mixin class. Your custom model class should inherit from it.
+# It provides the essential :py:meth:`~robo_orchard_lab.models.torch_model.TorchModelMixin.save_model`
+# and :py:meth:`~robo_orchard_lab.models.torch_model.TorchModelMixin.load_model` methods.
 #
 
 # %%
@@ -39,14 +42,17 @@
 #
 # Let's create a simple fully-connected network called ``SimpleNet``.
 #
-# 1.  Create the config class ``SimpleNetCfg``: This class must inherit from :py:class:`~robo_orchard_lab.models.mixin.TorchModuleCfg` and should define the parameters your model needs (e.g., `input_size`, `hidden_size`, `output_size`).
+# 1.  Create the config class ``SimpleNetCfg``: This class must inherit from :py:class:`~robo_orchard_lab.models.torch_model.TorchModuleCfg`
+#     and should define the parameters your model needs (e.g., `input_size`, `hidden_size`, `output_size`).
 #
-# 2.  Create the model class ``SimpleNet``: This class must inherit from :py:class:`~robo_orchard_lab.models.mixin.ModelMixin`. In its ``__init__`` method, it accepts a config object ``cfg`` and calls ``super().__init__(cfg)`` to complete the setup.
+# 2.  Create the model class ``SimpleNet``: This class must inherit from :py:class:`~robo_orchard_lab.models.torch_model.TorchModelMixin`.
+#     In its :py:meth:`~robo_orchard_lab.models.torch_model.TorchModelMixin.__init__` method, it accepts a config object ``cfg``
+#     and calls ``super().__init__(cfg)`` to complete the setup.
 #
 
 import torch.nn as nn
 
-from robo_orchard_lab.models.mixin import (
+from robo_orchard_lab.models import (
     ClassType_co,
     ModelMixin,
     TorchModuleCfg,
@@ -81,10 +87,12 @@ class SimpleNetCfg(TorchModuleCfg[SimpleNet]):
 # %%
 # Step 2: Instantiate and Save the Model
 # ---------------------------------------------------------
-# The :py:class:`~robo_orchard_lab.models.mixin.ModelMixin` provides the ``save_model`` method,
+# The :py:class:`~robo_orchard_lab.models.torch_model.TorchModelMixin` provides the
+# :py:meth:`~robo_orchard_lab.models.torch_model.TorchModelMixin.save_model` method,
 # which automatically performs two actions:
 #
 # 1.  Saves the model's configuration ``cfg`` to ``model.config.json``.
+#
 # 2.  Saves the model's weights ``state_dict`` to ``model.safetensors``.
 #
 
@@ -94,13 +102,14 @@ import shutil
 config = SimpleNetCfg(hidden_size=256)
 
 # %%
-# 2. Instantiate the model by calling the config object. This leverages the functionality of ClassInitFromConfigMixin
+# 2. Instantiate the model by calling the config object. This leverages the functionality of :py:class:`~robo_orchard_core.utils.config.ClassInitFromConfigMixin`
+#
 model = config()
 print("Model created:", model)
 
 # %%
-# 3. Call the save_model method
-output_dir = "./checkpoint"
+# 3. Call the :py:meth:`~robo_orchard_lab.models.torch_model.TorchModelMixin.save_model` method
+output_dir = ".workspace/model_checkpoint"
 
 if os.path.exists(output_dir):
     shutil.rmtree(output_dir)
@@ -115,7 +124,8 @@ print(subprocess.check_output(["tree", output_dir]).decode())
 # %%
 # Step 3: Load the Model
 # ---------------------------------------------------------
-# Loading the model is just as easy. The ``load_model`` method automatically reads ``model.config.json`` to build the model architecture and then loads the weights from ``model.safetensors``.
+# Loading the model is just as easy. The :py:meth:`~robo_orchard_lab.models.torch_model.TorchModelMixin.load_model`
+# method automatically reads ``model.config.json`` to build the model architecture and then loads the weights from ``model.safetensors``.
 #
 
 loaded_model = ModelMixin.load_model(output_dir)
