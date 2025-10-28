@@ -38,7 +38,7 @@ from robo_orchard_lab.envs.robotwin.obs import (
 if TYPE_CHECKING:
     from envs._base_task import Base_Task
 
-
+EVAL_SEED_BASE = 100000
 logger = LoggerManager().get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
@@ -245,7 +245,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
 
         If the environment has not been reset before, or the seed is
         different from the previous one, the environment will be re-created
-        and check the seed.
+        and check the seed, and the seed will be updated in the config.
 
         Warning:
             RoboTwin does not use local RandomGenerator, when the environment
@@ -264,6 +264,21 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         if not hasattr(self, "_task") or (
             seed is not None and seed != self.cfg.seed
         ):
+            # when seed need to be update
+            if seed is not None and seed != self.cfg.seed:
+                if (
+                    self.cfg.eval_mode
+                    and seed < EVAL_SEED_BASE
+                    or seed % EVAL_SEED_BASE == 0
+                ):
+                    # check the seed is valid for eval_mode
+                    raise ValueError(
+                        f"In eval_mode, seed must be >= {EVAL_SEED_BASE} "
+                        f"and not multiple of {EVAL_SEED_BASE}, "
+                        f"but got {seed}."
+                    )
+                self.cfg.seed = seed
+
             task, instructions = self._check_and_update_seed()
             assert task is not None
             self._task = task
@@ -426,8 +441,8 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             self.check_expert = True
             self.check_task_init = False
 
-        if self.eval_mode and self.seed < 100000:
-            new_seed = 100000 * (1 + self.seed)
+        if self.eval_mode and self.seed < EVAL_SEED_BASE:
+            new_seed = EVAL_SEED_BASE * (1 + self.seed)
             logger.info(
                 f"Eval mode is on, changing seed from {self.seed} "
                 f"to {new_seed}"

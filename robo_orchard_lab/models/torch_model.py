@@ -30,6 +30,10 @@ from safetensors.torch import (
     load_model as safetensors_load_model,
     save_model as safetensors_save_model,
 )
+from transformers.modeling_utils import (
+    get_parameter_device,
+    get_parameter_dtype,
+)
 from typing_extensions import deprecated
 
 from robo_orchard_lab.utils.huggingface import download_repo
@@ -106,6 +110,14 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         self.cfg = cfg
 
         self._accelerate_model_id: int = -1
+
+    @property
+    def device(self) -> torch.device:
+        return get_parameter_device(self)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return get_parameter_dtype(self)  # type: ignore
 
     @property
     def accelerate_model_id(self) -> int:

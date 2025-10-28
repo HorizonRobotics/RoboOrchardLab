@@ -49,7 +49,7 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
         self.pipeline = cfg.pipeline()
 
     @classmethod
-    def from_infer_pipeline(
+    def from_shared(
         cls,
         pipeline: InferencePipelineMixin,
         observation_space: gym.Space[OBSType] | None = None,
@@ -78,8 +78,7 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
         return action
 
     def reset(self) -> None:
-        if hasattr(self.pipeline, "reset"):
-            self.pipeline.reset()  # type: ignore
+        self.pipeline.reset()
 
 
 class InferencePipelinePolicyCfg(PolicyConfig[InferencePipelinePolicy]):

@@ -16,12 +16,13 @@
 
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
-from typing import Type, TypeVar
+from typing import Any, Type, TypeVar
 
 from datasets import Dataset as HFDataset
 from robo_orchard_core.utils.config import (
     ClassConfig,
     ClassInitFromConfigMixin,
+    ClassType,
 )
 from sortedcontainers import SortedList
 
@@ -30,6 +31,8 @@ __all__ = [
     "DeltaTimestampSamplerConfig",
     "MultiRowSampler",
     "MultiRowSamplerConfig",
+    "ColumnIndexOffsetSampler",
+    "ColumnIndexOffsetSamplerConfig",
 ]
 
 
@@ -132,13 +135,14 @@ class MultiRowSampler(ClassInitFromConfigMixin, metaclass=ABCMeta):
 
     @property
     @abstractmethod
-    def column_rows_keys(self) -> dict[str, list]:
+    def column_rows_keys(self) -> dict[str, Any]:
         """Get the keys of the rows that are sampled.
 
         This property is expected to return a dictionary where keys are
-        column names and values are lists of row keys. It is useful
-        for understanding which columns are sampled and what are the
-        corresponding row keys.
+        column names and values are the corresponding configuration or
+        parameters used for sampling rows from that column.
+        It is useful for understanding which columns are sampled and what
+        are the sampling strategies or parameters associated with each column.
         """
         raise NotImplementedError(
             "This property should be implemented by subclasses."
@@ -225,6 +229,12 @@ class IndexFrameCache:
 
 
 class DeltaTimestampSampler(MultiRowSampler):
+    """Sampler that samples rows based on delta timestamps.
+
+    This sampler selects rows from the dataset episode based on specified
+    delta timestamps for each column and a tolerance value.
+    """
+
     def __init__(self, cfg: DeltaTimestampSamplerConfig) -> None:
         self.cfg = cfg
 
@@ -252,7 +262,7 @@ class DeltaTimestampSampler(MultiRowSampler):
         )
 
     @property
-    def column_rows_keys(self) -> dict[str, list]:
+    def column_rows_keys(self) -> dict[str, list[float]]:
         """Get the keys of the rows that are sampled."""
         return self.cfg.column_delta_ts
 
@@ -371,7 +381,7 @@ class DeltaTimestampSamplerConfig(
 
     """
 
-    class_type: Type[DeltaTimestampSampler] = DeltaTimestampSampler
+    class_type: ClassType[DeltaTimestampSampler] = DeltaTimestampSampler
 
     column_delta_ts: dict[str, list[float]]
     """A dictionary where keys are column names and values are lists of
@@ -386,3 +396,115 @@ class DeltaTimestampSamplerConfig(
     to the desired delta timestamps, allowing for some flexibility in
     matching due to potential variations in the data.
     """
+
+
+class ColumnIndexOffsetSampler(MultiRowSampler):
+    """Sampler that samples rows based on column index offsets.
+
+    This sampler selects rows from the dataset based on specified
+    index offsets for each column in the same episode.
+
+    Example:
+        For example, if the current index is 10, and the column_offsets
+        is {"camera": [-1, 0, 1]}, then the sampler will return the indices
+        [9, 10, 11] for the "camera" column, provided that these indices
+        belong to the same episode as index 10. If any of these indices
+        do not belong to the same episode, None will be returned for that
+        position.
+
+    """
+
+    cfg: ColumnIndexOffsetSamplerConfig
+
+    def __init__(self, cfg: ColumnIndexOffsetSamplerConfig) -> None:
+        self.cfg = cfg
+
+    @property
+    def column_rows_keys(self) -> dict[str, list[int]]:
+        """Get the keys of the rows that are sampled."""
+        return self.cfg.column_offsets
+
+    def sample_row_idx(
+        self, index_dataset: HFDataset | CachedIndexDataset, index: int
+    ) -> dict[str, list[int | None]]:
+        # No need to use CachedIndexDataset because it does not support
+        # __getitems__.
+        if isinstance(index_dataset, CachedIndexDataset):
+            index_dataset = index_dataset._dataset
+
+        return self.sample_row_idx_by_offsets(
+            index_dataset,
+            index,
+            self.cfg.column_offsets,
+        )
+
+    @staticmethod
+    def sample_row_idx_by_offsets(
+        index_dataset: HFDataset,
+        index: int,
+        column_offsets: dict[str, list[int]],
+    ) -> dict[str, list[int | None]]:
+        """Sample row indices based on column index offsets.
+
+        Args:
+            index_dataset (HFDataset): The dataset from which to sample rows.
+            index (int): The index to sample from.
+            column_offsets (dict[str, list[int]]): A dictionary where keys are
+                column names and values are lists of index offsets.
+
+        Returns:
+            dict[str, list[int | None]]: A dictionary where keys are column
+                names and values are lists of row indices.
+        """
+
+        def _prepare_index_cache(index_dataset: HFDataset, index: int):
+            index_frame_cache = dict()
+            all_indexes = set([index])
+            for offset_list in column_offsets.values():
+                for offset in offset_list:
+                    sampled_idx = index + offset
+                    if 0 <= sampled_idx < len(index_dataset):
+                        all_indexes.add(sampled_idx)
+            all_indexes = sorted(all_indexes)
+            for idx, frame in zip(
+                all_indexes,
+                index_dataset.__getitems__(all_indexes),
+                strict=True,
+            ):
+                index_frame_cache[idx] = frame
+            return index_frame_cache
+
+        ret: dict[str, list[int | None]] = {}
+        index_frame_cache = _prepare_index_cache(index_dataset, index)
+        cur_row = index_frame_cache[index]
+        cur_episode = cur_row["episode_index"]
+
+        for column, offset_list in column_offsets.items():
+            sampled_rows = []
+            for offset in offset_list:
+                sampled_idx = index + offset
+                # check that the sampled_idx is in the same episode
+                sampled_frame = index_frame_cache.get(sampled_idx)
+                if (
+                    sampled_frame is not None
+                    and sampled_frame["episode_index"] == cur_episode
+                ):
+                    sampled_rows.append(sampled_idx)
+                else:
+                    sampled_rows.append(None)
+
+            ret[column] = sampled_rows
+        return ret
+
+
+class ColumnIndexOffsetSamplerConfig(
+    MultiRowSamplerConfig[ColumnIndexOffsetSampler]
+):
+    """Configuration class for ColumnIndexOffsetSampler."""
+
+    class_type: ClassType[ColumnIndexOffsetSampler] = ColumnIndexOffsetSampler
+
+    column_offsets: dict[str, list[int]]
+    """A dictionary where keys are column names and values are lists of
+    index offsets. This is used to sample rows based on index offsets
+    for each column."""

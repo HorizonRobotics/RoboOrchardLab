@@ -380,6 +380,12 @@ class RODataset(TorchDataset):
         This method is similar to the `select` method in Hugging Face
         Datasets.
 
+        Warning:
+            The returned new RODataset will only contain the selected frames,
+            and the episode-level metadata does not change. Therefore, the
+            episode-level metadata may not correspond to the selected frames!
+
+
         Args:
             indices (Iterable): The indices of the frames to select.
                 This can be a list of integers or a slice object.
@@ -536,11 +542,15 @@ class RODataset(TorchDataset):
     ) -> dict | list:
         """Convert the metadata index in `data` to actual metadata objects.
 
+        The `data` can be either a row sample containing multiple columns
+        (dict), or a slice of a single column (list).
+
         Args:
             data (dict | list): The data to convert. If `data` is a dict
                 with index-based metadata, it will be converted to actual
-                metadata objects. If `data` is a list, it will be converted
-                to a list of metadata objects.
+                metadata objects. If `data` is a list, it is supposed to be
+                a slice of a single column with index-based metadata, and
+                it will be converted to actual metadata objects.
             column_name (MetaIndexKeyType | None, optional): The name of the
                 column to convert. If `data` is a list, this argument must be
                 provided to convert the index-based metadata to actual
@@ -718,15 +728,30 @@ class ROMultiRowDataset(RODataset):
         meta_index2meta: bool = True,
     ):
         super().__init__(dataset_path, storage_options, meta_index2meta)
+        self._column_datasets = {}
+        self._set_row_sampler(row_sampler())
+
+    @property
+    def row_sampler(self) -> MultiRowSampler:
+        return self._row_sampler
+
+    @row_sampler.setter
+    def row_sampler(self, row_sampler: MultiRowSampler) -> None:
         self._set_row_sampler(row_sampler)
 
-    def _set_row_sampler(self, row_sampler: MultiRowSamplerConfig) -> None:
+    def _set_row_sampler(self, row_sampler: MultiRowSampler) -> None:
         """Set the row sampler for the dataset."""
-        self._row_sampler: MultiRowSampler = row_sampler()
-        self._column_datasets = {
-            col_name: self.frame_dataset.select_columns(column_names=col_name)
-            for col_name in self._row_sampler.column_rows_keys
-        }
+        self._row_sampler: MultiRowSampler = row_sampler
+        for col_name in self._row_sampler.column_rows_keys:
+            if col_name not in self._column_datasets:
+                if col_name not in self.frame_dataset.column_names:
+                    raise KeyError(
+                        f"Column {col_name} not found in dataset. "
+                        f"Available columns: {self.frame_dataset.column_names}"
+                    )
+            self._column_datasets[col_name] = (
+                self.frame_dataset.select_columns(column_names=col_name)
+            )
 
     @staticmethod
     def from_dataset(
@@ -744,7 +769,8 @@ class ROMultiRowDataset(RODataset):
         parent_state_dict = dataset._get_state_()
         ret = ROMultiRowDataset.__new__(ROMultiRowDataset)
         ret.__dict__.update(parent_state_dict)
-        ret._set_row_sampler(row_sampler)
+        ret._column_datasets = {}
+        ret._set_row_sampler(row_sampler())
         return ret
 
     def __getitem_no_transform__(self, index: int | slice | list[int]) -> dict:
@@ -753,20 +779,17 @@ class ROMultiRowDataset(RODataset):
         def fast_column_get(col_name: str, idx_rows: list[int | None]):
             col_dataset = self._column_datasets[col_name]
             not_none_idx_rows = []
-            not_none_idx_row_pos = []
-            non_idx_row_pos = []
+            not_none_idx_row_offset = []
             for i, idx in enumerate(idx_rows):
                 if idx is not None:
                     not_none_idx_rows.append(idx)
-                    not_none_idx_row_pos.append(i)
-                else:
-                    non_idx_row_pos.append(i)
+                    not_none_idx_row_offset.append(i)
 
             not_none_row = col_dataset[not_none_idx_rows][col_name]
             tmp_dict = {
                 i: val
                 for i, val in zip(
-                    not_none_idx_row_pos, not_none_row, strict=True
+                    not_none_idx_row_offset, not_none_row, strict=True
                 )
             }
             return [tmp_dict.get(i, None) for i in range(len(idx_rows))]
@@ -789,16 +812,11 @@ class ROMultiRowDataset(RODataset):
             )
             cur_rows = super().__getitem_no_transform__(index)
             # update column that needs multi-row sampling
-            new_rows = {k: [] for k in self._row_sampler.column_rows_keys}
 
-            # for cur_idx in index:
-            #     for col_name, idx_rows in self._row_sampler.sample_row_idx(
-            #         cached_index_dataset, cur_idx
-            #     ).items():
-            #         new_rows[col_name].append(
-            #             fast_column_get(col_name, idx_rows)
-            #         )
-
+            # first collect all column rows
+            new_rows: dict[str, list[list[int | None]]] = {
+                k: [] for k in self._row_sampler.column_rows_keys
+            }
             for cur_idx in index:
                 for col_name, idx_rows in self._row_sampler.sample_row_idx(
                     cached_index_dataset, cur_idx
@@ -806,12 +824,14 @@ class ROMultiRowDataset(RODataset):
                     new_rows[col_name].append(idx_rows)
 
             for k, v in new_rows.items():
+                # flatten and get all rows at once for each column
                 flattened_rows = []
                 [flattened_rows.extend(row) for row in v]
                 flattened_rows = fast_column_get(k, flattened_rows)
+                # reshape back to list of list
                 cnt = 0
                 for i in range(len(v)):
-                    v[i] = flattened_rows[cnt : cnt + len(v[i])]
+                    v[i] = flattened_rows[cnt : cnt + len(v[i])]  # noqa: E203
                     cnt += len(v[i])
                 new_rows[k] = v
 

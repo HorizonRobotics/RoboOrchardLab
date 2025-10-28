@@ -21,7 +21,7 @@ import functools
 import inspect
 from abc import ABCMeta, abstractmethod
 from dataclasses import is_dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from pydantic import AliasChoices, BaseModel, Field
 from robo_orchard_core.utils.config import (
@@ -51,6 +51,20 @@ __all__ = [
     "ConcatDictTransform",
     "ConcatDictTransformConfig",
 ]
+
+
+def _to_dict(obj: dict | BaseModel | Any) -> dict | Any:
+    if isinstance(obj, dict):
+        return obj
+    elif isinstance(obj, BaseModel):
+        return {k: getattr(obj, k) for k in obj.model_fields}
+    elif is_dataclass(obj):
+        return {
+            field.name: getattr(obj, field.name)
+            for field in obj.__dataclass_fields__.values()
+        }
+    else:
+        return obj
 
 
 class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
@@ -98,6 +112,10 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         transformed values added to the original row dict.
 
         """
+        row = _to_dict(row)
+        if not isinstance(row, dict):
+            raise TypeError(f"Expected row to be a dict, but got {type(row)}.")
+
         mapped_input = row.copy()
         # mapping input columns if needed
         if isinstance(self.cfg.input_columns, dict):
@@ -118,18 +136,7 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                 raise KeyError(f"Input column `{col}` not found in row dict.")
             ts_input[col] = mapped_input.get(col, None)
 
-        columns_after = self.transform(**ts_input)
-        if isinstance(columns_after, BaseModel):
-            columns_after = {
-                k: getattr(columns_after, k)
-                for k in columns_after.model_fields
-            }
-        elif is_dataclass(columns_after):
-            columns_after = {
-                field.name: getattr(columns_after, field.name)
-                for field in columns_after.__dataclass_fields__.values()
-            }
-
+        columns_after = _to_dict(self.transform(**ts_input))
         if not isinstance(columns_after, dict):
             raise TypeError(
                 f"Transform {self.__class__.__name__} must return a dict, "
@@ -203,8 +210,8 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                 f"Expected input_columns to be a dict, list, tuple or None, "
                 f"but got {type(self.cfg.input_columns)}."
             )
-        # handle duplicate columns
-        self._input_columns = list(set(self._input_columns))
+        # handle duplicate columns and retain order
+        self._input_columns = list(dict.fromkeys(self._input_columns).keys())
         return self._input_columns
 
     @functools.cached_property
