@@ -89,6 +89,8 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         bgr2rgb=False,
         depth_scale=1000,
         instruction_reader=None,
+        hist_steps=None,
+        pred_steps=None,
         **kwargs,
     ):
         super().__init__(
@@ -109,6 +111,8 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         self.bgr2rgb = bgr2rgb
         self.depth_scale = depth_scale
         self.instruction_reader = build(instruction_reader)
+        self.hist_steps = hist_steps
+        self.pred_steps = pred_steps
 
     def get_instruction(self, lmdb_index, data, by_reader=True):
         if self.instruction_reader is not None and by_reader:
@@ -202,7 +206,7 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         return {"T_world2cam": T_world2cam}
 
     def get_calibration(self, lmdb_index, data):
-        # TODO
+        # TODO, only for agilex collected data currently
         calibration = self.meta_lmdbs[lmdb_index][f"{data['uuid']}/extrinsics"]
         calibration = dict(
             left=calibration["piper_left_end_pose_to_camera_left_link"],
@@ -210,6 +214,85 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             right=calibration["piper_right_end_pose_to_camera_right_link"],
         )
         return {"calibration": calibration}
+
+    def _concat_shards(self, *shards):
+        shards = [x for x in shards if x is not None]
+        if len(shards) == 0:
+            return None
+        elif isinstance(shards[0], np.ndarray):
+            return np.concatenate(shards, axis=0)
+        elif isinstance(shards[0], list):
+            results = []
+            for x in shards:
+                results.extend(x)
+            return results
+
+    def _get_meta_with_shard(
+        self, lmdb_index, uuid, key, step_index, num_steps_per_shard
+    ):
+        shard_index = step_index // num_steps_per_shard
+        current_shard = self.meta_lmdbs[lmdb_index][
+            f"{uuid}/{shard_index}/{key}"
+        ]
+        step_index_in_shard = step_index % num_steps_per_shard
+        if (
+            self.hist_steps is not None
+            and step_index_in_shard < self.hist_steps - 1
+            and shard_index != 0
+        ):
+            pre_shard = self.meta_lmdbs[lmdb_index][
+                f"{uuid}/{shard_index - 1}/{key}"
+            ]
+        else:
+            pre_shard = None
+
+        if (
+            self.pred_steps is not None
+            and num_steps_per_shard - step_index_in_shard < self.pred_steps
+        ):
+            next_shard = self.meta_lmdbs[lmdb_index][
+                f"{uuid}/{shard_index + 1}/{key}"
+            ]
+        else:
+            next_shard = None
+        if pre_shard is not None:
+            step_index_in_shard += len(pre_shard)
+        data = self._concat_shards(pre_shard, current_shard, next_shard)
+        return data, step_index_in_shard
+
+    def get_joint_state(self, lmdb_index, data):
+        num_steps_per_shard = data["num_steps_per_shard"]
+        uuid = data["uuid"]
+        if num_steps_per_shard is None:
+            joint_state = self.meta_lmdbs[lmdb_index][
+                f"{uuid}/observation/robot_state/joint_positions"
+            ]
+            master_joint_state = self.meta_lmdbs[lmdb_index][
+                f"{uuid}/observation/robot_state/master_joint_positions"
+            ]
+            step_index_in_shard = data["step_index"]
+        else:
+            joint_state, step_index_in_shard = self._get_meta_with_shard(
+                lmdb_index,
+                uuid,
+                "observation/robot_state/joint_positions",
+                data["step_index"],
+                num_steps_per_shard,
+            )
+            master_joint_state = self._get_meta_with_shard(
+                lmdb_index,
+                uuid,
+                "observation/robot_state/master_joint_positions",
+                data["step_index"],
+                num_steps_per_shard,
+            )[0]
+        results = {
+            "joint_state": joint_state,
+            "step_index_in_shard": step_index_in_shard,
+        }
+        if master_joint_state is not None:
+            results["master_joint_state"] = master_joint_state
+        return results
 
     def __getitem__(self, index):
         lmdb_index, episode_index, step_index = self._get_indices(index)
@@ -222,22 +305,18 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             cam_names = self.cam_names
         else:
             cam_names = self.meta_lmdbs[lmdb_index][f"{uuid}/camera_names"]
-        joint_state = self.meta_lmdbs[lmdb_index][
-            f"{uuid}/observation/robot_state/joint_positions"
-        ]
-        master_joint_state = self.meta_lmdbs[lmdb_index][
-            f"{uuid}/observation/robot_state/master_joint_positions"
+        num_steps_per_shard = self.meta_lmdbs[lmdb_index][
+            f"{uuid}/num_steps_per_shard"
         ]
         data = dict(
             uuid=uuid,
             step_index=step_index,
             task_name=idx_data.task_name,
             cam_names=cam_names,
-            joint_state=np.array(joint_state),
+            num_steps_per_shard=num_steps_per_shard,
         )
-        if master_joint_state is not None:
-            data["master_joint_state"] = np.array(master_joint_state)
 
+        data.update(self.get_joint_state(lmdb_index, data))
         if self.load_ee_state:
             ee_state = self.meta_lmdbs[lmdb_index][
                 f"{uuid}/observation/robot_state/cartesian_position"
@@ -299,6 +378,25 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
                 data.get("hist_robot_state", [None])[-1],
                 **kwargs,
             )
+
+            if "depths" in data.keys():
+                vis_depths = self.depth_visualize(data["depths"])
+                if len(vis_depths) % 2 == 0:
+                    num_imgs = len(vis_depths)
+                    vis_depths = np.concatenate(
+                        [
+                            np.concatenate(
+                                vis_depths[: num_imgs // 2], axis=1
+                            ),
+                            np.concatenate(
+                                vis_depths[num_imgs // 2 :], axis=1
+                            ),
+                        ],
+                        axis=0,
+                    )
+                else:
+                    vis_depths = np.concatenate(vis_depths, axis=1)
+                vis_imgs = np.concatenate([vis_imgs, vis_depths], axis=0)
 
             if videoWriter is None:
                 videoWriter = cv2.VideoWriter(  # noqa: N806
@@ -396,6 +494,30 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         if channel_conversion:
             vis_imgs = vis_imgs[..., ::-1]
         return vis_imgs
+
+    @staticmethod
+    def depth_visualize(depth, min_depth=0.01, max_depth=1.2, mode="bwr"):
+        import matplotlib.pyplot as plt
+
+        mask = depth > 0
+        cmap = plt.cm.get_cmap(mode, 256)
+        cmap = np.array([cmap(i) for i in range(256)])[:, :3] * 255
+        cmap = cmap[::-1]
+
+        depth_shape = depth.shape
+        if max_depth is None:
+            max_depth = depth.max()
+        if min_depth is None:
+            min_depth = depth.min()
+
+        depth = (depth - min_depth) / (max_depth - min_depth)
+        index = np.int32(depth * 255)
+        index = np.clip(index, a_min=0, a_max=255)
+        depth_color = cmap[index].reshape(*depth_shape, 3)
+        depth_color = np.where(mask[..., None], depth_color, 0)
+        depth_color = np.uint8(depth_color)
+
+        return depth_color
 
 
 class RH20TManipulationDataset(HorizonManipulationLmdbDataset):

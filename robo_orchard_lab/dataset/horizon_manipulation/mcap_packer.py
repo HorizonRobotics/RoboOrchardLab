@@ -18,6 +18,7 @@ import copy
 import glob
 import json
 import logging
+import math
 import os
 
 import numpy as np
@@ -134,9 +135,10 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         task_names=None,
         user_names=None,
         static_threshold: float = 1e-3,
-        head_time_to_filter: float = None,
+        head_time_to_filter: float = 1e8,
         tile_time_to_filter: float = None,
         date_prefix: str = None,
+        num_steps_per_shard: int = None,
         **kwargs,
     ):
         super().__init__(input_path, output_path, **kwargs)
@@ -152,6 +154,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         else:
             self.date_prefix = date_prefix
         self.episodes = self.input_path_handler(input_path)
+        self.num_steps_per_shard = num_steps_per_shard
 
     def calibration_process(self, calibration_dict):
         if calibration_dict is None:
@@ -205,6 +208,67 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
             joint[:, 15:16] = -right_joint[:, 6:7] / 2
         link_poses_dict = self.chain.forward_kinematics(joint)
         return link_poses_dict
+
+    def _write_meta_data(
+        self,
+        uuid,
+        cameras,
+        intrinsic,
+        extrinsic,
+        timestamp,
+        joint_positions,
+        joint_velocity,
+        joint_effort,
+        cartesian_position,
+        master_joint_positions,
+        master_joint_velocity,
+        master_joint_effort,
+        shard_idx=None,
+    ):
+        if shard_idx is None:
+            start_idx = 0
+            end_idx = len(timestamp)
+            prefix = f"{uuid}"
+        else:
+            start_idx = shard_idx * self.num_steps_per_shard
+            end_idx = start_idx + self.num_steps_per_shard
+            prefix = f"{uuid}/{shard_idx}"
+
+        self.meta_pack_file.write(f"{uuid}/camera_names", cameras)
+        self.meta_pack_file.write(f"{uuid}/intrinsic", intrinsic)
+        self.meta_pack_file.write(f"{uuid}/extrinsic", extrinsic)
+        self.meta_pack_file.write(
+            f"{prefix}/timestamp", timestamp[start_idx:end_idx]
+        )
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/joint_positions",
+            joint_positions[start_idx:end_idx],
+        )
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/joint_velocity",
+            joint_velocity[start_idx:end_idx],
+        )
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/joint_effort",
+            joint_effort[start_idx:end_idx],
+        )
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/cartesian_position",
+            cartesian_position[start_idx:end_idx],
+        )
+
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/master_joint_positions",
+            master_joint_positions[start_idx:end_idx],
+        )
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/master_joint_velocity",
+            master_joint_velocity[start_idx:end_idx],
+        )
+        self.meta_pack_file.write(
+            f"{prefix}/observation/robot_state/master_joint_effort",
+            master_joint_effort[start_idx:end_idx],
+        )
 
     def _pack(self):
         cameras = ["middle", "left", "right"]
@@ -555,39 +619,45 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                 for i, depth in enumerate(depths[t]["data"]):
                     self.depth_pack_file.write(f"{uuid}/{cam}/{i}", depth)
 
-            self.meta_pack_file.write(f"{uuid}/extrinsic", extrinsic)
             self.meta_pack_file.write(f"{uuid}/intrinsic", intrinsic)
-            self.meta_pack_file.write(f"{uuid}/timestamp", base_time)
+            if self.num_steps_per_shard is not None:
+                self.meta_pack_file.write(
+                    f"{uuid}/num_steps_per_shard", self.num_steps_per_shard
+                )
+                num_shards = math.ceil(num_steps / self.num_steps_per_shard)
+                logger.info(f"num_shards:{num_shards}")
+                for shard_idx in range(num_shards):
+                    self._write_meta_data(
+                        uuid,
+                        cameras,
+                        intrinsic,
+                        extrinsic,
+                        base_time,
+                        joint_positions,
+                        joint_velocity,
+                        joint_effort,
+                        ee_poses,
+                        master_joint_positions,
+                        master_joint_velocity,
+                        master_joint_effort,
+                        shard_idx,
+                    )
+            else:
+                self._write_meta_data(
+                    uuid,
+                    cameras,
+                    intrinsic,
+                    extrinsic,
+                    base_time,
+                    joint_positions,
+                    joint_velocity,
+                    joint_effort,
+                    ee_poses,
+                    master_joint_positions,
+                    master_joint_velocity,
+                    master_joint_effort,
+                )
 
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/joint_positions",
-                joint_positions,
-            )
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/joint_velocity",
-                joint_velocity,
-            )
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/joint_effort", joint_effort
-            )
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/cartesian_position", ee_poses
-            )
-
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/master_joint_positions",
-                master_joint_positions,
-            )
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/master_joint_velocity",
-                master_joint_velocity,
-            )
-            self.meta_pack_file.write(
-                f"{uuid}/observation/robot_state/master_joint_effort",
-                master_joint_effort,
-            )
-
-            self.meta_pack_file.write(f"{uuid}/camera_names", cameras)
             meta.update(
                 uuid=uuid,
                 user=user,
@@ -619,6 +689,7 @@ if __name__ == "__main__":
     parser.add_argument("--user_names", type=str, default=None)
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--date_prefix", type=str, default=None)
+    parser.add_argument("--num_steps_per_shard", type=int, default=None)
     args = parser.parse_args()
 
     if args.task_names is None:
@@ -633,6 +704,7 @@ if __name__ == "__main__":
         task_names=task_names,
         user_names=args.user_names,
         date_prefix=args.date_prefix,
+        num_steps_per_shard=args.num_steps_per_shard,
         calibration_dict={
             "left": {
                 "position": [

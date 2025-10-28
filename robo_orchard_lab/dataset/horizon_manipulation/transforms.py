@@ -148,7 +148,10 @@ class SimpleStateSampling:
         )
         joint_state = np.clip(joint_state, -self.limitation, self.limitation)
 
-        step_index = data["step_index"]
+        if "step_index_in_shard" in data:
+            step_index = data["step_index_in_shard"]
+        else:
+            step_index = data["step_index"]
         hist_steps = self.hist_steps
         pred_steps = self.pred_steps
 
@@ -178,6 +181,7 @@ class SimpleStateSampling:
         if hist_state.shape[0] != hist_steps:
             padding = np.tile(state[:1], (hist_steps - hist_state.shape[0], 1))
             hist_state = np.concatenate([padding, hist_state], axis=0)
+        hist_state = np.copy(hist_state)
         hist_joint_state = hist_state[:, :num_joint]
         data["hist_joint_state"] = hist_joint_state
         if "ee_state" in data:
