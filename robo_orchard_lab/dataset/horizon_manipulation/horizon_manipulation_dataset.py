@@ -287,11 +287,11 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
                 num_steps_per_shard,
             )[0]
         results = {
-            "joint_state": joint_state,
+            "joint_state": np.array(joint_state),
             "step_index_in_shard": step_index_in_shard,
         }
         if master_joint_state is not None:
-            results["master_joint_state"] = master_joint_state
+            results["master_joint_state"] = np.array(master_joint_state)
         return results
 
     def __getitem__(self, index):
