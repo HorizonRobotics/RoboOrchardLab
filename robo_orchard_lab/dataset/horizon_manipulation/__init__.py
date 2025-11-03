@@ -18,4 +18,3 @@ from .horizon_manipulation_dataset import (
     HorizonManipulationLmdbDataset,
     RH20TManipulationDataset,
 )
-

@@ -401,6 +401,7 @@ def build_transforms(
         [[1, 0, 0, 0], [0, 1, 0, 0.3], [0, 0, 1, 0], [0, 0, 0, 1]]
     ).tolist()  # noqa: N806
     t_base2world = np.eye(4).tolist()  # noqa: N806
+    joint_mask = ([True] * 6 + [False]) * 2
 
     joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
     ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
@@ -424,12 +425,14 @@ def build_transforms(
             fk_loss_weight=fk_loss_weight,
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
+            joint_mask=joint_mask,
         )
     else:
         add_data_relative_items = dict(
             type=AddItems,
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
+            joint_mask=joint_mask,
         )
 
     state_sampling = dict(
@@ -536,6 +539,7 @@ def build_transforms(
                 "uuid",
                 "subtask",
                 "pred_mask",
+                "joint_mask",
             ],
         )
         # joint_state_noise = dict(
@@ -587,6 +591,7 @@ def build_transforms(
                 "text",
                 "uuid",
                 "subtask",
+                "joint_mask",
             ],
         )
         transforms = [
@@ -617,6 +622,7 @@ def build_transforms(
                 "text",
                 "remaining_actions",
                 "delay_horizon",
+                "joint_mask",
             ],
         )
         unsqueeze_batch = dict(type=UnsqueezeBatch)

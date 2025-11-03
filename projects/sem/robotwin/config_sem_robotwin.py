@@ -122,6 +122,7 @@ def build_model(config):
         JointGraphAttention,
         RotaryAttention,
         SEMActionDecoder,
+        SEMActionLoss,
         SEMRobotStateEncoder,
         UpsampleHead,
     )
@@ -320,6 +321,9 @@ def build_model(config):
                     embed_dims=embed_dims,
                     num_heads=8,
                     max_position_embeddings=32,
+                ),
+                loss=dict(
+                    type=SEMActionLoss,
                 ),
                 norm_layer=dict(
                     type=decoder_norm,

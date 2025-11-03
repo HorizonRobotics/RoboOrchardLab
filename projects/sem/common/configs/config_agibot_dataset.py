@@ -258,6 +258,7 @@ def build_transforms(config):
             "fk_loss_weight",
             "T_world2cam",
             "intrinsic",
+            "joint_mask",
         ]
     )
 
@@ -290,13 +291,16 @@ def build_transforms(config):
             + [lift_weights] * 2  # lift joints (2)
         ]
     )  # 1, num_joint, 8
+    joint_mask = ([True] * 7 + [False]) * 2 + [False, True]
 
     add_data_relative_items = AddItems(
         state_loss_weights=loss_weight * l1,
         fk_loss_weight=loss_weight * l2,
         T_base2ego=np.eye(4),
         T_base2world=np.eye(4),
+        joint_mask=np.array(joint_mask),
     )
+
     return [
         add_data_relative_items,
         state_sampling,

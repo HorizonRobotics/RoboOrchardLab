@@ -261,22 +261,16 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
             )
         ]
 
-        text_feature_mask = (
-            self.vlm.config.vision_end_token_id == vlm_input_ids
-        )
-        text_feature_mask = (
-            text_feature_mask.flip(dims=(-1,)).cumsum(dim=-1).flip(dims=(-1,))
-        )
-        text_feature_mask = text_feature_mask == 0
-        max_text_feature = text_feature_mask.sum(dim=1).max()
-
+        text_feature_mask = ~img_feature_mask
+        text_feature = vlm_outputs[text_feature_mask]
+        text_feature = text_feature.unflatten(0, (batch_size, -1))
         not_pad_mask = (
             vlm_input_ids != self.vlm_processor.tokenizer.pad_token_id
         )
         text_feature_mask = text_feature_mask & not_pad_mask
+        text_feature_mask = text_feature_mask[~img_feature_mask]
+        text_feature_mask = text_feature_mask.unflatten(0, (batch_size, -1))
 
-        text_feature_mask = text_feature_mask[:, -max_text_feature:]
-        text_feature = vlm_outputs[:, -max_text_feature:]
         text_dict = dict(
             embedded=text_feature, text_token_mask=text_feature_mask
         )

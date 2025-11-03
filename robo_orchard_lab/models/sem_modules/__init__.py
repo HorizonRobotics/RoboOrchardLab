@@ -24,6 +24,7 @@ from .layers import (
     TemporalJointGraphAttention,
     UpsampleHead,
 )
+from .loss import SEMActionLoss
 from .processor import SEMProcessor, SEMProcessorCfg
 from .robot_state_encoder import SEMRobotStateEncoder
 from .structure import SEM_Qwen2_5_VL, SEM_Qwen2_5_VLConfig, TextTemplate

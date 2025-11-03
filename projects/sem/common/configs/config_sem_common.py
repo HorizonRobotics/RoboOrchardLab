@@ -107,6 +107,7 @@ def build_model(config):
         SEM_Qwen2_5_VL,
         SEM_Qwen2_5_VLConfig,
         SEMActionDecoder,
+        SEMActionLoss,
         SEMRobotStateEncoder,
         TemporalJointGraphAttention,
         TextTemplate,
@@ -225,6 +226,10 @@ def build_model(config):
                 head=head,
                 with_mobile=with_mobile,
                 mobile_head=mobile_head,
+                loss=dict(
+                    type=SEMActionLoss,
+                    loss_mode=config.get("loss_mode", "l2"),
+                ),
                 img_cross_attn=dict(
                     type=RotaryAttention,
                     embed_dims=embed_dims,

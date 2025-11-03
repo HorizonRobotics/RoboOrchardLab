@@ -442,6 +442,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
     rh20t_loss_weight = 0.5
     state_loss_weights = loss_weights * 0.2 * rh20t_loss_weight
     fk_loss_weight = loss_weights * 1.8 * rh20t_loss_weight
+    joint_mask = [True] * num_joint + [False]
 
     if mode == "training":
         add_data_relative_items = AddItems(
@@ -449,11 +450,13 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
             fk_loss_weight=fk_loss_weight,
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
+            joint_mask=joint_mask,
         )
     else:
         add_data_relative_items = AddItems(
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
+            joint_mask=joint_mask,
         )
 
     state_sampling = SimpleStateSampling(
@@ -504,6 +507,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
                 "text",
                 "uuid",
                 "subtask",
+                "joint_mask",
             ]
         )
         transforms = [
@@ -533,6 +537,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
                 "text",
                 "uuid",
                 "subtask",
+                "joint_mask",
             ]
         )
         transforms = [

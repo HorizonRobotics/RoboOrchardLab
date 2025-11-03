@@ -76,9 +76,20 @@ class SEMRobotStateEncoder(nn.Module):
             ]
         )
 
-    def forward(self, robot_state, joint_distance=None):
+    def forward(self, robot_state, joint_distance=None, joint_mask=None):
         bs, num_step, num_link = robot_state.shape[:3]
         robot_state = robot_state.permute(0, 2, 1, 3)
+
+        if joint_mask is not None:
+            joint_state = torch.where(
+                joint_mask[..., None, None],
+                robot_state.new_tensor(-1),
+                robot_state[..., :1],
+            )
+            robot_state = torch.cat(
+                [joint_state, robot_state[..., 1:]], dim=-1
+            )
+
         num_chunk = num_step // self.chunk_size
         robot_state = robot_state.reshape(bs, num_link, num_chunk, -1)
         x = self.input_fc(robot_state)

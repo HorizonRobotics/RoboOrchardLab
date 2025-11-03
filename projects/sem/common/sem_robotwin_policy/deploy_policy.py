@@ -113,7 +113,7 @@ class SEMPolicy:
         with in_cwd(config):
             self.processor = processor_cfg()
 
-        self.model = ModelMixin.load_model(config, strict=False)
+        self.model = ModelMixin.load_model(config, load_impl="native")
         self.model.eval()
         self.model.requires_grad_()
 

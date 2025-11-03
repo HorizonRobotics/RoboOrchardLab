@@ -337,6 +337,7 @@ def build_transforms(
             + [ee_state_loss_weights]
         ]
     ).tolist()
+    joint_mask = ([True] * num_joint_per_arm + [False]) * 2
 
     if mode == "training":
         add_data_relative_items = dict(
@@ -344,11 +345,13 @@ def build_transforms(
             T_base2world=t_base2world,
             state_loss_weights=loss_weights,
             fk_loss_weight=loss_weights,
+            joint_mask=joint_mask,
         )
     else:
         add_data_relative_items = dict(
             type=AddItems,
             T_base2world=t_base2world,
+            joint_mask=joint_mask,
         )
 
     state_sampling = dict(
@@ -395,6 +398,7 @@ def build_transforms(
                 "state_loss_weights",
                 "text",
                 "uuid",
+                "joint_mask",
             ],
         )
         joint_state_noise = dict(
@@ -430,6 +434,7 @@ def build_transforms(
                 "kinematics",
                 "text",
                 "uuid",
+                "joint_mask",
             ],
         )
         transforms = [
@@ -457,6 +462,7 @@ def build_transforms(
                 "joint_scale_shift",
                 "kinematics",
                 "text",
+                "joint_mask",
             ],
         )
         unsqueeze_batch = dict(type=UnsqueezeBatch)

@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import logging
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -24,6 +26,8 @@ from robo_orchard_lab.models.sem_modules.layers import (
     linear_act_ln,
 )
 from robo_orchard_lab.utils import as_sequence, build
+
+logger = logging.getLogger(__name__)
 
 
 class SEMActionDecoder(nn.Module):
@@ -57,29 +61,35 @@ class SEMActionDecoder(nn.Module):
         num_test_traj=1,
         chunk_size=8,
         force_kinematics=False,
-        state_loss_weights=None,
-        fk_loss_weight=None,
         pre_norm=True,
         with_mobile=False,
         mobile_head=None,
         mobile_traj_state_dims=2,
-        mobile_loss_weight=1.0,
         async_inference_plugin=None,
+        use_joint_mask=False,
+        noise_type="global_joint",
+        pred_scaled_joint=True,
+        prediction_type="absolute_joint_absolute_pose",
+        loss=None,
+        **kwargs,
     ):
         super().__init__()
+        if len(kwargs) != 0:
+            logger.warning(f"Get unexpected arguments: {kwargs}")
         self.feature_level = as_sequence(feature_level)
         self.embed_dims = embed_dims
         self.pred_steps = pred_steps
         self.chunk_size = chunk_size
         self.num_test_traj = num_test_traj
-        self.state_loss_weights = state_loss_weights
-        self.fk_loss_weight = fk_loss_weight
         self.force_kinematics = force_kinematics
         self.pre_norm = pre_norm
         self.with_mobile = with_mobile
         self.mobile_traj_state_dims = mobile_traj_state_dims
-        self.mobile_loss_weight = mobile_loss_weight
         self.async_inference_plugin = build(async_inference_plugin)
+
+        self.loss = build(loss)
+        if hasattr(self.loss, "recompute"):
+            self.loss.recompute = self.recompute
 
         self.robot_encoder = build(robot_encoder)
         if operation_order is None:
@@ -130,9 +140,27 @@ class SEMActionDecoder(nn.Module):
 
         self.training_noise_scheduler = build(training_noise_scheduler)
         self.test_noise_scheduler = build(test_noise_scheduler)
-        self.prediction_type = (
-            self.training_noise_scheduler.config.prediction_type
-        )
+        assert self.training_noise_scheduler.config.prediction_type == "sample"
+        assert self.test_noise_scheduler.config.prediction_type == "sample"
+        assert noise_type in [
+            "global_joint",
+            "local_joint",
+            "global_joint_global_pose",
+            "global_joint_local_pose",
+            "local_joint_global_pose",
+            "local_joint_local_pose",
+        ]
+        assert prediction_type in [
+            "absolute_joint_absolute_pose",
+            "absolute_joint_relative_pose",
+            "relative_joint_absolute_pose",
+            "relative_joint_relative_pose",
+        ]
+        self.use_joint_mask = use_joint_mask
+        self.noise_type = noise_type
+        self.pred_scaled_joint = pred_scaled_joint
+        self.prediction_type = prediction_type
+
         self.num_train_timesteps = (
             self.training_noise_scheduler.config.num_train_timesteps
         )
@@ -150,12 +178,19 @@ class SEMActionDecoder(nn.Module):
         return img_feature
 
     def apply_scale_shift(
-        self, robot_state, joint_scale_shift=None, inverse=False
+        self,
+        robot_state,
+        joint_scale_shift=None,
+        inverse=False,
+        scale_only=False,
     ):
         if joint_scale_shift is None:
             return robot_state
         scale = joint_scale_shift[:, None, :, 0:1]
-        shift = joint_scale_shift[:, None, :, 1:2]
+        if not scale_only:
+            shift = joint_scale_shift[:, None, :, 1:2]
+        else:
+            shift = 0
         if not inverse:
             robot_state = torch.cat(
                 [(robot_state[..., :1] - shift) / scale, robot_state[..., 1:]],
@@ -211,6 +246,59 @@ class SEMActionDecoder(nn.Module):
         )
         return robot_state
 
+    def sample_noise(self, noise_shape, hist_robot_state):
+        if not self.noise_type.endswith("pose"):
+            noise = torch.randn([*noise_shape[:-1], 1])
+        else:
+            noise = torch.randn(noise_shape)
+        noise = noise.to(hist_robot_state)
+        if self.noise_type.startswith("local_joint"):
+            noise[..., :1] = noise[..., :1] + hist_robot_state[:, -1:, :, :1]
+        if self.noise_type.endswith("local_pose"):
+            noise[..., 1:] = noise[..., 1:] + hist_robot_state[:, -1:, :, 1:]
+        return noise
+
+    def get_prediction(
+        self, model_pred, hist_robot_state, joint_scale_shift, joint_mask
+    ):
+        origin_model_pred = model_pred.clone()
+        if not self.pred_scaled_joint:
+            model_pred = self.apply_scale_shift(
+                model_pred, joint_scale_shift, scale_only=True
+            )
+
+        if self.prediction_type == "absolute_joint_absolute_pose":
+            pred = model_pred
+        elif self.prediction_type == "absolute_joint_relative_pose":
+            pred = torch.cat(
+                [
+                    model_pred[..., :1],
+                    model_pred[..., 1:] + hist_robot_state[:, -1:, :, 1:],
+                ],
+                dim=-1,
+            )
+        elif self.prediction_type == "relative_joint_absolute_pose":
+            pred = torch.cat(
+                [
+                    model_pred[..., :1] + hist_robot_state[:, -1:, :, :1],
+                    model_pred[..., 1:],
+                ],
+                dim=-1,
+            )
+        elif self.prediction_type == "relative_joint_relative_pose":
+            pred = model_pred + hist_robot_state
+
+        if joint_mask is not None and self.prediction_type.startswith(
+            "relative"
+        ):
+            pred_joint_state = torch.where(
+                joint_mask[:, None, :, None],
+                pred[..., :1],
+                origin_model_pred[..., :1],
+            )
+            pred = torch.cat([pred_joint_state, pred[..., 1:]], dim=-1)
+        return pred
+
     def forward(self, feature_maps, inputs, text_dict=None, **kwargs):
         img_feature = self.format_img_feature_maps(feature_maps)
 
@@ -235,9 +323,16 @@ class SEMActionDecoder(nn.Module):
             )
         joint_relative_pos = joint_relative_pos.to(hist_robot_state)
 
+        if not self.use_joint_mask:
+            joint_mask = None
+        else:
+            joint_mask = inputs.get("joint_mask")
+            if joint_mask is None:
+                logger.warning(f"Miss `joint_mask`, uuid:{inputs.get('uuid')}")
+
         if self.robot_encoder is not None:
             robot_feature = self.robot_encoder(
-                hist_robot_state, joint_relative_pos
+                hist_robot_state, joint_relative_pos, joint_mask
             )
         else:
             robot_feature = None
@@ -247,14 +342,21 @@ class SEMActionDecoder(nn.Module):
                 inputs["pred_robot_state"], joint_scale_shift
             )
             pred_steps = pred_robot_state.shape[1]
-            noise = torch.randn([bs, pred_steps, num_joint, 1]).to(img_feature)
+            noise = self.sample_noise(
+                [bs, pred_steps, num_joint, state_dims], hist_robot_state
+            )
             timesteps = torch.randint(
                 0, self.num_train_timesteps, (bs,), device=img_feature.device
             ).long()
-            noisy_action = self.training_noise_scheduler.add_noise(
-                pred_robot_state[..., :1], noise, timesteps
-            )
-            noisy_action = self.recompute(noisy_action, inputs)
+            if not self.noise_type.endswith("pose"):
+                noisy_action = self.training_noise_scheduler.add_noise(
+                    pred_robot_state[..., :1], noise, timesteps
+                )
+                noisy_action = self.recompute(noisy_action, inputs)
+            else:
+                noisy_action = self.training_noise_scheduler.add_noise(
+                    pred_robot_state, noise, timesteps
+                )
 
             if self.with_mobile:
                 target_mobile_traj = inputs.get("mobile_traj")
@@ -277,16 +379,14 @@ class SEMActionDecoder(nn.Module):
                 timesteps,
                 joint_relative_pos,
                 noisy_mobile_traj,
+                joint_mask,
             )
-            if self.prediction_type == "epsilon":
-                target = torch.cat([noise, pred_robot_state[..., 1:]], dim=-1)
-            elif self.prediction_type == "sample":
-                target = pred_robot_state
-            else:
-                raise ValueError("Unsupported prediction type")
+            pred = self.get_prediction(
+                pred, hist_robot_state, joint_scale_shift, joint_mask
+            )
             return {
                 "pred": pred,
-                "target": target,
+                "target": pred_robot_state,
                 "pred_mobile_traj": pred_mobile_traj,
                 "target_mobile_traj": inputs.get("mobile_traj"),
                 "timesteps": timesteps,
@@ -298,9 +398,10 @@ class SEMActionDecoder(nn.Module):
             else:
                 pred_mobile_trajs = None
             for _ in range(self.num_test_traj):
-                noisy_action = torch.randn(
-                    [bs, self.pred_steps, num_joint, 1],
-                ).to(img_feature)
+                noisy_action = self.sample_noise(
+                    [bs, self.pred_steps, num_joint, state_dims],
+                    hist_robot_state,
+                )
                 if self.with_mobile:
                     noisy_mobile_traj = torch.randn(
                         [bs, self.pred_steps, 2]
@@ -312,7 +413,8 @@ class SEMActionDecoder(nn.Module):
                     device=img_feature.device,
                 )
                 for t in self.test_noise_scheduler.timesteps:
-                    noisy_action = self.recompute(noisy_action, inputs)
+                    if not self.noise_type.endswith("pose"):
+                        noisy_action = self.recompute(noisy_action, inputs)
                     pred, pred_mobile_traj = self.forward_layers(
                         noisy_action,
                         img_feature,
@@ -321,6 +423,10 @@ class SEMActionDecoder(nn.Module):
                         t.to(device=noisy_action.device).tile(bs),
                         joint_relative_pos,
                         noisy_mobile_traj,
+                        joint_mask,
+                    )
+                    pred = self.get_prediction(
+                        pred, hist_robot_state, joint_scale_shift, joint_mask
                     )
                     if self.async_inference_plugin is not None:
                         if (
@@ -331,7 +437,7 @@ class SEMActionDecoder(nn.Module):
                         ):
                             remaining_actions = (
                                 inputs["remaining_actions"][
-                                    :, : inputs["delay_horizon"], ...
+                                    :, : inputs["delay_horizon"]
                                 ]
                                 .to(pred)
                                 .unsqueeze(-1)
@@ -339,19 +445,23 @@ class SEMActionDecoder(nn.Module):
                             remaining_actions = self.apply_scale_shift(
                                 remaining_actions,
                                 joint_scale_shift,
-                                inverse=False,
                             )
                             pred = self.async_inference_plugin(
                                 pred,
                                 remaining_actions,
                                 inputs["delay_horizon"],
                             )
-                    noisy_action = self.test_noise_scheduler.step(
-                        pred[..., :1], t, noisy_action[..., :1]
-                    ).prev_sample
-                    noisy_action = torch.cat(
-                        [noisy_action, pred[..., 1:]], dim=-1
-                    )
+                    if not self.noise_type.endswith("pose"):
+                        noisy_action = self.test_noise_scheduler.step(
+                            pred[..., :1], t, noisy_action[..., :1]
+                        ).prev_sample
+                        noisy_action = torch.cat(
+                            [noisy_action, pred[..., 1:]], dim=-1
+                        )
+                    else:
+                        noisy_action = self.test_noise_scheduler.step(
+                            pred, t, noisy_action
+                        ).prev_sample
                     if self.with_mobile:
                         noisy_mobile_traj = self.test_noise_scheduler.step(
                             pred_mobile_traj, t, noisy_mobile_traj
@@ -373,12 +483,23 @@ class SEMActionDecoder(nn.Module):
         timesteps=None,
         joint_relative_pos=None,
         noisy_mobile_traj=None,
+        joint_mask=None,
     ):
         t_embed = self.t_embed(timesteps)
 
         bs, pred_steps, num_joint, state_dims = noisy_action.shape
         num_chunk = pred_steps // self.chunk_size
         noisy_action = noisy_action.permute(0, 2, 1, 3)
+
+        if joint_mask is not None:
+            noisy_joint_state = torch.where(
+                joint_mask[..., None, None],
+                noisy_action.new_tensor(-1),
+                noisy_action[..., :1],
+            )
+            noisy_action = torch.cat(
+                [noisy_joint_state, noisy_action[..., 1:]], dim=-1
+            )
 
         noisy_action = noisy_action.reshape(bs, num_joint, num_chunk, -1)
         x = self.input_layers(noisy_action)
@@ -581,69 +702,6 @@ class SEMActionDecoder(nn.Module):
         pred = self.head(x)
         pred = pred.permute(0, 2, 1, 3)
         return pred, pred_mobile_traj
-
-    def loss(self, model_outs, inputs, **kwargs):
-        pred = model_outs["pred"]
-        target = model_outs["target"]
-        pred_mask = inputs.get("pred_mask")
-        output = {}
-        loss = self._loss_func(
-            pred,
-            target,
-            pred_mask,
-            inputs.get("state_loss_weights", self.state_loss_weights),
-        )
-        output["loss_noise_mse"] = loss
-        fk_loss_weight = inputs.get("fk_loss_weight", self.fk_loss_weight)
-        if fk_loss_weight is not None:
-            fk_pred = self.recompute(pred, inputs)
-            fk_loss = self._loss_func(
-                fk_pred,
-                target,
-                pred_mask,
-                fk_loss_weight,
-            )
-            output["loss_fk_mse"] = fk_loss
-
-        if self.with_mobile:
-            pred_mobile_traj = model_outs["pred_mobile_traj"]
-            target_mobile_traj = model_outs["target_mobile_traj"]
-            if target_mobile_traj is None:
-                loss_mobile = self._fake_loss(pred_mobile_traj)
-            else:
-                error = torch.norm(
-                    pred_mobile_traj - target_mobile_traj, dim=-1
-                )
-                loss_weight = inputs.get(
-                    "mobile_loss_weight", self.mobile_loss_weight
-                )
-                error = error * loss_weight
-                if pred_mask is not None:
-                    error = error[pred_mask]
-                if error.shape[0] == 0:
-                    loss_mobile = self._fake_loss(pred_mobile_traj)
-                else:
-                    loss_mobile = error.mean()
-            output["loss_mobile"] = loss_mobile
-        return output
-
-    def _loss_func(self, pred, target, pred_mask, weight=None):
-        error = torch.square(pred - target)
-        if weight is not None:
-            if isinstance(weight, torch.Tensor):
-                weight = weight.to(error)
-            else:
-                weight = error.new_tensor(weight)
-            error = error * weight
-        if pred_mask is not None:
-            error = error[pred_mask]
-            if error.shape[0] == 0:
-                return self._fake_loss(pred)
-        loss = error.sum(dim=-1).mean()
-        return loss
-
-    def _fake_loss(self, error):
-        return error.sum() * 0
 
     def post_process(self, model_outs, inputs, **kwargs):
         bs = model_outs["pred_actions"][0].shape[0]
