@@ -44,3 +44,10 @@ python3 robotwin_eval.py \
 ```bash
 RoboOrchardJob-AIDISubmit submit_from_config --config projects/sem/common/submit_cfg_robotwin_eval.json
 ```
+
+## Docker image
+- **New version image (supports Qwen3):**  
+  `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch260-robotwin2-transformer4571-20251030`
+
+- **Old version image (deprecated):**  
+  `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250918`

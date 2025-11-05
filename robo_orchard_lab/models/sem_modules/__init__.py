@@ -28,3 +28,8 @@ from .loss import SEMActionLoss
 from .processor import SEMProcessor, SEMProcessorCfg
 from .robot_state_encoder import SEMRobotStateEncoder
 from .structure import SEM_Qwen2_5_VL, SEM_Qwen2_5_VLConfig, TextTemplate
+from .structure_qwen3_vl import (
+    SEM_Qwen3VL,
+    SEM_Qwen3VLConfig,
+    SEM_Qwen3VLTextTemplate,
+)

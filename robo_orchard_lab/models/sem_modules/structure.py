@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import logging
 import os
 from typing import Optional
 
@@ -38,6 +39,9 @@ from robo_orchard_lab.utils.build import (
 )
 
 __all__ = ["TextTemplate", "SEM_Qwen2_5_VL", "SEM_Qwen2_5_VLConfig"]
+
+
+logger = logging.getLogger(__name__)
 
 
 class TextTemplate(nn.Module):
@@ -106,22 +110,26 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
                 attn_implementation="flash_attention_2",
                 torch_dtype=torch.bfloat16,
             )
+        if not hasattr(self.vlm, "language_model"):
+            logger.warning("Deprecated, please use `transformers` >= 4.57.1.")
+            self.vlm.language_model = self.vlm.model
+            self.vlm.model.get_rope_index = self.vlm.get_rope_index
 
         if self.cfg.freeze_vlm:
             self.vlm.eval()
             self.vlm.requires_grad_(False)
         else:
-            # self.vlm.model.gradient_checkpointing_enable()
+            # self.vlm.language_model.gradient_checkpointing_enable()
             if self.cfg.freeze_vision:
                 self.vlm.visual.eval()
                 self.vlm.visual.requires_grad_(False)
 
-        origin_num_layers = len(self.vlm.model.layers)
+        origin_num_layers = len(self.vlm.language_model.layers)
         if (
             self.cfg.num_vlm_layers is not None
             and self.cfg.num_vlm_layers >= 0
         ):
-            self.vlm.model.layers = self.vlm.model.layers[
+            self.vlm.language_model.layers = self.vlm.language_model.layers[
                 : self.cfg.num_vlm_layers
             ]
 
@@ -132,12 +140,12 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         self.feat_mapping = torch.nn.ModuleList(
             [
                 torch.nn.Linear(
-                    self.vlm.model.config.hidden_size,
+                    self.vlm.language_model.config.hidden_size,
                     self.decoder.embed_dims,
                     bias=True,
                     dtype=torch.bfloat16,
                 )
-                for _ in range(len(self.vlm.model.layers) + 1)
+                for _ in range(len(self.vlm.language_model.layers) + 1)
             ]
         )
         temperature = 3
@@ -147,9 +155,13 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
                 torch.linspace(0.1, 1, highlighted_layer + 1),
                 torch.linspace(1, 0.1, origin_num_layers - highlighted_layer),
             ]
-        )[: len(self.vlm.model.layers) + 1]
+        )[: len(self.vlm.language_model.layers) + 1]
         weight = weight.to(dtype=torch.bfloat16) * temperature
         self.weight = torch.nn.Parameter(weight, requires_grad=True)
+        self.qwen_patch_size = (
+            self.vlm.config.vision_config.patch_size
+            * self.vlm.config.vision_config.spatial_merge_size
+        )
 
     def save_model(
         self, directory: str, model_prefix: str = "model", **kwargs
@@ -253,8 +265,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         img_feature = vlm_outputs[img_feature_mask].unflatten(
             0, (batch_size, -1)
         )
-        qwen_patch_size = 28
-        h_, w_ = h // qwen_patch_size, w // qwen_patch_size
+        h_, w_ = h // self.qwen_patch_size, w // self.qwen_patch_size
         feature_maps = [
             img_feature.reshape(batch_size, num_cams, h_, w_, -1).permute(
                 0, 1, 4, 2, 3
@@ -326,7 +337,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         pixel_values=None,
         image_grid_thw=None,
     ):
-        inputs_embeds = self.vlm.model.embed_tokens(input_ids)
+        inputs_embeds = self.vlm.language_model.embed_tokens(input_ids)
         if pixel_values is not None:
             pixel_values = pixel_values.type(self.vlm.visual.dtype)
             image_embeds = self.vlm.visual(
@@ -357,13 +368,13 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         if attention_mask is not None:
             attention_mask = attention_mask.to(inputs_embeds.device)
 
-        position_ids, _rope_deltas = self.vlm.get_rope_index(
+        position_ids, _rope_deltas = self.vlm.model.get_rope_index(
             input_ids,
             image_grid_thw=image_grid_thw,
             attention_mask=attention_mask,
         )
 
-        outputs = self.vlm.model(
+        outputs = self.vlm.language_model(
             input_ids=None,
             position_ids=position_ids,
             attention_mask=attention_mask,
@@ -374,6 +385,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         )
         return outputs
 
+    @torch.no_grad()
     def _generate_vlm(self, inputs):
         outputs = self.vlm.generate(
             **inputs,
@@ -385,14 +397,13 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         # (ar_times, num_layers + 1, batch_size, seq, hidden_size)
         hidden_states = outputs.hidden_states
         # + 1 for the input embeddings
-        num_hidden_states = self.vlm.config.num_hidden_layers + 1
+        num_hidden_states = len(self.vlm.language_model.layers) + 1
         cated_hidden_states = []
         for i in range(num_hidden_states):
             hs_i = torch.cat([h[i] for h in hidden_states], dim=1)
             cated_hidden_states.append(hs_i)
         cated_hidden_states = tuple(cated_hidden_states)
         outputs.hidden_states = cated_hidden_states
-
         return outputs
 
     def state_dict(self, *args, destination=None, prefix="", keep_vars=False):

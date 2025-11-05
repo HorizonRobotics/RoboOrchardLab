@@ -443,12 +443,13 @@ def build_transforms(
         use_master_joint=False,
         gripper_indices=[6, 13],
     )
+    dst_wh = config.get("dst_wh", (308, 252))
     resize = dict(
         type=Resize,
-        dst_wh=config.get("dst_wh", (308, 252)),
+        dst_wh=dst_wh,
         dst_intrinsic=[
-            [291.31466499988414, 0.0, 151.90650584751774, 0.0],
-            [0.0, 317.15939794199295, 131.32947211181488, 0.0],
+            [290, 0.0, dst_wh[0] / 2, 0.0],
+            [0.0, 310, dst_wh[1] / 2, 0.0],
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],

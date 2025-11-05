@@ -77,6 +77,13 @@ config = dict(
 #     checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/yun01.du/plat_gpu/2025-10-03/23-21/sem_v3.0_with_mobile_traj-20251003-232109.677152/output/checkpoints/checkpoint_40/model.safetensors",  # pretrain with mobile trajectory prediction  # noqa: E501
 # )
 
+# qwen3
+# config.update(
+#     vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
+#     # The Qwen3 patch size is 32. dst_wh must be divisible by the patch size  # noqa: E501
+#     dst_wh=(352, 288),
+# )
+
 
 def build_model(config):
     import copy
@@ -106,6 +113,8 @@ def build_model(config):
         RotaryAttention,
         SEM_Qwen2_5_VL,
         SEM_Qwen2_5_VLConfig,
+        SEM_Qwen3VL,
+        SEM_Qwen3VLConfig,
         SEMActionDecoder,
         SEMActionLoss,
         SEMRobotStateEncoder,
@@ -113,6 +122,15 @@ def build_model(config):
         TextTemplate,
         UpsampleHead,
     )
+
+    if "qwen3" in config["vlm_pretrain"].lower():
+        patch_size = 32
+        model_class = SEM_Qwen3VL
+        model_config = SEM_Qwen3VLConfig
+    else:
+        patch_size = 28
+        model_class = SEM_Qwen2_5_VL
+        model_config = SEM_Qwen2_5_VLConfig
 
     embed_dims = config["embed_dims"]
     decoder_norm = nn.RMSNorm
@@ -155,8 +173,8 @@ def build_model(config):
         "gate_mlp",
     ] * config.get("decoder_layers", 6)
 
-    model = SEM_Qwen2_5_VL(
-        cfg=SEM_Qwen2_5_VLConfig(
+    model = model_class(
+        cfg=model_config(
             with_cot=config["with_cot"],
             vlm_pretrain=config["vlm_pretrain"],
             num_vlm_layers=config.get("num_vlm_layers"),
@@ -175,7 +193,7 @@ def build_model(config):
                         num_depth=config["num_depth"],
                         origin_stride=2,
                         valid_threshold=0.5,
-                        stride=(28,),
+                        stride=(patch_size,),
                     ),
                     dict(
                         type=TextTemplate,
@@ -191,8 +209,8 @@ def build_model(config):
                     depths=[2, 6, 2],
                     num_heads=[2, 4, 8],
                     window_size=8,
-                    patch_size=7,
-                    strides=[7, 2, 2],
+                    patch_size=patch_size // 4,
+                    strides=[patch_size // 4, 2, 2],
                     mlp_ratio=4,
                     qkv_bias=True,
                     qk_scale=None,
