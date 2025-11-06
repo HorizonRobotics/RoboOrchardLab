@@ -580,7 +580,7 @@ class RobotData:
 
     name: str
     """The name of the robot."""
-    urdf_content: str
+    urdf_content: str | None
     """The URDF content of the robot."""
 
     def make_transient_orm(

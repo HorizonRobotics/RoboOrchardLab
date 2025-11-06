@@ -291,7 +291,7 @@ for root, _, files in os.walk(OUTPUT_DATASET_PATH):
         print(f"{sub_indent}{f}")
 
 # %%
-# Now, let's load it just like any other `RODataset`
+# Now, let's load it just like any other :py:class:`~robo_orchard_lab.dataset.robot.dataset.RODataset`
 print("--- Loading the new dataset with RODataset ---")
 
 new_dataset = RODataset(OUTPUT_DATASET_PATH, meta_index2meta=True)

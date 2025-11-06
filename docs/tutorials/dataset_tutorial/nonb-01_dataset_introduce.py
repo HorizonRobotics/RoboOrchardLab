@@ -103,16 +103,33 @@ This creates a critical gap. The community has tried to bridge this,
 most notably with the `LeRobot Dataset <https://docs.phospho.ai/learn/lerobot-dataset>`__ format.
 While a valuable standard, it introduces several key limitations when faced with complex data like the stream above:
 
-1. **Performance Bottlenecks**: LeRobot's reliance on Parquet requires a time and disk intensive conversion to
-Apache Arrow every time it's loaded by the datasets library.
+1. **Lossy Compression for Visual Data**: LeRobot encodes dense visual
+data like RGB images and **depth maps** into standard video files
+(e.g., `.mp4`). Common video codecs are inherently **lossy**, meaning
+pixel-level information is lost during compression. This can be
+problematic for tasks requiring high data fidelity, especially
+with depth or segmentation data.
 
-2. **No Native Multi-frequency Support**: Its flat-table structure cannot natively store multi-frequency signals,
+2. **Limited Sensor Flexibility**: The format is heavily optimized for
+**cameras** and standard robot states. Its reliance on video encoding
+makes it difficult to natively integrate other crucial sensor
+modalities common in robotics, such as **LiDAR point clouds** or
+**tactile sensor arrays**, which don't fit the video paradigm well.
+(See community discussion in `LeRobot GitHub Issue #1144 <https://github.com/huggingface/lerobot/issues/1144>`__).
+
+3. **No Native Multi-frequency Support**: Its flat-table structure cannot natively store multi-frequency signals,
 forcing users to downsample (losing data) or create sparse, bloated tables.
 
-3. **Crude Metadata**: Using flat JSON files for metadata is slow and scales poorly.
+4. **Crude Metadata**: Using flat JSON files for metadata is slow and scales poorly.
 It is impossible to query or filter large datasets without loading them entirely.
 
-4. **Loss of Visualization Fidelity**: The conversion process often breaks the round-trip back to powerful
+5. **Performance Overhead**: LeRobot uses **Parquet** for tabular data.
+While efficient, the Hugging Face `datasets` library requires
+converting Parquet to **Apache Arrow** format upon loading,
+introducing significant time and disk space overhead, especially
+for large datasets.
+
+6. **Loss of Visualization Fidelity**: The conversion process often breaks the round-trip back to powerful
 visualizers like Foxglove.
 
 This is why we created the **RoboOrchard Dataset**. It is designed specifically to solve these
@@ -124,16 +141,16 @@ Introduce the RoboOrchard Dataset format
 Our format is built on two key components:
 
 * Native `Apache Arrow <https://arrow.apache.org/docs/>`__ for **high-performance**,
-  **zero-copy** frame data (fully `Hugging Face dataset <https://huggingface.co/docs/datasets/index>`__ compatible).
+  **zero-copy** and **customize data types** frame data (fully `Hugging Face dataset <https://huggingface.co/docs/datasets/index>`__ compatible).
 
 * An embedded `DuckDB <https://duckdb.org/docs/stable/>`__ database that replaces crude JSON files with a
   powerful SQL engine for all **metadata** (episodes, tasks, instructions, etc.).
 
 This design provides:
 
-1. **Native Performance**: No conversion overhead.
+1. **High Performance**: Native Arrow ensures maximum I/O speed for training with zero conversion delay.
 
-2. **Native Multi-Frequency Support**: Preserves the full fidelity of your raw data.
+2. **Data Fidelity & Flexibility**: Preserves original sensor data (lossless options, multi-frequency support) and allows for easier integration of diverse sensor types like LiDAR or tactile sensors.
 
 3. **Powerful Querying**: Use SQL to filter your dataset before loading.
 

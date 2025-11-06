@@ -38,7 +38,7 @@ class Robot(DatasetORMBase, MD5FieldMixin["Robot"]):
         INTEGER, primary_key=True, autoincrement=False
     )
     name: Mapped[str] = mapped_column(Text)
-    urdf_content: Mapped[str] = mapped_column(Text)
+    urdf_content: Mapped[str | None] = mapped_column(Text)
 
     md5: Mapped[bytes] = mapped_column(BLOB(length=16), index=True)
 
@@ -47,7 +47,8 @@ class Robot(DatasetORMBase, MD5FieldMixin["Robot"]):
 
         The MD5 hash is generated from the URDF content and name.
         """
-        combined_str = f"{self.name}{self.urdf_content}".encode("utf-8")
+        urdf_content_str = self.urdf_content if self.urdf_content else ""
+        combined_str = f"{self.name}{urdf_content_str}".encode("utf-8")
         ret = hashlib.md5(combined_str).digest()
         if self.md5 != ret:
             self.md5 = ret

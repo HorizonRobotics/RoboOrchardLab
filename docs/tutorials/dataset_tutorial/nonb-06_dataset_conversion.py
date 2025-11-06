@@ -48,12 +48,18 @@ Here, we demonstrate how the **RoboOrchard Dataset** handles this:
 # --------------------------------
 #
 
-from typing import Generator
+import os
+import pprint
+from typing import Any, Generator
 
 import datasets as hg_datasets
+import torch
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from robo_orchard_lab.dataset.datatypes import (
+    BatchCameraData,
     BatchJointsState,
+    ImageMode,
 )
 from robo_orchard_lab.dataset.experimental.mcap.batch_decoder import (
     McapBatch2BatchJointStateConfig,
@@ -84,14 +90,18 @@ from robo_orchard_lab.dataset.robot import (
     RODataset,
     TaskData,
 )
+from robo_orchard_lab.dataset.robot.conversion.lerobot_dataset import (
+    LerobotDatasetEpisodePackaging,
+    get_hg_features,
+)
 
 # Define paths
 SOURCE_DATASET_PATH = ".workspace/dummy_dataset/"
-OUTPUT_MCAP_PATH = ".workspace/convention/dummy_dataset_episode0.mcap"
-MCAP_INGEST_DATASET_PATH = ".workspace/convention/dummy_dataset/"
+OUTPUT_MCAP_PATH = ".workspace/conversion/mcap/dummy_dataset_episode0.mcap"
+MCAP_INGEST_DATASET_PATH = ".workspace/conversion/mcap/dataset/"
 
 # %%
-# Mcap Convention
+# Mcap conversion
 # --------------------------------
 #
 
@@ -158,7 +168,7 @@ print(f"You can now open '{OUTPUT_MCAP_PATH}' in Foxglove.")
 
 # %%
 # Part 2: Ingesting MCAP to RoboOrchard Dataset
-# ---------------------------------------------------
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 #
 # This is the "MCAP -> Dataset" workflow, it is the same packaging pattern we learned in the
 # :ref:`previous tutorial <sphx_glr_build_tutorials_dataset_tutorial_nonb-05_dataset_create.py>`.
@@ -283,16 +293,188 @@ packager.packaging(
 print("--- Ingestion Complete! ---")
 
 # %%
-# Lerobot Dataset Convention
+# Lerobot Dataset Conversion
 # --------------------------------
 #
-# Interoperability with the most popular `Lerobot Dataset <https://docs.phospho.ai/learn/lerobot-dataset>`__
-# formats is a key goal.
+# This section details our interoperability strategy with `LeRobot Dataset <https://huggingface.co/docs/lerobot/lerobot-dataset-v3>`__.
 #
-# Currently, direct conversion tools between **RoboOrchard Dataset** and
-# the `Lerobot Dataset <https://docs.phospho.ai/learn/lerobot-dataset>`__
-# format are **in development**.
+# 1. We **provide** a clear path for **ingesting** data from LeRobot Dataset to RoboOrchard Dataset.
 #
-# Please check the library's documentation for future updates on
-# this feature.
+# 2. We **do not** provide a utility for **exporting** data from RoboOrchard Dataset to LeRobot Dataset.
 #
+# This one-way conversion is a deliberate design choice based on the
+# fundamental limitations of the LeRobot format, which we discussed
+# in the :ref:`Community Solutions Overview <sphx_glr_build_tutorials_dataset_tutorial_nonb-01_dataset_introduce.py>`.
+#
+# Exporting our high-fidelity format back to LeRobot Dataset would force
+# us to accept data degradation and loss of flexibility.
+#
+
+# %%
+# Part 1: Ingesting Lerobot Dataset to RoboOrchard Dataset
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# The process for ingesting a `LeRobot Dataset <https://huggingface.co/docs/lerobot/lerobot-dataset-v3>`__
+# follows the exact same packaging pattern as our MCAP ingestion.
+#
+# 1.  Define a **Target Schema**: We define what we want our
+#     new RoboOrchard dataset to look like (e.g., using
+#     `BatchJointsStateFeature`).
+#
+# 2.  Define a **Transform Function**: This function will read the
+#     *raw* LeRobot frame (a dict of Tensors or string) and "transform" it
+#     to match our target schema (e.g., merging columns into a
+#     :py:class:`~robo_orchard_core.datatypes.joint_state.BatchJointsState` object).
+#
+# 3.  Run the :py:class:`~robo_orchard_lab.dataset.robot.packaging.DatasetPackaging` engine.
+#
+# .. note::
+#
+#    This example requires lerobot to be installed. (``pip install lerobot``)
+#
+
+# %%
+# Example A: Using default conversion
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+# This example uses the default behavior. We pass ``transform=None``.
+# The :py:class:`~robo_orchard_lab.dataset.robot.conversion.lerobot_dataset.LerobotDatasetEpisodePackaging`
+# will use the :py:class:`~robo_orchard_lab.dataset.robot.conversion.lerobot_dataset.DefaultTransform`,
+# and the :py:func:`~robo_orchard_lab.dataset.robot.conversion.lerobot_dataset.get_hg_features` function will
+# define the schema using `hg_datasets.features.Image()`.
+#
+# This creates a standard, simple Hugging Face dataset.
+#
+
+TARGET_LEROBOT_CONVERT_PATH = (
+    ".workspace/conversion/lerobot/default_ts/dataset"
+)
+
+EPISODE_IDX = list(range(2))
+
+os.environ["HF_DATASETS_CACHE"] = os.path.join(
+    TARGET_LEROBOT_CONVERT_PATH, ".cache"
+)
+
+lerobot_dataset = LeRobotDataset(
+    "yaak-ai/L2D-v3",
+    episodes=EPISODE_IDX,
+    video_backend="pyav",  # for compatible purpose
+)
+
+target_features = get_hg_features(lerobot_dataset)
+print("Target Schema (features):\n{}".format(pprint.pformat(target_features)))
+
+# %%
+# Create the list of packagers
+episodes_to_package = []
+for ep_idx in EPISODE_IDX:
+    # We access the metadata by index
+    episode_meta = lerobot_dataset.meta.episodes[ep_idx]
+    episodes_to_package.append(
+        LerobotDatasetEpisodePackaging(
+            lerobot_dataset,
+            episode_meta,
+            max_frames=2,  # for demo purpose
+        )
+    )
+
+ro_dataset_packer = DatasetPackaging(
+    features=target_features, check_timestamp=True
+)
+ro_dataset_packer.packaging(
+    episodes=episodes_to_package,
+    dataset_path=TARGET_LEROBOT_CONVERT_PATH,
+    max_shard_size="100MB",
+    force_overwrite=True,
+)
+
+# %%
+# Example B: Using custom conversion
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+# This example uses the `transform` argument to upgrade the
+# data structure during ingestion. We will convert LeRobot's
+# image tensors into our custom :py:class:`~robo_orchard_core.datatypes.camera.BatchCameraData` objects
+#
+
+
+TARGET_LEROBOT_CONVERT_PATH = ".workspace/conversion/lerobot/custom/dataset"
+
+EPISODE_IDX = list(range(2))
+
+os.environ["HF_DATASETS_CACHE"] = os.path.join(
+    TARGET_LEROBOT_CONVERT_PATH, ".cache"
+)
+
+lerobot_dataset = LeRobotDataset(
+    "yaak-ai/L2D-v3",
+    episodes=EPISODE_IDX,
+    video_backend="pyav",  # for compatible purpose
+)
+
+target_features = get_hg_features(lerobot_dataset)
+# upgrade all camera data features to BatchCameraDataFeature
+for key in lerobot_dataset.meta.camera_keys:
+    if key in target_features:
+        target_features[key] = BatchCameraData.dataset_feature()
+print("Target Schema (features):\n{}".format(pprint.pformat(target_features)))
+
+
+# %%
+#
+class FrameDataAdaptor:
+    def __init__(self, camera_keys: list[str]):
+        self.camera_keys = camera_keys
+
+    def __call__(self, frame_data: dict[str, Any]) -> dict[str, Any]:
+        new_frame_data = dict()
+
+        for key, value in frame_data.items():
+            if key in self.camera_keys:
+                # Note: Lerobot dataset will normalize the image data
+                value = (value * 255).type(torch.uint8)
+                new_frame_data[key] = BatchCameraData(
+                    sensor_data=value[None, ...], pix_fmt=ImageMode.RGB
+                )
+            else:
+                if isinstance(value, torch.Tensor):
+                    value = value.numpy()
+                new_frame_data[key] = value
+
+        return new_frame_data
+
+
+# Create the list of packagers
+episodes_to_package = []
+for ep_idx in EPISODE_IDX:
+    # We access the metadata by index
+    episode_meta = lerobot_dataset.meta.episodes[ep_idx]
+    episodes_to_package.append(
+        LerobotDatasetEpisodePackaging(
+            lerobot_dataset,
+            episode_meta,
+            max_frames=2,  # for demo purpose
+            transform=FrameDataAdaptor(
+                camera_keys=lerobot_dataset.meta.camera_keys
+            ),
+        )
+    )
+
+ro_dataset_packer = DatasetPackaging(
+    features=target_features, check_timestamp=True
+)
+ro_dataset_packer.packaging(
+    episodes=episodes_to_package,
+    dataset_path=TARGET_LEROBOT_CONVERT_PATH,
+    max_shard_size="100MB",
+    force_overwrite=True,
+)
+
+# %%
+#
+ro_dataset = RODataset(TARGET_LEROBOT_CONVERT_PATH)
+sample = ro_dataset[0]
+for key, value in sample.items():
+    if key in lerobot_dataset.meta.camera_keys:
+        print("key = {}, value type = {}".format(key, type(value)))
