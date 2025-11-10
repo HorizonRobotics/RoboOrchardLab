@@ -26,10 +26,11 @@ from typing import (
 )
 
 from robo_orchard_core.utils.config import ClassType
-from torchmetrics import Metric
 
+from robo_orchard_lab.metrics.base import MetricProtocol
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
+    ModelOutput,
     PipelineHookArgs,
     PipelineHooks,
     PipelineHooksConfig,
@@ -46,7 +47,7 @@ class MetricEntry:
     """A class representing an entry for tracking a metric."""
 
     names: Sequence[str] | str  # type: ignore
-    metric: Metric
+    metric: MetricProtocol
 
     def __post_init__(self) -> None:
         """Initializes the names attribute as a sequence."""
@@ -126,7 +127,7 @@ class MetricTracker(PipelineHooks):
         )
 
     @abstractmethod
-    def update_metric(self, batch: Any, model_outputs: Any) -> None:
+    def update_metric(self, batch: Any, model_outputs: ModelOutput) -> None:
         """Updates the metrics using the current batch data and model outputs.
 
         This method must be implemented in subclasses to define how the metrics
@@ -138,10 +139,10 @@ class MetricTracker(PipelineHooks):
             batch (Any): The current batch of data from the dataset. It is
                 expected to contain all necessary inputs (e.g., features,
                 labels) required for metric computation.
-            model_outputs (Any): The outputs produced by the model for the
-                given batch. This could include predictions, probabilities,
-                logits, or other outputs, depending on the model architecture
-                and task.
+            model_outputs (ModelOutput): The outputs produced by the model
+                for the given batch. This could include predictions,
+                probabilities, logits, or other outputs, depending on the
+                model architecture and task.
 
         Example:
             A typical implementation in a subclass might look like this:
@@ -185,7 +186,8 @@ class MetricTracker(PipelineHooks):
             device information.
         """
         for metric_i in self.metrics:
-            metric_i.to(args.accelerator.device)
+            if hasattr(metric_i, "to"):
+                metric_i.to(args.accelerator.device)  # type: ignore
 
     def _on_batch_end(self, args: PipelineHookArgs) -> None:
         """Callback when batch ends.
@@ -196,6 +198,8 @@ class MetricTracker(PipelineHooks):
             args (PipelineHookArgs): Arguments containing the batch data and
             model outputs.
         """
+        if args.model_outputs is None:
+            raise ValueError("Model outputs are required to update metrics.")
         self.update_metric(args.batch, args.model_outputs)
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:

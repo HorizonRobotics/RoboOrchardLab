@@ -42,6 +42,15 @@ class Instruction(DatasetORMBase, MD5FieldMixin["Instruction"]):
 
     md5: Mapped[bytes] = mapped_column(BLOB(length=16), index=True)
 
+    @classmethod
+    def md5_content_fields(cls) -> list[str]:
+        exclude_keys = ["index", "md5"]
+        ret = []
+        for key in cls.__table__.columns.keys():
+            if key not in exclude_keys:
+                ret.append(key)
+        return ret
+
     def update_md5(self) -> bytes:
         """Generate a unique MD5 hash for the instruction content.
 

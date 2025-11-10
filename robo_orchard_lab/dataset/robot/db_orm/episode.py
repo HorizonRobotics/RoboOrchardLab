@@ -42,8 +42,11 @@ class Episode(DatasetORMBase):
     """The unique index of the episode."""
 
     dataset_begin_index: Mapped[int] = mapped_column(BIGINT)
+    """The index of the first dataset item in this episode.
 
-    """The index of the first dataset item in this episode."""
+    Can be -1 if not available. User should fix it after all
+    processings are done.
+    """
 
     frame_num: Mapped[int] = mapped_column(INTEGER)
 

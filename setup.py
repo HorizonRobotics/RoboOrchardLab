@@ -224,7 +224,7 @@ if __name__ == "__main__":
         # use git url to install the latest version.
         # This is for non-release version only.
         # "robo_orchard_core==0.2.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@7cfd9e8758cf79c0265730b315e1c905f4466058",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@c20938a40c370037f1cc55513017f4afc7448438",
     ]
     # optional dependencies
     extras_require = {

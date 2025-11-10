@@ -184,7 +184,8 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         to a JSON file in the `output_dir`.
 
         The configuration is saved as `model_{id}.config.json` where `{id}`
-        corresponds to the model's `accelerate_model_id`.
+        corresponds to the model's `accelerate_model_id`. If there is only one
+        model, it is saved as `model.config.json`.
 
         Note:
             This hook only saves the configuration. The model weights (`state_dict`)
@@ -199,7 +200,11 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         """  # noqa: E501
 
         model_id = self.accelerate_model_id
-        filename = f"model_{model_id}.config.json"
+
+        if len(models) == 1:
+            filename = "model.config.json"
+        else:
+            filename = f"model_{model_id}.config.json"
         logger.info(f"Saving model config to {filename}.")
         with open(os.path.join(output_dir, filename), "w") as f:
             f.write(self.cfg.model_dump_json(indent=4))
@@ -279,6 +284,15 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
             )
 
         if accelerator is not None:
+            # save model will be:
+            #   directory/model.safetensors
+            #   or directory/model-00001-of-00005.safetensors ...
+            if model_prefix is not None and model_prefix != "model":
+                logger.warning(
+                    "model_prefix is ignored when saving with accelerator. "
+                    "When using accelerator, the model prefix is "
+                    "always 'model'."
+                )
             accelerator.save_model(self, save_directory=directory)
         else:
             assert model_prefix is not None
@@ -421,7 +435,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
 
         Args:
             directory (str): The path to the directory containing the model's
-                configuration file and state dictionary file.
+                configuration file and pretrained weights file.
             device (str|None, optional): The device (e.g., "cpu", "cuda:0")
                 onto which the model's state dictionary should be loaded.
                 Passed to `load_file` for loading the safetensors file.
@@ -436,7 +450,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
                 `state_dict()` function. Passed to `model.load_state_dict()`.
                 Defaults to True.
             model_prefix (str, optional): The prefix for the configuration
-                and state dictionary files. For example, if "model", files
+                and weights files. For example, if prefix is "model", files
                 will be sought as "model.config.json" and "model.safetensors".
                 Defaults to "model".
             load_impl (Literal["native", "accelerate"], optional): The

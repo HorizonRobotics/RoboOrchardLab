@@ -140,6 +140,31 @@ class RODataset(TorchDataset):
 
         self._transform: Callable[[dict], dict] | None = None
 
+    @staticmethod
+    def from_dataset(
+        frame_dataset: HFDataset,
+        meta_db_engine: Engine,
+        meta_index2meta: bool = False,
+    ) -> RODataset:
+        """Create a RODataset from a frame dataset and meta db engine."""
+
+        if frame_dataset._indices is not None:
+            raise ValueError(
+                "frame_dataset should not have any indices. "
+                "Please reset the indices before creating RODataset."
+            )
+
+        ret = RODataset.__new__(RODataset)
+        ret.frame_dataset = frame_dataset
+        ret.index_dataset = ret.frame_dataset.select_columns(
+            column_names=list(PreservedIndexColumnsKeys)
+        )
+        ret.meta_index2meta = meta_index2meta
+        ret._dataset_format_version = None
+        ret.db_engine = meta_db_engine
+        ret._transform = None
+        return ret
+
     def __repr__(self) -> str:
         # ret = "RODataset(num_rows={})".format(len(self))
         dict_info = {}

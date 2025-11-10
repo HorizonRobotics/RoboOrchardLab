@@ -96,26 +96,34 @@ class RePackingEpisodeHelper(EpisodePackaging):
             Instruction, index_rows["instruction_index"]
         )
 
-        for i, idx in enumerate(self.frame_index_list):
-            row = self.dataset.frame_dataset[idx]
-            instruction_index = row["instruction_index"]
-            orm_instruction = all_instruction[i]
-            if orm_instruction is None:
-                raise RuntimeError(
-                    f"Instruction not found for frame index {idx} "
-                    f"with instruction_index {instruction_index}"
-                )
-            features = {key: row[key] for key in keep_columns}
-            frame = DataFrame(
-                features=features,
-                instruction=InstructionData(
-                    name=orm_instruction.name,
-                    json_content=orm_instruction.json_content,
-                ),
-                timestamp_ns_min=row["timestamp_min"],
-                timestamp_ns_max=row["timestamp_max"],
+        # split self.frame_index_list into batches
+        batch_size = 128
+        for batch_start in range(0, len(self.frame_index_list), batch_size):
+            batch_end = min(
+                batch_start + batch_size, len(self.frame_index_list)
             )
-            yield frame
+            batch_indices = self.frame_index_list[batch_start:batch_end]
+            batch_row = self.dataset.frame_dataset.__getitems__(batch_indices)
+            for i, idx in enumerate(batch_indices):
+                row = batch_row[i]
+                instruction_index = row["instruction_index"]
+                orm_instruction = all_instruction[batch_start + i]
+                if orm_instruction is None:
+                    raise RuntimeError(
+                        f"Instruction not found for frame index {idx} "
+                        f"with instruction_index {instruction_index}"
+                    )
+                features = {key: row[key] for key in keep_columns}
+                frame = DataFrame(
+                    features=features,
+                    instruction=InstructionData(
+                        name=orm_instruction.name,
+                        json_content=orm_instruction.json_content,
+                    ),
+                    timestamp_ns_min=row["timestamp_min"],
+                    timestamp_ns_max=row["timestamp_max"],
+                )
+                yield frame
 
 
 class RePackingDatasetHelper:
@@ -139,24 +147,37 @@ class RePackingDatasetHelper:
         current_episode_index = None
         current_episode_frames = []
 
+        def process_batch(batch_frame_indices: list[int]):
+            nonlocal current_episode_index, current_episode_frames
+            batch_rows = self.dataset.index_dataset.__getitems__(
+                batch_frame_indices
+            )
+            for i, frame_index in enumerate(batch_frame_indices):
+                row = batch_rows[i]
+                episode_index = row["episode_index"]
+                # only for first frame, assign current_episode_index
+                if current_episode_index is None:
+                    current_episode_index = episode_index
+
+                if episode_index != current_episode_index:
+                    # yield the previous episode
+                    yield RePackingEpisodeHelper(
+                        self.dataset, current_episode_frames
+                    )
+                    current_episode_index = episode_index
+                    current_episode_frames = [frame_index]
+                else:
+                    current_episode_frames.append(frame_index)
+
+        batch_size = 1024
+        batch_frame_indices = []
         for frame_index in self.frame_indices:
-            row = self.dataset.frame_dataset[frame_index]
-            episode_index = row["episode_index"]
-
-            # only for first frame, assign current_episode_index
-            if current_episode_index is None:
-                current_episode_index = episode_index
-
-            if episode_index != current_episode_index:
-                # yield the previous episode
-                yield RePackingEpisodeHelper(
-                    self.dataset, current_episode_frames
-                )
-                current_episode_index = episode_index
-                current_episode_frames = [frame_index]
-            else:
-                current_episode_frames.append(frame_index)
-
+            batch_frame_indices.append(frame_index)
+            if len(batch_frame_indices) >= batch_size:
+                yield from process_batch(batch_frame_indices)
+                batch_frame_indices.clear()
+        if batch_frame_indices:
+            yield from process_batch(batch_frame_indices)
         if current_episode_frames:
             yield RePackingEpisodeHelper(self.dataset, current_episode_frames)
 

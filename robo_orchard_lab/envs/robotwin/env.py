@@ -419,7 +419,22 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     """
 
+    task_config_path: str | None = None
+    """Path to the task configuration file.
+
+    If not provided, the path will be set to
+    `<RoboTwin_PATH>/task_config/_config_template.yml` for RoboTwin2.0.
+
+    Note that we only support RoboTwin2.0 for now.
+    """
+
     def __post_init__(self):
+        if self.task_config_path is None:
+            robo_twin_root = config_robotwin_path()
+            self.task_config_path = os.path.join(
+                robo_twin_root, "task_config", "_config_template.yml"
+            )
+
         task_config_path = self.task_config_path
         if not os.path.exists(task_config_path):
             raise FileNotFoundError(
@@ -450,21 +465,6 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             self.seed = new_seed
 
     @property
-    def task_config_path(self) -> str:
-        """Path to the task configuration file."""
-        robo_twin_root = config_robotwin_path()
-        ret = os.path.join(
-            robo_twin_root, "task_config", f"{self.task_name}.yml"
-        )
-        if os.path.exists(ret):
-            return ret
-        else:
-            # for RoboTwin 2.0.
-            return os.path.join(
-                robo_twin_root, "task_config", "_config_template.yml"
-            )
-
-    @property
     def embodiment_config_path(self) -> str:
         """Path to the embodiment configuration file."""
         robo_twin_root = config_robotwin_path()
@@ -482,7 +482,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     def get_task_config(self) -> dict[str, Any]:
         """Get the configuration for the task."""
-
+        assert self.task_config_path is not None
         with (
             open(self.task_config_path, "r", encoding="utf-8") as f,
         ):
