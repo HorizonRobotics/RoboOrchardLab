@@ -143,7 +143,7 @@ class SimpleTrainer(HookBasedTrainer):
             # use weakref.proxy to avoid circular reference
             self_proxy: SimpleTrainer = weakref.proxy(self)  # type: ignore
 
-            def eval_callback():
+            def eval_callback(model: torch.nn.Module):
                 self_proxy.eval()
 
             val_cfg = ValidationConfig(

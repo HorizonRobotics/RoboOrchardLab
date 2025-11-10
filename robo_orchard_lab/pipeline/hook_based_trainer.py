@@ -181,7 +181,7 @@ class HookBasedTrainer:
 
     Note:
         The trainer will register the following default hooks in order
-        at beginning:
+        at beginning if applicable:
 
         - `GradientClippingHook`: This hook is responsible for clipping
             the gradients to prevent exploding gradients. It will be
@@ -189,6 +189,7 @@ class HookBasedTrainer:
 
         - `OptimizerHook`: This hook is responsible for performing the
             optimization step and updating the learning rate scheduler.
+            This hook will always be registered!
 
         - `ValidationHook`: This hook is responsible for performing
             validation during training. It will call the evaluation
