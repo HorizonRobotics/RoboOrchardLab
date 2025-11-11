@@ -317,8 +317,18 @@ class TestDatasetPackaging:
 
 
 class TestDataset:
+    def test_no_lockfiles(self, example_dataset_path: str):
+        database_p_dir = os.path.dirname(example_dataset_path)
+        import glob
+
+        lockfiles = glob.glob(
+            os.path.join(database_p_dir, "*.lock"), recursive=True
+        )
+        assert len(lockfiles) == 0
+
     def test_load_dataset(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)
+
         assert len(dataset.frame_dataset) == 8
         assert len(dataset.frame_dataset) == len(dataset)
         assert "data" in dataset.frame_dataset.column_names

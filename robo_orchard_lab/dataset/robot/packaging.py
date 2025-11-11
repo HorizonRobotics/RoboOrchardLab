@@ -420,6 +420,22 @@ class DatasetPackaging:
         ) as state_file:
             json.dump(state, state_file, indent=2, sort_keys=True)
 
+        # remove lock files if exist.
+        # lock files is required during building the dataset,
+        # but not needed after the dataset is built.
+        lockfiles_postfix = [
+            ".incomplete_info.lock",
+            "_builder.lock",
+        ]
+        dataset_parent_dir = os.path.dirname(dataset_path)
+        dataset_name = os.path.basename(dataset_path)
+        for postfix in lockfiles_postfix:
+            lockfile_path = os.path.join(
+                dataset_parent_dir, f"{dataset_name}{postfix}"
+            )
+            if fs.exists(lockfile_path):
+                fs.rm(lockfile_path)
+
     def packaging(
         self,
         episodes: Iterable[EpisodePackaging],
