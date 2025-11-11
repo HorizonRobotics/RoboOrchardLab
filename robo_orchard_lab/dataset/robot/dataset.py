@@ -34,7 +34,9 @@ from datasets import (
     Dataset as HFDataset,
     Features,
 )
-from datasets.arrow_dataset import Column
+from datasets.arrow_dataset import (
+    Column,
+)
 from sqlalchemy import URL, Engine, select
 from sqlalchemy.orm import Session, make_transient
 from typing_extensions import Self
@@ -146,7 +148,13 @@ class RODataset(TorchDataset):
         meta_db_engine: Engine,
         meta_index2meta: bool = False,
     ) -> RODataset:
-        """Create a RODataset from a frame dataset and meta db engine."""
+        """Create a RODataset from a frame dataset and meta db engine.
+
+        This method does not perform any checks on the input frame_dataset
+        and meta_db_engine. It is the caller's responsibility to ensure
+        that the frame_dataset contains the necessary index columns and
+        that the meta_db_engine is connected to a valid meta database.
+        """
 
         if frame_dataset._indices is not None:
             raise ValueError(
@@ -155,14 +163,18 @@ class RODataset(TorchDataset):
             )
 
         ret = RODataset.__new__(RODataset)
-        ret.frame_dataset = frame_dataset
-        ret.index_dataset = ret.frame_dataset.select_columns(
-            column_names=list(PreservedIndexColumnsKeys)
-        )
-        ret.meta_index2meta = meta_index2meta
-        ret._dataset_format_version = None
-        ret.db_engine = meta_db_engine
-        ret._transform = None
+
+        state_dict = {
+            "frame_dataset": frame_dataset,
+            "index_dataset": frame_dataset.select_columns(
+                column_names=list(PreservedIndexColumnsKeys)
+            ),
+            "meta_index2meta": meta_index2meta,
+            "_dataset_format_version": None,
+            "db_engine": meta_db_engine,
+            "_transform": None,
+        }
+        ret.__setstate__(state_dict)
         return ret
 
     def __repr__(self) -> str:
@@ -203,8 +215,14 @@ class RODataset(TorchDataset):
         """Set the state of the dataset from a pickled state."""
         # restore db_engine from url
         state = state.copy()
-        db_engine_url = state.pop("db_engine_url")
-        state["db_engine"] = create_engine(db_engine_url, readonly=True)
+        if (db_engine_url := state.pop("db_engine_url", None)) is not None:
+            state["db_engine"] = create_engine(db_engine_url, readonly=True)
+        else:
+            if "db_engine" not in state:
+                raise KeyError(
+                    "db_engine_url not found in state. "
+                    "Cannot restore db_engine."
+                )
         # restore other state
         self.__dict__.update(state)
 

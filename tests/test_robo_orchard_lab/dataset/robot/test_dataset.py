@@ -16,6 +16,7 @@
 import os
 import random
 import string
+import tempfile
 from typing import Generator
 
 import datasets as hg_datasets
@@ -37,6 +38,10 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Instruction,
     Robot,
     Task,
+)
+from robo_orchard_lab.dataset.robot.merge import (
+    create_merged_dataset,
+    merge_datasets,
 )
 from robo_orchard_lab.dataset.robot.packaging import (
     DataFrame,
@@ -1087,3 +1092,84 @@ class TestConcatRODataset:
 
         assert multi_row["joints"][0] == multi_row["joints"][1]
         assert multi_row["joints"][0] == dataset[100]["joints"]
+
+
+class TestMergeDataset:
+    @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
+    def test_merge_datasets(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+        tmp_local_folder: str,
+        cache_source_mappings_in_memory: bool,
+    ):
+        dataset_path_list = [
+            "robo_orchard_workspace/datasets/robotwin2.0/aloha_agilex_demo_clean_filtered_mini",  # noqa
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        ]
+        dataset_full_path_list = [
+            os.path.join(ROBO_ORCHARD_TEST_WORKSPACE, p)
+            for p in dataset_path_list
+        ]
+        datasets = [
+            RODataset(dataset_path=p, meta_index2meta=True)
+            for p in dataset_full_path_list
+        ]
+
+        target_dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_merge_datasets_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+
+        print("datasets to merge: ", datasets)
+        row_to_check = [0, 1, 2, 3, 1000, 1003, 2000, 2003]
+        with tempfile.TemporaryDirectory() as cur_tmp_local_folder:
+            merged_dataset = create_merged_dataset(
+                datasets=datasets,
+                cache_dir=cur_tmp_local_folder,
+                cache_meta_idx_mappings_in_memory=(
+                    cache_source_mappings_in_memory
+                ),
+            )
+
+            # check length
+            total_len = sum(len(d) for d in datasets)
+            assert len(merged_dataset) == total_len
+            merged_dataset.meta_index2meta = True
+            # check some data
+            print("checking merged dataset rows...")
+
+            for i in row_to_check:
+                merged_row = merged_dataset[i]
+                dataset_idx = 0 if i < len(datasets[0]) else 1
+                dataset_row_idx = (
+                    i if dataset_idx == 0 else i - len(datasets[0])
+                )
+                original_row = datasets[dataset_idx][dataset_row_idx]
+                assert merged_row["joints"] == original_row["joints"]
+                assert merged_row["task"].md5 == original_row["task"].md5
+                assert (
+                    merged_row["instruction"].md5
+                    == original_row["instruction"].md5
+                )
+
+        # save merge dataset to disk
+        merge_datasets(
+            datasets=datasets,
+            target_path=target_dataset_dir,
+            cache_meta_idx_mappings_in_memory=cache_source_mappings_in_memory,
+        )
+        merged_dataset = RODataset(
+            dataset_path=target_dataset_dir, meta_index2meta=True
+        )
+        for i in row_to_check:
+            merged_row = merged_dataset[i]
+            dataset_idx = 0 if i < len(datasets[0]) else 1
+            dataset_row_idx = i if dataset_idx == 0 else i - len(datasets[0])
+            original_row = datasets[dataset_idx][dataset_row_idx]
+            assert merged_row["joints"] == original_row["joints"]
+            assert merged_row["task"].md5 == original_row["task"].md5
+            assert (
+                merged_row["instruction"].md5
+                == original_row["instruction"].md5
+            )

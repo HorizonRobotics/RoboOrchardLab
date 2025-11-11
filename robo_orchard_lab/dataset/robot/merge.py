@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import os
+import tempfile
 from typing import Type, TypeVar
 
 import numpy as np
@@ -23,19 +24,31 @@ from datasets import (
     Dataset as HFDataset,
     Features,
 )
-from datasets.arrow_dataset import _concatenate_map_style_datasets
+from datasets.arrow_dataset import (
+    _align_features,
+    _concatenate_map_style_datasets,
+)
 from datasets.arrow_writer import ArrowWriter
-from sqlalchemy import select
+from datasets.features.features import _check_if_features_can_be_aligned
+from sqlalchemy import URL, select
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
+from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.db_orm import (
+    DatasetORMBase,
     Episode,
     Instruction,
     Robot,
     Task,
 )
 from robo_orchard_lab.dataset.robot.db_orm.md5 import MD5ObjCache
+from robo_orchard_lab.dataset.robot.engine import create_engine, create_tables
+
+__all__ = [
+    "create_merged_dataset",
+    "merge_datasets",
+]
 
 MD5TableType = TypeVar("MD5TableType", bound=Instruction | Robot | Task)
 
@@ -44,7 +57,7 @@ def _merge_md5_table(
     orm_type: Type[MD5TableType],
     src_session: Session,
     dst_session: Session,
-    src_index_mapping: np.ndarray,
+    src_index_mapping: np.ndarray | dict[int, int],
     batch_size: int = 500,
 ) -> None:
     dst_max_index = (
@@ -116,9 +129,9 @@ def _merge_md5_table(
 def _merge_episode_table(
     src_session: Session,
     dst_session: Session,
-    robot_mapping: np.ndarray,
-    task_mapping: np.ndarray,
-    src_index_mapping: np.ndarray,
+    robot_mapping: np.ndarray | dict[int, int],
+    task_mapping: np.ndarray | dict[int, int],
+    src_index_mapping: np.ndarray | dict[int, int],
     batch_size: int = 500,
 ):
     # get next available episode index in dst_session
@@ -161,23 +174,28 @@ def _merge_episode_table(
 
 
 def _merge_meta_db(
-    src_session: Session, dst_session: Session, cache_dir: str
-) -> dict[str, np.ndarray]:
+    src_session: Session, dst_session: Session, cache_dir: str | None
+) -> dict[str, np.ndarray | dict[int, int]]:
     """Merge meta database from src_session to dst_session.
 
     Args:
         src_session (Session): The source database session.
         dst_session (Session): The destination database session.
+        cache_dir: str | None: The directory to store the index mapping
+            files. If None, use memory dict instead.
 
     Returns:
-        dict[str, np.ndarray]: A mapping from table name to index mapping
-            array. Each index mapping array maps from source index to
-            destination index.
+        dict[str, np.ndarray | dict[int, int]]: A mapping from table name
+            to index mapping array. Each index mapping array maps from
+            source index to destination index.
     """
 
     def prepare_index_mapping(
-        cache_dir: str, orm_type: Type[Instruction | Robot | Task | Episode]
-    ) -> np.ndarray:
+        cache_dir: str | None,
+        orm_type: Type[Instruction | Robot | Task | Episode],
+    ) -> np.ndarray | dict[int, int]:
+        if cache_dir is None:
+            return {}
         max_src_index = (
             src_session.query(orm_type.index)
             .order_by(orm_type.index.desc())
@@ -202,7 +220,7 @@ def _merge_meta_db(
         index_mapping[:] = -1  # initialize to -1
         return index_mapping
 
-    src_index_mapping: dict[str, np.ndarray] = {}
+    src_index_mapping: dict[str, np.ndarray | dict[int, int]] = {}
 
     for orm_type in (Instruction, Robot, Task):
         index_mapping = prepare_index_mapping(
@@ -233,7 +251,7 @@ def _merge_meta_db(
 
 def _remap_meta_index(
     frame_dataset: HFDataset,
-    index_mapping: dict[str, np.ndarray],
+    index_mapping: dict[str, np.ndarray | dict[int, int]],
     target_index_start: int,
     cached_index_path: str,
 ) -> HFDataset:
@@ -248,8 +266,8 @@ def _remap_meta_index(
 
     Args:
         frame_dataset (HFDataset): The frame dataset to remap.
-        index_mapping (dict[str, np.ndarray]): A mapping from meta table
-            name to index mapping array.
+        index_mapping (dict[str, np.ndarray|dict[int, int]]): A mapping from
+            meta table name to index mapping array.
         target_index_start (int): The starting index for the `index` column
             offset.
         cached_index_path (str): The path to save the remapped Arrow file.
@@ -271,7 +289,16 @@ def _remap_meta_index(
     for column_name, src_name in mapping_columns:
         column_idx_mapping = index_mapping[src_name]
         origin_column = frame_dataset[column_name]
-        new_column: np.ndarray = column_idx_mapping[origin_column]
+        if isinstance(column_idx_mapping, dict):
+            new_column = np.array(
+                [
+                    column_idx_mapping.get(int(idx), -1)
+                    for idx in origin_column
+                ],
+                dtype=np.int64,
+            )
+        else:
+            new_column: np.ndarray = column_idx_mapping[origin_column]
         # check that all indices are valid
         if np.any(new_column < 0):
             raise ValueError(f"Invalid index found in column {column_name}.")
@@ -299,6 +326,7 @@ def _remap_meta_index(
     instruction_column_writer.close()
 
     mapped_idx_dataset = HFDataset.from_file(cached_index_path)
+
     mapped_dataset = _concatenate_map_style_datasets(
         [
             frame_dataset.select_columns(
@@ -314,3 +342,120 @@ def _remap_meta_index(
     )
 
     return mapped_dataset
+
+
+def create_merged_dataset(
+    datasets: list[RODataset],
+    cache_dir: str,
+    db_driver: str = "duckdb",
+    cache_meta_idx_mappings_in_memory: bool = False,
+) -> RODataset:
+    """Merge multiple RODatasets into a single RODataset.
+
+    Args:
+        datasets (list[RODataset]): The list of RODatasets to merge.
+        cache_dir (str): The directory to store the merged meta database
+            and temporary files.
+            Note that this directory should not be deleted until the merged
+            dataset is no longer needed, as the merged dataset relies on
+            the meta database stored in this directory.
+        db_driver (str, optional): The database driver to use for the
+            merged meta database. Defaults to "duckdb".
+        cache_meta_idx_mappings_in_memory (bool, optional): Whether to cache
+            the source to destination index mappings in memory.
+            If False, the mappings will be stored in a memory mapped temporary
+            files in `cache_dir`, which use dense numpy arrays.
+            If True, the mappings will be stored in memory using dicts,
+            which may use more memory but may be faster for sources with
+            sparse indices. Defaults to False.
+
+    Returns:
+        RODataset: The merged RODataset.
+    """
+    if len(datasets) == 0:
+        raise ValueError("datasets cannot be empty.")
+    # check and align features
+    features_list = [ds.frame_dataset.features for ds in datasets]
+    _check_if_features_can_be_aligned(features_list)
+    features_list = _align_features(features_list)
+    features = Features(
+        {k: v for features in features_list for k, v in features.items()}
+    )
+    # initialize meta database
+    db_file_name = f"meta_db.{db_driver}"
+    dst_db_path = os.path.join(cache_dir, db_file_name)
+    if os.path.exists(dst_db_path):
+        os.remove(dst_db_path)
+    meta_db_engine = create_engine(
+        url=URL.create(
+            drivername=db_driver,
+            database=dst_db_path,
+        ),
+        echo=False,
+    )
+    create_tables(engine=meta_db_engine, base=DatasetORMBase)
+    frame_dataset = HFDataset.from_dict(
+        features=features, mapping={k: [] for k in features.keys()}
+    )
+    for i, dataset in enumerate(tqdm(datasets, desc="Merging datasets")):
+        # create a temporary cache directory for each dataset
+        with tempfile.TemporaryDirectory() as local_cache_dir:
+            with (
+                Session(dataset.db_engine) as src_session,
+                Session(meta_db_engine) as dst_session,
+            ):
+                src_idx_mapping = _merge_meta_db(
+                    src_session=src_session,
+                    dst_session=dst_session,
+                    cache_dir=local_cache_dir
+                    if not cache_meta_idx_mappings_in_memory
+                    else None,
+                )
+            target_path = os.path.join(
+                cache_dir, f"mapped_meta_index_{i}.arrow"
+            )
+            mapped_dataset = _remap_meta_index(
+                frame_dataset=dataset.frame_dataset,
+                index_mapping=src_idx_mapping,
+                cached_index_path=target_path,
+                target_index_start=len(frame_dataset),
+            )
+            src_idx_mapping = None
+        frame_dataset = _concatenate_map_style_datasets(
+            [frame_dataset, mapped_dataset],
+            axis=0,
+            info=None,
+            split=None,
+        )
+    meta_db_engine.dispose()
+    meta_db_engine = create_engine(
+        url=URL.create(
+            drivername=db_driver,
+            database=dst_db_path,
+        ),
+        echo=False,
+        readonly=True,
+    )
+    return RODataset.from_dataset(
+        frame_dataset=frame_dataset,
+        meta_db_engine=meta_db_engine,
+    )
+
+
+def merge_datasets(
+    datasets: list[RODataset],
+    target_path: str,
+    db_driver: str = "duckdb",
+    cache_meta_idx_mappings_in_memory: bool = False,
+):
+    """Merge multiple RODatasets and save to disk."""
+    with tempfile.TemporaryDirectory() as local_cache_dir:
+        merged_dataset = create_merged_dataset(
+            datasets=datasets,
+            cache_dir=local_cache_dir,
+            db_driver=db_driver,
+            cache_meta_idx_mappings_in_memory=(
+                cache_meta_idx_mappings_in_memory
+            ),
+        )
+        merged_dataset.save_to_disk(target_path)
