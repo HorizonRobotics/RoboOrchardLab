@@ -204,9 +204,9 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
 
     def extract_feature_3d(self, inputs):
         input_3d = inputs.get(self.input_3d)
-        dtype = next(self.backbone_3d.parameters()).dtype
-        input_3d = input_3d.to(dtype=dtype)
         if self.backbone_3d is not None and input_3d is not None:
+            dtype = next(self.backbone_3d.parameters()).dtype
+            input_3d = input_3d.to(dtype=dtype)
             if "depth" in self.input_3d and input_3d.dim() == 5:
                 bs, num_cams = input_3d.shape[:2]
                 input_3d = input_3d.flatten(end_dim=1)
