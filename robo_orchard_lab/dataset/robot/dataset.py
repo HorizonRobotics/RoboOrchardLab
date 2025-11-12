@@ -373,6 +373,7 @@ class RODataset(TorchDataset):
         num_shards: int | None = None,
         num_proc: int | None = None,
         storage_options: dict | None = None,
+        batch_size: int | None = None,
     ):
         """Saves a dataset to filesystem.
 
@@ -391,7 +392,16 @@ class RODataset(TorchDataset):
             storage_options (dict | None, optional): Additional Key/value pairs
                 to be passed on to the file-system backend, if any. Defaults
                 to None.
+            batch_size (int | None, optional): The batch size to use when
+                saving the dataset. If None, the default batch size from
+                Hugging Face Datasets will be used. Defaults to None.
         """
+        from datasets import config as hg_datasets_config
+
+        old_batch_size = hg_datasets_config.DEFAULT_MAX_BATCH_SIZE
+        if batch_size is not None:
+            hg_datasets_config.DEFAULT_MAX_BATCH_SIZE = batch_size
+
         self.frame_dataset.save_to_disk(
             dataset_path=dataset_path,
             max_shard_size=max_shard_size,
@@ -399,6 +409,7 @@ class RODataset(TorchDataset):
             num_proc=num_proc,
             storage_options=storage_options,
         )
+        hg_datasets_config.DEFAULT_MAX_BATCH_SIZE = old_batch_size
         src_meta_db_path = self.db_engine.url.database
         assert src_meta_db_path is not None
         fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]

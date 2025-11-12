@@ -143,12 +143,11 @@ def _merge_episode_table(
     )
     next_dst_episode_index = src_max_episode_index + 1
 
-    bar = tqdm(
+    with tqdm(
         unit="rows",
         total=src_session.query(Episode).count(),
         desc=f" Merging {Episode.__tablename__} ",
-    )
-    with bar:
+    ) as bar:
         for i, src_episode in enumerate(src_session.scalars(select(Episode))):
             dst_episode_dict = {}
             Episode.column_copy(src_episode, dst_episode_dict)
@@ -286,7 +285,9 @@ def _remap_meta_index(
         ("robot_index", "robot"),
         ("episode_index", "episode"),
     ]
-    for column_name, src_name in mapping_columns:
+    for column_name, src_name in tqdm(
+        mapping_columns, desc=" Remapping columns "
+    ):
         column_idx_mapping = index_mapping[src_name]
         origin_column = frame_dataset[column_name]
         if isinstance(column_idx_mapping, dict):
@@ -314,32 +315,32 @@ def _remap_meta_index(
     mapped_column_names = [k for k, _ in mapping_columns]
 
     # Write to Arrow file
-    table = pa.Table.from_arrays(mapped_arrays, names=mapped_column_names)
-    feature = Features(
-        {k: frame_dataset.features[k] for k in mapped_column_names}
-    )
-    instruction_column_writer = ArrowWriter(
-        path=cached_index_path, features=feature
-    )
-    instruction_column_writer.write_table(table)
-    instruction_column_writer.finalize()
-    instruction_column_writer.close()
-
-    mapped_idx_dataset = HFDataset.from_file(cached_index_path)
-
-    mapped_dataset = _concatenate_map_style_datasets(
-        [
-            frame_dataset.select_columns(
-                [
-                    k
-                    for k in frame_dataset.features.keys()
-                    if k not in mapped_column_names
-                ]
-            ),
-            mapped_idx_dataset,
-        ],
-        axis=1,
-    )
+    with tqdm(total=1, desc=" Writing remapped index columns ") as pbar:
+        table = pa.Table.from_arrays(mapped_arrays, names=mapped_column_names)
+        feature = Features(
+            {k: frame_dataset.features[k] for k in mapped_column_names}
+        )
+        instruction_column_writer = ArrowWriter(
+            path=cached_index_path, features=feature
+        )
+        instruction_column_writer.write_table(table)
+        instruction_column_writer.finalize()
+        instruction_column_writer.close()
+        mapped_idx_dataset = HFDataset.from_file(cached_index_path)
+        mapped_dataset = _concatenate_map_style_datasets(
+            [
+                frame_dataset.select_columns(
+                    [
+                        k
+                        for k in frame_dataset.features.keys()
+                        if k not in mapped_column_names
+                    ]
+                ),
+                mapped_idx_dataset,
+            ],
+            axis=1,
+        )
+        pbar.update(1)
 
     return mapped_dataset
 
@@ -407,9 +408,11 @@ def create_merged_dataset(
                 src_idx_mapping = _merge_meta_db(
                     src_session=src_session,
                     dst_session=dst_session,
-                    cache_dir=local_cache_dir
-                    if not cache_meta_idx_mappings_in_memory
-                    else None,
+                    cache_dir=(
+                        local_cache_dir
+                        if not cache_meta_idx_mappings_in_memory
+                        else None
+                    ),
                 )
             target_path = os.path.join(
                 cache_dir, f"mapped_meta_index_{i}.arrow"
@@ -421,12 +424,14 @@ def create_merged_dataset(
                 target_index_start=len(frame_dataset),
             )
             src_idx_mapping = None
-        frame_dataset = _concatenate_map_style_datasets(
-            [frame_dataset, mapped_dataset],
-            axis=0,
-            info=None,
-            split=None,
-        )
+        with tqdm(total=1, desc=" Concatenating datasets ") as pbar:
+            frame_dataset = _concatenate_map_style_datasets(
+                [frame_dataset, mapped_dataset],
+                axis=0,
+                info=None,
+                split=None,
+            )
+            pbar.update(1)
     meta_db_engine.dispose()
     meta_db_engine = create_engine(
         url=URL.create(
@@ -447,8 +452,31 @@ def merge_datasets(
     target_path: str,
     db_driver: str = "duckdb",
     cache_meta_idx_mappings_in_memory: bool = False,
+    max_shard_size: str | int = "8000MB",
+    num_shards: int | None = None,
+    num_proc: int | None = None,
+    storage_options: dict | None = None,
+    batch_size: int | None = None,
 ):
-    """Merge multiple RODatasets and save to disk."""
+    """Merge multiple RODatasets and save to disk.
+
+    Args:
+        max_shard_size (str | int , optional): The maximum size of
+            each shard. Defaults to "8000MB". This can be a string
+            (e.g., "8000MB") or an integer (e.g., 8000 * 1024 * 1024
+            for 8000MB).
+        num_shards (int | None, optional): The number of shards to create.
+            Number of shards to write. By default the number of shards
+            depends on `max_shard_size` and `num_proc`.
+        num_proc (int | None, optional): The number of processes to use
+            for saving the dataset. Defaults to None.
+        storage_options (dict | None, optional): Additional Key/value pairs
+            to be passed on to the file-system backend, if any. Defaults
+            to None.
+        batch_size (int | None, optional): The batch size to use when
+            saving the dataset. If None, the default batch size from
+            Hugging Face Datasets will be used. Defaults to None.
+    """
     with tempfile.TemporaryDirectory() as local_cache_dir:
         merged_dataset = create_merged_dataset(
             datasets=datasets,
@@ -458,4 +486,13 @@ def merge_datasets(
                 cache_meta_idx_mappings_in_memory
             ),
         )
-        merged_dataset.save_to_disk(target_path)
+        with tqdm(total=1, desc=" Saving merged dataset to disk ") as pbar:
+            merged_dataset.save_to_disk(
+                target_path,
+                max_shard_size=max_shard_size,
+                num_shards=num_shards,
+                num_proc=num_proc,
+                storage_options=storage_options,
+                batch_size=batch_size,
+            )
+            pbar.update(1)
