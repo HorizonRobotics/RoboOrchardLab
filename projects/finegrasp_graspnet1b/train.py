@@ -90,6 +90,14 @@ def main(args, accelerator):
     build_model = config.build_model
     build_optimizer = config.build_optimizer
     build_metric = config.build_metric
+    build_processor = config.build_processor
+
+    processor = build_processor(config)
+    with open(
+        os.path.join(args.workspace, "finegrasp_processor.json"),
+        "w",
+    ) as fh:
+        fh.write(processor.cfg.model_dump_json(indent=4))
 
     (
         train_data_cfgs,

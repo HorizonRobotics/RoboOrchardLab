@@ -83,7 +83,7 @@ def build_model():
         voxel_size=0.005,
         cylinder_radius=0.07,
         cylinder_groups=[0.25, 0.5, 0.75, 1.0],
-        use_normal=False,
+        use_normal=True,
         loss=loss,
     )
 
@@ -225,3 +225,11 @@ def build_dataset(trainer_cfg):
         train_dataloader,
         val_dataloader,
     )
+
+
+def build_processor(config):
+    from robo_orchard_lab.models.finegrasp import FineGraspProcessorCfg
+
+    processor = FineGraspProcessorCfg()
+    processor = processor()
+    return processor

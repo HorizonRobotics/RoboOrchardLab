@@ -9,15 +9,31 @@
     <a href="https://scholar.google.com/citations?user=HQfc8TEAAAAJ&hl=en" target="_blank">Zhizhong Su</a>
 </div>
 <div align="center" style="line-height: 3;">
-  <a href="https://arxiv.org/abs/2507.05978" target="_blank" style="margin: 2px;">
-    <img alt="Paper" src="https://img.shields.io/badge/arxiv-red" style="display: inline-block; vertical-align: middle;"/>
   </a>
+    <a href="https://horizonrobotics.github.io/robot_lab/finegrasp/index.html" target="_blank" style="margin: 2px;">
+    <img alt="Project" src="https://img.shields.io/badge/Project-Website-blue" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+    <a href="https://github.com/HorizonRobotics/robo_orchard_lab/tree/master/projects/finegrasp_graspnet1b" target="_blank" style="margin: 2px;">
+    <img alt="FineGrasp Code" src="https://img.shields.io/badge/FineGrasp_Code-Github-bule" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+  </a>
+    <a href="https://github.com/HorizonRobotics/robo_orchard_grasp_label" target="_blank" style="margin: 2px;">
+    <img alt="Grasp Label Code" src="https://img.shields.io/badge/Grasp Label Code-Github-bule" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+  <a href="https://arxiv.org/abs/2507.05978" target="_blank" style="margin: 2px;">
+    <img alt="Paper" src="https://img.shields.io/badge/Paper-arXiv-red" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+    <a href="https://huggingface.co/HorizonRobotics/FineGrasp" target="_blank" style="margin: 2px;">
+    <img alt="Model" src="https://img.shields.io/badge/Model-HuggingFace-red" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+  
 </div>
+
 
 
 # Introduction
 
-Training and evaluation scripts for Finegrasp on the GraspNet-1B dataset.
+Training and evaluation scripts for FineGrasp on the GraspNet-1B dataset.
 
 # Usage
 
@@ -69,7 +85,8 @@ cd Scale-Balanced-Grasp/knn && python3 setup.py install
 ```
 ## Prepare Dataset
 
-For dataset preparation, please follow the instructions provided in [EconomicGrasp](https://github.com/iSEE-Laboratory/EconomicGrasp).
+For dataset basic preparation, please follow the instructions provided in [EconomicGrasp](https://github.com/iSEE-Laboratory/EconomicGrasp).
+
 
 ## check Envrionment
 ```bash
@@ -115,13 +132,11 @@ python3 eval.py \
     --data_root ./data
 ```
 
-## Predict
+## Quick inference using pipeline and pretrain models
+
 ```bash
 cd projects/finegrasp_graspnet1b
-python3 infer.py \
-    --config configs/config_finegrasp_minkunet.py \
-    --checkpoint_path finegrasp.safetensors \
-    --data_root ./data
+python3 infer.py
 ```
 
 ## Results
