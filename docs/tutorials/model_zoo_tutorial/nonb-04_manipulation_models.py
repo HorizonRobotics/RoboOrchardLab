@@ -37,17 +37,10 @@ State-of-the-Art (SOTA) manipulation models provided by the
 #
 # .. code-block:: python
 #
-#   import os
 #   import torch
-#   from huggingface_hub import snapshot_download
 #   from robo_orchard_lab.models import ModelMixin
 #
-#   file_path = snapshot_download(
-#       repo_id="HorizonRobotics/FineGrasp",
-#       allow_patterns=["finegrasp_pipeline/**"],
-#   )
-#   model_path = os.path.join(file_path, "finegrasp_pipeline")
-#   model: torch.nn.Module = ModelMixin.load_model(model_path)
+#   model: torch.nn.Module = ModelMixin.load_model("hf://model/HorizonRobotics/FineGrasp/finegrasp_pipeline")
 #
 #
 # Inference Pipeline
@@ -55,50 +48,27 @@ State-of-the-Art (SOTA) manipulation models provided by the
 #
 # .. code-block:: python
 #
-#   import os
-#   import numpy as np
-#   import scipy.io as scio
-#   from PIL import Image
 #   from robo_orchard_lab.models.finegrasp.processor import GraspInput
-#   from huggingface_hub import snapshot_download
 #   from robo_orchard_lab.inference import InferencePipelineMixin
 #
-#   file_path = snapshot_download(
-#       repo_id="HorizonRobotics/FineGrasp",
-#       allow_patterns=[
-#           "finegrasp_pipeline/**",
-#           "data_example/**"
-#       ],
-#   )
-
-#   pipeline = InferencePipelineMixin.load(
-#       os.path.join(file_path, "finegrasp_pipeline")
-#   )
+#   pipeline = InferencePipelineMixin.load("hf://model/HorizonRobotics/FineGrasp/finegrasp_pipeline")
 #   pipeline.to("cuda")
 #   pipeline.model.eval()
-
-#   rgb_image_path = os.path.join(file_path, "data_example/0000_rgb.png")
-#   depth_image_path = os.path.join(file_path, "data_example/0000_depth.png")
-#   intrinsic_file = os.path.join(file_path, "data_example/0000.mat")
-
-#   depth_image = np.array(Image.open(depth_image_path), dtype=np.float32)
-#   rgb_image = np.array(Image.open(rgb_image_path), dtype=np.float32)
-#   intrinsic_matrix = scio.loadmat(intrinsic_file)["intrinsic_matrix"]
-
-#   # Grasp workspace limits [xmin, xmax, ymin, ymax, zmin, zmax].
+#
+#   # Grasp workspace limits, [xmin, xmax, ymin, ymax, zmin, zmax].
 #   grasp_workspace = [-1, 1, -1, 1, 0.0, 2.0]
-
+#
 #   # depth_image is in mm, depth_scale=1000.0.
 #   depth_scale = 1000.0
-
+#
 #   input_data = GraspInput(
-#       rgb_image=rgb_image,
-#       depth_image=depth_image,
+#       rgb_image="hf://HorizonRobotics/FineGrasp/data_example/0000_rgb.png",
+#       depth_image="hf://HorizonRobotics/FineGrasp/data_example/0000_depth.png",
 #       depth_scale=depth_scale,
-#       intrinsic_matrix=intrinsic_matrix,
+#       intrinsic_matrix="hf://HorizonRobotics/FineGrasp/data_example/0000.mat",
 #       grasp_workspace=grasp_workspace,
 #   )
-
+#
 #   output = pipeline(input_data)
 #   print(f"Best grasp pose: {output.grasp_poses[0]}")
 

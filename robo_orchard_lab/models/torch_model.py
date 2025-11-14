@@ -36,7 +36,7 @@ from transformers.modeling_utils import (
 )
 from typing_extensions import deprecated
 
-from robo_orchard_lab.utils.huggingface import download_repo
+from robo_orchard_lab.utils.huggingface import download_hf_resource
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     abspath,
@@ -392,7 +392,9 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         """  # noqa: E501
 
         if directory.startswith("hf://"):
-            directory = download_repo(directory, repo_type="model")
+            if not directory.startswith("hf://model/"):
+                directory = "hf://model/" + directory[5:]
+            directory = download_hf_resource(directory)
 
         directory = abspath(directory)
 

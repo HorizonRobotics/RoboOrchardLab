@@ -16,10 +16,13 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
 
+import fsspec
 import numpy as np
 import open3d
+import scipy.io as scio
 import torch
 from graspnetAPI.graspnet_eval import GraspGroup
+from PIL import Image
 
 from robo_orchard_lab.inference.processor import (
     ClassType_co,
@@ -50,9 +53,9 @@ class GraspInput:
     """Input data for FineGraspProcessor.
 
     Args:
-        rgb_image (np.ndarray): RGB image of shape (H, W, 3),
-        depth_image (np.ndarray): Depth image of shape (H, W),
-        intrinsic_matrix (np.ndarray): Camera intrinsic matrix of shape (3, 3),
+        rgb_image (str | np.ndarray): RGB image of shape (H, W, 3),
+        depth_image (str | np.ndarray): Depth image of shape (H, W),
+        intrinsic_matrix (str | np.ndarray): Camera intrinsic matrix of shape (3, 3),
         points (np.ndarray | None): Point cloud of shape (N, 3). If provided,
             depth_image will be ignored.
         depth_scale (float): Scale factor to convert raw depth values to
@@ -91,13 +94,13 @@ class GraspInput:
         >>> print(input_data.intrinsic_matrix.shape)
         (3, 3)
 
-    """
+    """  # noqa: E501
 
-    rgb_image: np.ndarray
+    rgb_image: str | np.ndarray
 
-    depth_image: np.ndarray
+    depth_image: str | np.ndarray
 
-    intrinsic_matrix: np.ndarray
+    intrinsic_matrix: str | np.ndarray
 
     points: np.ndarray | None = None
 
@@ -108,6 +111,19 @@ class GraspInput:
     )  # xmin, xmax, ymin, ymax, zmin, zmax
 
     num_sample_points: int = 20000
+
+    def __post_init__(self):
+        if isinstance(self.depth_image, str):
+            with fsspec.open(self.rgb_image, "rb") as f:
+                self.rgb_image = np.array(Image.open(f), dtype=np.float32)
+
+        if isinstance(self.depth_image, str):
+            with fsspec.open(self.depth_image, "rb") as f:
+                self.depth_image = np.array(Image.open(f), dtype=np.float32)
+
+        if isinstance(self.intrinsic_matrix, str):
+            with fsspec.open(self.intrinsic_matrix, "rb") as f:
+                self.intrinsic_matrix = scio.loadmat(f)["intrinsic_matrix"]
 
 
 @dataclass

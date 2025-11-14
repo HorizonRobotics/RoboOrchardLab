@@ -18,12 +18,13 @@ import os
 import re
 import warnings
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
-from urllib.parse import urlparse
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import fsspec
 from accelerate import Accelerator
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from huggingface_hub.hf_api import RepoFile
 
 from robo_orchard_lab.utils.env import set_env
 
@@ -31,7 +32,7 @@ __all__ = [
     "get_accelerate_project_last_checkpoint_id",
     "accelerator_load_state",
     "AcceleratorState",
-    "download_repo",
+    "download_hf_resource",
 ]
 
 
@@ -230,68 +231,103 @@ class AcceleratorState:
                 raise KeyError(f"Key {key} not found in TrainerProgressState.")
 
 
-def download_repo(
-    url: str, repo_type: Literal["model", "dataset", "space"]
-) -> str:
-    """Downloads a repository from the Hugging Face Hub.
+HF_URI_PATTERN = re.compile(
+    r"^/(?P<repo_type>model|dataset|space)/"
+    r"(?P<repo_id>[^/]+(?:/[^/]+)?)"
+    r"(?:/(?P<path_inside_repo>.+))?$"
+)
 
-    The URL format supports specifying a repository, an optional token,
-    and an optional revision, mimicking pip's git URL syntax.
 
-    URL Format: hf://<token>@<repo_id>@<revision>
+def download_hf_resource(url: str) -> str:
+    """Downloads a resource (repo, dir, or file) from the Hugging Face Hub using a custom HF URI scheme.
 
-    - token (optional): A Hugging Face Hub token.
+    The URI scheme is defined as:
+    hf://<repo_type>/<repo_id>[</path>][@<revision>]?token=<token>
 
-    - repo_id: The repository ID (e.g., 'meta-llama/Llama-2-7b-chat-hf').
-
-    - revision (optional): A git revision (branch, tag, or commit hash),
-      preceded by an '@'.
+    - repo_type: 'model', 'dataset', or 'space'.
+    - repo_id: The repository ID (e.g., 'gpt2' or 'meta-llama/Llama-2-7b-chat-hf').
+    - /<path>: (Optional) Download a single file or a specific subdirectory.
+    - @<revision>: (Optional) A git revision.
+    - ?token=<token>: (Optional) A Hugging Face Hub token.
 
     Args:
-        url (str): The URL of the repository in the specified format.
-        repo_type (Literal["model", "dataset", "space"]): The type of the repository ('model', 'dataset', 'space').
+        url (str): The HF URI string.
 
     Returns:
-        str: The local directory path where the repository is downloaded.
+        str: The local directory path (for repo/dir) or file path.
 
     Raises:
-        ValueError: If the URL format is invalid.
+        ValueError: If the URL format is invalid or missing required components.
     """  # noqa: E501
     if not url.startswith("hf://"):
-        raise ValueError("URL should start with hf://")
+        raise ValueError("URL must start with hf://")
 
-    # Use rsplit to robustly separate the revision from the base URL.
-    # This correctly handles the user-friendly repo_url@revision format.
-    if "@" in url[5:]:  # Check for '@' beyond the 'hf://' prefix
-        parts = url.rsplit("@", 1)
-        base_url = parts[0]
-        # Heuristic check: if the part after '@' looks like a path, it's likely
-        # part of the repo_id (e.g., hf://user@model/path), not a revision.
-        # A simple check is for '/'. Revisions typically don't contain '/'.
-        if "/" in parts[1] or "=" in parts[1]:  # A simple heuristic
+    # parse revision
+    if "@" in url[5:]:
+        base_url, revision = url.rsplit("@", 1)
+        if "?" in revision and "?" in base_url:
             base_url = url
             revision = None
-        else:
-            revision = parts[1]
     else:
         base_url = url
         revision = None
 
-    parsed_url = urlparse(base_url)
+    # parse uri
+    parsed_uri = urlparse(base_url)
+    query_params = parse_qs(parsed_uri.query)
+    token = query_params.get("token", [None])[0]
 
-    token_from_url = parsed_url.username
+    match = HF_URI_PATTERN.match(parsed_uri.path)
+    if not match:
+        raise ValueError("Invalid HF URI structure.")
 
-    repo_id = parsed_url.hostname
-    if not repo_id:
-        raise ValueError(f"Invalid Hugging Face Hub URI: {url}")
-    if parsed_url.path:
-        repo_id += parsed_url.path
+    groups = match.groupdict()
+    repo_type: str = groups["repo_type"]
+    repo_id: str = groups["repo_id"]
+    path_inside_repo: str | None = groups.get("path_inside_repo")
 
     with set_env(HF_HUB_DISABLE_PROGRESS_BARS="1"):
-        directory = snapshot_download(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            token=token_from_url,
-            revision=revision,
-        )
-        return directory
+        if not path_inside_repo:
+            return snapshot_download(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                token=token,
+            )
+
+        api = HfApi(token=token)
+        try:
+            paths_info = api.get_paths_info(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                paths=[path_inside_repo],
+                revision=revision,
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to resolve path '{path_inside_repo}' in repo: {e}"
+            )
+
+        if not paths_info:
+            raise ValueError(
+                f"Path '{path_inside_repo}' does not exist in {repo_id}"
+            )
+
+        if isinstance(paths_info[0], RepoFile):
+            return hf_hub_download(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                filename=path_inside_repo,
+                revision=revision,
+                token=token,
+            )
+        else:
+            allow_pattern = f"{path_inside_repo.rstrip('/')}/*"
+            path = snapshot_download(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                token=token,
+                allow_patterns=[allow_pattern],
+            )
+            return os.path.join(path, path_inside_repo)
