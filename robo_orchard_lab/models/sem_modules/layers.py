@@ -375,7 +375,7 @@ class TemporalJointGraphAttention(nn.Module):
 
         if temporal_attn_mask is not None:
             attn = torch.where(
-                temporal_attn_mask[None, None, :, None, :],
+                temporal_attn_mask[..., None, None, :, None, :],
                 float("-inf"),
                 attn,
             )

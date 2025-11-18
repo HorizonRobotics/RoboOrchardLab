@@ -71,6 +71,7 @@ class SEMActionDecoder(nn.Module):
         pred_scaled_joint=True,
         prediction_type="absolute_joint_absolute_pose",
         loss=None,
+        temporal_attn_drop=None,
         **kwargs,
     ):
         super().__init__()
@@ -86,6 +87,7 @@ class SEMActionDecoder(nn.Module):
         self.with_mobile = with_mobile
         self.mobile_traj_state_dims = mobile_traj_state_dims
         self.async_inference_plugin = build(async_inference_plugin)
+        self.temporal_attn_drop = temporal_attn_drop
 
         self.loss = build(loss)
         if hasattr(self.loss, "recompute"):
@@ -525,16 +527,22 @@ class SEMActionDecoder(nn.Module):
         else:
             num_hist_chunk = 0
 
+        temp_attn_mask = ~torch.tril(
+            torch.ones(
+                num_chunk,
+                num_hist_chunk + num_chunk,
+                dtype=torch.bool,
+                device=x.device,
+            ),
+            num_hist_chunk,
+        )
+        if self.temporal_attn_drop is not None and self.training:
+            attn_drop = torch.rand(bs) < self.temporal_attn_drop
+            attn_drop = attn_drop[:, None, None].to(x.device)
+            temp_attn_mask = temp_attn_mask[None].repeat(bs, 1, 1)
+            temp_attn_mask[..., :num_hist_chunk] = attn_drop
+
         if "temp_cross_attn" in self.operation_order:
-            temp_attn_mask = ~torch.tril(
-                torch.ones(
-                    num_chunk,
-                    num_hist_chunk + num_chunk,
-                    dtype=torch.bool,
-                    device=x.device,
-                ),
-                num_hist_chunk,
-            )
             temp_query_pos = (
                 torch.arange(num_chunk)[None].tile(bs * num_joint, 1).to(x)
                 + num_hist_chunk
@@ -568,16 +576,6 @@ class SEMActionDecoder(nn.Module):
                 torch.arange(num_hist_chunk + num_chunk).tile(bs, 1).to(x)
             )
             joint_relative_pos_wochunk = joint_relative_pos
-            if "temp_cross_attn" not in self.operation_order:
-                temp_attn_mask = ~torch.tril(
-                    torch.ones(
-                        num_chunk,
-                        num_hist_chunk + num_chunk,
-                        dtype=torch.bool,
-                        device=x.device,
-                    ),
-                    num_hist_chunk,
-                )
 
         joint_relative_pos = joint_relative_pos.tile(num_chunk, 1, 1)
 
