@@ -206,10 +206,8 @@ class RotaryAttention(nn.Module):
 
         attn = attn.softmax(dim=-1).type_as(v)
         x = (attn @ v).transpose(1, 2)
-
         x = x.reshape(B, N, C)
         x = self.proj(x)
-
         x = x + identity
         return x
 

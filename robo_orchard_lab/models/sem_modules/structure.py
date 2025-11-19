@@ -72,7 +72,6 @@ class TextTemplate(nn.Module):
             for i, subtask in enumerate(data["subtask"]):
                 if subtask is not None and len(subtask) > 0:
                     text[i] += f"{subtask}\n"
-
         data["instruction"] = instructions
         data["text"] = text
         return data

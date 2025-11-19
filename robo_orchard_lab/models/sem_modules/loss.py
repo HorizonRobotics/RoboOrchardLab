@@ -120,7 +120,7 @@ class SEMActionLoss(nn.Module):
         if target is None:
             loss_mobile = self._fake_loss(pred)
         else:
-            loss_mobile = self._loss_func(pred, target, weight, pred_mask)
+            self._loss_func(pred, target, weight, pred_mask)
         return {"loss_mobile": loss_mobile}
 
     def _loss_func(self, pred, target, weight=None, pred_mask=None):

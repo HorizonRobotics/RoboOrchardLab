@@ -17,50 +17,47 @@
 
 config = dict(
     hist_steps=1,
-    pred_steps=32,
+    pred_steps=64,
     chunk_size=4,
     embed_dims=256,
     with_depth=True,
     with_depth_loss=True,
-    min_depth=0,
-    max_depth=10,
+    min_depth=0.01,
+    max_depth=1.2,
     num_depth=128,
     batch_size=16,
     max_step=int(1e5),
-    step_log_freq=10,
+    step_log_freq=50,
     save_step_freq=5000,
     num_workers=16,
     lr=1e-4,
-    training_with_subtask=True,
+    training_with_subtask=False,
     with_cot=False,
-    with_mobile=True,
     training_datasets=[
-        # "robotwin1_0",
-        # "robotwin2_0",
-        # "robotwin2_0_ur5_wsg",
-        # "robotwin2_0_arx_x5a",
-        # "robotwin2_0_franka_panda",
-        ## "robotwin2_0_piper",
-        # "challenge",
-        # "challenge_finetune",
-        # "challenge_self_collect",
-        # "horizon_beijing",
-        # "horizon_shanghai_0804",
-        # "horizon_shanghai_0909",
-        # "agilex",
-        ## "rh20t",
-        # "agibot",
-        # "droid",
-        "behavior"
+        "robotwin1_0",
+        "robotwin2_0",
+        "robotwin2_0_ur5_wsg",
+        "robotwin2_0_arx_x5a",
+        "robotwin2_0_franka_panda",
+        # "robotwin2_0_piper",
+        "challenge",
+        "challenge_finetune",
+        "challenge_self_collect",
+        "horizon_beijing",
+        "horizon_shanghai_0804",
+        "horizon_shanghai_0909",
+        "agilex",
+        # "rh20t",
+        "agibot",
+        "droid",
     ],
     deploy_datasets=[
-        # "horizon_beijing",
-        # "horizon_shanghai_0909",
-        # "robotwin2_0",
-        # "robotwin2_0_ur5_wsg",
-        # "robotwin2_0_arx_x5a",
-        # "robotwin2_0_franka_panda",
-        "behavior"
+        "horizon_beijing",
+        "horizon_shanghai_0909",
+        "robotwin2_0",
+        "robotwin2_0_ur5_wsg",
+        "robotwin2_0_arx_x5a",
+        "robotwin2_0_franka_panda",
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
 )
@@ -70,13 +67,6 @@ config = dict(
 # config.update(
 #     num_vlm_layers=0,
 #     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-08-25/16-58/sem_alldata_layers0_resume2-20250825-153143.959699-COPY/output/checkpoints/checkpoint_15/model.safetensors",  # pretrain  # noqa: E501
-# )
-# v3.0
-# config.update(
-#    num_vlm_layers=1,
-#    freeze_vlm=True,
-#    checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-09-30/14-53/sem_v3_nomobile-20250930-145313.591034/output/checkpoints/checkpoint_40/model.safetensors",   # pretrain  # noqa: E501
-#    #checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/yun01.du/plat_gpu/2025-10-03/23-21/sem_v3.0_with_mobile_traj-20251003-232109.677152/output/checkpoints/checkpoint_40/model.safetensors",  # pretrain with mobile trajectory prediction  # noqa: E501
 # )
 
 # v3.0
@@ -123,8 +113,8 @@ def build_model(config):
         RotaryAttention,
         SEM_Qwen2_5_VL,
         SEM_Qwen2_5_VLConfig,
-        # SEM_Qwen3VL,
-        # SEM_Qwen3VLConfig,
+        SEM_Qwen3VL,
+        SEM_Qwen3VLConfig,
         SEMActionDecoder,
         SEMActionLoss,
         SEMRobotStateEncoder,
@@ -135,12 +125,12 @@ def build_model(config):
 
     if "qwen3" in config["vlm_pretrain"].lower():
         patch_size = 32
-        # model_class = SEM_Qwen3VL
-        # model_config = SEM_Qwen3VLConfig
+        model_class = SEM_Qwen3VL
+        model_config = SEM_Qwen3VLConfig
     else:
         patch_size = 28
-        # model_class = SEM_Qwen2_5_VL
-        # model_config = SEM_Qwen2_5_VLConfig
+        model_class = SEM_Qwen2_5_VL
+        model_config = SEM_Qwen2_5_VLConfig
 
     embed_dims = config["embed_dims"]
     decoder_norm = nn.RMSNorm
@@ -161,7 +151,7 @@ def build_model(config):
     with_mobile = config.get("with_mobile", False)
     if with_mobile:
         mobile_head = copy.deepcopy(head)
-        mobile_head.update(out_dim=3)
+        mobile_head.update(out_dim=2)
     else:
         mobile_head = None
 
@@ -183,8 +173,8 @@ def build_model(config):
         "gate_mlp",
     ] * config.get("decoder_layers", 6)
 
-    model = SEM_Qwen2_5_VL(
-        cfg=SEM_Qwen2_5_VLConfig(
+    model = model_class(
+        cfg=model_config(
             with_cot=config["with_cot"],
             vlm_pretrain=config["vlm_pretrain"],
             num_vlm_layers=config.get("num_vlm_layers"),
@@ -367,62 +357,57 @@ def build_model(config):
 
 
 def build_training_dataset(config, lazy_init=False):
-    from config_behavior_dataset import (
-        build_datasets as build_behavior_datasets,
+    from config_agibot_dataset import build_datasets as build_agibot_datasets
+    from config_agilex_dataset import build_datasets as build_agilex_datasets
+    from config_droid_dataset import build_datasets as build_droid_datasets
+    from config_rh20t_dataset import build_datasets as build_rh20t_datasets
+    from config_robotwin_dataset import (
+        build_datasets as build_robotwin_datasets,
     )
 
     from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
 
     datasets = []
-    # datasets.extend(
-    #    build_robotwin_datasets(
-    #        config,
-    #        config["training_datasets"],
-    #        mode="training",
-    #        lazy_init=lazy_init,
-    #    )
-    # )
-    # datasets.extend(
-    #    build_agilex_datasets(
-    #        config,
-    #        config["training_datasets"],
-    #        mode="training",
-    #        lazy_init=lazy_init,
-    #    )
-    # )
-    # datasets.extend(
-    #    build_rh20t_datasets(
-    #        config,
-    #        config["training_datasets"],
-    #        mode="training",
-    #        lazy_init=lazy_init,
-    #    )
-    # )
-    # datasets.extend(
-    #    build_agibot_datasets(
-    #        config,
-    #        config["training_datasets"],
-    #        mode="training",
-    #        lazy_init=lazy_init,
-    #    )
-    # )
-    # datasets.extend(
-    #    build_droid_datasets(
-    #        config,
-    #        config["training_datasets"],
-    #        mode="training",
-    #        lazy_init=lazy_init,
-    #    )
-    # )
     datasets.extend(
-        build_behavior_datasets(
+        build_robotwin_datasets(
             config,
             config["training_datasets"],
             mode="training",
             lazy_init=lazy_init,
         )
     )
-
+    datasets.extend(
+        build_agilex_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_rh20t_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_agibot_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_droid_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
     dataset = ConcatDatasetWithFlag(datasets=datasets)
     return dataset
 
@@ -465,7 +450,7 @@ def build_optimizer(config, model):
             ),
             optim.lr_scheduler.MultiStepLR(
                 optimizer,
-                milestones=[int(max_step * 0.7)],
+                milestones=[int(max_step * 0.9)],
                 gamma=0.1,
             ),
         ]
@@ -477,9 +462,6 @@ def build_processors(config):
     from config_agilex_dataset import (
         build_processors as build_agilex_processors,
     )
-    from config_behavior_dataset import (
-        build_processors as build_behavior_processors,
-    )
     from config_robotwin_dataset import (
         build_processors as build_robotwin_processors,
     )
@@ -488,8 +470,4 @@ def build_processors(config):
     processors.update(
         build_robotwin_processors(config, config["deploy_datasets"])
     )
-    processors.update(
-        build_behavior_processors(config, config["deploy_datasets"])
-    )
-
     return processors

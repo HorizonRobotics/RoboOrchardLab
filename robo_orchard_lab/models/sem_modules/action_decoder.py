@@ -64,8 +64,7 @@ class SEMActionDecoder(nn.Module):
         pre_norm=True,
         with_mobile=False,
         mobile_head=None,
-        mobile_traj_state_dims=3,
-        mobile_loss_weight=1.0,
+        mobile_traj_state_dims=2,
         async_inference_plugin=None,
         use_joint_mask=False,
         noise_type="global_joint",
@@ -204,7 +203,6 @@ class SEMActionDecoder(nn.Module):
                 [robot_state[..., :1] * scale + shift, robot_state[..., 1:]],
                 dim=-1,
             )
-
         return robot_state
 
     def forward_kinematics(self, joint_state, inputs):
@@ -345,7 +343,6 @@ class SEMActionDecoder(nn.Module):
             pred_robot_state = self.apply_scale_shift(
                 inputs["pred_robot_state"], joint_scale_shift
             )
-
             pred_steps = pred_robot_state.shape[1]
             noise = self.sample_noise(
                 [bs, pred_steps, num_joint, state_dims], hist_robot_state
@@ -402,7 +399,6 @@ class SEMActionDecoder(nn.Module):
                 pred_mobile_trajs = []
             else:
                 pred_mobile_trajs = None
-
             for _ in range(self.num_test_traj):
                 noisy_action = self.sample_noise(
                     [bs, self.pred_steps, num_joint, state_dims],
@@ -410,16 +406,14 @@ class SEMActionDecoder(nn.Module):
                 )
                 if self.with_mobile:
                     noisy_mobile_traj = torch.randn(
-                        [bs, self.pred_steps, self.mobile_traj_state_dims]
+                        [bs, self.pred_steps, 2]
                     ).to(img_feature)
                 else:
                     noisy_mobile_traj = None
-
                 self.test_noise_scheduler.set_timesteps(
                     self.num_inference_timesteps,
                     device=img_feature.device,
                 )
-
                 for t in self.test_noise_scheduler.timesteps:
                     if not self.noise_type.endswith("pose"):
                         noisy_action = self.recompute(noisy_action, inputs)
@@ -470,17 +464,13 @@ class SEMActionDecoder(nn.Module):
                         noisy_action = self.test_noise_scheduler.step(
                             pred, t, noisy_action
                         ).prev_sample
-
                     if self.with_mobile:
                         noisy_mobile_traj = self.test_noise_scheduler.step(
                             pred_mobile_traj, t, noisy_mobile_traj
-                        ).prev_sample
-
+                        )
                 pred_actions.append(noisy_action)
-
                 if self.with_mobile:
                     pred_mobile_trajs.append(noisy_mobile_traj)
-
             return {
                 "pred_actions": pred_actions,
                 "pred_mobile_trajs": pred_mobile_trajs,
@@ -622,7 +612,6 @@ class SEMActionDecoder(nn.Module):
                     .permute(0, 2, 1, 3)
                     .flatten(1, 2)
                 )
-
             elif op == "temp_cross_attn":
                 x = x.reshape(bs * num_joint, num_chunk, -1)
                 if robot_feature is not None:
@@ -643,7 +632,6 @@ class SEMActionDecoder(nn.Module):
                     identity=_identity,
                 )
                 x = x.reshape(bs, num_joint * num_chunk, -1)
-
             elif op == "temp_joint_attn":
                 x = x.reshape(bs, num_joint, num_chunk, -1)
                 kv = torch.cat(
@@ -664,7 +652,6 @@ class SEMActionDecoder(nn.Module):
                 )
                 x = layer(**kwargs)
                 x = x.reshape(bs, num_joint * num_chunk, -1)
-
             elif op == "text_cross_attn":
                 x = layer(
                     query=x,
@@ -675,7 +662,6 @@ class SEMActionDecoder(nn.Module):
                     key_pos=tca_key_pos,
                     identity=identity,
                 )
-
             elif op == "img_cross_attn":
                 x = layer(
                     query=x,
@@ -685,20 +671,16 @@ class SEMActionDecoder(nn.Module):
                     key_pos=ica_key_pos,
                     identity=identity,
                 )
-
             elif op == "ffn":
                 x = layer(x, identity=identity)
-
             elif op == "norm":
                 if self.pre_norm:
                     identity = x
                 x = layer(x)
-
             elif op == "t_norm":
                 if self.pre_norm:
                     identity = x
                 x, gate_msa, shift_mlp, scale_mlp, gate_mlp = layer(x, t_embed)
-
             elif op == "gate_msa":
                 x = gate_msa * x
             elif op == "gate_mlp":
@@ -717,7 +699,6 @@ class SEMActionDecoder(nn.Module):
             pred_mobile_traj = None
         pred = self.head(x)
         pred = pred.permute(0, 2, 1, 3)
-
         return pred, pred_mobile_traj
 
     def post_process(self, model_outs, inputs, **kwargs):

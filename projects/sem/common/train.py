@@ -167,7 +167,7 @@ if __name__ == "__main__":
             project_dir=args.workspace,
             logging_dir=args.logging_dir,
             automatic_checkpoint_naming=True,
-            total_limit=100,
+            total_limit=3,
         ),
         dataloader_config=DataLoaderConfiguration(
             use_seedable_sampler=True,
