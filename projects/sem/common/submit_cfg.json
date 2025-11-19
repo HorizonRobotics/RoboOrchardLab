@@ -1,18 +1,20 @@
 {
-    "job_name": "sem_alldata",
-    "workspace_folder": "submit-sem",
+    "job_name": "sem_behavior1k",
+    "workspace_folder": "submit_sem",
     "docker_image": "docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250918",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
-    "num_workers": 2,
-    "gpu_per_worker": 8,
+    "num_workers": 1,
+    "gpu_per_worker": 1,
     "wall_time": 14400,
     "cmd": [
         "ulimit -n 65536",
-        "ln -s /horizon-bucket/robot_lab2/datasets/all_data ${WORKING_PATH}/data",
-        "ln -s /horizon-bucket/robot_lab/users/xuewu.lin/urdf ${WORKING_PATH}/urdf",
-        "ln -s /horizon-bucket/robot_lab/users/xuewu.lin/ckpt ${WORKING_PATH}/ckpt",
-        "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH"
+        "ln -s /horizon-bucket/robot_lab2/users/qingze.wang/dataset/ ${WORKING_PATH}/dataset",
+        "ln -s /horizon-bucket/robot_lab2/users/qingze.wang/urdf ${WORKING_PATH}/urdf",
+        "ln -s /horizon-bucket/robot_lab2/users/qingze.wang/ckpt ${WORKING_PATH}/ckpt",
+        "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH",
+        "pip3 install pyav",
+        "pip3 install wordfreq"
     ],
     "python_launcher": "accelerate",
     "python_executable": "train.py --workspace /job_data --logging_dir /job_tboard --config configs/config_sem_common.py",
@@ -22,7 +24,7 @@
         "projects/sem/common/train.py",
         "projects/sem/common/utils.py"
     ],
-    "job_password": "1227",
+    "job_password": "123456",
     "queue_name": "project-4090-robot-lab-bcloud-bj",
     "project_id": "Robot-lab"
 }

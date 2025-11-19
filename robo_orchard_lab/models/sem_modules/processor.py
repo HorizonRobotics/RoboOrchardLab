@@ -50,6 +50,8 @@ class MultiArmManipulationInput:
     """A dictionary mapping camera names to their intrinsic
     parameter matrices."""
 
+    t_cam2base: dict[str, TENSOR_TYPE] | None = None
+
     t_world2cam: dict[str, TENSOR_TYPE] | None = None
     """A dictionary mapping camera names to their world-to-camera
     transformation matrices (e.g., extrinsic parameters)."""
@@ -68,6 +70,9 @@ class MultiArmManipulationInput:
 
     history_ee_pose: list[TENSOR_TYPE] | None = None
     """A list of past end-effector poses."""
+
+    history_base_qvel: list[TENSOR_TYPE] | None = None
+    mobile_traj: list[TENSOR_TYPE] | None = None
 
     instruction: str | None = None
     """A natural language command or goal for the task."""
@@ -120,6 +125,11 @@ class Struct2Dict:
             [data.intrinsic[x] for x in cam_names]
         )
 
+        if data.t_cam2base is not None:
+            input_data["T_cam2base"] = np.stack(
+                [data.t_cam2base[x] for x in cam_names]
+            )
+
         if data.t_world2cam is not None:
             input_data["T_world2cam"] = np.stack(
                 [data.t_world2cam[x] for x in cam_names]
@@ -127,17 +137,18 @@ class Struct2Dict:
 
         assert data.history_joint_state is not None
         input_data["joint_state"] = np.stack(data.history_joint_state)
+
         input_data["step_index"] = len(data.history_joint_state) - 1
 
         if self.load_image:
             assert data.image is not None
             images = [data.image[x][-1] for x in cam_names]
-            input_data["imgs"] = np.stack(images)
+            input_data["imgs"] = images
 
         if self.load_depth:
             assert data.depth is not None
             depth = [data.depth[x][-1] for x in cam_names]
-            input_data["depths"] = np.stack(depth)
+            input_data["depths"] = depth
 
         input_data["text"] = (
             "" if data.instruction is None else data.instruction
@@ -176,6 +187,7 @@ class SEMProcessor(ProcessorMixin):
             data = self.struction_to_dict(data)
         for ts_i in self.transforms:
             data = ts_i(data)
+
         return data
 
     def post_process(self, batch, model_outputs) -> MultiArmManipulationOutput:
