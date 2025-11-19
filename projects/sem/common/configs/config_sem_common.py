@@ -51,6 +51,7 @@ config = dict(
         "agibot",
         "droid",
     ],
+    # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
         "horizon_beijing",
         "horizon_shanghai_0909",
@@ -410,6 +411,27 @@ def build_training_dataset(config, lazy_init=False):
     )
     dataset = ConcatDatasetWithFlag(datasets=datasets)
     return dataset
+
+
+def build_validation_dataset(config, lazy_init=False):
+    from config_agilex_dataset import build_datasets as build_agilex_datasets
+
+    from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
+
+    datasets = []
+    datasets.extend(
+        build_agilex_datasets(
+            config,
+            config.get("validation_datasets", []),
+            mode="validation",
+            lazy_init=lazy_init,
+        )
+    )
+    if len(datasets) == 0:
+        return None
+    else:
+        dataset = ConcatDatasetWithFlag(datasets=datasets)
+        return dataset
 
 
 def build_optimizer(config, model):

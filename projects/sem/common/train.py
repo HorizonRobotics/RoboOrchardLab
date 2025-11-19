@@ -24,7 +24,7 @@ import torch
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState, is_initialized
 from accelerate.utils import DataLoaderConfiguration, ProjectConfiguration
-from utils import load_checkpoint, load_config
+from utils import ActionMetric, load_checkpoint, load_config
 
 from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.dataset.dataset_wrapper import (
@@ -66,6 +66,7 @@ def main(args, accelerator):
     config = load_config(args.config)
     build_model = config.build_model
     build_dataset = config.build_training_dataset
+    build_validation_dataset = config.build_validation_dataset
     build_optimizer = config.build_optimizer
     build_processors = config.build_processors
     config = config.config
@@ -90,29 +91,51 @@ def main(args, accelerator):
     if accelerator.is_main_process:
         logger.info("\n" + json.dumps(config, indent=4))
 
-    train_dataset = build_dataset(config)
+    model = build_model(config)
 
     num_workers = config.get("num_workers", 4)
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=collate_batch_dict,
-        persistent_workers=num_workers > 0,
-        batch_sampler=DistributedBatchFlagSampler(
+    if not args.eval_only:
+        train_dataset = build_dataset(config)
+        train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
-            config["batch_size"],
-            drop_last=True,
-        ),
-        # in_order=False,
-    )
+            num_workers=num_workers,
+            pin_memory=True,
+            collate_fn=collate_batch_dict,
+            persistent_workers=num_workers > 0,
+            batch_sampler=DistributedBatchFlagSampler(
+                train_dataset,
+                config["batch_size"],
+                drop_last=True,
+            ),
+            # in_order=False,
+        )
+        optimizer, lr_scheduler = build_optimizer(config, model)
+    else:
+        train_dataloader = optimizer = lr_scheduler = None
 
-    model = build_model(config)
     accelerator.register_save_state_pre_hook(
         model.accelerator_save_state_pre_hook
     )
-    optimizer, lr_scheduler = build_optimizer(config, model)
     load_checkpoint(model, config.get("checkpoint"), accelerator)
+
+    val_dataset = build_validation_dataset(config)
+    if val_dataset is not None:
+        val_dataloader = torch.utils.data.DataLoader(
+            val_dataset,
+            num_workers=num_workers,
+            shuffle=False,
+            pin_memory=False,
+            batch_size=config["batch_size"],
+            collate_fn=collate_batch_dict,
+            persistent_workers=num_workers > 0,
+        )
+        pred_steps = config.get("pred_steps", 64)
+        metric = ActionMetric(
+            eval_horizons=[pred_steps // 4, pred_steps // 2, pred_steps],
+        )
+    else:
+        val_dataloader = None
+        metric = None
 
     trainer = SimpleTrainer(
         model=model,
@@ -136,15 +159,22 @@ def main(args, accelerator):
             ),
         ],
         max_step=config.get("max_step"),
-        step_eval_freq=config.get("step_eval_freq"),
+        step_eval_freq=config.get("save_step_freq"),
         lr_scheduler_step_at="step",
         resume_from=config.get("resume_from"),
         resume_share_dir=(
             "/job_data/resume_from" if if_cluster else "./resume_from"
         ),
+        val_dataloader=val_dataloader,
+        metric=metric,
     )
-
-    trainer()
+    if args.eval_only:
+        assert val_dataset is not None, (
+            "The validation dataset must be specified when eval_only=True."
+        )
+        trainer.eval()
+    else:
+        trainer()
 
 
 if __name__ == "__main__":
@@ -152,6 +182,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str)
     parser.add_argument("--workspace", type=str, default="./workspace")
     parser.add_argument("--logging_dir", type=str, default=None)
+    parser.add_argument("--eval_only", action="store_true")
     parser.add_argument("--kwargs", type=str, default=None)
     args = parser.parse_args()
 
