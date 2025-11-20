@@ -64,7 +64,9 @@ def load_navigation_vlm(
             }
         )
 
-    return load_pretrained_model(model_path, model_name, model_base, **kwargs)
+    return load_pretrained_model(model_path, model_name, model_base, **kwargs)[
+        1
+    ]
 
 
 class AuxThink(ModelMixin):
@@ -76,13 +78,16 @@ class AuxThink(ModelMixin):
         self.model = None
 
     def load_from_llava_model(self, model_path):
-        _, self.model, _, _ = load_navigation_vlm(model_path)
+        self.model = load_navigation_vlm(model_path)
 
     def generate_content(self, prompt):
         return self.model.generate_content(prompt)
 
-    def forward(self, inputs):
-        return self.model(inputs)
+    def forward(self, inputs, is_training: bool = False):
+        if is_training:
+            return self.model(inputs)
+        else:
+            return self.model.generate_content(inputs[0])
 
     def save_pretrained(self, directory: str):
         self.model.save_pretrained(directory)
