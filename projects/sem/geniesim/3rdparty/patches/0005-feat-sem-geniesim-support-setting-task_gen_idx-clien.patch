@@ -1,0 +1,125 @@
+From 7bd601c321d53646576627c787b3b29770c5379c Mon Sep 17 00:00:00 2001
+From: "jiawei03.li" <jiawei03.li@horizon.auto>
+Date: Mon, 24 Nov 2025 21:18:52 +0800
+Subject: [PATCH 5/6] feat(sem/geniesim): support setting task_gen_idx (client)
+
+---
+ source/geniesim/benchmark/task_benchmark.py | 25 +++++++++++++++++----
+ source/geniesim/layout/task_generate.py     |  7 ++++--
+ source/geniesim/utils/eval_utils.py         |  7 ++++--
+ 3 files changed, 31 insertions(+), 8 deletions(-)
+
+diff --git a/source/geniesim/benchmark/task_benchmark.py b/source/geniesim/benchmark/task_benchmark.py
+index adf7271..9d81562 100644
+--- a/source/geniesim/benchmark/task_benchmark.py
++++ b/source/geniesim/benchmark/task_benchmark.py
+@@ -55,6 +55,7 @@ class TaskBenchmark(object):
+         self.episodes_per_instance = args.num_episode
+         self.args = args
+         self.task_config = None
++        self.task_gen_idx = args.task_gen_idx
+         self.record = args.record
+         self.fps = args.fps
+ 
+@@ -85,9 +86,16 @@ class TaskBenchmark(object):
+     def evaluate_policy(self):
+         for task in self.tasks:
+             # load task config
+-            task_config_file = os.path.join(
+-                system_utils.benchmark_ader_path(), "eval_tasks", task + ".json"
+-            )
++            if self.task_gen_idx is None:
++                task_config_file = os.path.join(
++                    system_utils.benchmark_ader_path(), "eval_tasks", task + ".json"
++                )
++            else:
++                task_config_file = os.path.join(
++                    system_utils.benchmark_ader_path(),
++                    "eval_tasks", "task_gen", f"{task}_{self.task_gen_idx}.json",
++                )
++            logger.info("Evaluating agent on the task config: {}".format(task_config_file))
+             self.task_config = system_utils.load_json(task_config_file)
+             self.task_config["specific_task_name"] = task
+ 
+@@ -112,6 +120,7 @@ class TaskBenchmark(object):
+                     save_path=task_folder,
+                     task_num=self.episodes_per_instance,
+                     task_name=self.task_config["task"],
++                    task_gen_idx=self.task_gen_idx,
+                 )
+                 robot_position = task_generator.robot_init_pose["position"]
+                 robot_rotation = task_generator.robot_init_pose["quaternion"]
+@@ -132,7 +141,7 @@ class TaskBenchmark(object):
+                     evaluate_results.append(self.single_evaluate_ret)
+ 
+             # output evaluate_results
+-            dump_eval_result(out_dir, evaluate_results)
++            dump_eval_result(out_dir, evaluate_results, self.task_gen_idx)
+ 
+     def evaluate_episode(self, episode_file):
+         # Create agent to be evaluated
+@@ -154,6 +163,8 @@ class TaskBenchmark(object):
+             env = DemoEnv(robot, episode_file, self.task_config, self.policy)
+         else:
+             env = DummyEnv(robot, episode_file, self.task_config)
++        logger.info(f"Using env class: {self.args.env_class}")
++
+         init_pose = self.task_config["robot"].get("init_arm_pose")
+         if init_pose:
+             robot.set_init_pose(init_pose)
+@@ -332,6 +343,12 @@ def main():
+         default="iros_stamp_the_seal",
+         help="Specify the task to evaluate",
+     )
++    parser.add_argument(
++        "--task_gen_idx",
++        type=int,
++        default=None,
++        help="Specify the task generation index for testing generalization, value from 1 to 5",
++    )
+     parser.add_argument(
+         "--output_dir",
+         type=str,
+diff --git a/source/geniesim/layout/task_generate.py b/source/geniesim/layout/task_generate.py
+index a436fdf..d4ea856 100644
+--- a/source/geniesim/layout/task_generate.py
++++ b/source/geniesim/layout/task_generate.py
+@@ -265,11 +265,14 @@ class TaskGenerator:
+                 fix_obj_ids=self.fix_obj_ids,
+             )
+ 
+-    def generate_tasks(self, save_path, task_num, task_name):
++    def generate_tasks(self, save_path, task_num, task_name, task_gen_idx=None):
+         os.makedirs(save_path, exist_ok=True)
+ 
+         for i in range(task_num):
+-            output_file = os.path.join(save_path, f"{task_name}_%d.json" % (i))
++            if task_gen_idx is None:
++                output_file = os.path.join(save_path, f"{task_name}_%d.json" % (i))
++            else:
++                output_file = os.path.join(save_path, f"{task_name}_gen_{task_gen_idx}_%d.json" % (i))
+             self.task_template["objects"] = []
+             self.task_template["objects"] += self.fix_obj_infos
+ 
+diff --git a/source/geniesim/utils/eval_utils.py b/source/geniesim/utils/eval_utils.py
+index 009c999..9e76ae5 100644
+--- a/source/geniesim/utils/eval_utils.py
++++ b/source/geniesim/utils/eval_utils.py
+@@ -152,9 +152,12 @@ def generate_eval_file_path(dir_path, prefix_name):
+     return os.path.join(dir_path, new_filename)
+ 
+ 
+-def dump_eval_result(out_dir, content):
++def dump_eval_result(out_dir, content, task_gen_idx=None):
+     os.makedirs(out_dir, exist_ok=True)
+-    file_path = generate_eval_file_path(out_dir, "evaluate_ret")
++    if task_gen_idx is None:
++        file_path = generate_eval_file_path(out_dir, "evaluate_ret")
++    else:
++        file_path = generate_eval_file_path(out_dir, "evaluate_ret" + f"_gen_{task_gen_idx}")
+     logger.info(f"Evaluation result file generated at {file_path}")
+     with open(file_path, "w+") as f:
+         json.dump(content, f, indent=4)
+-- 
+2.43.0
+

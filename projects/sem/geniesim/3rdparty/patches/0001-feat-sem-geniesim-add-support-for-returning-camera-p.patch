@@ -1,0 +1,95 @@
+From 8b82c213193f42623a5272fb8908be30ea149781 Mon Sep 17 00:00:00 2001
+From: "jiawei03.li" <jiawei03.li@horizon.auto>
+Date: Mon, 24 Nov 2025 20:57:07 +0800
+Subject: [PATCH 1/6] feat(sem/geniesim): add support for returning camera
+ parameters (server)
+
+---
+ .../app/controllers/command_controller.py     | 29 +++++++++++++++----
+ 1 file changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/source/geniesim/app/controllers/command_controller.py b/source/geniesim/app/controllers/command_controller.py
+index d039b16..349a289 100644
+--- a/source/geniesim/app/controllers/command_controller.py
++++ b/source/geniesim/app/controllers/command_controller.py
+@@ -344,6 +344,12 @@ class CommandController:
+                         "rgb:/" + camera.split("/")[-1] + "_rgb",
+                         "depth:/" + camera.split("/")[-1] + "_depth",
+                     ]
++
++                # add camera info
++                camera_param["publish"].append(
++                    "info:/" + camera.split("/")[-1] + "_camera_info"
++                )
++
+                 pprint(camera_param)
+                 camera_graph = self.sensor_base._init_camera(
+                     self.ui_builder.my_world.get_rendering_dt(),
+@@ -359,6 +365,12 @@ class CommandController:
+             logger.info(f"sensor_base.publish_joint {self.robot_prim_path}")
+             self.sensor_base.publish_joint(robot_prim=self.robot_prim_path)
+ 
++            # tf
++            tf_targets = [self.robot_prim_path, *self.robot_cfg.cameras]
++            logger.info(f"sensor_base.publish_tf {self.robot_prim_path}, on {tf_targets}")
++            if og.get_graph_by_path("/RobotTFActionGraph") is None:
++                self.sensor_base.publish_tf(robot_prim=self.robot_prim_path, targets=tf_targets, topic_name="/tf")
++
+         if not self.sensor_base_initialized:
+             _init_omni_graph()
+             self.sensor_base_initialized = True
+@@ -382,6 +394,7 @@ class CommandController:
+             or self.Command == 27
+         ):
+             if "G1" in self.robot_name and self.target_point is not None:
++                logger.info(f"on_physics_step_<{self.Command}>")
+ 
+                 def align_camera_to_target(camera_position, target_point):
+                     direction = target_point - camera_position
+@@ -511,7 +524,7 @@ class CommandController:
+             with tracer.start_as_current_span(
+                 f"rpc_server.step_command_{self.Command}"
+             ) as span:
+-
++                logger.info(f"on_command_step_<{self.Command}>")
+                 if self.Command == 1:
+                     prim_path = self.data["Cam_prim_path"]
+                     isRGB = self.data["isRGB"]
+@@ -525,7 +538,7 @@ class CommandController:
+                         isSemantic=isSemantic,
+                         isGN=isGN,
+                     )
+-                if self.Command == 2:
++                elif self.Command == 2:
+                     for value in self.articulat_objects.values():
+                         value.initialize()
+                     isSingle = False
+@@ -711,10 +724,11 @@ class CommandController:
+                             tf_to_record.append(prim.GetPath())
+                             logger.info(f"- {prim.GetPath()}")
+                         logger.info(f"sensor_base.publish_tf {self.robot_prim_path}")
+-                        self.sensor_base.publish_tf(
+-                            robot_prim=self.robot_prim_path,
+-                            targets=tf_to_record,
+-                        )
++                        if og.get_graph_by_path("/RobotTFActionGraph") is None:
++                            self.sensor_base.publish_tf(
++                                robot_prim=self.robot_prim_path,
++                                targets=tf_to_record,
++                            )
+ 
+                         self.recording_started = True
+                         self.data_to_send = "Start"
+@@ -1028,6 +1042,9 @@ class CommandController:
+                     x_target = SingleXFormPrim(self.data["prim_path"])
+                     pos, quat = x_target.get_world_pose()
+                     self.data_to_send = {"pos": pos, "quat": quat}
++                else:
++                    logger.error(f"Unknown Command: {self.Command}, type:{type(self.Command)}")
++
+         if self.Command:
+             with self.condition:
+                 self.condition.notify_all()
+-- 
+2.43.0
+

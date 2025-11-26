@@ -1,0 +1,63 @@
+From 37f54160cc92b4a82465f69278db7d3e4b77c5d3 Mon Sep 17 00:00:00 2001
+From: "jiawei03.li" <jiawei03.li@horizon.auto>
+Date: Mon, 24 Nov 2025 21:02:56 +0800
+Subject: [PATCH 2/6] feat(sem/geniesim): support setting record_root_path
+ (server)
+
+---
+ source/geniesim/app/controllers/command_controller.py | 4 ++++
+ source/geniesim/app/raise_standalone_sim.py           | 2 ++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/source/geniesim/app/controllers/command_controller.py b/source/geniesim/app/controllers/command_controller.py
+index 349a289..0720c76 100644
+--- a/source/geniesim/app/controllers/command_controller.py
++++ b/source/geniesim/app/controllers/command_controller.py
+@@ -88,6 +88,7 @@ class CommandController:
+         publish_ros=True,
+         record_images=False,
+         record_video=False,
++        record_root_path=None,
+     ):
+         self.ui_builder = ui_builder
+         self.data = None
+@@ -135,6 +136,7 @@ class CommandController:
+         self.publish_ros = publish_ros
+         self.record_images = record_images
+         self.record_video = record_video
++        self.record_root_path = record_root_path
+         self.gripper_cmd_r = None
+         self._lock = threading.Lock()
+ 
+@@ -145,6 +147,8 @@ class CommandController:
+     def process_recording_path(self):
+         main_dir = os.getenv("SIM_REPO_ROOT")
+         root_path = os.path.join(main_dir, "output/recording_data/")
++        if self.record_root_path is not None:
++            root_path = self.record_root_path
+         recording_path = os.path.join(root_path, self.task_name)
+         if os.path.isdir(recording_path):
+             folder_index = 1
+diff --git a/source/geniesim/app/raise_standalone_sim.py b/source/geniesim/app/raise_standalone_sim.py
+index ab44b26..f6e60e8 100644
+--- a/source/geniesim/app/raise_standalone_sim.py
++++ b/source/geniesim/app/raise_standalone_sim.py
+@@ -27,6 +27,7 @@ parser.add_argument(
+     default=False,
+     help="enable_gpu_dynamics",
+ )
++parser.add_argument("--record_root_path", type=str, default=None)
+ 
+ from geniesim.utils.system_utils import check_and_fix_env
+ 
+@@ -82,6 +83,7 @@ def main():
+         publish_ros=args_cli.rospub,
+         record_images=args_cli.record_img,
+         record_video=args_cli.record_video,
++        record_root_path=args_cli.record_root_path,
+     )
+     rpc_server = GrpcServer(server_function=server_function)
+     rpc_server.start()
+-- 
+2.43.0
+

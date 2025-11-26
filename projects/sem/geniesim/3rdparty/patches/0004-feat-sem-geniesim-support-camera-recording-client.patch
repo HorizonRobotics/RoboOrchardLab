@@ -1,0 +1,34 @@
+From 4ee21131e4f20352b28cb2ee75226f53b4352793 Mon Sep 17 00:00:00 2001
+From: "jiawei03.li" <jiawei03.li@horizon.auto>
+Date: Mon, 24 Nov 2025 21:14:55 +0800
+Subject: [PATCH 4/6] feat(sem/geniesim): support camera recording (client)
+
+---
+ source/geniesim/benchmark/task_benchmark.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/source/geniesim/benchmark/task_benchmark.py b/source/geniesim/benchmark/task_benchmark.py
+index be5cbd7..adf7271 100644
+--- a/source/geniesim/benchmark/task_benchmark.py
++++ b/source/geniesim/benchmark/task_benchmark.py
+@@ -172,11 +172,16 @@ class TaskBenchmark(object):
+         self.single_evaluate_ret["task_name"] = self.task_config["task"]
+         self.single_evaluate_ret["model_path"] = ""
+         self.single_evaluate_ret["start_time"] = system_utils.TIMENOW()
++        self.camera_prim_list = [
++            "/G1/head_link2/Head_Camera",
++            "/G1/gripper_l_base_link/Left_Camera",
++            "/G1/gripper_r_base_link/Right_Camera",
++        ]
+ 
+         if self.record:
+             env.start_recording(
+                 task_name=self.task_name,
+-                camera_prim_list=[],
++                camera_prim_list=self.camera_prim_list,
+                 fps=self.fps,
+             )
+ 
+-- 
+2.43.0
+

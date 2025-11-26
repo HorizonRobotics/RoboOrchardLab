@@ -1,0 +1,58 @@
+From baf467613cd1a98d569cdbf5f32fcf03d632219e Mon Sep 17 00:00:00 2001
+From: "jiawei03.li" <jiawei03.li@horizon.auto>
+Date: Mon, 24 Nov 2025 21:09:27 +0800
+Subject: [PATCH 3/6] feat(sem/geniesim): add intrinsic K, R, P to ROS
+ publisher (server)
+
+---
+ source/geniesim/app/ros_publisher/base.py   | 5 ++++-
+ source/geniesim/app/ros_publisher/camera.py | 3 +++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/source/geniesim/app/ros_publisher/base.py b/source/geniesim/app/ros_publisher/base.py
+index 5826bd6..970d604 100644
+--- a/source/geniesim/app/ros_publisher/base.py
++++ b/source/geniesim/app/ros_publisher/base.py
+@@ -82,7 +82,7 @@ class USDBase:
+         rendering_fps = int(1.0 / rendering_dt)
+         step_size = int(rendering_fps / param["frequency"])
+         logger.info(
+-            f"init cam rendering_fps {rendering_fps} frequency {param['frequency']} step_size {step_size}"
++            f"init cam rendering_fps {rendering_fps} frequency {param['frequency']} step_size {step_size} with publish {param['publish']}"
+         )
+         camera_graph = []
+         for publish in param["publish"]:
+@@ -98,6 +98,7 @@ class USDBase:
+             elif publish == "depth":
+                 camera_graph.append(publish_depth(camera, step_size, ""))
+             elif publish == "info":
++                logger.info(f"init cam info {camera.prim_path} topic {topic}")
+                 camera_graph.append(publish_camera_info(camera, step_size, topic))
+             elif publish == "pointcloud":
+                 publish_pointcloud_from_depth(camera, step_size, topic)
+@@ -109,6 +110,8 @@ class USDBase:
+                 publish_boundingbox3d(camera, step_size, topic)
+             elif publish == "semantic":
+                 publish_semantic_segmant(camera, step_size, topic)
++            else:
++                logger.warn(f"Unknown camera publish type {publish} for {camera.prim_path}")
+         camera.initialize()
+         return camera_graph
+ 
+diff --git a/source/geniesim/app/ros_publisher/camera.py b/source/geniesim/app/ros_publisher/camera.py
+index 35a8721..5178f89 100644
+--- a/source/geniesim/app/ros_publisher/camera.py
++++ b/source/geniesim/app/ros_publisher/camera.py
+@@ -184,6 +184,9 @@ def publish_camera_info(camera: Camera, step_size: int, topic=""):
+         width=camera_info["width"],
+         height=camera_info["height"],
+         projectionType=camera_info["projectionType"],
++        k=camera_info["k"].reshape([1, 9]),
++        r=camera_info["r"].reshape([1, 9]),
++        p=camera_info["p"].reshape([1, 12]),
+         physicalDistortionModel=camera_info["physicalDistortionModel"],
+         physicalDistortionCoefficients=camera_info["physicalDistortionCoefficients"],
+     )
+-- 
+2.43.0
+
