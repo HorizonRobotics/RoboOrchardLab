@@ -49,7 +49,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #
 #   import torch
 #   from robo_orchard_lab.inference import InferencePipelineMixin
-#   from robo_orchard_lab.processors.auxthink_processor import AuxThinkInput
+#   from robo_orchard_lab.models.aux_think.processor import AuxThinkInput
 #
 #   # -----------------------------
 #   # Step 1. Load a saved pipeline
@@ -83,6 +83,75 @@ State-of-the-Art (SOTA) navigation models provided by the
 #
 #   # Example Output:
 #   # "The next action is  move forward 25 cm, turn left 45 degrees, turn left 15 degrees."
+#
+#
+#   # -----------------------------
+#   # Step 4. Batch inference (optional)
+#   # -----------------------------
+#   batch_data = [data, data]
+#   batch_results = list(pipeline(batch_data))
+#   for r in batch_results:
+#       print(r.text)
+
+# %%
+# MonoDream: Monocular Vision-Language Navigation with Panoramic Dreaming
+# --------------------------------------------------------------------------------------------
+#
+# `Click here to visit the homepage. <https://horizonrobotics.github.io/robot_lab/monodream/index.html>`__
+#
+# Loading Pretrained Model
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# .. code-block:: python
+#
+#   import torch
+#   from robo_orchard_lab.models import TorchModelMixin
+#
+#   model: torch.nn.Module = TorchModelMixin.load("hf://HorizonRobotics/MonoDream")
+#
+# Inference Pipeline
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# .. code-block:: python
+#
+#   import torch
+#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.models.monodream.processor import MonoDreamInput
+#
+#   # -----------------------------
+#   # Step 1. Load a saved pipeline
+#   # -----------------------------
+#   directory = "hf://HorizonRobotics/MonoDream"
+#   pipeline = InferencePipelineMixin.load(directory)
+#   pipeline.model.init_components(directory)
+#   pipeline.model.eval()
+#
+#   # -----------------------------
+#   # Step 2. Prepare raw input
+#   # -----------------------------
+#   data = AuxThinkInput(
+#       image_paths=[
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_0.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_1.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_2.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_3.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_4.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_5.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_6.png",
+#           "hf://HorizonRobotics/MonoDream/data_example/rgb_7.png",
+#       ],
+#       instruction="Go around the kitchen island and wait between the tall cabinet and wine fridge."
+#   )
+#
+#   # -----------------------------
+#   # Step 3. Run inference
+#   # (pre_process → collate → model → post_process)
+#   # -----------------------------
+#   result = pipeline(data)
+#   print(result.text)
+#
+#   # Example Output:
+#   # "The next action is move forward 25 cm, turn left 45 degrees, turn left 15 degrees."
 #
 #
 #   # -----------------------------

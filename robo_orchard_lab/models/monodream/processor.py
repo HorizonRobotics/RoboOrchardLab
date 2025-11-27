@@ -18,21 +18,22 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import fsspec
-from PIL import Image
+from PIL import Image as PILImage
 
 from robo_orchard_lab.inference.processor import (
     ClassType_co,
     ProcessorMixin,
     ProcessorMixinCfg,
 )
+from robo_orchard_lab.models.monodream.utils.constants import Image
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 
-__all__ = ["AuxThinkProcessor", "AuxThinkProcessorCfg"]
+__all__ = ["MonoDreamProcessor", "MonoDreamProcessorCfg"]
 
 
 @dataclass
-class AuxThinkInput:
-    """Data structure for inputs to the AuxThink navigation model.
+class MonoDreamInput:
+    """Data structure for inputs to the MonoDream navigation model.
 
     Each input contains:
         - a list of image file paths
@@ -47,8 +48,8 @@ class AuxThinkInput:
 
 
 @dataclass
-class AuxThinkOutput:
-    """Output structure for the AuxThink model."""
+class MonoDreamOutput:
+    """Output structure for the MonoDream model."""
 
     text: str
     """Model-generated text output."""
@@ -60,32 +61,36 @@ class PathListToData:
     def __init__(self, load_image: bool = True):
         self.load_image = load_image
 
-    def __call__(self, data: AuxThinkInput) -> dict:
+    def __call__(self, data: MonoDreamInput) -> dict:
         input_data = {}
         if self.load_image:
-            # Load all images as PIL.Image
+            # Load all images as PIL.Image or Image
             images = []
             for p in data.image_paths:
-                with fsspec.open(p, "rb") as f:
-                    img = Image.open(f).convert("RGB")
+                if isinstance(p, Image):
+                    img = p
+                else:
+                    with fsspec.open(p, "rb") as f:
+                        img = PILImage.open(f).convert("RGB")
                 images.append(img)
         else:
-            images = data.image_paths  # keep as paths if not loading
+            images = data.image_paths
+
         input_data["images"] = images
         input_data["instruction"] = data.instruction
         return input_data
 
 
-class AuxThinkProcessor(ProcessorMixin):
-    """Processor for the AuxThink navigation model.
+class MonoDreamProcessor(ProcessorMixin):
+    """Processor for the MonoDream navigation model.
 
     Converts image paths + instruction into a multimodal list input format,
     and extracts the generated text from model outputs.
     """
 
-    cfg: "AuxThinkProcessorCfg"
+    cfg: "MonoDreamProcessorCfg"
 
-    def __init__(self, cfg: "AuxThinkProcessorCfg"):
+    def __init__(self, cfg: "MonoDreamProcessorCfg"):
         super().__init__(cfg)
         self.pathlist_to_data = PathListToData(load_image=self.cfg.load_image)
         self.transforms = (
@@ -107,9 +112,9 @@ class AuxThinkProcessor(ProcessorMixin):
             ),
         ]
 
-    def pre_process(self, data: Union[AuxThinkInput, Dict]):
-        """Convert AuxThinkInput into model-ready multimodal list format."""
-        if isinstance(data, AuxThinkInput):
+    def pre_process(self, data: Union[MonoDreamInput, Dict]):
+        """Convert MonoDreamInput into model-ready multimodal list format."""
+        if isinstance(data, MonoDreamInput):
             data = self.pathlist_to_data(data)
 
         for ts_i in self.transforms:
@@ -142,15 +147,15 @@ class AuxThinkProcessor(ProcessorMixin):
         input_list.extend(data["images"])
         return input_list
 
-    def post_process(self, model_outputs, _) -> AuxThinkOutput:
+    def post_process(self, model_outputs, _) -> MonoDreamOutput:
         """Extract model-generated text output."""
         text = model_outputs
-        return AuxThinkOutput(text=text)
+        return MonoDreamOutput(text=text)
 
 
-class AuxThinkProcessorCfg(ProcessorMixinCfg[AuxThinkProcessor]):
-    """Configuration for AuxThinkProcessor."""
+class MonoDreamProcessorCfg(ProcessorMixinCfg[MonoDreamProcessor]):
+    """Configuration for MonoDreamProcessor."""
 
-    class_type: ClassType_co[AuxThinkProcessor] = AuxThinkProcessor
+    class_type: ClassType_co[MonoDreamProcessor] = MonoDreamProcessor
     load_image: bool = True
     transforms: Optional[List[DelayInitDictType]] = None

@@ -87,7 +87,7 @@ class AuxThink(ModelMixin):
         if is_training:
             return self.model(inputs)
         else:
-            return self.model.generate_content(inputs[0])
+            return self.model.generate_content(inputs)
 
     def save_pretrained(self, directory: str):
         self.model.save_pretrained(directory)
