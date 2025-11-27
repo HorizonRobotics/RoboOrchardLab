@@ -71,7 +71,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #           "hf://HorizonRobotics/Aux-Think/data_example/rgb_6.png",
 #           "hf://HorizonRobotics/Aux-Think/data_example/rgb_7.png",
 #       ],
-#       instruction="Go around the kitchen island and wait between the tall cabinet and wine fridge."
+#       instruction="Walk down the hallway to the right of the billiards table. Stop at the top of the staircase."
 #   )
 #
 #   # -----------------------------
@@ -82,8 +82,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   print(result.text)
 #
 #   # Example Output:
-#   # "The next action is  move forward 25 cm, turn left 45 degrees, turn left 15 degrees."
-#
+#   # "The next action is turn right 15 degrees, move forward 50 cm, turn right 15 degrees."
 #
 #   # -----------------------------
 #   # Step 4. Batch inference (optional)
@@ -129,7 +128,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   # -----------------------------
 #   # Step 2. Prepare raw input
 #   # -----------------------------
-#   data = AuxThinkInput(
+#   data = MonoDreamInput(
 #       image_paths=[
 #           "hf://HorizonRobotics/MonoDream/data_example/rgb_0.png",
 #           "hf://HorizonRobotics/MonoDream/data_example/rgb_1.png",
@@ -140,7 +139,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #           "hf://HorizonRobotics/MonoDream/data_example/rgb_6.png",
 #           "hf://HorizonRobotics/MonoDream/data_example/rgb_7.png",
 #       ],
-#       instruction="Go around the kitchen island and wait between the tall cabinet and wine fridge."
+#       instruction="Walk down the hallway to the right of the billiards table. Stop at the top of the staircase."
 #   )
 #
 #   # -----------------------------
@@ -151,8 +150,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   print(result.text)
 #
 #   # Example Output:
-#   # "The next action is move forward 25 cm, turn left 45 degrees, turn left 15 degrees."
-#
+#   # "The next action is turn right 15 degrees, move forward 25 cm, turn right 45 degrees."
 #
 #   # -----------------------------
 #   # Step 4. Batch inference (optional)
