@@ -36,7 +36,10 @@ from transformers.modeling_utils import (
 )
 from typing_extensions import deprecated
 
-from robo_orchard_lab.utils.huggingface import download_hf_resource
+from robo_orchard_lab.utils.huggingface import (
+    auto_add_repo_type,
+    download_hf_resource,
+)
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     abspath,
@@ -322,20 +325,15 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
 
         This method supports loading from a local path or a Hugging Face Hub
         repository. For Hub models, a URI format is used:
-        `hf://[<token>@]<repo_id>`
+        ``hf://[<token>@][model/]<repo_id>[/<path>][@<revision>]``
 
         .. code-block:: text
 
-            Public model: `hf://google/gemma-7b`
+            Public model: `hf://HorizonRobotics/BIP3D_Tiny_Det`
 
-            Private model: `hf://hf_YourToken@username/private-repo`
+            Public model directory: `hf://HorizonRobotics/FineGrasp/finegrasp_pipeline`
 
-        .. warning::
-
-            Embedding tokens directly in the URL can be a security risk.
-            The URL may be logged in shell history or server logs. It is often safer
-            to rely on the environment variable **HF_TOKEN** or the
-            local token cache from `huggingface-cli login`.
+            Private model: `hf://your-name/private-repo`
 
         This method first loads the model's configuration from a JSON file
         (e.g., "model.config.json") found in the given directory. It then
@@ -378,7 +376,6 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
 
                 Defaults to "accelerate".
 
-
         Returns:
             torch.nn.Module: An instance of the model (typed as "ModelMixin" or a subclass),
                 initialized from the configuration and optionally with weights loaded.
@@ -392,9 +389,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         """  # noqa: E501
 
         if directory.startswith("hf://"):
-            if not directory.startswith("hf://model/"):
-                directory = "hf://model/" + directory[5:]
-            directory = download_hf_resource(directory)
+            directory = download_hf_resource(auto_add_repo_type(directory))
 
         directory = abspath(directory)
 

@@ -19,7 +19,7 @@ import re
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import unquote, urlparse
 
 import fsspec
 from accelerate import Accelerator
@@ -33,6 +33,7 @@ __all__ = [
     "accelerator_load_state",
     "AcceleratorState",
     "download_hf_resource",
+    "auto_add_repo_type",
 ]
 
 
@@ -231,24 +232,24 @@ class AcceleratorState:
                 raise KeyError(f"Key {key} not found in TrainerProgressState.")
 
 
-HF_URI_PATTERN = re.compile(
-    r"^/(?P<repo_type>model|dataset|space)/"
-    r"(?P<repo_id>[^/]+(?:/[^/]+)?)"
-    r"(?:/(?P<path_inside_repo>.+))?$"
-)
+VALID_REPO_TYPES = {"model", "dataset", "space"}
 
 
 def download_hf_resource(url: str) -> str:
     """Downloads a resource (repo, dir, or file) from the Hugging Face Hub using a custom HF URI scheme.
 
     The URI scheme is defined as:
-    hf://<repo_type>/<repo_id>[</path>][@<revision>]?token=<token>
+    ``hf://[<token>@]<repo_type>/<repo_id>[/<path>][@<revision>]``
 
-    - repo_type: 'model', 'dataset', or 'space'.
-    - repo_id: The repository ID (e.g., 'gpt2' or 'meta-llama/Llama-2-7b-chat-hf').
-    - /<path>: (Optional) Download a single file or a specific subdirectory.
-    - @<revision>: (Optional) A git revision.
-    - ?token=<token>: (Optional) A Hugging Face Hub token.
+    - <token>@: (Optional) User token
+
+    - repo_type: (Optional) 'model', 'dataset', or 'space'
+
+    - repo_id: The repository ID (e.g., 'gpt2' or 'meta-llama/Llama-2-7b-chat-hf')
+
+    - /<path>: (Optional) Download a single file or a specific subdirectory
+
+    - @<revision>: (Optional) A git revision
 
     Args:
         url (str): The HF URI string.
@@ -262,30 +263,54 @@ def download_hf_resource(url: str) -> str:
     if not url.startswith("hf://"):
         raise ValueError("URL must start with hf://")
 
-    # parse revision
-    if "@" in url[5:]:
-        base_url, revision = url.rsplit("@", 1)
-        if "?" in revision and "?" in base_url:
-            base_url = url
-            revision = None
+    parsed_uri = urlparse(url)
+
+    # Extract Token (Priority: Userinfo > Query Param)
+    token = parsed_uri.username
+    if token:
+        token = unquote(token)
+
+    # Handle revision at the end of the path (e.g., .../file.txt@v1.0)
+    raw_path = parsed_uri.path
+    revision = None
+    if "@" in raw_path:
+        raw_path, revision = raw_path.rsplit("@", 1)
+
+    # Path reconstruction
+    netloc = parsed_uri.netloc
+
+    # remove token part
+    if "@" in netloc:
+        host_part = netloc.rsplit("@", 1)[-1]
     else:
-        base_url = url
-        revision = None
+        host_part = netloc
 
-    # parse uri
-    parsed_uri = urlparse(base_url)
-    query_params = parse_qs(parsed_uri.query)
-    token = query_params.get("token", [None])[0]
+    path_part = raw_path.lstrip("/")
+    full_path_str = (
+        f"{host_part}/{path_part}"
+        if host_part and path_part
+        else (host_part or path_part)
+    )
+    parts = [p for p in full_path_str.split("/") if p]
 
-    match = HF_URI_PATTERN.match(parsed_uri.path)
-    if not match:
-        raise ValueError("Invalid HF URI structure.")
+    if not parts:
+        raise ValueError(f"Invalid URI: Empty path in '{url}'")
 
-    groups = match.groupdict()
-    repo_type: str = groups["repo_type"]
-    repo_id: str = groups["repo_id"]
-    path_inside_repo: str | None = groups.get("path_inside_repo")
+    if parts[0] not in VALID_REPO_TYPES:
+        raise ValueError(f"Invalid repo type {parts[0]}")
+    repo_type = parts[0]
+    segments = parts[1:]
 
+    if len(segments) < 2:
+        raise ValueError(
+            f"Invalid repo_id structure. Expected 'username/repo_name', "
+            f"but got: {'/'.join(segments)}"
+        )
+
+    repo_id = f"{segments[0]}/{segments[1]}"
+    path_inside_repo = "/".join(segments[2:]) if len(segments) > 2 else None
+
+    # download
     with set_env(HF_HUB_DISABLE_PROGRESS_BARS="1"):
         if not path_inside_repo:
             return snapshot_download(
@@ -331,3 +356,34 @@ def download_hf_resource(url: str) -> str:
                 allow_patterns=[allow_pattern],
             )
             return os.path.join(path, path_inside_repo)
+
+
+def auto_add_repo_type(url: str, repo_type: str = "model") -> str:
+    """Automatically add repo type to url."""
+
+    if not url.startswith("hf://"):
+        raise ValueError("URL must start with hf://")
+
+    if repo_type not in VALID_REPO_TYPES:
+        raise ValueError(f"Invalid repo type: {repo_type}")
+
+    parsed_uri = urlparse(url)
+
+    url_repo_type = parsed_uri.netloc.split("@")[-1]
+
+    if url_repo_type in VALID_REPO_TYPES:
+        if url_repo_type != repo_type:
+            raise ValueError(
+                f"url already has repo type {url_repo_type} "
+                f"but not matched required repo type {repo_type}"
+            )
+
+        return url
+
+    if parsed_uri.username:
+        token, organize = parsed_uri.netloc.split("@")
+        netloc = f"{token}@{repo_type}/{organize}/"
+    else:
+        netloc = f"{repo_type}/{parsed_uri.netloc}"
+
+    return f"{parsed_uri.scheme}://{netloc}/{parsed_uri.path}"

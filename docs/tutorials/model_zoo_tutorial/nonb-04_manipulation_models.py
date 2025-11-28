@@ -40,7 +40,7 @@ State-of-the-Art (SOTA) manipulation models provided by the
 #   import torch
 #   from robo_orchard_lab.models import ModelMixin
 #
-#   model: torch.nn.Module = ModelMixin.load_model("hf://model/HorizonRobotics/FineGrasp/finegrasp_pipeline")
+#   model: torch.nn.Module = ModelMixin.load_model("hf://HorizonRobotics/FineGrasp/finegrasp_pipeline")
 #
 #
 # Inference Pipeline
@@ -51,7 +51,7 @@ State-of-the-Art (SOTA) manipulation models provided by the
 #   from robo_orchard_lab.models.finegrasp.processor import GraspInput
 #   from robo_orchard_lab.inference import InferencePipelineMixin
 #
-#   pipeline = InferencePipelineMixin.load("hf://model/HorizonRobotics/FineGrasp/finegrasp_pipeline")
+#   pipeline = InferencePipelineMixin.load("hf://HorizonRobotics/FineGrasp/finegrasp_pipeline")
 #   pipeline.to("cuda")
 #   pipeline.model.eval()
 #

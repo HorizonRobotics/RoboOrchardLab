@@ -40,7 +40,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   import torch
 #   from robo_orchard_lab.models import TorchModelMixin
 #
-#   model: torch.nn.Module = TorchModelMixin.load("hf://HorizonRobotics/Aux-Think")
+#   model: torch.nn.Module = TorchModelMixin.load_model("hf://HorizonRobotics/Aux-Think")
 #
 # Inference Pipeline
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -106,7 +106,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   import torch
 #   from robo_orchard_lab.models import TorchModelMixin
 #
-#   model: torch.nn.Module = TorchModelMixin.load("hf://HorizonRobotics/MonoDream")
+#   model: torch.nn.Module = TorchModelMixin.load_model("hf://HorizonRobotics/MonoDream")
 #
 # Inference Pipeline
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

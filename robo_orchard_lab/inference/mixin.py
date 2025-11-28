@@ -24,7 +24,10 @@ from robo_orchard_core.utils.config import ClassConfig, ClassType_co, load_from
 from typing_extensions import TypeVar
 
 from robo_orchard_lab.models.mixin import TorchModelMixin, TorchModuleCfg
-from robo_orchard_lab.utils.huggingface import download_hf_resource
+from robo_orchard_lab.utils.huggingface import (
+    auto_add_repo_type,
+    download_hf_resource,
+)
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     abspath,
@@ -223,6 +226,18 @@ class InferencePipelineMixin(
     ):
         """Loads a pipeline from a directory or a Hugging Face Hub repository.
 
+        This method supports loading from a local path or a Hugging Face Hub
+        repository. For Hub models, a URI format is used:
+        ``hf://[<token>@][model/]<repo_id>[/<path>][@<revision>]``
+
+        .. code-block:: text
+
+            Public model: `hf://HorizonRobotics/Aux-Think`
+
+            Public model directory: `hf://HorizonRobotics/FineGrasp/finegrasp_pipeline`
+
+            Private model: `hf://your-name/private-repo`
+
         This factory method dynamically instantiates the correct pipeline class
         based on the `class_type` specified in the saved configuration file.
         It first loads the model and then uses the configuration to create the
@@ -251,9 +266,7 @@ class InferencePipelineMixin(
             in the configuration.
         """  # noqa: E501
         if directory.startswith("hf://"):
-            if not directory.startswith("hf://model/"):
-                directory = "hf://model/" + directory[5:]
-            directory = download_hf_resource(directory)
+            directory = download_hf_resource(auto_add_repo_type(directory))
 
         directory = abspath(directory)
 

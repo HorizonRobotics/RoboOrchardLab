@@ -40,7 +40,7 @@ State-of-the-Art (SOTA) perception models provided by the
 #   import torch
 #   from robo_orchard_lab.models import TorchModelMixin
 #
-#   model: torch.nn.Module = TorchModelMixin.load("hf://HorizonRobotics/BIP3D_Tiny_Det")
+#   model: torch.nn.Module = TorchModelMixin.load_model("hf://HorizonRobotics/BIP3D_Tiny_Det")
 #
 # Inference Pipeline
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
