@@ -42,6 +42,8 @@ def to_device(data: Any, device: torch.device) -> Any:
     """  # noqa: E501
     # Base case: If data is a tensor, move it directly to the device.
     if isinstance(data, torch.Tensor):
+        if data.device == device:
+            return data
         return data.to(device)
 
     # Recursive step for dictionaries: apply to_device to each value.

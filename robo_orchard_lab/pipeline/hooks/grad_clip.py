@@ -91,7 +91,7 @@ class GradientClippingHook(PipelineHooks):
         params = list(
             filter(lambda p: p.requires_grad and p.grad is not None, params)
         )
-        if len(params) > 0:
+        if len(params) > 0 and accelerator.sync_gradients:
             if self.clip_mode == "value":
                 accelerator.clip_grad_value_(params, self.clip_value)
             elif self.clip_mode == "norm":

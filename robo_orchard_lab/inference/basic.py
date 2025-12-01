@@ -33,7 +33,10 @@ from robo_orchard_core.utils.config import (
 )
 from torch.utils.data import Dataset
 
-from robo_orchard_lab.dataset.collates import collate_batch_dict
+from robo_orchard_lab.dataset.collates import (
+    CollatorConfig,
+    collate_batch_dict,
+)
 from robo_orchard_lab.inference.mixin import (
     InferencePipelineMixin,
     InferencePipelineMixinCfg,
@@ -45,6 +48,7 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixinCfg,
 )
 from robo_orchard_lab.models.mixin import TorchModelMixin
+from robo_orchard_lab.utils.torch import to_device
 
 __all__ = ["InferencePipeline", "InferencePipelineCfg"]
 
@@ -76,21 +80,23 @@ class InferencePipeline(
 
     cfg: InferencePipelineCfg
     processor: ProcessorMixin | None
+    collate_fn: CallableType[[list[Any]], Any] | None
 
-    def __init__(self, cfg: InferencePipelineCfg):
-        """Initializes the concrete inference pipeline.
-
-        In addition to the base class initialization, this also instantiates
-        the data processor from the provided configuration.
-        """
-        super().__init__(cfg)
-        self.processor = self.cfg.processor() if self.cfg.processor else None
-
-    def _configure(
-        self, cfg: InferencePipelineMixinCfg, model: TorchModelMixin
+    def __init__(
+        self,
+        cfg: InferencePipelineMixinCfg,
+        model: TorchModelMixin | None = None,
     ):
-        super()._configure(cfg, model)
+        super().__init__(cfg=cfg, model=model)
+
+    def _setup(self, cfg: InferencePipelineMixinCfg, model: TorchModelMixin):
+        super()._setup(cfg, model)
+        # setup processor and collate function
         self.processor = self.cfg.processor() if self.cfg.processor else None
+        if isinstance(self.cfg.collate_fn, CollatorConfig):
+            self.collate_fn = self.cfg.collate_fn()
+        else:
+            self.collate_fn = self.cfg.collate_fn
 
     @overload
     def __call__(self, data: InputType) -> OutputType: ...
@@ -150,7 +156,7 @@ class InferencePipeline(
         Returns:
             Iterable[OutputType]: An iterable of final, post-processed results.
         """
-        if self.cfg.collate_fn is None:
+        if self.collate_fn is None:
             warnings.warn(
                 "No collate function is specified in the pipeline config for "
                 "batch inference. Using default collate function "
@@ -159,7 +165,7 @@ class InferencePipeline(
             )
             collate_fn = collate_batch_dict
         else:
-            collate_fn = self.cfg.collate_fn
+            collate_fn = self.collate_fn
 
         if self.processor is not None:
             batch_data = [self.processor.pre_process(data) for data in batch]
@@ -168,7 +174,7 @@ class InferencePipeline(
 
         batch = collate_fn(batch_data)  # type: ignore
 
-        model_outputs = self.model(batch)
+        model_outputs = self._model_forward(batch)
         if self.processor is not None:
             outputs = self.processor.post_process(model_outputs, batch)
         else:
@@ -187,25 +193,38 @@ class InferencePipeline(
         Returns:
             OutputType: The final, post-processed result.
         """
-        # with switch_model_mode(self.model, "eval"):
-        # user should make sure that the model is in eval mode before calling
-        # the pipeline. Calling eval() for each inference may be costly.
-
         if self.processor is not None:
             data = self.processor.pre_process(data)
-        if self.cfg.collate_fn is not None:
-            batch = self.cfg.collate_fn([data])
+        if self.collate_fn is not None:
+            batch = self.collate_fn([data])
         else:
             batch = data  # type: ignore
         # the model should handle device placement internally,
         # as it may be distributed across multiple devices
-        model_outputs = self.model(batch)
+        model_outputs = self._model_forward(batch)
         if self.processor is not None:
             outputs = self.processor.post_process(model_outputs, batch)
         else:
             outputs = model_outputs
 
         return outputs
+
+    def _model_forward(self, data: Any) -> Any:
+        """Performs the model's forward pass.
+
+        For simple models, this directly calls the model with the batch.
+        For more complex models, such as self-regressive models (LLM), this
+        method should be overridden to implement generation logic.
+
+        Args:
+            data (Any): The input data batch for the model. It will be batched
+                if the collate function is provided or if batch inference is
+                used.
+
+        """
+        data = to_device(data, self.model.device)
+
+        return self.model(data)
 
 
 InferencePipelineType_co = TypeVar(
@@ -225,12 +244,12 @@ class InferencePipelineCfg(
     device transfer function.
     """  # noqa: E501
 
-    class_type: ClassType_co[InferencePipelineType_co] = InferencePipeline
+    class_type: ClassType_co[InferencePipelineType_co] = InferencePipeline  # type: ignore # noqa: E501
 
     processor: ConfigInstanceOf[ProcessorMixinCfg] | None = None
     """The configuration for the data processor. """
 
-    collate_fn: CallableType[[list[Any]], Any] | None = None
+    collate_fn: CallableType[[list[Any]], Any] | CollatorConfig | None = None
     """The function used to collate single data items into a single batch.
 
     This method is required when the input data is an iterable (e.g., dataset,

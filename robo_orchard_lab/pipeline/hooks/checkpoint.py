@@ -265,6 +265,7 @@ class SaveModel(PipelineHooks):
         """
         if args.model is None:
             raise ValueError("model is None. Cannot save model.")
+        self._saved_last_step = args.global_step_id
         accelerator = args.accelerator
         save_root = self.cfg.get_save_root(accelerator)
         save_root = os.path.join(
@@ -289,13 +290,13 @@ class SaveModel(PipelineHooks):
         if (
             self.cfg.save_step_freq is not None
             and (args.global_step_id + 1) % self.cfg.save_step_freq == 0
+            and self._saved_last_step != args.global_step_id
         ):
-            self._saved_last_step = args.global_step_id
             args.accelerator.wait_for_everyone()
-            save_location = self._save_model(
-                args, step_id=args.step_id, epoch_id=args.epoch_id
-            )
             if args.accelerator.is_main_process:
+                save_location = self._save_model(
+                    args, step_id=args.step_id, epoch_id=args.epoch_id
+                )
                 logger.info(
                     "Save model at the end of step {} to {}".format(
                         args.global_step_id, save_location
@@ -306,19 +307,16 @@ class SaveModel(PipelineHooks):
         if (
             self.cfg.save_epoch_freq is not None
             and (args.epoch_id + 1) % self.cfg.save_epoch_freq == 0
+            and self._saved_last_step != args.global_step_id
         ):
-            if self._saved_last_step == args.global_step_id:
-                return
-
-            self._saved_last_step = args.global_step_id
             args.accelerator.wait_for_everyone()
-            save_location = self._save_model(
-                args, step_id=args.step_id, epoch_id=args.epoch_id
-            )
             if args.accelerator.is_main_process:
+                save_location = self._save_model(
+                    args, step_id=args.step_id, epoch_id=args.epoch_id
+                )
                 logger.info(
-                    "Save model at the end of epoch {} to {}".format(
-                        args.epoch_id, save_location
+                    "Save model at the end of epoch {} of global step {} to {}".format(  # noqa: E501
+                        args.epoch_id, args.global_step_id, save_location
                     )
                 )
 
@@ -342,14 +340,16 @@ class SaveModel(PipelineHooks):
         ):
             return
 
-        self._saved_last_step = args.global_step_id
         args.accelerator.wait_for_everyone()
-        save_location = self._save_model(
-            args, step_id=args.step_id, epoch_id=args.epoch_id
-        )
+
         if args.accelerator.is_main_process:
+            save_location = self._save_model(
+                args, step_id=args.step_id, epoch_id=args.epoch_id
+            )
             logger.info(
-                "Save model at the end of training to {}".format(save_location)
+                "Save model at the end of training global step {} to {}".format(  # noqa: E501
+                    args.global_step_id, save_location
+                )
             )
 
 

@@ -128,7 +128,7 @@ def deterministic_setup():
 @pytest.fixture(scope="function")
 def test_pipeline_cfg() -> MyTestPipelineCfg:
     """Provides an instance of MyTestPipelineCfg."""
-    return MyTestPipelineCfg(model=DummyModelCfg())
+    return MyTestPipelineCfg(model_cfg=DummyModelCfg())
 
 
 @pytest.fixture(scope="function")
@@ -153,7 +153,7 @@ def test_pipeline_initialization(test_pipeline: MyTestPipeline):
 def test_pipeline_call_with_collator(with_collator: bool):
     test_pipeline = MyTestPipeline(
         cfg=MyTestPipelineCfg(
-            model=DummyModelCfg(),
+            model_cfg=DummyModelCfg(),
             batch_size=1,
             collate_fn=collate_batch_dict if with_collator else None,
         )
@@ -191,7 +191,7 @@ def test_pipeline_call_with_collator(with_collator: bool):
 def test_pipeline_batched(batch_size):
     batch_size = batch_size
     test_pipeline = MyTestPipeline(
-        cfg=MyTestPipelineCfg(model=DummyModelCfg(), batch_size=batch_size)
+        cfg=MyTestPipelineCfg(model_cfg=DummyModelCfg(), batch_size=batch_size)
     )
     raw_input = [{"input_data": torch.randn(1, 10)} for _ in range(3)]
     batched_input = []

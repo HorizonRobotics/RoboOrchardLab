@@ -75,30 +75,17 @@ class InferencePipelineMixin(
     cfg: InferencePipelineMixinCfg
     """The configuration for the pipeline"""
 
-    def __init__(self, cfg: InferencePipelineMixinCfg):
+    def __init__(
+        self,
+        cfg: InferencePipelineMixinCfg,
+        model: TorchModelMixin | None = None,
+    ):
         """Initializes the inference pipeline with the given configuration.
 
-        This constructor sets up the model based on the provided configuration.
-        It ensures that the model is properly instantiated and ready for use.
-
-        Args:
-            cfg (InferencePipelineMixinCfg): The configuration for the
-                inference pipeline, including the model configuration.
-        """
-        if cfg.model is None:
-            raise ValueError("The model configuration is missing.")
-        self._configure(cfg=cfg, model=cfg.model())
-
-    @classmethod
-    def from_shared(
-        cls, cfg: InferencePipelineMixinCfg, model: TorchModelMixin
-    ):
-        """Creates an inference pipeline from a given model instance.
-
-        This factory method allows for the creation of an inference pipeline
-        using an already instantiated model. It is useful when the model has
-        been created or loaded separately and needs to be integrated into a
-        pipeline.
+        This constructor sets up the model based on the provided configuration,
+        or creating an inference pipeline using an already instantiated model.
+        It is useful when the model has been created or loaded separately and
+        needs to be integrated into a pipeline.
 
         Note:
             If the provided configuration contains a model configuration that
@@ -109,39 +96,44 @@ class InferencePipelineMixin(
 
         Args:
             cfg (InferencePipelineMixinCfg): The configuration for the
-                inference pipeline.
-            model (TorchModelMixin): An instance of the model to be used in
-                the pipeline.
-
-        Returns:
-            InferencePipelineMixin: An instance of the inference pipeline
-                initialized with the provided model.
+                inference pipeline, including the model configuration.
+            model (TorchModelMixin | None): An optional instance of the model
+                to be used in the pipeline. If None, the model will be
+                instantiated from the configuration.
         """
-        pipeline = cls.__new__(cls)
-        if (cfg.model is not None) and cfg.model != model.cfg:
-            logger.warning(
-                "The provided model configuration in the pipeline "
-                "differs from the configuration of the given model "
-                "instance. The latter will be used."
-            )
-            cfg.model = model.cfg
-        pipeline._configure(cfg=cfg, model=model)
-        return pipeline
+        if model is None:
+            if cfg.model_cfg is None:
+                raise ValueError("The model configuration is missing.")
+            model = cfg.model_cfg()
+        else:
+            if (cfg.model_cfg is not None) and cfg.model_cfg != model.cfg:
+                raise ValueError(
+                    "The provided model configuration in the pipeline "
+                    "differs from the configuration of the given model "
+                    "instance. You should set cfg.model_cfg to None when "
+                    "model is provided."
+                )
+            if cfg.model_cfg is None:
+                cfg.model_cfg = model.cfg
+        assert model is not None
+        self._setup(cfg=cfg, model=model)
 
-    def _configure(
-        self, cfg: InferencePipelineMixinCfg, model: TorchModelMixin
-    ):
-        """Configures the pipeline with the given configuration and model.
+    def _setup(self, cfg: InferencePipelineMixinCfg, model: TorchModelMixin):
+        """Configures the pipeline with the given parameters.
 
         This method sets the internal configuration and model of the pipeline.
         It is useful for scenarios where the pipeline needs to be reconfigured
         after initialization.
+
+        Subclasses can override this method to implement additional setup
+        logic specific to their requirements.
 
         Args:
             cfg (InferencePipelineMixinCfg): The new configuration for the
                 inference pipeline.
             model (TorchModelMixin): The new model to be used in the pipeline.
         """
+
         self.cfg = cfg
         self.model = model
 
@@ -156,7 +148,7 @@ class InferencePipelineMixin(
     @property
     def device(self) -> torch.device:
         """The device where the model's parameters are located."""
-        return next(self.model.parameters()).device
+        return self.model.device
 
     @abc.abstractmethod
     def __call__(self, data: InputType) -> OutputType:
@@ -210,7 +202,7 @@ class InferencePipelineMixin(
             os.path.join(directory, f"{inference_prefix}.config.json"), "w"
         ) as fh:
             cfg_copy = self.cfg.model_copy()
-            cfg_copy.model = None  # Avoid redundancy of model config
+            cfg_copy.model_cfg = None  # Avoid redundancy of model config
             fh.write(cfg_copy.model_dump_json(indent=4))
 
     @staticmethod
@@ -276,7 +268,7 @@ class InferencePipelineMixin(
                 ensure_type=InferencePipelineMixinCfg,
             )
             cfg.update_model_cfg(f"{model_prefix}.config.json")
-            if cfg.model is None:
+            if cfg.model_cfg is None:
                 raise ValueError("The model configuration is missing.")
             pipeline: InferencePipelineMixin = cfg.class_type(cfg=cfg)  # type: ignore
             if load_weights:
@@ -316,16 +308,20 @@ class InferencePipelineMixinCfg(ClassConfig[InferencePipelineMixinType_co]):
     its associated components.
     """
 
-    model: TorchModuleCfg | None = None
+    model_cfg: TorchModuleCfg | None = None
     """The configuration for the model used in the pipeline."""
 
     def update_model_cfg(self, model_cfg_path: str):
         """Update model configuration from a file."""
-        if self.model is not None and os.path.exists(model_cfg_path):
+        if self.model_cfg is not None and os.path.exists(model_cfg_path):
             logger.warning(
                 f"Both the pipeline config and {model_cfg_path} "
                 "contain a model configuration. The latter will be used."
             )
-            self.model = load_from(model_cfg_path, ensure_type=TorchModuleCfg)
-        if self.model is None:
-            self.model = load_from(model_cfg_path, ensure_type=TorchModuleCfg)
+            self.model_cfg = load_from(
+                model_cfg_path, ensure_type=TorchModuleCfg
+            )
+        if self.model_cfg is None:
+            self.model_cfg = load_from(
+                model_cfg_path, ensure_type=TorchModuleCfg
+            )

@@ -63,7 +63,6 @@ class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
         """
         pass
 
-    # Should place optional arguments after required ones!!
     def post_process(self, model_outputs, model_input: Any = None):
         """Transforms model output into a user-friendly format.
 

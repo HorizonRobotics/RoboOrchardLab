@@ -23,6 +23,7 @@ from robo_orchard_core.utils.config import (
     Config,
     TorchTensor,
 )
+from typing_extensions import Self
 
 from robo_orchard_lab.models.codec.base import Codec, CodecConfig
 
@@ -47,6 +48,33 @@ class NormStatistics(Config):
     q01: TorchTensor | None = None
     q99: TorchTensor | None = None
 
+    @property
+    def device(self) -> torch.device | None:
+        """Get the device of the statistics tensors."""
+        first_not_none = self._find_first_not_none()
+        if first_not_none is not None:
+            return first_not_none.device
+        return None
+
+    @property
+    def dtype(self) -> torch.dtype | None:
+        """Get the dtype of the statistics tensors."""
+        first_not_none = self._find_first_not_none()
+        if first_not_none is not None:
+            return first_not_none.dtype
+        return None
+
+    def _find_first_not_none(self) -> torch.Tensor | None:
+        """Find the first non-None tensor among the statistics."""
+        not_none_tensor = None
+        attrs = ["mean", "std", "min", "max", "q01", "q99"]
+        for attr in attrs:
+            if getattr(self, attr) is not None:
+                not_none_tensor = getattr(self, attr)
+                break
+
+        return not_none_tensor
+
     def __post_init__(self):
         # find the first non-None value:
         not_none_tensor = None
@@ -70,12 +98,43 @@ class NormStatistics(Config):
                     f"but mean has shape {not_none_tensor.shape}."
                 )
 
+    def to(
+        self,
+        dtype: torch.dtype | None = None,
+        device: torch.device | str | None = None,
+    ) -> NormStatistics:
+        """Move all tensors to the specified device."""
+        ret_dict = {}
+        for attr in [
+            "mean",
+            "std",
+            "min",
+            "max",
+            "q01",
+            "q99",
+        ]:
+            tensor: torch.Tensor | None = getattr(self, attr)
+            if tensor is not None:
+                # setattr(self, attr, tensor.to(device=device, dtype=dtype))
+                tensor = tensor.to(device=device, dtype=dtype)
+            ret_dict[attr] = tensor
+        return NormStatistics(**ret_dict)
+
 
 class NormalizeCodec(Codec):
     cfg: NormalizeCodecConfig
 
     def __init__(self, cfg: NormalizeCodecConfig):
         self.cfg = cfg
+
+    def to(
+        self,
+        dtype: torch.dtype | None = None,
+        device: torch.device | str | None = None,
+    ) -> Self:
+        """Move all tensors in cfg to the specified device."""
+        new_cfg = self.cfg.to(device=device, dtype=dtype)
+        return type(self)(new_cfg)
 
 
 NormalizeCodecT_co = TypeVar(
@@ -96,6 +155,9 @@ class MinMaxNormalizeCodec(NormalizeCodec):
             )
         self._min = self.cfg.stats.min
         self._max = self.cfg.stats.max
+        self._need_clamp = (
+            self.cfg.clip_min is not None or self.cfg.clip_max is not None
+        )
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         """Normalize the data using min-max normalization."""
@@ -103,8 +165,12 @@ class MinMaxNormalizeCodec(NormalizeCodec):
             self._max - self._min + self.cfg.eps
         ) * 2 - 1
 
-        return torch.clamp(
-            normalized_data, min=self.cfg.clip_min, max=self.cfg.clip_max
+        return (
+            torch.clamp(
+                normalized_data, min=self.cfg.clip_min, max=self.cfg.clip_max
+            )
+            if self._need_clamp
+            else normalized_data
         )
 
     def decode(self, data: torch.Tensor) -> torch.Tensor:
@@ -128,12 +194,19 @@ class MeanStdNormalizeCodec(NormalizeCodec):
             )
         self._mean = self.cfg.stats.mean
         self._std = self.cfg.stats.std
+        self._need_clamp = (
+            self.cfg.clip_min is not None or self.cfg.clip_max is not None
+        )
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         """Normalize the data using mean and standard deviation."""
         normalized_data = (data - self._mean) / (self._std + self.cfg.eps)
-        return torch.clamp(
-            normalized_data, min=self.cfg.clip_min, max=self.cfg.clip_max
+        return (
+            torch.clamp(
+                normalized_data, min=self.cfg.clip_min, max=self.cfg.clip_max
+            )
+            if self._need_clamp
+            else normalized_data
         )
 
     def decode(self, data: torch.Tensor) -> torch.Tensor:
@@ -154,14 +227,21 @@ class QuantileNormalizeCodec(NormalizeCodec):
             )
         self._q01 = self.cfg.stats.q01
         self._q99 = self.cfg.stats.q99
+        self._need_clamp = (
+            self.cfg.clip_min is not None or self.cfg.clip_max is not None
+        )
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         """Normalize the data using quantile normalization."""
         normalized_data = (data - self._q01) / (
             self._q99 - self._q01 + self.cfg.eps
         ) * 2 - 1
-        return torch.clamp(
-            normalized_data, min=self.cfg.clip_min, max=self.cfg.clip_max
+        return (
+            torch.clamp(
+                normalized_data, min=self.cfg.clip_min, max=self.cfg.clip_max
+            )
+            if self._need_clamp
+            else normalized_data
         )
 
     def decode(self, data: torch.Tensor) -> torch.Tensor:
@@ -183,3 +263,14 @@ class NormalizeCodecConfig(CodecConfig[NormalizeCodecT_co]):
     """Minimum value to clip the normalized data."""
     clip_max: float | None = None
     """Maximum value to clip the normalized data."""
+
+    def to(
+        self,
+        dtype: torch.dtype | None = None,
+        device: torch.device | str | None = None,
+    ) -> NormalizeCodecConfig[NormalizeCodecT_co]:
+        """Move all tensors in stats to the specified device."""
+        data_dict = self.__dict__.copy()
+        data_dict["stats"] = self.stats.to(device=device, dtype=dtype)
+
+        return NormalizeCodecConfig[NormalizeCodecT_co](**data_dict)

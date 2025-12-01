@@ -39,30 +39,29 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
 
     def __init__(
         self,
-        cfg: InferencePipelinePolicyCfg,
+        pipeline: InferencePipelinePolicyCfg
+        | InferencePipelineMixin[OBSType, ACTType],
         observation_space: gym.Space[OBSType] | None = None,
         action_space: gym.Space[ACTType] | None = None,
     ):
-        super().__init__(
-            cfg, observation_space=observation_space, action_space=action_space
-        )
-        self.pipeline = cfg.pipeline()
-
-    @classmethod
-    def from_shared(
-        cls,
-        pipeline: InferencePipelineMixin,
-        observation_space: gym.Space[OBSType] | None = None,
-        action_space: gym.Space[ACTType] | None = None,
-    ):
-        ret = cls.__new__(cls)
-        ret.cfg = InferencePipelinePolicyCfg.from_inference_pipeline(
-            pipeline.cfg
-        )
-        ret.pipeline = pipeline
-        ret.observation_space = observation_space
-        ret.action_space = action_space
-        return ret
+        if isinstance(pipeline, InferencePipelinePolicyCfg):
+            super().__init__(
+                pipeline,
+                observation_space=observation_space,
+                action_space=action_space,
+            )
+        else:
+            super().__init__(
+                InferencePipelinePolicyCfg(
+                    pipeline_cfg=pipeline.cfg,
+                ),
+                observation_space=observation_space,
+                action_space=action_space,
+            )
+        if isinstance(pipeline, InferencePipelinePolicyCfg):
+            pipeline = pipeline.pipeline_cfg()
+        assert isinstance(pipeline, InferencePipelineMixin)
+        self.pipeline = pipeline
 
     def act(self, obs: OBSType) -> ACTType:
         """Generate an action based on the observation.
@@ -84,22 +83,4 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
 class InferencePipelinePolicyCfg(PolicyConfig[InferencePipelinePolicy]):
     class_type: ClassType_co[InferencePipelinePolicy] = InferencePipelinePolicy
 
-    pipeline: ConfigInstanceOf[InferencePipelineMixinCfg]
-
-    @classmethod
-    def from_inference_pipeline(
-        cls,
-        pipeline: InferencePipelineMixinCfg,
-    ) -> InferencePipelinePolicyCfg:
-        """Create an from an existing InferencePipeline Config.
-
-        Args:
-            pipeline (InferencePipelineMixinCfg): An instance of pipeline
-                config.
-
-        Returns:
-            InferencePipelinePolicyCfg: A configuration object for
-                InferencePipelinePolicy.
-        """
-        cfg = cls(pipeline=pipeline)
-        return cfg
+    pipeline_cfg: ConfigInstanceOf[InferencePipelineMixinCfg]

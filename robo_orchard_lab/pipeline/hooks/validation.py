@@ -66,6 +66,29 @@ class ValidationHook(PipelineHooks):
                 ),
             )
 
+        if cfg.eval_at_begin:
+            self.register_hook(
+                "on_loop",
+                HookContext.from_callable(
+                    before=self._on_loop_begin, after=None
+                ),
+            )
+
+    def _on_loop_begin(
+        self,
+        hook_args: PipelineHookArgs,
+    ) -> None:
+        """Called at the beginning of the training loop.
+
+        This method checks if evaluation is needed at the beginning of
+        training and calls the evaluation callback if necessary.
+
+        Args:
+            hook_args (PipelineHookArgs): The current training progress state.
+        """
+        if self.cfg.eval_at_begin:
+            self.evaluate(hook_args)
+
     def _on_step_end(
         self,
         hook_args: PipelineHookArgs,
@@ -154,6 +177,9 @@ class ValidationHookConfig(PipelineHooksConfig[ValidationHook]):
     epoch_eval_freq: int | None = None
     """The frequency of evaluation in terms of epochs. If specified, the
     evaluation will be performed every `epoch_eval_freq` epochs."""
+
+    eval_at_begin: bool = False
+    """If True, evaluation will be performed at the beginning of training. """
 
     def __post_init__(self):
         if self.step_eval_freq is None and self.epoch_eval_freq is None:

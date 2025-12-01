@@ -34,7 +34,7 @@ from transformers.modeling_utils import (
     get_parameter_device,
     get_parameter_dtype,
 )
-from typing_extensions import deprecated
+from typing_extensions import Self, deprecated
 
 from robo_orchard_lab.utils.huggingface import (
     auto_add_repo_type,
@@ -311,8 +311,9 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         with open(config_path, "w") as f:
             f.write(self.cfg.model_dump_json(indent=4))
 
-    @staticmethod
+    @classmethod
     def load_model(
+        cls: type[Self],
         directory: str,
         load_weight: bool = True,
         strict: bool = True,
@@ -320,11 +321,14 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         device_map: str | dict[str, int | str | torch.device] | None = None,
         model_prefix: str = "model",
         load_impl: Literal["native", "accelerate"] = "accelerate",
-    ) -> TorchModelMixin:
+    ) -> Self:
         """Loads a model from a local directory or the Hugging Face Hub.
 
-        This method supports loading from a local path or a Hugging Face Hub
-        repository. For Hub models, a URI format is used:
+        This class method services like `load_pretrained` methods in huggingface
+        transformers or other similar libraries.
+
+        It supports loading from a local path or a Hugging Face Hub repository.
+        For Hub models, a URI format is used:
         ``hf://[<token>@][model/]<repo_id>[/<path>][@<revision>]``
 
         .. code-block:: text
@@ -402,7 +406,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
             cfg: TorchModuleCfg = load_config_class(f.read())  # type: ignore
 
         with in_cwd(directory):
-            model: TorchModelMixin = cfg()
+            model: Self = cfg()
 
         if load_weight:
             model.load_weights(

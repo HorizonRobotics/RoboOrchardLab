@@ -37,7 +37,7 @@ from datasets import (
 from datasets.arrow_dataset import (
     Column,
 )
-from sqlalchemy import URL, Engine, select
+from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
 from typing_extensions import Self
 
@@ -691,6 +691,21 @@ class RODataset(TorchDataset):
                 if ret is not None:
                     make_transient(ret)
                 return ret
+
+    def iterate_meta_by_statement(self, stmt: Select) -> Iterable[Any]:
+        """Create an iterator over the meta information in the dataset.
+
+        Args:
+            stmt (Select): The SQLAlchemy Select statement to execute.
+
+        Yields:
+            Iterable[Any]: An iterator over the metadata objects returned
+                by the query.
+
+        """
+        with Session(self.db_engine) as session:
+            for row in session.execute(stmt):
+                yield row
 
     def iterate_meta(
         self,

@@ -145,7 +145,7 @@ processor_cfg = SimpleProcessorCfg(scale_factor=0.5)
 # 2. Create the main pipeline config
 pipeline_config = InferencePipelineCfg(
     # Nest the model config
-    model=model_cfg,
+    model_cfg=model_cfg,
     # Nest the processor config
     processor=processor_cfg,
     # Assign the collate function
