@@ -14,8 +14,12 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import logging
+
 import torch
 from torch import nn
+
+logger = logging.getLogger(__name__)
 
 
 class RTCInferencePlugin(nn.Module):
@@ -38,30 +42,46 @@ class RTCInferencePlugin(nn.Module):
     can significantly improve task success rates by reducing action jitter.
     """
 
-    def __init__(self):
+    def __init__(self, max_horizon=32):
         super().__init__()
+        self.max_horizon = max_horizon
 
     def forward(self, pred, remaining_actions, delay_horizon):
         """Using remaining actions to smooth the prediction this time.
 
         Args:
             pred (torch.Tensor): The newly predicted actions of shape
-                (B, N_s, N_j, C), where B is batch size, N_s is the length of
-                predicted actions, N_j is number of joints.
+                (B, N_r, N_j, C), where B is batch size, N_r is the length of
+                last remaining actions, N_j is number of joints.
             remaining_actions (torch.Tensor): The unexecuted actions last time
-                of shape (B, N_s, N_j, C), where B is batch size, N_s is the
-                length of predicted actions, N_j is number of joints.
+                of shape (B, N_p, N_j, C), where B is batch size, N_p is the
+                length of current predicted actions, N_j is number of joints.
             delay_horizon (int): The number of time steps to blend, which
                 corresponds to the system's latency.
         """
-        pred_head = pred[:, :delay_horizon]
-        weights = torch.linspace(
-            1, 0, steps=delay_horizon, device=pred_head.device
+        max_horizon = min(
+            pred.shape[1], remaining_actions.shape[1], self.max_horizon
         )
-        weights = weights.view(1, -1, 1, 1)
+        delay_horizon = min(delay_horizon, max_horizon)
+        weights = torch.ones(delay_horizon)
 
-        pred[:, :delay_horizon, :, :1] = remaining_actions[
-            :, :delay_horizon
-        ] * weights + pred[:, :delay_horizon, :, :1] * (1 - weights)
+        if delay_horizon < max_horizon:
+            h = max_horizon - delay_horizon
+            ci = torch.torch.linspace(1, 0, steps=h + 2)[1:-1]
+            decay = ci * (torch.exp(ci) - 1) / (torch.ones(h) * torch.e - 1)
+            weights = torch.cat([weights, decay])
+        else:
+            logger.warning(
+                "Received 'remaining_actions' is too short; "
+                "this may result in motion jitter. "
+                f"remaining steps: {remaining_actions.shape[1]}."
+            )
 
+        weights = weights.to(pred)
+        weights = weights[:max_horizon, None, None]
+        rtc_dim = remaining_actions.shape[-1]
+        pred[:, :max_horizon, :, :rtc_dim] = (
+            weights * remaining_actions[:, :max_horizon]
+            + (1 - weights) * pred[:, :max_horizon, :, :rtc_dim]
+        )
         return pred

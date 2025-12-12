@@ -14,10 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import logging
+
 import torch
 import torch.nn.functional as F
 from pytorch3d.transforms import quaternion_to_matrix
 from torch import nn
+
+logger = logging.getLogger(__name__)
 
 
 class SEMActionLoss(nn.Module):
@@ -32,8 +36,11 @@ class SEMActionLoss(nn.Module):
         with_consistent_loss=False,
         timestep_loss_weight=None,
         parallel_loss_weight=None,
+        **kwargs,
     ):
         super().__init__()
+        if len(kwargs) != 0:
+            logger.warning(f"Get unexpected arguments: {kwargs}")
         assert loss_mode in ["l1", "l2", "smooth_l1"]
         self.state_loss_weight = default_state_loss_weight
         self.fk_loss_weight = default_fk_loss_weight

@@ -445,84 +445,125 @@ class SEMActionDecoder(nn.Module):
                 "timesteps": timesteps,
                 "num_parallel": self.num_parallel_training_sample,
             }
-        else:
-            pred_actions = []
-            if self.with_mobile:
-                pred_mobile_trajs = []
+        else:  # inference
+            if (
+                self.async_inference_plugin is not None
+                and "remaining_actions" in inputs
+                and "delay_horizon" in inputs
+            ):
+                remaining_actions = (
+                    inputs["remaining_actions"][0]
+                    .to(img_feature)
+                    .unsqueeze(-1)
+                )
+                remaining_actions = self.apply_scale_shift(
+                    remaining_actions,
+                    joint_scale_shift,
+                )
+                delay_horizon = inputs["delay_horizon"][0]
             else:
-                pred_mobile_trajs = None
-            for _ in range(self.num_test_traj):
-                noisy_action = self.sample_noise(
-                    [bs, self.pred_steps, num_joint, state_dims],
+                remaining_actions = None
+
+            if self.num_test_traj is not None and self.num_test_traj > 1:
+                bs = self.num_test_traj * bs
+                text_dict = {key: text_dict[key] for key in text_dict}
+                (
+                    img_feature,
+                    robot_feature,
+                    joint_relative_pos,
                     hist_robot_state,
+                    joint_scale_shift,
+                    joint_mask,
+                    remaining_actions,
+                    inputs["embodiedment_mat"],
+                    text_dict["embedded"],
+                    text_dict["text_token_mask"],
+                ) = self._repeat(
+                    self.num_test_traj,
+                    img_feature,
+                    robot_feature,
+                    joint_relative_pos,
+                    hist_robot_state,
+                    joint_scale_shift,
+                    joint_mask,
+                    remaining_actions,
+                    inputs["embodiedment_mat"],
+                    text_dict["embedded"],
+                    text_dict["text_token_mask"],
                 )
-                if self.with_mobile:
-                    noisy_mobile_traj = torch.randn(
-                        [bs, self.pred_steps, 2]
-                    ).to(img_feature)
+                inputs["joint_scale_shift"] = joint_scale_shift
+
+            noisy_action = self.sample_noise(
+                [bs, self.pred_steps, num_joint, state_dims],
+                hist_robot_state,
+            )
+            if self.with_mobile:
+                noisy_mobile_traj = torch.randn(
+                    [bs, self.pred_steps, self.mobile_traj_state_dims]
+                ).to(img_feature)
+            else:
+                noisy_mobile_traj = None
+            self.test_noise_scheduler.set_timesteps(
+                self.num_inference_timesteps,
+                device=img_feature.device,
+            )
+
+            for t in self.test_noise_scheduler.timesteps:
+                if not self.noise_type.endswith("pose"):
+                    noisy_action = self.recompute(noisy_action, inputs)
+                pred, pred_mobile_traj = self.forward_layers(
+                    noisy_action,
+                    img_feature,
+                    text_dict,
+                    robot_feature,
+                    t.to(device=noisy_action.device).tile(bs),
+                    joint_relative_pos,
+                    noisy_mobile_traj,
+                    joint_mask,
+                )
+                pred = self.get_prediction(
+                    pred, hist_robot_state, joint_scale_shift, joint_mask
+                )
+                if remaining_actions is not None:
+                    pred = self.async_inference_plugin(
+                        pred,
+                        remaining_actions,
+                        delay_horizon,
+                    )
+                if not self.noise_type.endswith("pose"):
+                    noisy_action = self.test_noise_scheduler.step(
+                        pred[..., :1], t, noisy_action[..., :1]
+                    ).prev_sample
+                    noisy_action = torch.cat(
+                        [noisy_action, pred[..., 1:]], dim=-1
+                    )
                 else:
-                    noisy_mobile_traj = None
-                self.test_noise_scheduler.set_timesteps(
-                    self.num_inference_timesteps,
-                    device=img_feature.device,
-                )
-                for t in self.test_noise_scheduler.timesteps:
-                    if not self.noise_type.endswith("pose"):
-                        noisy_action = self.recompute(noisy_action, inputs)
-                    pred, pred_mobile_traj = self.forward_layers(
-                        noisy_action,
-                        img_feature,
-                        text_dict,
-                        robot_feature,
-                        t.to(device=noisy_action.device).tile(bs),
-                        joint_relative_pos,
-                        noisy_mobile_traj,
-                        joint_mask,
-                    )
-                    pred = self.get_prediction(
-                        pred, hist_robot_state, joint_scale_shift, joint_mask
-                    )
-                    if self.async_inference_plugin is not None:
-                        if (
-                            "remaining_actions" in inputs
-                            and inputs["remaining_actions"].size > 0
-                            and "delay_horizon" in inputs
-                            and inputs["delay_horizon"] > 0
-                        ):
-                            remaining_actions = (
-                                inputs["remaining_actions"][
-                                    :, : inputs["delay_horizon"]
-                                ]
-                                .to(pred)
-                                .unsqueeze(-1)
-                            )
-                            remaining_actions = self.apply_scale_shift(
-                                remaining_actions,
-                                joint_scale_shift,
-                            )
-                            pred = self.async_inference_plugin(
-                                pred,
-                                remaining_actions,
-                                inputs["delay_horizon"],
-                            )
-                    if not self.noise_type.endswith("pose"):
-                        noisy_action = self.test_noise_scheduler.step(
-                            pred[..., :1], t, noisy_action[..., :1]
-                        ).prev_sample
-                        noisy_action = torch.cat(
-                            [noisy_action, pred[..., 1:]], dim=-1
-                        )
-                    else:
-                        noisy_action = self.test_noise_scheduler.step(
-                            pred, t, noisy_action
-                        ).prev_sample
-                    if self.with_mobile:
-                        noisy_mobile_traj = self.test_noise_scheduler.step(
-                            pred_mobile_traj, t, noisy_mobile_traj
-                        )
-                pred_actions.append(noisy_action)
+                    noisy_action = self.test_noise_scheduler.step(
+                        pred, t, noisy_action
+                    ).prev_sample
                 if self.with_mobile:
-                    pred_mobile_trajs.append(noisy_mobile_traj)
+                    noisy_mobile_traj = self.test_noise_scheduler.step(
+                        pred_mobile_traj, t, noisy_mobile_traj
+                    )
+
+            pred_actions = noisy_action
+            pred_mobile_trajs = noisy_mobile_traj
+            if self.num_test_traj is not None and self.num_test_traj > 1:
+                inputs["joint_scale_shift"] = joint_scale_shift.unflatten(
+                    0, (-1, self.num_test_traj)
+                )[:, 0]
+                pred_actions = pred_actions.unflatten(
+                    0, (-1, self.num_test_traj)
+                )
+                if self.with_mobile:
+                    pred_mobile_trajs = pred_mobile_trajs.unflatten(
+                        0, (-1, self.num_test_traj)
+                    )
+            else:  # only one trajectory for one sample
+                pred_actions = pred_actions.unsqueeze(1)
+                if self.with_mobile:
+                    pred_mobile_trajs = pred_mobile_trajs.unsqueeze(1)
+
             return {
                 "pred_actions": pred_actions,
                 "pred_mobile_trajs": pred_mobile_trajs,
@@ -754,12 +795,10 @@ class SEMActionDecoder(nn.Module):
         return pred, pred_mobile_traj
 
     def post_process(self, model_outs, inputs, **kwargs):
-        bs = model_outs["pred_actions"][0].shape[0]
+        bs = model_outs["pred_actions"].shape[0]
         results = []
         for i in range(bs):
-            pred_actions = torch.stack(
-                [x[i] for x in model_outs["pred_actions"]]
-            )
+            pred_actions = model_outs["pred_actions"][i]
             if "joint_scale_shift" in inputs:
                 pred_actions = self.apply_scale_shift(
                     pred_actions,
@@ -769,7 +808,7 @@ class SEMActionDecoder(nn.Module):
             results.append(dict(pred_actions=pred_actions))
 
             if model_outs.get("pred_mobile_trajs") is not None:
-                results[-1]["pred_mobile_trajs"] = torch.stack(
-                    [x[i] for x in model_outs["pred_mobile_trajs"]]
-                )
+                results[-1]["pred_mobile_trajs"] = model_outs[
+                    "pred_mobile_trajs"
+                ][i]
         return results
