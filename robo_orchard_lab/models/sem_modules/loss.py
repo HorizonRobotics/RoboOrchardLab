@@ -28,8 +28,10 @@ class SEMActionLoss(nn.Module):
         default_mobile_loss_weight=1.0,
         loss_mode="l2",
         smooth_l1_beta=1.0,
-        with_wasserstein_distance=False,
+        with_wasserstein_distance=True,
         with_consistent_loss=False,
+        timestep_loss_weight=None,
+        parallel_loss_weight=None,
     ):
         super().__init__()
         assert loss_mode in ["l1", "l2", "smooth_l1"]
@@ -40,6 +42,8 @@ class SEMActionLoss(nn.Module):
         self.smooth_l1_beta = smooth_l1_beta
         self.with_wasserstein_distance = with_wasserstein_distance
         self.with_consistent_loss = with_consistent_loss
+        self.timestep_loss_weight = timestep_loss_weight
+        self.parallel_loss_weight = parallel_loss_weight
         self.recompute = None
 
     def forward(self, model_outs, inputs, **kwargs):
@@ -52,7 +56,9 @@ class SEMActionLoss(nn.Module):
                 pred,
                 target,
                 inputs.get("state_loss_weights", self.state_loss_weight),
-                pred_mask,
+                pred_mask=pred_mask,
+                timestep=model_outs["timesteps"],
+                num_parallel=model_outs["num_parallel"],
             )
         )
         fk_loss_weight = inputs.get("fk_loss_weight", self.fk_loss_weight)
@@ -61,7 +67,13 @@ class SEMActionLoss(nn.Module):
             fk_pred = self.recompute(pred, inputs)
             output.update(
                 self.robot_state_loss(
-                    fk_pred, target, fk_loss_weight, pred_mask, suffix="_fk"
+                    fk_pred,
+                    target,
+                    fk_loss_weight,
+                    pred_mask=pred_mask,
+                    timestep=model_outs["timesteps"],
+                    num_parallel=model_outs["num_parallel"],
+                    suffix="_fk",
                 )
             )
             if self.with_consistent_loss:
@@ -71,6 +83,8 @@ class SEMActionLoss(nn.Module):
                         fk_pred.detach(),
                         fk_loss_weight,
                         pred_mask=None,
+                        timestep=model_outs["timesteps"],
+                        num_parallel=model_outs["num_parallel"],
                         suffix="_consistent",
                     )
                 )
@@ -80,12 +94,14 @@ class SEMActionLoss(nn.Module):
                     model_outs["pred_mobile_traj"],
                     model_outs.get("target_mobile_traj"),
                     inputs.get("mobile_loss_weight", self.mobile_loss_weight),
-                    pred_mask,
+                    pred_mask=pred_mask,
+                    timestep=model_outs["timesteps"],
+                    num_parallel=model_outs["num_parallel"],
                 )
             )
         return output
 
-    def robot_state_loss(self, pred, target, weight, pred_mask, suffix=""):
+    def robot_state_loss(self, pred, target, weight, suffix="", **kwargs):
         rot_size = pred.shape[-1] - 4
         pred_angle, pred_xyz, pred_rot = pred.split([1, 3, rot_size], dim=-1)
         tgt_angle, tgt_xyz, tgt_rot = target.split([1, 3, rot_size], dim=-1)
@@ -107,23 +123,31 @@ class SEMActionLoss(nn.Module):
                 )
                 w_rot = w_rot * scale
 
-        loss_angle = self._loss_func(pred_angle, tgt_angle, w_angle, pred_mask)
-        loss_xyz = self._loss_func(pred_xyz, tgt_xyz, w_xyz, pred_mask)
-        loss_rot = self._loss_func(pred_rot, tgt_rot, w_rot, pred_mask)
+        loss_angle = self._loss_func(pred_angle, tgt_angle, w_angle, **kwargs)
+        loss_xyz = self._loss_func(pred_xyz, tgt_xyz, w_xyz, **kwargs)
+        loss_rot = self._loss_func(pred_rot, tgt_rot, w_rot, **kwargs)
         return {
             f"loss_angle{suffix}": loss_angle,
             f"loss_xyz{suffix}": loss_xyz,
             f"loss_rot{suffix}": loss_rot,
         }
 
-    def mobile_trajectory_loss(self, pred, target, weight, pred_mask):
+    def mobile_trajectory_loss(self, pred, target, weight, **kwargs):
         if target is None:
             loss_mobile = self._fake_loss(pred)
         else:
-            self._loss_func(pred, target, weight, pred_mask)
+            self._loss_func(pred, target, weight, **kwargs)
         return {"loss_mobile": loss_mobile}
 
-    def _loss_func(self, pred, target, weight=None, pred_mask=None):
+    def _loss_func(
+        self,
+        pred,
+        target,
+        weight=None,
+        pred_mask=None,
+        timestep=None,
+        num_parallel=None,
+    ):
         if self.loss_mode == "l2":
             error = torch.square(pred - target)
         elif self.loss_mode == "l1":
@@ -135,12 +159,38 @@ class SEMActionLoss(nn.Module):
                 0.5 * error * error / self.smooth_l1_beta,
                 error - 0.5 * self.smooth_l1_beta,
             )
+
+        if num_parallel is not None:
+            error = error.unflatten(0, (-1, num_parallel)).transpose(0, 1)
+
         if weight is not None:
             if isinstance(weight, torch.Tensor):
                 weight = weight.to(error)
             else:
                 weight = error.new_tensor(weight)
             error = error * weight
+
+        if timestep is not None and self.timestep_loss_weight is not None:
+            if num_parallel is not None:
+                timestep = timestep.reshape(-1, num_parallel).transpose(0, 1)
+            timestep_weight = self.timestep_loss_weight / (timestep + 1)
+            while timestep_weight.dim() < error.dim():
+                timestep_weight = timestep_weight.unsqueeze(-1)
+            error = error * timestep_weight
+
+        if num_parallel is not None and self.parallel_loss_weight is not None:
+            min_idx = error.flatten(2).sum(dim=-1).argmin(dim=0)
+            bs = error.shape[1]
+            bs_idx = torch.arange(bs).to(min_idx)
+
+            parallel_weight = error.new_full(
+                [num_parallel, bs], self.parallel_loss_weight
+            )
+            parallel_weight[min_idx, bs_idx] = 1
+            while parallel_weight.dim() < error.dim():
+                parallel_weight = parallel_weight.unsqueeze(-1)
+            error = (error * parallel_weight).sum(dim=0)
+
         if pred_mask is not None:
             error = error[pred_mask]
             if error.shape[0] == 0:

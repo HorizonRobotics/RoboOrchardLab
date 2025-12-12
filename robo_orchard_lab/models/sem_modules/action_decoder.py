@@ -72,6 +72,7 @@ class SEMActionDecoder(nn.Module):
         prediction_type="absolute_joint_absolute_pose",
         loss=None,
         temporal_attn_drop=None,
+        num_parallel_training_sample=None,
         **kwargs,
     ):
         super().__init__()
@@ -88,6 +89,7 @@ class SEMActionDecoder(nn.Module):
         self.mobile_traj_state_dims = mobile_traj_state_dims
         self.async_inference_plugin = build(async_inference_plugin)
         self.temporal_attn_drop = temporal_attn_drop
+        self.num_parallel_training_sample = num_parallel_training_sample
 
         self.loss = build(loss)
         if hasattr(self.loss, "recompute"):
@@ -301,6 +303,17 @@ class SEMActionDecoder(nn.Module):
             pred = torch.cat([pred_joint_state, pred[..., 1:]], dim=-1)
         return pred
 
+    def _repeat(self, n, *inputs):
+        output = []
+        for x in inputs:
+            if x is None:
+                output.append(None)
+            else:
+                output.append(x.repeat_interleave(n, dim=0))
+        if len(output) == 0:
+            return output[0]
+        return output
+
     def forward(self, feature_maps, inputs, text_dict=None, **kwargs):
         img_feature = self.format_img_feature_maps(feature_maps)
 
@@ -344,12 +357,50 @@ class SEMActionDecoder(nn.Module):
                 inputs["pred_robot_state"], joint_scale_shift
             )
             pred_steps = pred_robot_state.shape[1]
-            noise = self.sample_noise(
-                [bs, pred_steps, num_joint, state_dims], hist_robot_state
-            )
             timesteps = torch.randint(
                 0, self.num_train_timesteps, (bs,), device=img_feature.device
             ).long()
+
+            if (
+                self.num_parallel_training_sample is not None
+                and self.num_parallel_training_sample > 1
+            ):
+                bs = self.num_parallel_training_sample * bs
+                text_dict = {key: text_dict[key] for key in text_dict}
+                (
+                    pred_robot_state,
+                    hist_robot_state,
+                    img_feature,
+                    robot_feature,
+                    joint_relative_pos,
+                    timesteps,
+                    joint_scale_shift,
+                    joint_mask,
+                    inputs["mobile_traj"],
+                    inputs["embodiedment_mat"],
+                    text_dict["embedded"],
+                    text_dict["text_token_mask"],
+                ) = self._repeat(
+                    self.num_parallel_training_sample,
+                    pred_robot_state,
+                    hist_robot_state,
+                    img_feature,
+                    robot_feature,
+                    joint_relative_pos,
+                    timesteps,
+                    joint_scale_shift,
+                    joint_mask,
+                    inputs.get("mobile_traj"),
+                    inputs["embodiedment_mat"],
+                    text_dict["embedded"],
+                    text_dict["text_token_mask"],
+                )
+                inputs["joint_scale_shift"] = joint_scale_shift
+
+            noise = self.sample_noise(
+                [bs, pred_steps, num_joint, state_dims], hist_robot_state
+            )
+
             if not self.noise_type.endswith("pose"):
                 noisy_action = self.training_noise_scheduler.add_noise(
                     pred_robot_state[..., :1], noise, timesteps
@@ -392,6 +443,7 @@ class SEMActionDecoder(nn.Module):
                 "pred_mobile_traj": pred_mobile_traj,
                 "target_mobile_traj": inputs.get("mobile_traj"),
                 "timesteps": timesteps,
+                "num_parallel": self.num_parallel_training_sample,
             }
         else:
             pred_actions = []

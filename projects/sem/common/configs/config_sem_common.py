@@ -78,12 +78,28 @@ config = dict(
 #     checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/yun01.du/plat_gpu/2025-10-03/23-21/sem_v3.0_with_mobile_traj-20251003-232109.677152/output/checkpoints/checkpoint_40/model.safetensors",  # pretrain with mobile trajectory prediction  # noqa: E501
 # )
 
-# qwen3
+# v4.0.a qwen3
 # config.update(
 #     vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
+#     num_vlm_layers=2,
 #     # The Qwen3 patch size is 32. dst_wh must be divisible by the patch size  # noqa: E501
 #     dst_wh=(352, 288),
+#     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-11-12/09-47/sem_alldata_qwen3_resume2-20251112-094307.065259-COPY/output/checkpoints/checkpoint_11/model.safetensors",  # noqa: E501
 # )
+
+
+# v4.0.b qwen2.5 offset
+config.update(
+    num_vlm_layers=1,
+    freeze_vlm=False,
+    decoder_kwargs=dict(
+        use_joint_mask=True,
+        noise_type="local_joint",
+        pred_scaled_joint=False,
+        prediction_type="relative_joint_relative_pose",
+    ),
+    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-11-12/21-18/sem_alldata_offset_resume-20251112-211801.410966/output/checkpoints/checkpoint_10/model.safetensors",
+)
 
 
 def build_model(config):
@@ -245,6 +261,7 @@ def build_model(config):
                 head=head,
                 with_mobile=with_mobile,
                 mobile_head=mobile_head,
+                **config.get("decoder_kwargs", {}),
                 loss=dict(
                     type=SEMActionLoss,
                     loss_mode=config.get("loss_mode", "l2"),
