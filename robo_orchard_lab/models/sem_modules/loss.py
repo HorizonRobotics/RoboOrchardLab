@@ -185,18 +185,21 @@ class SEMActionLoss(nn.Module):
                 timestep_weight = timestep_weight.unsqueeze(-1)
             error = error * timestep_weight
 
-        if num_parallel is not None and self.parallel_loss_weight is not None:
-            min_idx = error.flatten(2).sum(dim=-1).argmin(dim=0)
-            bs = error.shape[1]
-            bs_idx = torch.arange(bs).to(min_idx)
+        if num_parallel is not None:
+            if self.parallel_loss_weight is not None:
+                min_idx = error.flatten(2).sum(dim=-1).argmin(dim=0)
+                bs = error.shape[1]
+                bs_idx = torch.arange(bs).to(min_idx)
 
-            parallel_weight = error.new_full(
-                [num_parallel, bs], self.parallel_loss_weight
-            )
-            parallel_weight[min_idx, bs_idx] = 1
-            while parallel_weight.dim() < error.dim():
-                parallel_weight = parallel_weight.unsqueeze(-1)
-            error = (error * parallel_weight).sum(dim=0)
+                parallel_weight = error.new_full(
+                    [num_parallel, bs], self.parallel_loss_weight
+                )
+                parallel_weight[min_idx, bs_idx] = 1
+                while parallel_weight.dim() < error.dim():
+                    parallel_weight = parallel_weight.unsqueeze(-1)
+                error = (error * parallel_weight).sum(dim=0)
+            else:
+                error = error.mean(dim=0)
 
         if pred_mask is not None:
             error = error[pred_mask]
