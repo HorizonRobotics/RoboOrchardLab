@@ -99,7 +99,7 @@ def main(args, accelerator):
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             num_workers=num_workers,
-            pin_memory=True,
+            pin_memory=False,
             collate_fn=collate_batch_dict,
             persistent_workers=num_workers > 0,
             batch_sampler=DistributedBatchFlagSampler(

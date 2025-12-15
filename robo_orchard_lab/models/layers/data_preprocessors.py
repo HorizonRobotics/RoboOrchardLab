@@ -95,7 +95,7 @@ class BaseDataPreprocessor(nn.Module):
             idx[self.channel_dim] = self.channel_order
         elif self.channel_flip:
             idx[self.channel_dim] = [2, 1, 0]
-        imgs = imgs[idx]
+        imgs = imgs[tuple(idx)]
 
         if self.mean is not None:
             idx = [None] * imgs.dim()

@@ -1,7 +1,7 @@
 {
     "job_name": "sem_alldata",
     "workspace_folder": "submit-sem",
-    "docker_image": "docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250918",
+    "docker_image": "docker.hobot.cc/dlp/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 2,
@@ -23,6 +23,6 @@
         "projects/sem/common/utils.py"
     ],
     "job_password": "1227",
-    "queue_name": "project-4090-robot-lab-bcloud-bj",
+    "queue_name": "project-5090-nv570-robot-bcloud-bj",
     "project_id": "Robot-lab"
 }
