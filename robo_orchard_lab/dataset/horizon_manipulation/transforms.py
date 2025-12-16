@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 import pytorch_kinematics as pk
 import torch
-from pytorch3d.transforms import matrix_to_quaternion
+from pytorch3d.transforms import euler_angles_to_matrix, matrix_to_quaternion
 from scipy.spatial.transform import Rotation
 
 __all__ = [
@@ -36,6 +36,8 @@ __all__ = [
     "MultiArmKinematics",
     "GetProjectionMat",
     "UnsqueezeBatch",
+    "ExtrinsicNoise",
+    "RandomCropPaddingResize",
 ]
 
 
@@ -754,4 +756,119 @@ class DepthRestoration:
                 sum_conv, count_conv, where=count_conv > 1e-6
             )
             data["depths"][i][new_areas] = avg_matrix[new_areas]
+        return data
+
+
+class RandomCropPaddingResize:
+    def __init__(
+        self,
+        range_w=(-10, 10),
+        range_h=(-10, 10),
+        range_scale=None,
+    ):
+        self.range_w = range_w
+        self.range_h = range_h
+        self.range_scale = range_scale
+
+    def __call__(self, data):
+        if "imgs" in data:
+            imgs = data["imgs"]
+            aug_imgs = []
+        else:
+            imgs = None
+        if "depths" in data:
+            depths = data["depths"]
+            aug_depths = []
+        else:
+            depths = None
+
+        for i in range(data["intrinsic"].shape[0]):
+            crop_w = int(np.random.uniform(self.range_w[0], self.range_w[1]))
+            crop_h = int(np.random.uniform(self.range_h[0], self.range_h[1]))
+
+            pad_w = int(np.random.uniform(self.range_w[0], self.range_w[1]))
+            pad_h = int(np.random.uniform(self.range_h[0], self.range_h[1]))
+
+            pad = (
+                (
+                    abs(pad_h) if pad_h > 0 else 0,
+                    abs(pad_h) if pad_h < 0 else 0,
+                ),
+                (
+                    abs(pad_w) if pad_w > 0 else 0,
+                    abs(pad_w) if pad_w < 0 else 0,
+                ),
+                (0, 0),
+            )
+
+            trans_mat_crop_pad = np.eye(4)
+            trans_mat_crop_pad[0, 2] = -max(crop_w, 0) + pad[1][0]
+            trans_mat_crop_pad[1, 2] = -max(crop_h, 0) + pad[0][0]
+            data["intrinsic"][i] = trans_mat_crop_pad @ data["intrinsic"][i]
+
+            if self.range_scale is not None:
+                scale = np.random.uniform(*self.range_scale)
+                trans_mat_resize = np.eye(4)
+                trans_mat_resize[0, 0] = scale
+                trans_mat_resize[1, 1] = scale
+                data["intrinsic"][i] = trans_mat_resize @ data["intrinsic"][i]
+
+            if imgs is not None:
+                aug_img = imgs[i][
+                    max(crop_h, 0) : crop_h + imgs[i].shape[0],
+                    max(crop_w, 0) : crop_w + imgs[i].shape[1],
+                ]
+                aug_img = np.pad(aug_img, pad)
+                if self.range_scale is not None:
+                    aug_img = cv2.resize(
+                        aug_img,
+                        (
+                            int(aug_img.shape[1] * scale),
+                            int(aug_img.shape[0] * scale),
+                        ),
+                    )
+                aug_imgs.append(aug_img)
+
+            if depths is not None:
+                aug_depth = depths[i][
+                    max(crop_h, 0) : crop_h + depths[i].shape[0],
+                    max(crop_w, 0) : crop_w + depths[i].shape[1],
+                ]
+                aug_depth = np.pad(aug_depth, pad[: aug_depth.ndim])
+                if self.range_scale is not None:
+                    aug_depth = cv2.resize(
+                        aug_depth,
+                        (
+                            int(aug_depth.shape[1] * scale),
+                            int(aug_depth.shape[0] * scale),
+                        ),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                aug_depths.append(aug_depth)
+
+        if imgs is not None:
+            data["imgs"] = aug_imgs
+        if depths is not None:
+            data["depths"] = aug_depths
+        return data
+
+
+class ExtrinsicNoise:
+    def __init__(self, noise_range: tuple):
+        assert len(noise_range) == 6
+        self.noise_range = np.array(noise_range)
+
+    def __call__(self, data):
+        num_cams = len(data["T_world2cam"])
+        noise = np.random.uniform(
+            -self.noise_range,
+            self.noise_range,
+            size=(num_cams, 6),
+        )
+        noise = torch.from_numpy(noise)
+        noise_matrix = torch.eye(4)[None].repeat(num_cams, 1, 1)
+        noise_matrix[:, :3, :3] = euler_angles_to_matrix(noise[:, :3], "XYZ")
+        noise_matrix[:, :3, 3] = noise[:, 3:]
+        noise_matrix = noise_matrix.to(data["T_world2cam"])
+        data["T_world2cam"] = noise_matrix @ data["T_world2cam"]
         return data

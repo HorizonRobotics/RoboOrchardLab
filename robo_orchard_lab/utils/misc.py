@@ -148,7 +148,7 @@ def stack_batch(
     )
 
     dim = tensor_list[0].dim()
-    num_img = len(tensor_list)
+    num_tensor = len(tensor_list)
     all_sizes: torch.Tensor = torch.Tensor(
         [tensor.shape for tensor in tensor_list]
     )
@@ -157,8 +157,6 @@ def stack_batch(
         * pad_size_divisor
     )
     padded_sizes = max_sizes - all_sizes
-    # The first dim normally means channel,  which should not be padded.
-    padded_sizes[:, 0] = 0
     if padded_sizes.sum() == 0:
         return torch.stack(tensor_list)
     # `pad` is the second arguments of `F.pad`. If pad is (1, 2, 3, 4),
@@ -167,7 +165,7 @@ def stack_batch(
     # the `padded_sizes`. Therefore, the `padded_sizes` needs to be reversed,
     # and only odd index of pad should be assigned to keep padding "right" and
     # "bottom".
-    pad = torch.zeros(num_img, 2 * dim, dtype=torch.int)
+    pad = torch.zeros(num_tensor, 2 * dim, dtype=torch.int)
     pad[:, 1::2] = padded_sizes[:, range(dim - 1, -1, -1)]
     batch_tensor = []
     for idx, tensor in enumerate(tensor_list):

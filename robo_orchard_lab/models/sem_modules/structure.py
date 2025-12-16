@@ -188,7 +188,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
             return self.predict(inputs)
 
     def loss(self, inputs):
-        model_outs, text_dict, loss_depth = self._forward(inputs)
+        model_outs, _, text_dict, loss_depth = self._forward(inputs)
         loss = self.decoder.loss(model_outs, inputs, text_dict=text_dict)
         if loss_depth is not None:
             loss["loss_depth"] = loss_depth
@@ -196,7 +196,7 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
 
     @torch.no_grad()
     def predict(self, inputs):
-        model_outs, text_dict = self._forward(inputs)
+        model_outs, _, text_dict = self._forward(inputs)
         results = self.decoder.post_process(
             model_outs, inputs, text_dict=text_dict
         )
@@ -327,8 +327,8 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
             depth_prob=depth_prob,
         )
         if self.training:
-            return model_outs, text_dict, loss_depth
-        return model_outs, text_dict
+            return model_outs, feature_maps, text_dict, loss_depth
+        return model_outs, feature_maps, text_dict
 
     def _forward_vlm(
         self,
