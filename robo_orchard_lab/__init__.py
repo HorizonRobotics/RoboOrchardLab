@@ -22,7 +22,11 @@ from . import (
     pipeline,
     utils,
 )
-from .version import __full_version__, __git_hash__, __version__
+
+try:
+    from .version import __full_version__, __git_hash__, __version__
+except ModuleNotFoundError as _:
+    pass
 
 
 def _set_env():

@@ -21,19 +21,81 @@ import torch.nn.functional as F
 from torch import nn
 
 from robo_orchard_lab.models.bip3d.utils import deformable_format
+from robo_orchard_lab.models.mixin import TorchModuleCfgType_co
 from robo_orchard_lab.models.sem_modules.layers import (
     ScalarEmbedder,
     linear_act_ln,
 )
 from robo_orchard_lab.utils import as_sequence, build
+from robo_orchard_lab.utils.build import DelayInitDictType
 
 logger = logging.getLogger(__name__)
+
+
+MODULE_TPYE = TorchModuleCfgType_co | DelayInitDictType | nn.Module
 
 
 class SEMActionDecoder(nn.Module):
     """Spatial Enhanced Manipulation (SEM) Action Decoder.
 
     Decoder implementation from the paper https://arxiv.org/abs/2505.16196
+
+    Args:
+        img_cross_attn (MODULE_TYPE):
+            Cross attention module between action and image features.
+        norm_layer (MODULE_TYPE): Normalization layer.
+        ffn (MODULE_TYPE): Feed-forward network.
+        head (MODULE_TYPE): Output head for action prediction.
+        training_noise_scheduler (Optional[Any]): Diffusion scheduler for
+            training phase (supports "sample" prediction only).
+        test_noise_scheduler (Optional[Any]): Diffusion scheduler for inference
+            phase (supports "sample" prediction only).
+        num_inference_timesteps (int): Num of denoising steps during inference.
+        joint_self_attn (Optional[MODULE_TYPE]): Joint dimension self-attention
+            module.
+        temp_cross_attn (Optional[MODULE_TYPE]): Causal temporal attention
+            module across time steps.
+        text_cross_attn (Optional[MODULE_TYPE]): Cross attention between action
+            and text features.
+        temp_joint_attn (Optional[MODULE_TYPE]): Joint-temporal attention
+            module (causal in temporal dimension).
+        robot_encoder (Optional[MODULE_TYPE]): Encoder for processing robot
+            state inputs.
+        timestep_norm_layer (Optional[MODULE_TYPE]): Normalization layer for
+            encoding diffusion timesteps.
+        feature_level (Union[int, List[int]]): Image feature level(s) to use.
+        state_dims (int): Dimension size of robot state. Defaults to 8, refer
+            to [a, x, y, z, qw, qx, qy, qz].
+        embed_dims (int): Embedding dimension size. Defaults to 256.
+        pred_steps (int): Number of future steps to predict. Defaults to 30.
+        operation_order (Optional[List[str]]): Sequence of operations
+            (attn/FFN/norm) in transformer decoder.
+        num_decoder (int): Number of transformer decoder layers. Defaults to 6.
+        act_cfg (Optional[MODULE_TYPE]): Activation function configuration.
+        num_test_traj (int): Number of trajectories to sample during inference.
+        chunk_size (int): Step size for chunking prediction horizon.
+        force_kinematics (bool): Apply forward kinematics before state input.
+        pre_norm (bool): Use pre-normalization or post-normalization.
+        with_mobile (bool): Enable trajectory prediction branch.
+        mobile_head (Optional[MODULE_TYPE]): Head for trajectory prediction.
+        mobile_traj_state_dims (int): Trajectory state dimensions
+            (default 2 for [x,y]).
+        async_inference_plugin (Optional[MODULE_TYPE]): Plugin for aggregating
+            predicted/remaining actions for async inference.
+        use_joint_mask (bool): Mask joint angle information. Defaults to False.
+        noise_type (str): Noise sampling space identifier.
+        pred_scaled_joint (bool): Predict joint angles scaled to [-1,1].
+        prediction_type (str): Prediction space specification.
+        loss (Optional[MODULE_TYPE]): Loss module (recommended: SEMActionLoss).
+        temporal_attn_drop (Optional[float]): Ratio of random dropout for
+            current robot state during training.
+        num_parallel_training_sample (Optional[int]): Number of trajectories
+            sampled per training example.
+        teacher_forcing_rate (Optional[float]): Probability of using teacher
+            forcing during training.
+        teacher_forcing_mean_steps (Optional[int]): Average steps for teacher
+            forcing.
+        **kwargs: Additional keyword arguments.
     """
 
     def __init__(
