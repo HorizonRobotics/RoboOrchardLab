@@ -73,6 +73,8 @@ class SEMActionDecoder(nn.Module):
         loss=None,
         temporal_attn_drop=None,
         num_parallel_training_sample=None,
+        teacher_forcing_rate=None,
+        teacher_forcing_mean_steps=None,
         **kwargs,
     ):
         super().__init__()
@@ -90,6 +92,16 @@ class SEMActionDecoder(nn.Module):
         self.async_inference_plugin = build(async_inference_plugin)
         self.temporal_attn_drop = temporal_attn_drop
         self.num_parallel_training_sample = num_parallel_training_sample
+        self.teacher_forcing_rate = teacher_forcing_rate
+        if (
+            teacher_forcing_rate is not None
+            and teacher_forcing_mean_steps is None
+        ):
+            logger.warning(
+                f"Use default teacher_forcing_mean_steps: {pred_steps // 4}"
+            )
+            teacher_forcing_mean_steps = pred_steps // 4
+        self.teacher_forcing_mean_steps = teacher_forcing_mean_steps
 
         self.loss = build(loss)
         if hasattr(self.loss, "recompute"):
@@ -190,6 +202,12 @@ class SEMActionDecoder(nn.Module):
     ):
         if joint_scale_shift is None:
             return robot_state
+
+        if robot_state.shape[0] != joint_scale_shift.shape[0]:
+            num_parallel = robot_state.shape[0] // joint_scale_shift.shape[0]
+            joint_scale_shift = joint_scale_shift.repeat_interleave(
+                num_parallel, dim=0
+            )
         scale = joint_scale_shift[:, None, :, 0:1]
         if not scale_only:
             shift = joint_scale_shift[:, None, :, 1:2]
@@ -315,6 +333,8 @@ class SEMActionDecoder(nn.Module):
         return output
 
     def forward(self, feature_maps, inputs, text_dict=None, **kwargs):
+        inputs = inputs.copy()
+        text_dict = text_dict.copy() if text_dict is not None else {}
         img_feature = self.format_img_feature_maps(feature_maps)
 
         if "hist_robot_state" not in inputs:
@@ -366,7 +386,6 @@ class SEMActionDecoder(nn.Module):
                 and self.num_parallel_training_sample > 1
             ):
                 bs = self.num_parallel_training_sample * bs
-                text_dict = {key: text_dict[key] for key in text_dict}
                 (
                     pred_robot_state,
                     hist_robot_state,
@@ -392,8 +411,8 @@ class SEMActionDecoder(nn.Module):
                     joint_mask,
                     inputs.get("mobile_traj"),
                     inputs["embodiedment_mat"],
-                    text_dict["embedded"],
-                    text_dict["text_token_mask"],
+                    text_dict.get("embedded"),
+                    text_dict.get("text_token_mask"),
                 )
                 inputs["joint_scale_shift"] = joint_scale_shift
 
@@ -409,6 +428,24 @@ class SEMActionDecoder(nn.Module):
             else:
                 noisy_action = self.training_noise_scheduler.add_noise(
                     pred_robot_state, noise, timesteps
+                )
+
+            if (
+                self.teacher_forcing_rate is not None
+                and self.teacher_forcing_rate > 0
+            ):
+                mask = torch.logical_and(
+                    torch.poisson(
+                        noisy_action.new_full(
+                            [bs, 1], self.teacher_forcing_mean_steps
+                        )
+                    )
+                    > torch.arange(pred_steps).to(noisy_action),
+                    torch.rand(bs)[:, None].to(noisy_action)
+                    < self.teacher_forcing_rate,
+                )[..., None, None]
+                noisy_action = torch.where(
+                    mask, pred_robot_state, noisy_action
                 )
 
             if self.with_mobile:
@@ -466,7 +503,6 @@ class SEMActionDecoder(nn.Module):
 
             if self.num_test_traj is not None and self.num_test_traj > 1:
                 bs = self.num_test_traj * bs
-                text_dict = {key: text_dict[key] for key in text_dict}
                 (
                     img_feature,
                     robot_feature,
@@ -488,8 +524,8 @@ class SEMActionDecoder(nn.Module):
                     joint_mask,
                     remaining_actions,
                     inputs["embodiedment_mat"],
-                    text_dict["embedded"],
-                    text_dict["text_token_mask"],
+                    text_dict.get("embedded"),
+                    text_dict.get("text_token_mask"),
                 )
                 inputs["joint_scale_shift"] = joint_scale_shift
 
@@ -646,13 +682,17 @@ class SEMActionDecoder(nn.Module):
                 .to(x)
             )
 
-        if text_dict is not None and "text_cross_attn" in self.operation_order:
-            text_feature = text_dict["embedded"]
+        if "text_cross_attn" in self.operation_order:
+            text_feature = text_dict.get("embedded")
+            assert text_feature is not None
             num_text_token = text_feature.shape[1]
             tca_query_pos = torch.arange(num_chunk).to(x)[None, None]
             tca_query_pos = tca_query_pos.tile(bs, num_joint, 1).flatten(1, 2)
             tca_query_pos += num_text_token
             tca_key_pos = torch.arange(num_text_token).to(x)[None].tile(bs, 1)
+            text_key_padding_mask = text_dict.get("text_token_mask")
+            if text_key_padding_mask is not None:
+                text_key_padding_mask = ~text_key_padding_mask
 
         if "img_cross_attn" in self.operation_order:
             ica_query_pos = torch.arange(num_chunk).to(x)[None, None]
@@ -750,7 +790,7 @@ class SEMActionDecoder(nn.Module):
                     query=x,
                     key=text_feature,
                     value=text_feature,
-                    key_padding_mask=~text_dict["text_token_mask"],
+                    key_padding_mask=text_key_padding_mask,
                     query_pos=tca_query_pos,
                     key_pos=tca_key_pos,
                     identity=identity,

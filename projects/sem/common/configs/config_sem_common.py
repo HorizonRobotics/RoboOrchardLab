@@ -97,7 +97,15 @@ config.update(
         noise_type="local_joint",
         pred_scaled_joint=False,
         prediction_type="relative_joint_relative_pose",
+        # temporal_attn_drop=0.05,
+        # num_parallel_training_sample=4,
+        # teacher_forcing_rate=0.02,
     ),
+    # loss_kwargs=dict(
+    #     timestep_loss_weight=1000,
+    #     parallel_loss_weight=0.1,
+    #     smooth_l1_beta=0.04,
+    # ),
     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-11-12/21-18/sem_alldata_offset_resume-20251112-211801.410966/output/checkpoints/checkpoint_10/model.safetensors",
 )
 
@@ -264,7 +272,7 @@ def build_model(config):
                 **config.get("decoder_kwargs", {}),
                 loss=dict(
                     type=SEMActionLoss,
-                    loss_mode=config.get("loss_mode", "l2"),
+                    **config.get("loss_kwargs", {}),
                 ),
                 img_cross_attn=dict(
                     type=RotaryAttention,
