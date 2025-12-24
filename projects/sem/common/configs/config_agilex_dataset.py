@@ -492,6 +492,9 @@ def build_transforms(
         gripper_indices=[6, 13],
     )
     dst_wh = config.get("dst_wh", (308, 252))
+    dst_wh = (max(392, dst_wh[0]), max(252, dst_wh[1]))
+    patch_size = config.get("patch_size", 1)
+    dst_wh = tuple(x // patch_size * patch_size for x in dst_wh)
     resize = dict(
         type=Resize,
         dst_wh=dst_wh,

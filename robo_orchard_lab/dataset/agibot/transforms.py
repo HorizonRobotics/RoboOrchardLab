@@ -808,9 +808,11 @@ class AgiBotDualArmKinematics:
                         )
 
                     # Batch matrix multiplication: [total_samples, 4, 4] @ [4, 4] -> [total_samples, 4, 4]
-                    pose_matrices = torch.matmul(
-                        embodiedment_mat.unsqueeze(0), pose_matrices
-                    )
+                    if embodiedment_mat.ndim > 2:
+                        em_mat = embodiedment_mat.flatten(0, -3)  # [x, 4, 4]
+                    else:
+                        em_mat = embodiedment_mat.unsqueeze(0)
+                    pose_matrices = torch.matmul(em_mat, pose_matrices)
 
                 # Extract positions and orientations (vectorized)
                 positions = pose_matrices[:, :3, 3]  # [total_samples, 3]

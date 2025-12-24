@@ -574,6 +574,9 @@ class MultiArmKinematics:
         link_poses = torch.cat(link_poses)
 
         if embodiedment_mat is not None:
+            if embodiedment_mat.ndim != 2:
+                embodiedment_mat = embodiedment_mat.flatten(0, -3)  # [x, 4, 4]
+                embodiedment_mat = embodiedment_mat.repeat(self.num_keys, 1, 1)
             link_poses = embodiedment_mat @ link_poses
 
         if return_matrix:

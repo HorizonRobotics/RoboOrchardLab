@@ -297,13 +297,18 @@ class SEMActionDecoder(nn.Module):
         )
         if len(kinematics) <= 1 or (
             all(x == kinematics[0] for x in kinematics[1:])
-            and (
-                embodiedment_mat[0] is None
-                or (embodiedment_mat[0] - embodiedment_mat[1:] == 0).all()
-            )
         ):
+            num_steps = joint_state.shape[1]
+            embodiedment_mat = embodiedment_mat[:, None].repeat(
+                1, num_steps, 1, 1
+            )
+            num_parallel = joint_state.shape[0] // embodiedment_mat.shape[0]
+            if num_parallel != 1:
+                embodiedment_mat = embodiedment_mat.repeat_interleave(
+                    num_parallel, dim=0
+                )
             robot_state = kinematics[0].joint_state_to_robot_state(
-                joint_state, embodiedment_mat[0]
+                joint_state, embodiedment_mat
             )
         else:
             for i in range(len(joint_state)):
