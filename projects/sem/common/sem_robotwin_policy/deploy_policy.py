@@ -17,10 +17,12 @@
 import importlib
 import logging
 import os
+import tempfile
 
 import numpy as np
 import requests
 import torch
+from filelock import FileLock, Timeout
 from robo_orchard_core.utils.config import load_config_class
 
 from robo_orchard_lab.models.mixin import ModelMixin
@@ -42,6 +44,46 @@ def load_config(config_file):
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
     return config
+
+
+def download_file(url, file_name, timeout=180):
+    if os.path.exists(file_name):
+        print(f"File existed: {file_name}")
+        return
+
+    lock_path = file_name + ".lock"
+    lock = FileLock(lock_path, timeout=timeout)
+
+    try:
+        with lock:
+            if os.path.exists(file_name):
+                print(f"File existed: {file_name}")
+                return
+
+            temp_dir = os.path.dirname(file_name) or "."
+            with tempfile.NamedTemporaryFile(
+                delete=False, dir=temp_dir
+            ) as tmp_file:
+                tmp_path = tmp_file.name
+                try:
+                    response = requests.get(url, stream=True)
+                    response.raise_for_status()
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            tmp_file.write(chunk)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+
+                    os.rename(tmp_path, file_name)
+                    print(f"Download success: {file_name}")
+                except Exception as e:
+                    print(f"Download fail: {file_name}, error: {e}")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    raise
+    except Timeout as e:
+        print(f"Download timeout: {file_name}")
+        raise e
 
 
 def download_job_ckpt_processor(
@@ -68,13 +110,7 @@ def download_job_ckpt_processor(
             file_name = file_name.replace(
                 f"{model_prefix}.config.json", "model.config.json"
             )
-        if os.path.exists(file_name):
-            continue
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(file_name, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        download_file(url, file_name)
 
 
 class SEMPolicy:
