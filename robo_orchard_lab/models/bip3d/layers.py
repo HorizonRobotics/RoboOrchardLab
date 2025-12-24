@@ -25,10 +25,18 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from transformers.models.deformable_detr.modeling_deformable_detr import (
-    MultiScaleDeformableAttentionFunction,
-    load_cuda_kernels,
-)
+
+try:
+    from transformers.models.deformable_detr.modeling_deformable_detr import (
+        MultiScaleDeformableAttentionFunction,
+        load_cuda_kernels,
+    )
+except ImportError:
+    from transformers.models.deformable_detr.modeling_deformable_detr import (
+        MultiScaleDeformableAttention as MultiScaleDeformableAttentionFunction,
+    )
+
+    load_cuda_kernels = None
 
 from robo_orchard_lab.models.layers.transformer_layers import (
     FFN,
@@ -88,7 +96,12 @@ class MultiScaleDeformableAttention(nn.Module):
         value_proj_ratio: float = 1.0,
     ):
         super().__init__()
-        load_cuda_kernels()
+        if load_cuda_kernels is not None:
+            logger.warning("Deprecated, please use `transformers` >= 4.57.1.")
+            load_cuda_kernels()
+        else:
+            self.func = MultiScaleDeformableAttentionFunction()
+
         if embed_dims % num_heads != 0:
             raise ValueError(
                 f"embed_dims must be divisible by num_heads, "
@@ -262,14 +275,25 @@ class MultiScaleDeformableAttention(nn.Module):
                 f"Last dim of reference_points must be"
                 f" 2 or 4, but get {reference_points.shape[-1]} instead."
             )
-        output = MultiScaleDeformableAttentionFunction.apply(
-            value,
-            spatial_shapes,
-            level_start_index,
-            sampling_locations,
-            attention_weights,
-            self.im2col_step,
-        )
+        if load_cuda_kernels is not None:
+            output = MultiScaleDeformableAttentionFunction.apply(
+                value,
+                spatial_shapes,
+                level_start_index,
+                sampling_locations,
+                attention_weights,
+                self.im2col_step,
+            )
+        else:
+            output = self.func(
+                value,
+                spatial_shapes,
+                spatial_shapes.tolist(),
+                level_start_index,
+                sampling_locations,
+                attention_weights,
+                self.im2col_step,
+            )
 
         output = self.output_proj(output)
 
