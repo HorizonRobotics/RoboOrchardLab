@@ -187,7 +187,7 @@ class MetricTracker(PipelineHooks):
         """
         for metric_i in self.metrics:
             if hasattr(metric_i, "to"):
-                metric_i.to(args.accelerator.device)  # type: ignore
+                metric_i.to(device=args.accelerator.device)  # type: ignore
 
     def _on_batch_end(self, args: PipelineHookArgs) -> None:
         """Callback when batch ends.

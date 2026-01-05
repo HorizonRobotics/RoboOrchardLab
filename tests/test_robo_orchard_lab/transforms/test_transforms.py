@@ -14,7 +14,10 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
+import glob
+import os
 import pickle
+import tempfile
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -29,7 +32,6 @@ from robo_orchard_lab.dataset.transforms import (
     DictTransform,
     DictTransformConfig,
 )
-from robo_orchard_lab.utils.state import State
 
 
 @dataclass
@@ -222,12 +224,29 @@ class TestDictTransforms:
         ts = cfg()
         ts.tensor = torch.tensor([1, 2, 3])  # type: ignore
         ts_bytes = pickle.dumps(ts)
-        state = ts.__getstate__()
+        state = ts._get_state()
         assert "tensor" in state.state
 
         ts_recovered = pickle.loads(ts_bytes)
         print(ts_recovered)
         print(ts_recovered.tensor)
+        assert torch.equal(ts_recovered.tensor, ts.tensor)
+
+    def test_save_and_load(self, tmp_local_folder: str):
+        cfg = DummyTransformConfig(
+            add_value=10, class_type=DummyBaseModelTransform
+        )
+        ts = cfg()
+
+        ts.tensor = torch.tensor([1, 2, 3])  # type: ignore
+
+        with tempfile.TemporaryDirectory(dir=tmp_local_folder) as save_path:
+            ts.save(save_path)
+            print(glob.glob(os.path.join(save_path, "**"), recursive=True))
+            ts_recovered = DummyTransform.load(save_path)
+            print(ts_recovered)
+            print(ts_recovered.tensor)
+            assert torch.equal(ts_recovered.tensor, ts.tensor)
 
 
 class TestConcatDictTransform:
@@ -278,6 +297,27 @@ class TestConcatDictTransform:
         transform_recovered = pickle.loads(ts_bytes)
         print(transform_recovered._transforms[0].tensor)
 
+    def test_save_and_load(self, tmp_local_folder: str):
+        cfg = ConcatDictTransformConfig(
+            transforms=[
+                DummyTransformConfig(add_value=10),
+                DummyTransformConfig(add_value=20),
+            ]
+        )
+        transform = cfg()
+        transform._transforms[0].tensor = torch.tensor([1, 2, 3])  # type: ignore
+
+        with tempfile.TemporaryDirectory(dir=tmp_local_folder) as save_path:
+            transform.save(save_path)
+
+            transform_recovered = ConcatDictTransform.load(save_path)
+            print(transform_recovered)
+            print(transform_recovered._transforms[0].tensor)
+            assert torch.equal(
+                transform_recovered._transforms[0].tensor,
+                transform._transforms[0].tensor,
+            )
+
     def test_getstate_no_mixin_cls(self):
         cfg = ConcatDictTransformConfig(
             transforms=[
@@ -288,7 +328,7 @@ class TestConcatDictTransform:
         transform = cfg()
         transform._transforms[0].tensor = torch.tensor([1, 2, 3])  # type: ignore
 
-        state = transform.__getstate__()
+        state = transform._get_state()
         print("state: ", state)
         for st in state.state["transforms"]:
-            assert isinstance(st, State)
+            assert st is not None

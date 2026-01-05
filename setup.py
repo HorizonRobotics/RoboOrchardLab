@@ -212,6 +212,7 @@ if __name__ == "__main__":
         "timeout-decorator",
         "requests",
         "huggingface_hub",
+        "cloudpickle",
         # metric
         "torchmetrics>=1.6",
         "datasets>=4.0.0",
@@ -221,10 +222,12 @@ if __name__ == "__main__":
         "fsspec",
         "sortedcontainers",
         "numpydantic",
+        "ray[default]>=2.49.1",
+        "pytorch-kinematics>=0.7.5",
         # use git url to install the latest version.
         # This is for non-release version only.
         # "robo_orchard_core==0.2.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@45ca98cd5a6d7548f2415631a0b4e7d50d97817c",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@63ec9b0057c95310233055c4065197324de2b824",
     ]
     # optional dependencies
     extras_require = {

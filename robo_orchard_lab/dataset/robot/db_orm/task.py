@@ -33,6 +33,7 @@ class Task(DatasetORMBase, MD5FieldMixin["Task"]):
     """ORM model for a task in a RoboOrchard dataset."""
 
     __tablename__ = "task"
+    __version__ = "0.0.1"
 
     index: Mapped[int] = mapped_column(
         INTEGER, primary_key=True, autoincrement=False

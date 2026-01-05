@@ -23,6 +23,8 @@ from robo_orchard_core.utils.config import (
     ClassType_co,  # noqa: F401
 )
 
+from robo_orchard_lab.utils.state import State, StateSaveLoadMixin
+
 __all__ = [
     "ClassType_co",
     "ProcessorMixin",
@@ -32,7 +34,9 @@ __all__ = [
 ]
 
 
-class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
+class ProcessorMixin(
+    ClassInitFromConfigMixin, StateSaveLoadMixin, metaclass=abc.ABCMeta
+):
     """An abstract base class for data processing modules.
 
     This class defines a standard interface for data processors, which are
@@ -46,6 +50,9 @@ class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
     """
 
     def __init__(self, cfg: "ProcessorMixinCfg"):
+        self._setup(cfg)
+
+    def _setup(self, cfg: "ProcessorMixinCfg") -> None:
         self.cfg = cfg
 
     @abc.abstractmethod
@@ -84,6 +91,21 @@ class ProcessorMixin(ClassInitFromConfigMixin, metaclass=abc.ABCMeta):
         """
 
         return model_outputs
+
+    def _get_state(self) -> State:
+        """Get the state of the object for saving."""
+        # pull out cfg from state for better clarity
+        ret = super()._get_state()
+        ret.config = ret.state.pop("cfg", None)
+        return ret
+
+    def _set_state(self, state: State) -> None:
+        """Set the state of the object from the unpickled state."""
+        # push cfg back to state for consistency
+        state.state["cfg"] = state.config
+        state.config = None
+        super()._set_state(state)
+        self._setup(self.cfg)
 
 
 ProcessorMixinType_co = TypeVar(

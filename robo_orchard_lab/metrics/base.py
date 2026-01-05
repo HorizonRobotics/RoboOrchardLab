@@ -26,15 +26,6 @@ __all__ = ["MetricProtocol", "MetricDict", "MetricConfig", "MetricDictConfig"]
 class MetricProtocol(Protocol):
     """Protocol for metric functions used in policy evaluation."""
 
-    def __call__(self, *args: Any, **kwds: Any):
-        """A combined method to update the metric state and compute the result.
-
-        This method is a convenience function that allows users to update the
-        metric state with new data and immediately compute the metric value in
-        a single call.
-        """
-        ...
-
     def reset(self, **kwargs: Any):
         """Resets the metric state to its default value."""
         ...
@@ -43,8 +34,12 @@ class MetricProtocol(Protocol):
         """Compute the final metric value based on state."""
         ...
 
-    def update(self, *args: Any, **kwds: Any):
+    def update(self, *args: Any, **kwargs: Any):
         """Updates the metric state with new data."""
+        ...
+
+    def to(self, *args, **kwargs):
+        """Moves the metric state to a specified device or dtype."""
         ...
 
 
@@ -62,9 +57,9 @@ class MetricDict(dict[str, MetricProtocol]):
             )
         super().__setitem__(key, value)
 
-    def __call__(self, *args: Any, **kwds: Any) -> Any:
+    def to(self, *args: Any, **kwds: Any) -> None:
         for metric in self.values():
-            metric(*args, **kwds)
+            metric.to(*args, **kwds)
 
     def update(self, *args: Any, **kwds: Any) -> None:
         for metric in self.values():

@@ -20,6 +20,7 @@ import concurrent.futures
 from typing import Any, Generator
 
 import ray
+import torch
 from robo_orchard_core.envs.env_base import EnvBaseCfg
 from robo_orchard_core.policy.base import PolicyConfig
 from robo_orchard_core.utils.config import (
@@ -31,10 +32,13 @@ from robo_orchard_core.utils.ray import (
     RayRemoteInstanceConfig,
 )
 
-from robo_orchard_lab.metrics.base import MetricDict
-from robo_orchard_lab.policy.evaluator import (
+from robo_orchard_lab.metrics.base import MetricDict, MetricProtocol
+from robo_orchard_lab.policy.base import PolicyMixin
+from robo_orchard_lab.policy.evaluator.base import (
     PolicyEvaluator,
     PolicyEvaluatorConfig,
+    RollOutStopCondition,
+    evaluate_rollout_stop_condition,
 )
 
 __all__ = ["PolicyEvaluatorRemote", "PolicyEvaluatorRemoteConfig"]
@@ -50,7 +54,39 @@ class PolicyEvaluatorRemote(RayRemoteInstance[PolicyEvaluator]):
     ) -> None:
         super().__init__(cfg)
 
-    def reconfigure_metrics(self, metrics: MetricDict) -> None:
+    def setup(
+        self,
+        env_cfg: EnvBaseCfg,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        metrics: MetricDict | MetricProtocol,
+        device: str | torch.device | None = None,
+    ):
+        """Setup the remote policy evaluator."""
+        return self.async_setup(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_or_cfg,
+            metrics=metrics,
+            device=device,
+        ).result()
+
+    def async_setup(
+        self,
+        env_cfg: EnvBaseCfg,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        metrics: MetricDict | MetricProtocol,
+        device: str | torch.device | None = None,
+    ) -> concurrent.futures.Future:
+        """Asynchronously setup the remote policy evaluator."""
+        return self._remote.setup.remote(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_or_cfg,
+            metrics=metrics,
+            device=device,
+        ).future()
+
+    def reconfigure_metrics(
+        self, metrics: MetricDict | MetricProtocol
+    ) -> None:
         """Reconfigure the metrics.
 
         Args:
@@ -66,24 +102,35 @@ class PolicyEvaluatorRemote(RayRemoteInstance[PolicyEvaluator]):
         """
         ray.get(self._remote.reconfigure_env.remote(env_cfg))
 
-    def reconfigure_policy(self, policy_cfg: PolicyConfig) -> None:
-        """Reconfigure the policy.
+    def reconfigure_policy(
+        self,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        device: str | torch.device | None = None,
+    ) -> None:
+        """Reconfigure the policy with a new configuration.
 
         Args:
-            policy_cfg (PolicyConfig): The new policy configuration.
+            policy_or_cfg (PolicyConfig | PolicyMixin): The new configuration
+                for the policy or a policy instance.
         """
-        ray.get(self._remote.reconfigure_policy.remote(policy_cfg))
+        ray.get(
+            self._remote.reconfigure_policy.remote(
+                policy_or_cfg, device=device
+            )
+        )
 
     def evaluate_episode(
         self,
         max_steps: int,
         env_reset_kwargs: dict[str, Any] | None = None,
         policy_reset_kwargs: dict[str, Any] | None = None,
-    ) -> None:
+        rollout_stop_condition: RollOutStopCondition = evaluate_rollout_stop_condition,  # noqa: E501
+    ) -> dict[str, Any]:
         return self.async_evaluate_episode(
             max_steps=max_steps,
             env_reset_kwargs=env_reset_kwargs,
             policy_reset_kwargs=policy_reset_kwargs,
+            rollout_stop_condition=rollout_stop_condition,
         ).result()
 
     def async_evaluate_episode(
@@ -91,11 +138,13 @@ class PolicyEvaluatorRemote(RayRemoteInstance[PolicyEvaluator]):
         max_steps: int,
         env_reset_kwargs: dict[str, Any] | None = None,
         policy_reset_kwargs: dict[str, Any] | None = None,
+        rollout_stop_condition: RollOutStopCondition = evaluate_rollout_stop_condition,  # noqa: E501
     ) -> concurrent.futures.Future:
         return self._remote.evaluate_episode.remote(
             max_steps=max_steps,
             env_reset_kwargs=env_reset_kwargs,
             policy_reset_kwargs=policy_reset_kwargs,
+            rollout_stop_condition=rollout_stop_condition,
         ).future()
 
     def make_episode_evaluation(
@@ -104,6 +153,7 @@ class PolicyEvaluatorRemote(RayRemoteInstance[PolicyEvaluator]):
         env_reset_kwargs: dict[str, Any] | None = None,
         policy_reset_kwargs: dict[str, Any] | None = None,
         rollout_steps: int = 5,
+        rollout_stop_condition: RollOutStopCondition = evaluate_rollout_stop_condition,  # noqa: E501
     ) -> Generator[int, None, None]:
         """Make an episode evaluation.
 
@@ -125,19 +175,31 @@ class PolicyEvaluatorRemote(RayRemoteInstance[PolicyEvaluator]):
             env_reset_kwargs=env_reset_kwargs,
             policy_reset_kwargs=policy_reset_kwargs,
             rollout_steps=rollout_steps,
+            rollout_stop_condition=rollout_stop_condition,
         )
         for ref in gen:
             yield ray.get(ref)
 
         del gen
 
-    def reset_metrics(self) -> None:
+    def reset_metrics(self, **kwargs) -> None:
         """Reset the metrics."""
-        ray.get(self._remote.reset_metrics.remote())
+        return ray.get(self._remote.reset_metrics.remote(**kwargs))
 
-    def reset_policy(self) -> None:
+    def reset_policy(self, **kwargs) -> None:
         """Reset the policy."""
-        ray.get(self._remote.reset_policy.remote())
+        return ray.get(self._remote.reset_policy.remote(**kwargs))
+
+    def reset_env(self, **kwargs) -> Any:
+        """Reset the environment."""
+        return ray.get(self._remote.reset_env.remote(**kwargs))
+
+    def async_reset_env(self, **kwargs) -> concurrent.futures.Future:
+        """Asynchronously reset the environment."""
+        return self._remote.reset_env.remote(**kwargs).future()
+
+    def get_metrics(self) -> MetricDict | MetricProtocol | None:
+        return ray.get(self._remote.get_metrics.remote())
 
     def compute_metrics(self) -> dict[str, Any]:
         """Compute the metrics and return the results.

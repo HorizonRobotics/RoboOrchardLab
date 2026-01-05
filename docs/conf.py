@@ -447,6 +447,18 @@ def patch_autodoc(app):
 
 
 def setup(app):
+    # Hotfix for transformers pathlib issue: Somehow transformers use
+    # pathlib.Path in its __spec__.submodule_search_locations but
+    # directly import `transformers` use str paths. We don't know why
+    # this happens, but to workaround the issue.
+    import pathlib
+
+    import transformers
+
+    for i, loc in enumerate(transformers.__spec__.submodule_search_locations):
+        if isinstance(loc, pathlib.Path):
+            transformers.__spec__.submodule_search_locations[i] = str(loc)
+
     app.add_js_file("google_analytics.js")
     app.add_css_file("css/custom.css")
     app.add_transform(AutoStructify)

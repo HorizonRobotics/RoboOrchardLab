@@ -27,6 +27,7 @@ from robo_orchard_lab.models.mixin import (
     TorchModuleCfg,
 )
 from robo_orchard_lab.utils.path import DirectoryNotEmptyError
+from robo_orchard_lab.utils.state import StateSaveLoadMixin
 
 
 # 1. without shared tensor
@@ -98,8 +99,8 @@ class NestedTiedWeightModelCfg(TorchModuleCfg[NestedTiedWeightModel]):
 
 @pytest.fixture
 def temp_dir():
-    with tempfile.TemporaryDirectory() as temp_directory:
-        yield temp_directory
+    with tempfile.TemporaryDirectory(dir=os.path.abspath("./")) as temp_dir:
+        yield temp_dir
 
 
 class TestModelMixin:
@@ -122,6 +123,39 @@ class TestModelMixin:
 
         for key, param in model.state_dict().items():
             assert torch.equal(param, loaded_model.state_dict()[key])
+
+    def test_save_and_load_state_api_simple_model(self, temp_dir):
+        with tempfile.TemporaryDirectory(dir=temp_dir) as save_path:
+            state = StateSaveLoadMixin()
+
+            cfg = SimpleModelCfg()
+            model = SimpleModel(cfg)
+            model.eval()
+
+            # model.save(save_path)
+            state.model = model
+            state.save(save_path)
+            print("save_path: ", save_path)
+            # import ipdb
+
+            # ipdb.set_trace()
+            assert os.path.exists(
+                os.path.join(save_path, "state", "model", "model.config.json")
+            )
+            assert os.path.exists(
+                os.path.join(save_path, "state", "model", "model.safetensors")
+            )
+            new_state = StateSaveLoadMixin.load(save_path)
+            loaded_model = new_state.model
+
+            # loaded_model = ModelMixin.load_model(save_path, device="cpu")
+            # loaded_model.eval()
+
+            assert isinstance(loaded_model, SimpleModel)
+            assert model.cfg.model_dump() == loaded_model.cfg.model_dump()
+
+            for key, param in model.state_dict().items():
+                assert torch.equal(param, loaded_model.state_dict()[key])
 
     def test_save_and_load_tied_weight_model(self, temp_dir):
         cfg = TiedWeightModelCfg()
@@ -194,7 +228,9 @@ class TestModelMixin:
         save_path = os.path.join(temp_dir, "config_only")
         model.save_model(save_path)
 
-        initialized_model = ModelMixin.load_model(save_path, load_weight=False)
+        initialized_model = ModelMixin.load_model(
+            save_path, load_weights=False
+        )
 
         assert isinstance(initialized_model, SimpleModel)
         assert model.cfg.model_dump() == initialized_model.cfg.model_dump()

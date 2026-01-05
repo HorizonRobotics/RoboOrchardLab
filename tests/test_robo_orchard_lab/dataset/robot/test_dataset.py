@@ -67,12 +67,14 @@ class DummyEpisodePackaging(EpisodePackaging):
         robots: list[RobotData] | None = None,
         tasks: list[TaskData] | None = None,
         instructions: list[InstructionData] | None = None,
+        use_pickle: bool = False,
     ):
         self._gen_frame_num = gen_frame_num
         self._candidate_robots = robots or []
         self._candidate_tasks = tasks or []
         self._candidate_instructions = instructions or []
         self._data_size = data_size
+        self._use_pickle = use_pickle
 
     def gen_robot(self) -> RobotData | None:
         if len(self._candidate_robots) == 0:
@@ -101,8 +103,12 @@ class DummyEpisodePackaging(EpisodePackaging):
         return hg_datasets.Features(
             {
                 "data": hg_datasets.Value("string"),
-                "joints": BatchJointsState.dataset_feature(),
-                "tf_graph": BatchFrameTransformGraph.dataset_feature(),
+                "joints": BatchJointsState.dataset_feature(
+                    use_pickle=self._use_pickle
+                ),
+                "tf_graph": BatchFrameTransformGraph.dataset_feature(
+                    use_pickle=self._use_pickle
+                ),
             }
         )
 
@@ -239,12 +245,66 @@ def example_dataset_path_shard(tmp_local_folder: str) -> str:
     return dataset_dir
 
 
+@pytest.fixture(scope="module")
+def example_dataset_pickle_path_no_shard(tmp_local_folder: str) -> str:
+    dataset_dir = os.path.join(
+        tmp_local_folder,
+        "example_dataset_path_"
+        + "".join(random.choices(string.ascii_lowercase, k=8)),
+    )
+    robots = [
+        RobotData(name="robot_0", urdf_content="robot_0_urdf"),
+        RobotData(name="robot_1", urdf_content="robot_1_urdf"),
+    ]
+    tasks = [
+        TaskData(name="task_0", description="task_0_description"),
+        TaskData(name="task_1", description="task_1_description"),
+    ]
+    instructions = [
+        InstructionData(
+            name="instruction_0",
+            json_content={
+                "instruction": "Do task 0 with robot 0",
+                "robot": "robot_0",
+                "task": "task_0",
+            },
+        ),
+        InstructionData(
+            name="instruction_1",
+            json_content={
+                "instruction": "Do task 1 with robot 1",
+                "robot": "robot_1",
+                "task": "task_1",
+            },
+        ),
+    ]
+    episodes = [
+        DummyEpisodePackaging(
+            gen_frame_num=5,
+            robots=robots[0:1],
+            tasks=tasks[0:1],
+            instructions=instructions[0:1],
+            use_pickle=True,
+        ),
+        DummyEpisodePackaging(
+            gen_frame_num=3, tasks=tasks[1:2], use_pickle=True
+        ),
+    ]
+    features = episodes[0].features
+    dataset_packaging = DatasetPackaging(
+        features=features, database_driver="duckdb"
+    )
+    dataset_packaging.packaging(episodes=episodes, dataset_path=dataset_dir)
+    return dataset_dir
+
+
 @pytest.fixture(
     params=[
         "example_dataset_path_no_shard",
         "example_dataset_path_shard",
+        "example_dataset_pickle_path_no_shard",
     ],
-    ids=["no_shard", "shard"],
+    ids=["no_shard", "shard", "pickle_no_shard"],
 )
 def example_dataset_path(request) -> str:
     """Provide a database engine from different backends."""

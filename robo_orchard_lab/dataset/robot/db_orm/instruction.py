@@ -32,6 +32,7 @@ __all__ = ["Instruction"]
 @register_table_mapper
 class Instruction(DatasetORMBase, MD5FieldMixin["Instruction"]):
     __tablename__ = "instruction"
+    __version__ = "0.0.1"
 
     index: Mapped[int] = mapped_column(
         BIGINT, primary_key=True, autoincrement=False
@@ -56,6 +57,7 @@ class Instruction(DatasetORMBase, MD5FieldMixin["Instruction"]):
 
         The MD5 hash is generated from the JSON content and name.
         """
+        # TODO:
         content_str = (
             json.dumps(self.json_content, sort_keys=True)
             if self.json_content

@@ -54,7 +54,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   # -----------------------------
 #   # Step 1. Load a saved pipeline
 #   # -----------------------------
-#   pipeline = InferencePipelineMixin.load("hf://HorizonRobotics/Aux-Think")
+#   pipeline = InferencePipelineMixin.load_pipeline("hf://HorizonRobotics/Aux-Think")
 #   pipeline.model.eval()
 #
 #   # -----------------------------
@@ -121,7 +121,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   # Step 1. Load a saved pipeline
 #   # -----------------------------
 #   directory = "hf://HorizonRobotics/MonoDream"
-#   pipeline = InferencePipelineMixin.load(directory)
+#   pipeline = InferencePipelineMixin.load_pipeline(directory)
 #   pipeline.model.init_components(directory)
 #   pipeline.model.eval()
 #

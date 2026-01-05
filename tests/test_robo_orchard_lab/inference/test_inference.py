@@ -262,14 +262,14 @@ def test_pipeline_save_and_load(test_pipeline: MyTestPipeline, tmp_path):
     save_dir = tmp_path / "saved_pipeline"
 
     # 1. Save the pipeline
-    test_pipeline.save(str(save_dir))
+    test_pipeline.save_pipeline(str(save_dir))
 
     # 2. Check if files were created
     assert (save_dir / "inference.config.json").is_file()
     assert (save_dir / "model.safetensors").is_file()
     assert (save_dir / "model.config.json").is_file()
 
-    loaded_pipeline = InferencePipelineMixin.load(str(save_dir))
+    loaded_pipeline = InferencePipelineMixin.load_pipeline(str(save_dir))
 
     # 4. Verify the loaded pipeline
     assert isinstance(loaded_pipeline, MyTestPipeline)
@@ -300,10 +300,10 @@ def test_save_raises_error_if_dir_not_empty(
     (save_dir / "some_file.txt").touch()  # Make the directory non-empty
 
     with pytest.raises(DirectoryNotEmptyError):
-        test_pipeline.save(str(save_dir), required_empty=True)
+        test_pipeline.save_pipeline(str(save_dir), required_empty=True)
 
     # Should not raise error if required_empty is False
     try:
-        test_pipeline.save(str(save_dir), required_empty=False)
+        test_pipeline.save_pipeline(str(save_dir), required_empty=False)
     except DirectoryNotEmptyError:
         pytest.fail("save() raised DirectoryNotEmptyError unexpectedly.")

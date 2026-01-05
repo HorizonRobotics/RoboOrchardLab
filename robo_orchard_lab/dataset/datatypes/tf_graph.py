@@ -27,6 +27,7 @@ from robo_orchard_lab.dataset.datatypes.geometry import (
     BatchFrameTransformFeature,
 )
 from robo_orchard_lab.dataset.datatypes.hg_features import (
+    PickleFeature,
     RODictDataFeature,
     TypedDictFeatureDecode,
     check_fields_consistency,
@@ -46,9 +47,13 @@ def _get(self, key: str, default: Any = None) -> Any:
 
 @classmethod
 def _batch_frame_transform_graph_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchFrameTransformGraphFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchFrameTransformGraphFeature | PickleFeature:
     """A class for frame transform graphs with dataset feature support."""
+    if use_pickle:
+        return PickleFeature(class_type=BatchFrameTransformGraphState)
     ret = BatchFrameTransformGraphFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -85,8 +90,12 @@ class BatchFrameTransformGraphStateFeature(
 
 @classmethod
 def _batch_frame_transform_graph_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchFrameTransformGraphFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchFrameTransformGraphFeature | PickleFeature:
+    if use_pickle:
+        return PickleFeature(class_type=BatchFrameTransformGraph)
     """A class for frame transform graphs with dataset feature support."""
     return BatchFrameTransformGraphFeature(dtype=dtype)
 

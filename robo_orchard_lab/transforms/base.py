@@ -37,8 +37,6 @@ from robo_orchard_lab.utils.state import (
     State,
     StateList,
     StateSaveLoadMixin,
-    obj2state,
-    state2obj,
 )
 
 __all__ = [
@@ -303,34 +301,27 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         ret += ")"
         return ret
 
-    def __getstate__(self) -> State:
-        """Return the state of the object for pickling."""
-        state = self.__dict__.copy()
-        # Remove any cached properties to avoid pickling issues
-        for key in [
+    def _get_ignore_save_attributes(self) -> list[str]:
+        return [
             "_input_columns",
             "_output_columns",
             "_mapped_input_columns",
             "_mapped_output_columns",
-        ]:
-            state.pop(key, None)
+        ]
 
-        config = state.pop("cfg")
-        state = obj2state(state)
+    def _get_state(self) -> State:
+        """Get the state of the object for saving."""
+        # pull out cfg from state for better clarity
+        ret = super()._get_state()
+        ret.config = ret.state.pop("cfg", None)
+        return ret
 
-        return State(
-            state=state,
-            config=config,
-            parameters=None,
-            save_to_path=None,
-            class_type=type(self),
-        )
-
-    def __setstate__(self, state: State) -> None:
+    def _set_state(self, state: State) -> None:
         """Set the state of the object from the unpickled state."""
-        self.cfg = state.config  # type: ignore
-        self.__dict__.update(state.parameters or {})
-        self.__dict__.update(state2obj(state.state))
+        # push cfg back to state for consistency
+        state.state["cfg"] = state.config
+        state.config = None
+        super()._set_state(state)
 
     def __add__(
         self, other: DictTransform | ConcatDictTransform
@@ -541,24 +532,21 @@ class ConcatDictTransform(DictTransform):
             row = transform(row)
         return row
 
-    def __getstate__(self) -> State:
-        state = obj2state(
-            dict(
-                # use StateList to enable pickling the transforms separately
-                transforms=StateList(self._transforms, save_to_path=True)
-            )
-        )
+    def _get_state(self) -> State:
         return State(
-            state=state,
+            state=dict(
+                # use StateList to enable pickling the transforms separately
+                transforms=StateList(self._transforms)
+            ),
             config=self.cfg,
-            save_to_path=None,
+            hierarchical_save=None,
             class_type=type(self),
         )
 
-    def __setstate__(self, state: State) -> None:
+    def _set_state(self, state: State) -> None:
         """Set the state of the object from the unpickled state."""
         self.cfg = state.config  # type: ignore
-        self._transforms = state2obj(state.state["transforms"])
+        self._transforms = state.state["transforms"]
 
 
 class ConcatDictTransformConfig(

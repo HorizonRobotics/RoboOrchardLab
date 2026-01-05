@@ -98,6 +98,14 @@ class InferencePipeline(
         else:
             self.collate_fn = self.cfg.collate_fn
 
+    def _get_ignore_save_attributes(self) -> list[str]:
+        # ignore processor and collate_fn during state save/load
+        # because they can be re-created from cfg
+        return super()._get_ignore_save_attributes() + [
+            "processor",
+            "collate_fn",
+        ]
+
     @overload
     def __call__(self, data: InputType) -> OutputType: ...
 

@@ -15,14 +15,21 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+import pickle
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import datasets as hg_datasets
+import numpy as np
 import pyarrow as pa
+import torch
 from datasets.features.features import register_feature
 from pydantic import BaseModel
+from robo_orchard_core.utils.config import (
+    callable_to_string,
+    string_to_callable,
+)
 from typing_extensions import TypeVar
 
 __all__ = [
@@ -30,7 +37,7 @@ __all__ = [
     "RODictDataFeature",
     "TypedDictFeatureDecode",
     "FeatureDecodeMixin",
-    # "ToDataFeatureMixin",
+    "PickleFeature",
     "hg_dataset_feature",
     "check_fields_consistency",
     "guess_hg_features",
@@ -194,8 +201,95 @@ def check_fields_consistency(
         )
 
 
+@hg_dataset_feature
+@dataclass
+class PickleFeature(RODataFeature, FeatureDecodeMixin):
+    """A feature that uses pickle to serialize and deserialize data.
+
+    Args:
+        class_type (type | str): The class type of the object to be
+            serialized/deserialized. It should be a class for initialization,
+            or a string from `callable_to_string` for deserialization.
+        binary_type (Literal["binary", "large_binary"], optional): The
+            type of binary storage to use. Defaults to "binary".
+
+    """
+
+    class_type: type | str
+
+    decode: bool = True
+
+    binary_type: Literal["binary", "large_binary"] = "binary"
+
+    def __post_init__(self):
+        # make sure that class_type is string for serialization
+        if not isinstance(self.class_type, str):
+            self.class_type = callable_to_string(self.class_type)
+
+    def _get_class_type(self) -> type:
+        """Get the class type from the class_type attribute."""
+        if hasattr(self, "_class_type"):
+            return self._class_type  # type: ignore
+        else:
+            self._class_type = (
+                string_to_callable(self.class_type)
+                if isinstance(self.class_type, str)
+                else self.class_type
+            )
+            return self._class_type  # type: ignore
+
+    def __setattr__(self, name, value):
+        if name == "class_type":
+            self.__dict__.pop("_class_type", None)
+            self.__dict__[name] = value
+        else:
+            super().__setattr__(name, value)
+
+    @property
+    def pa_type(self):
+        """Return the pyarrow data type for this feature."""
+        if self.binary_type == "binary":
+            return pa.binary()
+        else:
+            return pa.large_binary()
+
+    def encode_example(self, value: Any) -> bytes:
+        class_type = self._get_class_type()
+        if not isinstance(value, class_type):
+            # special handling for torch.Tensor
+            # as hugggingface datasets convert them to numpy arrays
+            # or lists automatically
+            if class_type is torch.Tensor and isinstance(
+                value, (np.ndarray, list, tuple)
+            ):
+                return pickle.dumps(value)
+
+            raise TypeError(
+                f"Value must be of type {class_type}, but got {type(value)}."
+            )
+        return pickle.dumps(value)
+
+    def decode_example(
+        self,
+        value: bytes,
+        **kwargs,
+    ) -> Any:
+        if not self.decode:
+            raise RuntimeError(
+                "Decoding is disabled for this feature. Please use "
+                "PickleFeature(decode=True) instead."
+            )
+        ret = pickle.loads(value)
+        class_type = self._get_class_type()
+        if class_type is torch.Tensor and not isinstance(ret, torch.Tensor):
+            ret = torch.tensor(ret)
+
+        return ret
+
+
 def guess_hg_features(
     data: dict,
+    dataset_feature_kwargs: dict | None = None,
 ) -> hg_datasets.features.Features:
     """Guess the Hugging Face dataset features from an dict.
 
@@ -206,12 +300,21 @@ def guess_hg_features(
     Try to avoid any None values in the input object, as it may lead to
     incorrect feature type inference.
 
+    Args:
+        data (dict): The input data to guess features from.
+        dataset_feature_kwargs (dict, optional): Additional keyword arguments
+            to pass to the `dataset_feature` method of the feature classes.
+            Defaults to None.
+
     """
 
     if not isinstance(data, dict):
         raise TypeError(
             "Input data must be a dictionary mapping field names to values."
         )
+
+    if dataset_feature_kwargs is None:
+        dataset_feature_kwargs = {}
 
     def guess_feature(obj: Any):
         if isinstance(obj, (hg_datasets.Features, RODataFeature)):
@@ -229,7 +332,7 @@ def guess_hg_features(
                 )
             return hg_datasets.Sequence(feature=guess_feature(value))
         elif isinstance(obj, ToDataFeatureMixin):
-            return obj.dataset_feature()
+            return obj.dataset_feature(**dataset_feature_kwargs)
         else:
             return hg_datasets.features.features.generate_from_arrow_type(
                 pa.array([obj]).type

@@ -27,6 +27,7 @@ T = TypeVar("T", bound="MD5FieldMixin")
 class MD5FieldMixin(Generic[T]):
     md5: Mapped[bytes] = mapped_column(BLOB(length=16), index=True)
 
+    # TODO: Seperate the md5 calculation logic from update_md5 method.
     @abstractmethod
     def update_md5(self) -> bytes:
         """Generate a unique MD5 hash for the class.

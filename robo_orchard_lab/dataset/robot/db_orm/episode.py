@@ -35,6 +35,7 @@ class Episode(DatasetORMBase):
     """ORM model for an episode in a RoboOrchard dataset."""
 
     __tablename__ = "episode"
+    __version__ = "0.0.1"
 
     index: Mapped[int] = mapped_column(
         BIGINT, primary_key=True, autoincrement=False

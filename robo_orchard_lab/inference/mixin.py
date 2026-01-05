@@ -34,6 +34,7 @@ from robo_orchard_lab.utils.path import (
     in_cwd,
     is_empty_directory,
 )
+from robo_orchard_lab.utils.state import State, StateSaveLoadMixin
 
 __all__ = [
     "ClassType_co",
@@ -48,8 +49,7 @@ OutputType = TypeVar("OutputType")
 
 
 class InferencePipelineMixin(
-    Generic[InputType, OutputType],
-    metaclass=abc.ABCMeta,
+    StateSaveLoadMixin, Generic[InputType, OutputType], metaclass=abc.ABCMeta
 ):
     """An abstract base class for end-to-end inference pipelines.
 
@@ -137,11 +137,11 @@ class InferencePipelineMixin(
         self.cfg = cfg
         self.model = model
 
-    def to(self, device: torch.device):
+    def to(self, device: str | torch.device):
         """Moves the underlying model to the specified device.
 
         Args:
-            device (torch.device): The target device to move the model to.
+            device (str): The target device to move the model to.
         """
         self.model.to(device)
 
@@ -167,7 +167,7 @@ class InferencePipelineMixin(
         """  # noqa: E501
         pass
 
-    def save(
+    def save_pipeline(
         self,
         directory: str,
         inference_prefix: str = "inference",
@@ -206,12 +206,12 @@ class InferencePipelineMixin(
             fh.write(cfg_copy.model_dump_json(indent=4))
 
     @staticmethod
-    def load(
+    def load_pipeline(
         directory: str,
         inference_prefix: str = "inference",
         load_weights: bool = True,
-        strict: bool = True,
         device: str | None = "cpu",
+        strict: bool = True,
         device_map: str | dict[str, int | str | torch.device] | None = None,
         model_prefix: str = "model",
         load_impl: Literal["native", "accelerate"] = "accelerate",
@@ -291,6 +291,22 @@ class InferencePipelineMixin(
         does nothing.
         """
         pass
+
+    def _get_state(self) -> State:
+        """Get the state of the object for saving."""
+        # pull out cfg from state for better clarity
+        ret = super()._get_state()
+        ret.config = ret.state.pop("cfg", None)
+        return ret
+
+    def _set_state(self, state: State) -> None:
+        """Set the state of the object from the unpickled state."""
+        # push cfg back to state for consistency
+        state.state["cfg"] = state.config
+        state.config = None
+        super()._set_state(state)
+        # after set state, ensure that the pipeline have been setup correctly
+        self._setup(cfg=self.cfg, model=self.model)
 
 
 InferencePipelineMixinType_co = TypeVar(

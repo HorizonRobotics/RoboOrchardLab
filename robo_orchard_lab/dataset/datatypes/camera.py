@@ -32,6 +32,7 @@ from robo_orchard_lab.dataset.datatypes.geometry import (
     BatchFrameTransformFeature,
 )
 from robo_orchard_lab.dataset.datatypes.hg_features import (
+    PickleFeature,
     RODictDataFeature,
     TypedDictFeatureDecode,
     check_fields_consistency,
@@ -58,9 +59,14 @@ __all__ = [
 
 @classmethod
 def _distortion_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> DistortionFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> DistortionFeature | PickleFeature:
     """A class for distortion parameters with dataset feature support."""
+    if use_pickle:
+        return PickleFeature(class_type=Distortion)
+
     ret = DistortionFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -93,8 +99,12 @@ class DistortionFeature(RODictDataFeature, TypedDictFeatureDecode):
 
 @classmethod
 def _camera_info_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchCameraInfoFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchCameraInfoFeature | PickleFeature:
+    if use_pickle:
+        return PickleFeature(class_type=BatchCameraInfo)
     ret = BatchCameraInfoFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -133,8 +143,12 @@ class BatchCameraInfoFeature(RODictDataFeature, TypedDictFeatureDecode):
 
 @classmethod
 def _camera_data_encoded_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchCameraDataEncodedFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchCameraDataEncodedFeature | PickleFeature:
+    if use_pickle:
+        return PickleFeature(class_type=BatchCameraDataEncoded)
     ret = BatchCameraDataEncodedFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -175,8 +189,12 @@ class BatchCameraDataEncodedFeature(BatchCameraInfoFeature):
 
 @classmethod
 def _camera_data_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchCameraDataFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchCameraDataFeature | PickleFeature:
+    if use_pickle:
+        return PickleFeature(class_type=BatchCameraData)
     ret = BatchCameraDataFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret

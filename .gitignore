@@ -16,6 +16,8 @@ docs/sg_execution_times.rst
 docs/index.rst
 docs/readme.md
 docs/autoapi/
+docs/tutorials/dataset_tutorial/data1
+docs/tutorials/dataset_tutorial/data2
 
 ## build
 dist/

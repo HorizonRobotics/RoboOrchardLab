@@ -46,6 +46,7 @@ from robo_orchard_lab.utils.path import (
     in_cwd,
     is_empty_directory,
 )
+from robo_orchard_lab.utils.state import CustomizedSaveLoadMixin
 
 __all__ = [
     "TorchModuleCfg",
@@ -95,7 +96,9 @@ def _set_nested_attr(obj: Any, names: list[str], value: Any):
     setattr(obj, names[-1], value)
 
 
-class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
+class TorchModelMixin(
+    torch.nn.Module, CustomizedSaveLoadMixin, ClassInitFromConfigMixin
+):
     """A mixin class for PyTorch `nn.Module` providing model saving and loading utilities.
 
     This mixin standardizes how models are configured, saved, and loaded,
@@ -315,13 +318,14 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
     def load_model(
         cls: type[Self],
         directory: str,
-        load_weight: bool = True,
+        load_weights: bool = True,
         strict: bool = True,
         device: str | None = "cpu",
         device_map: str | dict[str, int | str | torch.device] | None = None,
         model_prefix: str = "model",
         load_impl: Literal["native", "accelerate"] = "accelerate",
-    ) -> Self:
+        overwrite_cfg_class_type: bool = False,
+    ) -> Self | TorchModelMixin:
         """Loads a model from a local directory or the Hugging Face Hub.
 
         This class method services like `load_pretrained` methods in huggingface
@@ -345,7 +349,7 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         occurs within a context where the current working directory is set to
         the specified directory.
 
-        If `load_weight` is True, the method proceeds to load the model's
+        If `load_weights` is True, the method proceeds to load the model's
         weights (state dictionary) from a ".safetensors" file (e.g.,
         "model.safetensors") located in the same directory.
 
@@ -379,16 +383,24 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
                     advanced features like device mapping and offloading.
 
                 Defaults to "accelerate".
+            overwrite_cfg_class_type (bool, optional): If True, overwrites the
+                `cfg.class_type` loaded from the configuration file with
+                `cls`, even if they differ. This is useful when you want to
+                load a model configuration that was originally saved with
+                a different class type. Defaults to False.
 
         Returns:
             torch.nn.Module: An instance of the model (typed as "ModelMixin" or a subclass),
                 initialized from the configuration and optionally with weights loaded.
+                The returned model is of the type specified by `cls` if
+                `overwrite_cfg_class_type` is True. Otherwise, it is of the type
+                specified in the configuration file.
 
         Raises:
             FileNotFoundError: If the specified `directory` does not exist,
                 or if the configuration file (`{model_prefix}.config.json`)
                 or the state dictionary file (`{model_prefix}.safetensors}`,
-                when `load_weight` is True) is not found in the directory.
+                when `load_weights` is True) is not found in the directory.
             ValueError: If the Hugging Face Hub URI is invalid.
         """  # noqa: E501
 
@@ -405,10 +417,27 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         with open(config_file, "r") as f:
             cfg: TorchModuleCfg = load_config_class(f.read())  # type: ignore
 
+        if cfg.class_type != cls:
+            if overwrite_cfg_class_type:
+                logger.warning(
+                    f"Overwriting cfg.class_type from {cfg.class_type} "
+                    f"to {cls} because overwrite_cfg_class_type=True. "
+                    "Make sure this is intended. "
+                )
+                cfg.class_type = cls
+            else:
+                if cls != TorchModelMixin:
+                    raise ValueError(
+                        f"cfg.class_type {cfg.class_type} does not match "
+                        f"the requested class type {cls}. Only when cls is "
+                        f"`TorchModelMixin`, cfg.class_type is allowed to be "
+                        f"different."
+                    )
+
         with in_cwd(directory):
             model: Self = cfg()
 
-        if load_weight:
+        if load_weights:
             model.load_weights(
                 directory=directory,
                 strict=strict,
@@ -516,6 +545,23 @@ class TorchModelMixin(torch.nn.Module, ClassInitFromConfigMixin):
         # device_map can be None.
         if device is not None:
             self.to(device=device)
+
+    def _save_impl(self, path: str, protocol: Any):
+        """Serializes the model state to the given path.
+
+        This method implements `save` from `StateSaveLoadMixin` by
+        calling `save_model`.
+        """
+        self.save_model(directory=path, model_prefix="model")
+
+    @classmethod
+    def load(cls, path: str) -> Self | TorchModelMixin:
+        """Deserializes the model state from the given path.
+
+        This method implements `load` from `StateSaveLoadMixin` by
+        calling `load_model`.
+        """
+        return cls.load_model(directory=path, model_prefix="model")
 
 
 ModelMixin = TorchModelMixin

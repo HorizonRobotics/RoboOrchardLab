@@ -180,7 +180,7 @@ output_dir = ".workspace/pipeline_checkpoint"
 if os.path.exists(output_dir):
     shutil.rmtree(output_dir)
 
-pipeline.save(output_dir)
+pipeline.save_pipeline(output_dir)
 
 print(f"Pipeline has been saved to the `{output_dir}` directory.")
 print(subprocess.check_output(["tree", output_dir]).decode())
@@ -196,7 +196,7 @@ print(subprocess.check_output(["tree", output_dir]).decode())
 #
 
 # 1. Load the pipeline
-loaded_pipeline = InferencePipelineMixin.load(output_dir)
+loaded_pipeline = InferencePipelineMixin.load_pipeline(output_dir)
 loaded_pipeline.model.eval()  # Set model to eval mode
 print("Pipeline loaded:", loaded_pipeline)
 

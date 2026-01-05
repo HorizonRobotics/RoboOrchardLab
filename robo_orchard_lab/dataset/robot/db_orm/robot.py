@@ -30,15 +30,24 @@ __all__ = ["Robot"]
 
 @register_table_mapper
 class Robot(DatasetORMBase, MD5FieldMixin["Robot"]):
-    """ORM model for a robot in a RoboOrchard dataset."""
+    """ORM model for a robot in a RoboOrchard dataset.
+
+    We currently support URDF format for robot description.
+
+    """
 
     __tablename__ = "robot"
+    __version__ = "0.0.1"
 
     index: Mapped[int] = mapped_column(
         INTEGER, primary_key=True, autoincrement=False
     )
     name: Mapped[str] = mapped_column(Text)
     urdf_content: Mapped[str | None] = mapped_column(Text)
+    """The URDF content of the robot.
+
+    In current implementation, we only support URDF format.
+    """
 
     md5: Mapped[bytes] = mapped_column(BLOB(length=16), index=True)
 
