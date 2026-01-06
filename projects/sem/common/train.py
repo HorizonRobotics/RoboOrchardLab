@@ -113,6 +113,20 @@ def main(args, accelerator):
     else:
         train_dataloader = optimizer = lr_scheduler = None
 
+    trainable_param = 0
+    non_trainable_param = 0
+    for param in model.parameters():
+        if param.requires_grad:
+            trainable_param += param.numel()
+        else:
+            non_trainable_param += param.numel()
+    total_param = trainable_param + non_trainable_param
+    logger.info(
+        f"number of parameters: {total_param / 10**6:.2f}M, "
+        f"trainable: {trainable_param / 10**6:.2f}M, "
+        f"non-trainable: {non_trainable_param / 10**6:.2f}M"
+    )
+
     accelerator.register_save_state_pre_hook(
         model.accelerator_save_state_pre_hook
     )
