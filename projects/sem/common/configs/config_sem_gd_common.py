@@ -48,6 +48,7 @@ config = dict(
         # "rh20t",
         "agibot",
         "droid",
+        "egodex",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[

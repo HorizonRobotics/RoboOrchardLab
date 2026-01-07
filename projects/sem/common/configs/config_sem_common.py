@@ -50,6 +50,7 @@ config = dict(
         # "rh20t",
         "agibot",
         "droid",
+        "egodex",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -386,6 +387,7 @@ def build_training_dataset(config, lazy_init=False):
     from config_agibot_dataset import build_datasets as build_agibot_datasets
     from config_agilex_dataset import build_datasets as build_agilex_datasets
     from config_droid_dataset import build_datasets as build_droid_datasets
+    from config_egodex_dataset import build_datasets as build_egodex_datasets
     from config_rh20t_dataset import build_datasets as build_rh20t_datasets
     from config_robotwin_dataset import (
         build_datasets as build_robotwin_datasets,
@@ -428,6 +430,14 @@ def build_training_dataset(config, lazy_init=False):
     )
     datasets.extend(
         build_droid_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_egodex_datasets(
             config,
             config["training_datasets"],
             mode="training",

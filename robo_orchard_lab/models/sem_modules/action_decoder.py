@@ -98,6 +98,21 @@ class SEMActionDecoder(nn.Module):
         **kwargs: Additional keyword arguments.
     """
 
+    VALID_NOISE_TYPES = [
+        "global_joint",
+        "local_joint",
+        "global_joint_global_pose",
+        "global_joint_local_pose",
+        "local_joint_global_pose",
+        "local_joint_local_pose",
+    ]
+    VALID_PREDICTION_TYPES = [
+        "absolute_joint_absolute_pose",
+        "absolute_joint_relative_pose",
+        "relative_joint_absolute_pose",
+        "relative_joint_relative_pose",
+    ]
+
     def __init__(
         self,
         img_cross_attn,
@@ -220,20 +235,8 @@ class SEMActionDecoder(nn.Module):
         self.test_noise_scheduler = build(test_noise_scheduler)
         assert self.training_noise_scheduler.config.prediction_type == "sample"
         assert self.test_noise_scheduler.config.prediction_type == "sample"
-        assert noise_type in [
-            "global_joint",
-            "local_joint",
-            "global_joint_global_pose",
-            "global_joint_local_pose",
-            "local_joint_global_pose",
-            "local_joint_local_pose",
-        ]
-        assert prediction_type in [
-            "absolute_joint_absolute_pose",
-            "absolute_joint_relative_pose",
-            "relative_joint_absolute_pose",
-            "relative_joint_relative_pose",
-        ]
+        assert noise_type in self.VALID_NOISE_TYPES
+        assert prediction_type in self.VALID_PREDICTION_TYPES
         self.use_joint_mask = use_joint_mask
         self.noise_type = noise_type
         self.pred_scaled_joint = pred_scaled_joint
@@ -321,6 +324,8 @@ class SEMActionDecoder(nn.Module):
         return robot_state
 
     def recompute(self, robot_state, inputs):
+        if "kinematics" not in inputs:
+            return robot_state
         joint_state = self.apply_scale_shift(
             robot_state[..., :1],
             inputs.get("joint_scale_shift"),
@@ -335,15 +340,15 @@ class SEMActionDecoder(nn.Module):
         )
         return robot_state
 
-    def sample_noise(self, noise_shape, hist_robot_state):
-        if not self.noise_type.endswith("pose"):
+    def sample_noise(self, noise_shape, hist_robot_state, noise_type):
+        if not noise_type.endswith("pose"):
             noise = torch.randn([*noise_shape[:-1], 1])
         else:
             noise = torch.randn(noise_shape)
         noise = noise.to(hist_robot_state)
-        if self.noise_type.startswith("local_joint"):
+        if noise_type.startswith("local_joint"):
             noise[..., :1] = noise[..., :1] + hist_robot_state[:, -1:, :, :1]
-        if self.noise_type.endswith("local_pose"):
+        if noise_type.endswith("local_pose"):
             noise[..., 1:] = noise[..., 1:] + hist_robot_state[:, -1:, :, 1:]
         return noise
 
@@ -439,6 +444,12 @@ class SEMActionDecoder(nn.Module):
         else:
             robot_feature = None
 
+        if "noise_type" in inputs:
+            noise_type = inputs["noise_type"][0]
+            assert noise_type in self.VALID_NOISE_TYPES, noise_type
+        else:
+            noise_type = self.noise_type
+
         if self.training:
             pred_robot_state = self.apply_scale_shift(
                 inputs["pred_robot_state"], joint_scale_shift
@@ -484,10 +495,12 @@ class SEMActionDecoder(nn.Module):
                 inputs["joint_scale_shift"] = joint_scale_shift
 
             noise = self.sample_noise(
-                [bs, pred_steps, num_joint, state_dims], hist_robot_state
+                [bs, pred_steps, num_joint, state_dims],
+                hist_robot_state,
+                noise_type,
             )
 
-            if not self.noise_type.endswith("pose"):
+            if not noise_type.endswith("pose"):
                 noisy_action = self.training_noise_scheduler.add_noise(
                     pred_robot_state[..., :1], noise, timesteps
                 )
@@ -599,6 +612,7 @@ class SEMActionDecoder(nn.Module):
             noisy_action = self.sample_noise(
                 [bs, self.pred_steps, num_joint, state_dims],
                 hist_robot_state,
+                noise_type,
             )
             if self.with_mobile:
                 noisy_mobile_traj = torch.randn(
@@ -612,7 +626,7 @@ class SEMActionDecoder(nn.Module):
             )
 
             for t in self.test_noise_scheduler.timesteps:
-                if not self.noise_type.endswith("pose"):
+                if not noise_type.endswith("pose"):
                     noisy_action = self.recompute(noisy_action, inputs)
                 pred, pred_mobile_traj = self.forward_layers(
                     noisy_action,
@@ -633,7 +647,7 @@ class SEMActionDecoder(nn.Module):
                         remaining_actions,
                         delay_horizon,
                     )
-                if not self.noise_type.endswith("pose"):
+                if not noise_type.endswith("pose"):
                     noisy_action = self.test_noise_scheduler.step(
                         pred[..., :1], t, noisy_action[..., :1]
                     ).prev_sample
