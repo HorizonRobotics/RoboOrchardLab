@@ -65,7 +65,7 @@ agibot_scale_shift = [
     [0.357815969, 0.392597735],  # Joint5_l
     [0.389363049, 1.321284795],  # Joint6_l
     [0.477344665, 0.298801437],  # Joint7_l
-    [33.615918755, 54.628037467],  # left_gripper
+    [-33.615918755, 54.628037467],  # left_gripper
     # Right arm joints (7 joints)
     [1.056550615, 0.897950653],  # Joint1_r
     [0.610640659, -0.593406163],  # Joint2_r
@@ -74,7 +74,7 @@ agibot_scale_shift = [
     [0.567352174, -0.411271768],  # Joint5_r
     [0.313294437, -1.254856470],  # Joint6_r
     [0.490895931, -0.434084028],  # Joint7_r
-    [34.681226171, 61.714828429],  # right_gripper
+    [-34.681226171, 61.714828429],  # right_gripper
     # Head joints (2 joints)
     [0.049485552, -0.027264017],  # joint_head_pitch
     [0.077976995, 0.451097382],  # joint_head_yaw
@@ -175,6 +175,7 @@ def build_transforms(config):
         SimpleStateSampling,
         ToTensor,
         UpSampleJointState,
+        MoveEgoToCam,
     )
 
     state_sampling = SimpleStateSampling(
@@ -192,7 +193,8 @@ def build_transforms(config):
     resize = Resize(dst_wh=dst_wh)
 
     to_tensor = ToTensor()
-    projection_mat = GetProjectionMat(target_coordinate="base")
+    ego_to_cam = MoveEgoToCam()
+    projection_mat = GetProjectionMat(target_coordinate="ego")
     convert_dtype = ConvertDataType(
         convert_map=dict(
             imgs=torch.float32,
@@ -307,6 +309,7 @@ def build_transforms(config):
         resize,
         to_tensor,
         joint_upsample,
+        ego_to_cam,
         projection_mat,
         scale_shift,
         convert_dtype,

@@ -320,6 +320,7 @@ def build_transforms(
         ImageChannelFlip,
         ItemSelection,
         JointStateNoise,
+        MoveEgoToCam,
         Resize,
         SimpleStateSampling,
         ToTensor,
@@ -365,7 +366,8 @@ def build_transforms(
     )
     img_channel_flip = dict(type=ImageChannelFlip, output_channel=[2, 1, 0])
     to_tensor = dict(type=ToTensor)
-    projection_mat = dict(type=GetProjectionMat, target_coordinate="base")
+    ego_to_cam = dict(type=MoveEgoToCam)
+    projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
         convert_map=dict(
@@ -412,6 +414,7 @@ def build_transforms(
             resize,
             img_channel_flip,
             to_tensor,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             joint_state_noise,
@@ -443,6 +446,7 @@ def build_transforms(
             resize,
             img_channel_flip,
             to_tensor,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -472,6 +476,7 @@ def build_transforms(
             resize,
             img_channel_flip,
             to_tensor,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -504,11 +509,12 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         )
         dataset = RoboTwinLmdbDataset(
             paths=dataset_config[dataset_name]["paths"],
-            task_names=None,
+            task_names=config.get("task_names"),
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
             dataset_name=dataset_name,
             cam_names=data_config["cam_names"],
+            reset_step=1000,
         )
         datasets.append(dataset)
     return datasets

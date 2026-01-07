@@ -41,6 +41,7 @@ def build_transforms(config, mode):
         ConvertDataType,
         GetProjectionMat,
         ItemSelection,
+        MoveEgoToCam,
         MultiArmKinematics,
         Resize,
         SimpleStateSampling,
@@ -58,7 +59,7 @@ def build_transforms(config, mode):
         [2.6663869619369507, -0.004207730293273926],
         [2.0163204446434975, 2.2652585729956627],
         [2.758755087852478, -0.003111720085144043],
-        [0.5, 0.5],
+        [-0.5, 0.5],
     ]
 
     joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
@@ -104,6 +105,7 @@ def build_transforms(config, mode):
         dst_wh=config.get("dst_wh", (308, 252)),
     )
     to_tensor = ToTensor()
+    ego_to_cam = MoveEgoToCam()
     projection_mat = GetProjectionMat(target_coordinate="ego")
     convert_dtype = ConvertDataType(
         convert_map=dict(
@@ -130,7 +132,7 @@ def build_transforms(config, mode):
             ]
         ],
         finger_keys=[
-            ["left_inner_finger", "right_inner_finger"],
+            ["left_inner_finger"],
         ],
     )
 
@@ -161,6 +163,7 @@ def build_transforms(config, mode):
             resize,
             to_tensor,
             joint_upsample,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,

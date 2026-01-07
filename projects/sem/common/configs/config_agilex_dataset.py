@@ -432,6 +432,7 @@ def build_transforms(
         IdentityTransform,
         ItemSelection,
         JointStateNoise,
+        MoveEgoToCam,
         MultiArmKinematics,
         RandomCropPaddingResize,
         Resize,
@@ -506,6 +507,7 @@ def build_transforms(
         ],
     )
     to_tensor = dict(type=ToTensor)
+    ego_to_cam = dict(type=MoveEgoToCam)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
@@ -633,6 +635,7 @@ def build_transforms(
             to_tensor,
             calib_to_ext,
             extrinsic_noise,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             joint_state_noise,
@@ -666,6 +669,7 @@ def build_transforms(
             resize,
             to_tensor,
             calib_to_ext,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -697,6 +701,7 @@ def build_transforms(
             resize,
             to_tensor,
             calib_to_ext,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,

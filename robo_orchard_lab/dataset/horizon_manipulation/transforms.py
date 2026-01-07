@@ -41,6 +41,21 @@ __all__ = [
 ]
 
 
+class MoveEgoToCam:
+    def __init__(self, cam_idx=-1):
+        self.cam_idx = cam_idx
+
+    def __call__(self, data):
+        if isinstance(self.cam_idx, str):
+            cam_idx = data["cam_name"].index(self.cam_idx)
+        else:
+            cam_idx = self.cam_idx
+        data["T_base2ego"] = data["T_world2cam"][cam_idx] @ data.get(
+            "T_base2world", np.eye(4)
+        )
+        return data
+
+
 class IdentityTransform:
     def __call__(self, data):
         return data
