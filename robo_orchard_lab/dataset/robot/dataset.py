@@ -883,15 +883,11 @@ class ROMultiRowDataset(RODataset):
             # update column that needs multi-row sampling
 
             # first collect all column rows
-            new_rows: dict[str, list[list[int | None]]] = {
-                k: [] for k in self._row_sampler.column_rows_keys
-            }
-            for cur_idx in index:
-                for col_name, idx_rows in self._row_sampler.sample_row_idx(
-                    cached_index_dataset, cur_idx
-                ).items():
-                    new_rows[col_name].append(idx_rows)
-
+            new_rows: dict[str, list[list[int | None]]] = (
+                self._row_sampler.sample_row_idx_batch(
+                    cached_index_dataset, index
+                )
+            )
             for k, v in new_rows.items():
                 # flatten and get all rows at once for each column
                 flattened_rows = []

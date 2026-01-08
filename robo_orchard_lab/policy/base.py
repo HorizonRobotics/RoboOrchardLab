@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
+import copy
 from typing import Any, TypeVar
 
 import gymnasium as gym
@@ -87,8 +88,7 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
             the environment. Defaults to None.
         pipeline (InferencePipelineMixin| None, optional): The inference
             pipeline to use. If None, it will be created from the
-            configuration. If provided, its configuration must match
-            the policy's pipeline_cfg. Defaults to None.
+            configuration. If provided,  Defaults to None.
     """
 
     cfg: InferencePipelinePolicyCfg
@@ -102,16 +102,32 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
         action_space: gym.Space[ACTType] | None = None,
         pipeline: InferencePipelineMixin[OBSType, ACTType] | None = None,
     ):
+        if [cfg.pipeline_cfg, pipeline].count(None) != 1:
+            raise ValueError(
+                "Either pipeline_cfg in cfg or pipeline must be provided.",
+            )
+
+        if pipeline is None:
+            assert cfg.pipeline_cfg is not None
+            pipeline = cfg.pipeline_cfg()
+        else:
+            if cfg.pipeline_cfg is None:
+                cfg = copy.deepcopy(cfg)
+                cfg.pipeline_cfg = pipeline.cfg
+
+        assert pipeline is not None
+
         super().__init__(
             cfg,
             observation_space=observation_space,
             action_space=action_space,
         )
+
         self._setup(
             cfg,
             observation_space=observation_space,
             action_space=action_space,
-            pipeline=pipeline or cfg.pipeline_cfg(),
+            pipeline=pipeline,
         )
 
     def _setup(
@@ -174,4 +190,8 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
 class InferencePipelinePolicyCfg(PolicyConfig[InferencePipelinePolicy]):
     class_type: ClassType_co[InferencePipelinePolicy] = InferencePipelinePolicy
 
-    pipeline_cfg: ConfigInstanceOf[InferencePipelineMixinCfg[Any]]
+    pipeline_cfg: ConfigInstanceOf[InferencePipelineMixinCfg[Any]] | None = (
+        None
+    )
+    """Configuration for the inference pipeline. If None, it must be provided
+    when creating the policy."""

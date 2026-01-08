@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
-from typing import Any, Type, TypeVar
+from typing import Any, Sequence, Type, TypeVar
 
 from datasets import Dataset as HFDataset
 from robo_orchard_core.utils.config import (
@@ -33,6 +33,8 @@ __all__ = [
     "MultiRowSamplerConfig",
     "ColumnIndexOffsetSampler",
     "ColumnIndexOffsetSamplerConfig",
+    "CustomizedColumnIndexSampler",
+    "CustomizedColumnIndexSamplerConfig",
 ]
 
 
@@ -120,6 +122,10 @@ class MultiRowSampler(ClassInitFromConfigMixin, metaclass=ABCMeta):
     ) -> dict[str, list[int | None]]:
         """Sample a list of row indices from the index dataset.
 
+        Note:
+            This method should be implemented by subclasses to define
+            the specific sampling strategy, based on the provided index.
+
         Args:
             index_dataset (HFDataset): The dataset from which to sample rows.
             index (int): The index or indices to sample.
@@ -132,6 +138,40 @@ class MultiRowSampler(ClassInitFromConfigMixin, metaclass=ABCMeta):
         raise NotImplementedError(
             "This method should be implemented by subclasses."
         )
+
+    def sample_row_idx_batch(
+        self,
+        index_dataset: HFDataset | CachedIndexDataset,
+        index_batch: Sequence[int],
+    ) -> dict[str, list[list[int | None]]]:
+        """Sample a batch of row indices from the index dataset.
+
+        This method is a batch version of `sample_row_idx`, which
+        processes multiple indices at once.
+
+        Note:
+            The implementation provided here is a simple loop over
+            `sample_row_idx`. Subclasses may override this method
+            for more efficient batch processing.
+
+        Args:
+            index_dataset (HFDataset): The dataset from which to sample rows.
+            index_batch (Sequence[int]): A sequence of indices to sample.
+
+        Returns:
+            dict[str, list[list[int | None]]]: A dictionary where keys are
+            column names and values are lists of lists of row indices.
+
+        """
+        ret: dict[str, list[list[int | None]]] = {
+            k: [] for k in self.column_rows_keys
+        }
+        for idx in index_batch:
+            for column, indices in self.sample_row_idx(
+                index_dataset, idx
+            ).items():
+                ret[column].append(indices)
+        return ret
 
     @property
     @abstractmethod
@@ -596,3 +636,4 @@ class CustomizedColumnIndexSamplerConfig(
     class_type: ClassType[CustomizedColumnIndexSampler]
 
     columns: list[str]
+    """The list of columns to sample from. """
