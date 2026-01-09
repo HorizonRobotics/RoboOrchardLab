@@ -33,12 +33,28 @@ class ConcatDatasetWithFlag(ConcatDataset):
     def generate_flag(self):
         flags = []
         for i, dataset in enumerate(self.datasets):
-            flags.append(np.full(len(dataset), i))
+            flag = getattr(dataset, "flag", None)
+            if flag is None:
+                flag = i
+            else:
+                assert isinstance(flag, int) and flag >= len(self.datasets), (
+                    "Please use a larger integer as the flag "
+                    "(currently set to {x}) to avoid conflicts with the "
+                    "default value, which may cause unexpected issues."
+                )
+            flags.append(np.full(len(dataset), flag))
         self.flags = np.concatenate(flags)
 
 
 class DistributedBatchFlagSampler(Sampler[list[int]]):
-    def __init__(self, data_source, batch_size, drop_last=False, seed=0):
+    def __init__(
+        self,
+        data_source,
+        batch_size,
+        drop_last=False,
+        seed=0,
+        dataset_sample_weights=None,
+    ):
         dist_info = get_dist_info()
         self.rank = dist_info.rank
 
@@ -48,21 +64,33 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
         flags = np.copy(self.data_source.flags)
         assert len(flags) == len(self.data_source)
         self.groups_length = {}
-        for i in range(len(flags)):
-            if i == 0:
-                last = 0
-                continue
-            elif flags[i] != flags[i - 1]:
-                self.groups_length[flags[i - 1]] = i - last
-                last = i
-        self.groups_length[flags[-1]] = len(flags) - last
+        uniuqe_flags = np.unique(flags)
+        for f in uniuqe_flags:
+            self.groups_length[f] = (f == flags).sum()
         self.flags = flags
         self.seed = seed + self.rank
         logger.info(
             f"dataset length: {len(self.data_source)}, "
-            f"number of batches: {self.__len__()}"
+            f"number of batches: {self.__len__()}, "
+            f"dataset flags: {uniuqe_flags}"
         )
         self._epoch = 0
+        if dataset_sample_weights is not None:
+            assert len(dataset_sample_weights) == len(
+                self.data_source.datasets
+            )
+            sum_weights = sum(dataset_sample_weights)
+            dataset_sample_weights = [
+                x / sum_weights for x in dataset_sample_weights
+            ]
+            log_info = "\ndataset sample weights: "
+            for i, dataset in enumerate(self.data_source.datasets):
+                log_info += (
+                    f"\n|---{getattr(dataset, 'dataset_name', 'unnamed')}"
+                    f": {dataset_sample_weights[i]}"
+                )
+            logger.info(log_info)
+        self.dataset_sample_weights = dataset_sample_weights
         self.reset()
 
     def reset(self):
@@ -73,13 +101,43 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
     def set_epoch(self, epoch):
         self._epoch = epoch
 
-    def _indices_queue_generator(self):
-        n = len(self.data_source)
-        generator = np.random.default_rng(seed=self.seed + self._epoch)
-        yield from generator.permutation(n)
+    def _indices_generator(self):
+        if self.dataset_sample_weights is None:
+            n = len(self.data_source)
+            generator = np.random.default_rng(seed=self.seed + self._epoch)
+            yield from generator.permutation(n)
+        else:
+            lengths = [len(dataset) for dataset in self.data_source.datasets]
+            num_dataset = len(lengths)
+            prefix_length = np.cumsum([0] + lengths)
+            dataset_indices_queues = []
+            for i, length in enumerate(lengths):
+                tmp = np.random.default_rng(self.seed + i).permutation(length)
+                tmp = [x + prefix_length[i] for x in tmp]
+                dataset_indices_queues.append(tmp)
+            queue_indices = np.zeros(num_dataset, np.int32)
+            dataset_epoch = np.zeros(num_dataset, np.int32)
+            while True:
+                dataset_idx = np.random.choice(
+                    num_dataset,
+                    p=self.dataset_sample_weights,
+                )
+                queue = dataset_indices_queues[dataset_idx]
+                queue_idx = queue_indices[dataset_idx]
+                idx = queue[queue_idx]
+                queue_indices[dataset_idx] += 1
+                if queue_indices[dataset_idx] >= lengths[dataset_idx]:
+                    dataset_epoch[dataset_idx] += 1
+                    tmp = np.random.default_rng(
+                        self.seed + dataset_epoch[dataset_idx] + dataset_idx
+                    ).permutation(lengths[dataset_idx])
+                    tmp = [x + prefix_length[dataset_idx] for x in tmp]
+                    dataset_indices_queues[dataset_idx] = tmp
+                    queue_indices[dataset_idx] = 0
+                yield idx
 
     def __iter__(self):
-        generator = self._indices_queue_generator()
+        generator = self._indices_generator()
         while True:
             try:
                 i = next(generator).item()

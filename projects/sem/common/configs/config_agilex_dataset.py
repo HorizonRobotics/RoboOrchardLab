@@ -199,6 +199,7 @@ dataset_config = dict(
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
         depth_restore=True,
+        flag=100002,
     ),
     challenge_finetune=dict(
         data_paths=[
@@ -747,6 +748,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             load_extrinsic=data_config.get("load_extrinsic", False),
             load_calibration=data_config.get("load_calibration", False),
             instruction_reader=instruction_reader,
+            flag=data_config.get("flag", 100001),
         )
         datasets.append(dataset)
 

@@ -106,6 +106,7 @@ def main(args, accelerator):
                 train_dataset,
                 config["batch_size"],
                 drop_last=True,
+                dataset_sample_weights=config.get("dataset_sample_weights"),
             ),
             # in_order=False,
         )
