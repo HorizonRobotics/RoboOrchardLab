@@ -86,8 +86,9 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
             log_info = "\ndataset sample weights: "
             for i, dataset in enumerate(self.data_source.datasets):
                 log_info += (
-                    f"\n|---{getattr(dataset, 'dataset_name', 'unnamed')}"
-                    f": {dataset_sample_weights[i]}"
+                    f"\n|-{getattr(dataset, 'dataset_name', 'unnamed'):->30}"
+                    f": {dataset_sample_weights[i] * 100:.2f}%"
+                    f" [{len(dataset) / len(flags) * 100:.2f}%]"
                 )
             logger.info(log_info)
         self.dataset_sample_weights = dataset_sample_weights
@@ -112,28 +113,32 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
             prefix_length = np.cumsum([0] + lengths)
             dataset_indices_queues = []
             for i, length in enumerate(lengths):
-                tmp = np.random.default_rng(self.seed + i).permutation(length)
-                tmp = [x + prefix_length[i] for x in tmp]
-                dataset_indices_queues.append(tmp)
-            queue_indices = np.zeros(num_dataset, np.int32)
+                seed = self.seed * num_dataset + i
+                dataset_indices_queues.append(
+                    iter(
+                        np.random.default_rng(seed).permutation(length)
+                        + prefix_length[i]
+                    )
+                )
             dataset_epoch = np.zeros(num_dataset, np.int32)
+            dataset_rng = np.random.default_rng(seed=self.seed)
             while True:
-                dataset_idx = np.random.choice(
+                d_idx = dataset_rng.choice(
                     num_dataset,
                     p=self.dataset_sample_weights,
                 )
-                queue = dataset_indices_queues[dataset_idx]
-                queue_idx = queue_indices[dataset_idx]
-                idx = queue[queue_idx]
-                queue_indices[dataset_idx] += 1
-                if queue_indices[dataset_idx] >= lengths[dataset_idx]:
-                    dataset_epoch[dataset_idx] += 1
-                    tmp = np.random.default_rng(
-                        self.seed + dataset_epoch[dataset_idx] + dataset_idx
-                    ).permutation(lengths[dataset_idx])
-                    tmp = [x + prefix_length[dataset_idx] for x in tmp]
-                    dataset_indices_queues[dataset_idx] = tmp
-                    queue_indices[dataset_idx] = 0
+                try:
+                    idx = next(dataset_indices_queues[d_idx])
+                except StopIteration:
+                    dataset_epoch[d_idx] += 1
+                    seed = (
+                        self.seed * num_dataset + dataset_epoch[d_idx] + d_idx
+                    )
+                    dataset_indices_queues[d_idx] = iter(
+                        np.random.default_rng(seed).permutation(lengths[d_idx])
+                        + prefix_length[d_idx]
+                    )
+                    idx = next(dataset_indices_queues[d_idx])
                 yield idx
 
     def __iter__(self):
