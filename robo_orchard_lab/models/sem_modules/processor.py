@@ -13,11 +13,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import copy
+import os
+import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
+from robo_orchard_core.utils.config import load_config_class
 
 from robo_orchard_lab.inference.processor import (
     ClassType_co,
@@ -25,6 +29,7 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixinCfg,
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
+from robo_orchard_lab.utils.path import in_cwd
 
 __all__ = ["SEMProcessor", "SEMProcessorCfg"]
 
@@ -185,6 +190,39 @@ class SEMProcessor(ProcessorMixin):
         if self.cfg.valid_action_step is not None:
             action = action[: self.cfg.valid_action_step]
         return MultiArmManipulationOutput(action=action)
+
+    def save(self, path, processor_name, urdf_dir="./urdf"):
+        os.makedirs(path, exist_ok=True)
+        cfg = copy.deepcopy(self.cfg)
+        urdfs = []
+        for transform in cfg.transforms:
+            if "urdf" in transform:
+                urdf_file = transform["urdf"]
+                urdfs.append(urdf_file)
+                transform["urdf"] = os.path.join(
+                    urdf_dir, os.path.basename(urdf_file)
+                )
+
+        if len(urdfs) > 0:
+            if not os.path.isabs(path):
+                target_urdf_path = os.path.join(path, urdf_dir)
+            else:
+                target_urdf_path = urdf_dir
+            os.makedirs(target_urdf_path, exist_ok=True)
+            for urdf in urdfs:
+                shutil.copy2(urdf, target_urdf_path)
+
+        with open(os.path.join(path, processor_name), "w") as fh:
+            fh.write(cfg.model_dump_json(indent=4))
+
+    @staticmethod
+    def load(path, processor_name):
+        processor_cfg = load_config_class(
+            open(os.path.join(path, processor_name)).read()
+        )
+        with in_cwd(path):
+            processor = processor_cfg()
+        return processor
 
 
 class SEMProcessorCfg(ProcessorMixinCfg[SEMProcessor]):

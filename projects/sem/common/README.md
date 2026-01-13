@@ -45,6 +45,13 @@ python3 robotwin_eval.py \
 RoboOrchardJob-AIDISubmit submit_from_config --config projects/sem/common/submit_cfg_robotwin_eval.json
 ```
 
+
+## Export processor and model from python config
+```bash
+cd projects/sem/common
+python3 export.py --config configs/config_sem_common.py $@
+```
+
 ## Docker image
 - **New version image (supports Qwen3):**  
   `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch260-robotwin2-transformer4571-20251030`

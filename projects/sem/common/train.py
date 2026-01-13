@@ -75,11 +75,7 @@ def main(args, accelerator):
     if accelerator.is_main_process:
         processors = build_processors(config)
         for dataset_name, processor in processors.items():
-            with open(
-                os.path.join(args.workspace, f"{dataset_name}_processor.json"),
-                "w",
-            ) as fh:
-                fh.write(processor.cfg.model_dump_json(indent=4))
+            processor.save(args.workspace, f"{dataset_name}_processor.json")
 
     if args.kwargs is not None:
         if os.path.isfile(args.kwargs):

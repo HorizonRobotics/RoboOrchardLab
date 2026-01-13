@@ -448,17 +448,17 @@ class SEM_Qwen2_5_VL(ModelMixin):  # noqa: N801
         return incompatible_keys
 
 
-MODULE_TPYE = TorchModuleCfgType_co | DelayInitDictType  # noqa: E501
+MODULE_TYPE = TorchModuleCfgType_co | DelayInitDictType  # noqa: E501
 
 
 class SEM_Qwen2_5_VLConfig(TorchModuleCfg[SEM_Qwen2_5_VL]):  # noqa: N801
     class_type: ClassType_co[SEM_Qwen2_5_VL] = SEM_Qwen2_5_VL
     vlm_pretrain: str
-    decoder: MODULE_TPYE  # type: ignore
-    spatial_enhancer: MODULE_TPYE | None = None
-    data_preprocessor: MODULE_TPYE | None = None
-    backbone_3d: MODULE_TPYE | None = None
-    neck_3d: MODULE_TPYE | None = None
+    decoder: MODULE_TYPE  # type: ignore
+    spatial_enhancer: MODULE_TYPE | None = None
+    data_preprocessor: MODULE_TYPE | None = None
+    backbone_3d: MODULE_TYPE | None = None
+    neck_3d: MODULE_TYPE | None = None
     input_2d: str = "imgs"
     input_3d: str = "depths"
     freeze_vlm: bool = True

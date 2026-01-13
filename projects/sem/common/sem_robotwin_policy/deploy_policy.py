@@ -23,13 +23,12 @@ import numpy as np
 import requests
 import torch
 from filelock import FileLock, Timeout
-from robo_orchard_core.utils.config import load_config_class
 
 from robo_orchard_lab.models.mixin import ModelMixin
 from robo_orchard_lab.models.sem_modules.processor import (
     MultiArmManipulationInput,
+    SEMProcessor,
 )
-from robo_orchard_lab.utils.path import in_cwd
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
@@ -143,12 +142,7 @@ class SEMPolicy:
         if urdf_dir is not None and not os.path.exists(target_urdf_dir):
             os.symlink(urdf_dir, target_urdf_dir)
 
-        processor_cfg = load_config_class(
-            open(os.path.join(config, f"{processor}.json")).read()
-        )
-        with in_cwd(config):
-            self.processor = processor_cfg()
-
+        processor = SEMProcessor.load(config, f"{processor}.json")
         self.model = ModelMixin.load_model(config, load_impl="native")
         self.model.eval()
         self.model.requires_grad_()
