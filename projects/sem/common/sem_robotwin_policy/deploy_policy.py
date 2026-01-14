@@ -142,7 +142,7 @@ class SEMPolicy:
         if urdf_dir is not None and not os.path.exists(target_urdf_dir):
             os.symlink(urdf_dir, target_urdf_dir)
 
-        processor = SEMProcessor.load(config, f"{processor}.json")
+        self.processor = SEMProcessor.load(config, f"{processor}.json")
         self.model = ModelMixin.load_model(config, load_impl="native")
         self.model.eval()
         self.model.requires_grad_()
