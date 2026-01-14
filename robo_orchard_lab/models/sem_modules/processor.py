@@ -210,7 +210,10 @@ class SEMProcessor(ProcessorMixin):
                 target_urdf_path = urdf_dir
             os.makedirs(target_urdf_path, exist_ok=True)
             for urdf in urdfs:
-                shutil.copy2(urdf, target_urdf_path)
+                try:
+                    shutil.copy2(urdf, target_urdf_path)
+                except shutil.SameFileError:
+                    pass
 
         with open(os.path.join(path, processor_name), "w") as fh:
             fh.write(cfg.model_dump_json(indent=4))
