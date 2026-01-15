@@ -109,6 +109,11 @@ config.update(
     # ),
     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-11-12/21-18/sem_alldata_offset_resume-20251112-211801.410966/output/checkpoints/checkpoint_10/model.safetensors",
 )
+# isaac pick place dataset
+# config.update(
+#     training_datasets=["isaac_pick_place"],
+#     deploy_datasets=["isaac_pick_place"],
+# )
 
 
 def build_model(config):
@@ -388,6 +393,7 @@ def build_training_dataset(config, lazy_init=False):
     from config_agilex_dataset import build_datasets as build_agilex_datasets
     from config_droid_dataset import build_datasets as build_droid_datasets
     from config_egodex_dataset import build_datasets as build_egodex_datasets
+    from config_isaac_dataset import build_datasets as build_isaac_datasets
     from config_rh20t_dataset import build_datasets as build_rh20t_datasets
     from config_robotwin_dataset import (
         build_datasets as build_robotwin_datasets,
@@ -438,6 +444,14 @@ def build_training_dataset(config, lazy_init=False):
     )
     datasets.extend(
         build_egodex_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_isaac_datasets(
             config,
             config["training_datasets"],
             mode="training",
@@ -519,6 +533,7 @@ def build_processors(config):
     from config_agilex_dataset import (
         build_processors as build_agilex_processors,
     )
+    from config_isaac_dataset import build_processors as build_isaac_processors
     from config_robotwin_dataset import (
         build_processors as build_robotwin_processors,
     )
@@ -526,5 +541,8 @@ def build_processors(config):
     processors = build_agilex_processors(config, config["deploy_datasets"])
     processors.update(
         build_robotwin_processors(config, config["deploy_datasets"])
+    )
+    processors.update(
+        build_isaac_processors(config, config["deploy_datasets"])
     )
     return processors
