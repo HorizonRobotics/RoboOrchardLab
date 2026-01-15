@@ -15,9 +15,11 @@
 # permissions and limitations under the License.
 
 import logging
+from typing import List, Literal, Optional, Union
 
 import torch
 import torch.nn.functional as F
+from robo_orchard_core.utils.config import Config
 from torch import nn
 
 from robo_orchard_lab.models.bip3d.utils import deformable_format
@@ -26,31 +28,44 @@ from robo_orchard_lab.models.sem_modules.layers import (
     ScalarEmbedder,
     linear_act_ln,
 )
+from robo_orchard_lab.models.sem_modules.utils import (
+    apply_joint_mask,
+    apply_scale_shift,
+    recompute,
+)
 from robo_orchard_lab.utils import as_sequence, build
 from robo_orchard_lab.utils.build import DelayInitDictType
 
 logger = logging.getLogger(__name__)
 
 
-MODULE_TPYE = TorchModuleCfgType_co | DelayInitDictType | nn.Module
+MODULE_TYPE = TorchModuleCfgType_co | DelayInitDictType
+VALID_NOISE_TYPES = (
+    "global_joint",
+    "local_joint",
+    "global_joint_global_pose",
+    "global_joint_local_pose",
+    "local_joint_global_pose",
+    "local_joint_local_pose",
+)
+VALID_PREDICTION_TYPES = (
+    "absolute_joint_absolute_pose",
+    "absolute_joint_relative_pose",
+    "relative_joint_absolute_pose",
+    "relative_joint_relative_pose",
+)
 
 
-class SEMActionDecoder(nn.Module):
-    """Spatial Enhanced Manipulation (SEM) Action Decoder.
-
-    Decoder implementation from the paper https://arxiv.org/abs/2505.16196
+class SEMDecoderTransformerConfig(Config):
+    """Transformer config of SEM decoder.
 
     Args:
         img_cross_attn (MODULE_TYPE):
             Cross attention module between action and image features.
         norm_layer (MODULE_TYPE): Normalization layer.
         ffn (MODULE_TYPE): Feed-forward network.
-        head (MODULE_TYPE): Output head for action prediction.
-        training_noise_scheduler (Optional[Any]): Diffusion scheduler for
-            training phase (supports "sample" prediction only).
-        test_noise_scheduler (Optional[Any]): Diffusion scheduler for inference
-            phase (supports "sample" prediction only).
-        num_inference_timesteps (int): Num of denoising steps during inference.
+        operation_order (Optional[List[str]]): Sequence of operations
+            (attn/FFN/norm) in transformer decoder.
         joint_self_attn (Optional[MODULE_TYPE]): Joint dimension self-attention
             module.
         temp_cross_attn (Optional[MODULE_TYPE]): Causal temporal attention
@@ -59,33 +74,88 @@ class SEMActionDecoder(nn.Module):
             and text features.
         temp_joint_attn (Optional[MODULE_TYPE]): Joint-temporal attention
             module (causal in temporal dimension).
-        robot_encoder (Optional[MODULE_TYPE]): Encoder for processing robot
-            state inputs.
         timestep_norm_layer (Optional[MODULE_TYPE]): Normalization layer for
             encoding diffusion timesteps.
+        pre_norm (bool): Use pre-normalization or post-normalization.
+    """
+
+    img_cross_attn: MODULE_TYPE
+    norm_layer: MODULE_TYPE
+    ffn: MODULE_TYPE
+    operation_order: List[Union[str, None]]
+    joint_self_attn: Optional[MODULE_TYPE] = None
+    temp_cross_attn: Optional[MODULE_TYPE] = None
+    text_cross_attn: Optional[MODULE_TYPE] = None
+    temp_joint_attn: Optional[MODULE_TYPE] = None
+    timestep_norm_layer: Optional[MODULE_TYPE] = None
+    pre_norm: bool = True
+
+    @property
+    def op_config_map(self) -> dict:
+        return {
+            "img_cross_attn": self.img_cross_attn,
+            "norm": self.norm_layer,
+            "ffn": self.ffn,
+            "joint_self_attn": self.joint_self_attn,
+            "temp_joint_attn": self.temp_joint_attn,
+            "t_norm": self.timestep_norm_layer,
+            "text_cross_attn": self.text_cross_attn,
+            "temp_cross_attn": self.temp_cross_attn,
+        }
+
+
+class SEMDecoderBaseConfig(Config):
+    """Base config of SEM decoder.
+
+    Args:
+        training_noise_scheduler (Optional[Any]): Diffusion scheduler for
+            training phase (supports "sample" prediction only).
+        test_noise_scheduler (Optional[Any]): Diffusion scheduler for inference
+            phase (supports "sample" prediction only).
+        num_inference_timesteps (int): Num of denoising steps during inference.
         feature_level (Union[int, List[int]]): Image feature level(s) to use.
         state_dims (int): Dimension size of robot state. Defaults to 8, refer
             to [a, x, y, z, qw, qx, qy, qz].
         embed_dims (int): Embedding dimension size. Defaults to 256.
         pred_steps (int): Number of future steps to predict. Defaults to 30.
-        operation_order (Optional[List[str]]): Sequence of operations
-            (attn/FFN/norm) in transformer decoder.
-        num_decoder (int): Number of transformer decoder layers. Defaults to 6.
         act_cfg (Optional[MODULE_TYPE]): Activation function configuration.
         num_test_traj (int): Number of trajectories to sample during inference.
         chunk_size (int): Step size for chunking prediction horizon.
         force_kinematics (bool): Apply forward kinematics before state input.
-        pre_norm (bool): Use pre-normalization or post-normalization.
         with_mobile (bool): Enable trajectory prediction branch.
-        mobile_head (Optional[MODULE_TYPE]): Head for trajectory prediction.
         mobile_traj_state_dims (int): Trajectory state dimensions
             (default 2 for [x,y]).
-        async_inference_plugin (Optional[MODULE_TYPE]): Plugin for aggregating
-            predicted/remaining actions for async inference.
         use_joint_mask (bool): Mask joint angle information. Defaults to False.
         noise_type (str): Noise sampling space identifier.
         pred_scaled_joint (bool): Predict joint angles scaled to [-1,1].
         prediction_type (str): Prediction space specification.
+    """
+
+    training_noise_scheduler: Optional[MODULE_TYPE] = None
+    test_noise_scheduler: Optional[MODULE_TYPE] = None
+    num_inference_timesteps: int = 10
+    feature_level: int | List[int] = 1
+    state_dims: int = 8
+    embed_dims: int = 256
+    pred_steps: int = 64
+    act_cfg: Optional[MODULE_TYPE] = None
+    num_test_traj: int = 1
+    chunk_size: int = 8
+    force_kinematics: bool = False
+    with_mobile: bool = False
+    mobile_traj_state_dims: int = 2
+    use_joint_mask: bool = False
+    noise_type: Literal[VALID_NOISE_TYPES] = "global_joint"
+    pred_scaled_joint: bool = True
+    prediction_type: Literal[VALID_PREDICTION_TYPES] = (
+        "absolute_joint_absolute_pose"
+    )
+
+
+class SEMTrainingConfig(Config):
+    """SEM training config.
+
+    Args:
         loss (Optional[MODULE_TYPE]): Loss module (recommended: SEMActionLoss).
         temporal_attn_drop (Optional[float]): Ratio of random dropout for
             current robot state during training.
@@ -95,162 +165,137 @@ class SEMActionDecoder(nn.Module):
             forcing during training.
         teacher_forcing_mean_steps (Optional[int]): Average steps for teacher
             forcing.
+    """
+
+    loss: Optional[MODULE_TYPE] = None
+    temporal_attn_drop: Optional[float] = None
+    num_parallel_training_sample: Optional[int] = None
+    teacher_forcing_rate: Optional[float] = None
+    teacher_forcing_mean_steps: Optional[int] = None
+
+
+class SEMActionDecoder(nn.Module):
+    """Spatial Enhanced Manipulation (SEM) Action Decoder.
+
+    Decoder implementation from the paper https://arxiv.org/abs/2505.16196
+
+    Args:
+        transformer_cfg (SEMDecoderTransformerConfig): Config of
+            transformer layers.
+        head (MODULE_TYPE): Output head for action prediction.
+        base_cfg (SEMDecoderBaseConfig): base config of sem decoder.
+        training_cfg (SEMTrainingConfig): training config of sem decoder.
+        robot_encoder (Optional[MODULE_TYPE]): Encoder for processing robot
+            state inputs.
+        mobile_head (Optional[MODULE_TYPE]): Head for trajectory prediction.
+        async_inference_plugin (Optional[MODULE_TYPE]): Plugin for aggregating
+            predicted/remaining actions for async inference.
         **kwargs: Additional keyword arguments.
     """
 
-    VALID_NOISE_TYPES = [
-        "global_joint",
-        "local_joint",
-        "global_joint_global_pose",
-        "global_joint_local_pose",
-        "local_joint_global_pose",
-        "local_joint_local_pose",
-    ]
-    VALID_PREDICTION_TYPES = [
-        "absolute_joint_absolute_pose",
-        "absolute_joint_relative_pose",
-        "relative_joint_absolute_pose",
-        "relative_joint_relative_pose",
-    ]
-
     def __init__(
         self,
-        img_cross_attn,
-        norm_layer,
-        ffn,
-        head,
-        training_noise_scheduler=None,
-        test_noise_scheduler=None,
-        num_inference_timesteps=10,
-        joint_self_attn=None,
-        temp_cross_attn=None,
-        text_cross_attn=None,
-        temp_joint_attn=None,
-        robot_encoder=None,
-        timestep_norm_layer=None,
-        feature_level=1,
-        state_dims=8,
-        embed_dims=256,
-        pred_steps=30,
-        operation_order=None,
-        num_decoder=6,
-        act_cfg=None,
-        num_test_traj=1,
-        chunk_size=8,
-        force_kinematics=False,
-        pre_norm=True,
-        with_mobile=False,
-        mobile_head=None,
-        mobile_traj_state_dims=2,
-        async_inference_plugin=None,
-        use_joint_mask=False,
-        noise_type="global_joint",
-        pred_scaled_joint=True,
-        prediction_type="absolute_joint_absolute_pose",
-        loss=None,
-        temporal_attn_drop=None,
-        num_parallel_training_sample=None,
-        teacher_forcing_rate=None,
-        teacher_forcing_mean_steps=None,
+        transformer_cfg: SEMDecoderTransformerConfig,
+        head: MODULE_TYPE,
+        base_cfg: SEMDecoderBaseConfig,
+        training_cfg: Optional[SEMTrainingConfig] = None,
+        robot_encoder: Optional[MODULE_TYPE] = None,
+        mobile_head: Optional[MODULE_TYPE] = None,
+        async_inference_plugin: Optional[MODULE_TYPE] = None,
         **kwargs,
     ):
         super().__init__()
         if len(kwargs) != 0:
             logger.warning(f"Get unexpected arguments: {kwargs}")
-        self.feature_level = as_sequence(feature_level)
-        self.embed_dims = embed_dims
-        self.pred_steps = pred_steps
-        self.chunk_size = chunk_size
-        self.num_test_traj = num_test_traj
-        self.force_kinematics = force_kinematics
-        self.pre_norm = pre_norm
-        self.with_mobile = with_mobile
-        self.mobile_traj_state_dims = mobile_traj_state_dims
-        self.async_inference_plugin = build(async_inference_plugin)
-        self.temporal_attn_drop = temporal_attn_drop
-        self.num_parallel_training_sample = num_parallel_training_sample
-        self.teacher_forcing_rate = teacher_forcing_rate
-        if (
-            teacher_forcing_rate is not None
-            and teacher_forcing_mean_steps is None
-        ):
-            logger.warning(
-                f"Use default teacher_forcing_mean_steps: {pred_steps // 4}"
-            )
-            teacher_forcing_mean_steps = pred_steps // 4
-        self.teacher_forcing_mean_steps = teacher_forcing_mean_steps
+        transformer_cfg = SEMDecoderTransformerConfig.model_validate(
+            transformer_cfg
+        )
+        base_cfg = SEMDecoderBaseConfig.model_validate(base_cfg)
 
-        self.loss = build(loss)
-        if hasattr(self.loss, "recompute"):
-            self.loss.recompute = self.recompute
+        # base config
+        self.training_noise_scheduler = build(
+            base_cfg.training_noise_scheduler
+        )
+        self.test_noise_scheduler = build(base_cfg.test_noise_scheduler)
+        assert self.training_noise_scheduler.config.prediction_type == "sample"
+        assert self.test_noise_scheduler.config.prediction_type == "sample"
+        self.num_train_timesteps = (
+            self.training_noise_scheduler.config.num_train_timesteps
+        )
+        self.num_inference_timesteps = base_cfg.num_inference_timesteps
+        self.feature_level = as_sequence(base_cfg.feature_level)
+        self.pred_steps = base_cfg.pred_steps
+        self.chunk_size = base_cfg.chunk_size
+        self.num_test_traj = base_cfg.num_test_traj
+        self.force_kinematics = base_cfg.force_kinematics
+        self.with_mobile = base_cfg.with_mobile
+        self.state_dims = base_cfg.state_dims
+        self.embed_dims = base_cfg.embed_dims
+        self.mobile_traj_state_dims = base_cfg.mobile_traj_state_dims
+        self.use_joint_mask = base_cfg.use_joint_mask
+        self.noise_type = base_cfg.noise_type
+        self.pred_scaled_joint = base_cfg.pred_scaled_joint
+        self.prediction_type = base_cfg.prediction_type
 
+        # training config
+        if training_cfg is not None:
+            training_cfg = SEMTrainingConfig.model_validate(training_cfg)
+            self.training_cfg = training_cfg
+            self.loss = build(training_cfg.loss)
+            if (
+                training_cfg.teacher_forcing_rate is not None
+                and training_cfg.teacher_forcing_mean_steps is None
+            ):
+                logger.warning(
+                    f"Use default teacher_forcing_mean_steps: "
+                    f"{self.pred_steps // 4}"
+                )
+                training_cfg.teacher_forcing_mean_steps = self.pred_steps // 4
+
+        # build modules
         self.robot_encoder = build(robot_encoder)
-        if operation_order is None:
-            operation_order = [
-                "joint_self_attn",
-                "t_norm",
-                "temp_cross_attn",
-                "norm",
-                "img_cross_attn",
-                "norm",
-                "text_cross_attn",
-                "norm",
-                "ffn",
-                "norm",
-            ] * num_decoder
-        self.operation_order = operation_order
-
-        self.op_config_map = {
-            "joint_self_attn": joint_self_attn,
-            "temp_joint_attn": temp_joint_attn,
-            "norm": norm_layer,
-            "t_norm": timestep_norm_layer,
-            "ffn": ffn,
-            "text_cross_attn": text_cross_attn,
-            "img_cross_attn": img_cross_attn,
-            "temp_cross_attn": temp_cross_attn,
-        }
+        self.operation_order = transformer_cfg.operation_order
+        self.pre_norm = transformer_cfg.pre_norm
         self.layers = nn.ModuleList(
             [
-                build(self.op_config_map.get(op, None))
+                build(transformer_cfg.op_config_map.get(op, None))
                 for op in self.operation_order
             ]
         )
         self.input_layers = nn.Sequential(
-            nn.Linear(chunk_size * state_dims, embed_dims),
-            *linear_act_ln(embed_dims, 2, 2, act_cfg=act_cfg),
+            nn.Linear(self.chunk_size * self.state_dims, self.embed_dims),
+            *linear_act_ln(self.embed_dims, 2, 2, act_cfg=base_cfg.act_cfg),
         )
         self.head = build(head)
-
         if self.with_mobile:
             self.mobile_input_layers = nn.Sequential(
                 nn.Linear(
-                    chunk_size * self.mobile_traj_state_dims, embed_dims
+                    self.chunk_size * self.mobile_traj_state_dims,
+                    self.embed_dims,
                 ),
-                *linear_act_ln(embed_dims, 2, 2, act_cfg=act_cfg),
+                *linear_act_ln(
+                    self.embed_dims, 2, 2, act_cfg=base_cfg.act_cfg
+                ),
             )
             self.mobile_head = build(mobile_head)
-
-        self.training_noise_scheduler = build(training_noise_scheduler)
-        self.test_noise_scheduler = build(test_noise_scheduler)
-        assert self.training_noise_scheduler.config.prediction_type == "sample"
-        assert self.test_noise_scheduler.config.prediction_type == "sample"
-        assert noise_type in self.VALID_NOISE_TYPES
-        assert prediction_type in self.VALID_PREDICTION_TYPES
-        self.use_joint_mask = use_joint_mask
-        self.noise_type = noise_type
-        self.pred_scaled_joint = pred_scaled_joint
-        self.prediction_type = prediction_type
-
-        self.num_train_timesteps = (
-            self.training_noise_scheduler.config.num_train_timesteps
-        )
-        self.num_inference_timesteps = num_inference_timesteps
         self.t_embed = ScalarEmbedder(
-            timestep_norm_layer["condition_dims"], 256
+            transformer_cfg.timestep_norm_layer["condition_dims"], 256
         )
+        self.async_inference_plugin = build(async_inference_plugin)
 
-    def format_img_feature_maps(self, feature_maps):
+    def format_img_feature_maps(
+        self, feature_maps: Union[list[torch.Tensor] | torch.Tensor]
+    ):
+        """Formats multi-scale image feature maps.
+
+        Args:
+            feature_maps (list[torch.Tensor] | torch.Tensor): Multi-scale
+                feature as list of [bs, c, h, w] tensors, or single tensor.
+
+        Returns:
+            torch.Tensor: Flattened features [bs, n, c] if input was list,
+                otherwise original tensor.
+        """
         if isinstance(feature_maps, (list, tuple)):
             feature_maps = [feature_maps[i] for i in self.feature_level]
             img_feature = deformable_format(feature_maps)[0].flatten(1, 2)
@@ -258,89 +303,24 @@ class SEMActionDecoder(nn.Module):
             img_feature = feature_maps
         return img_feature
 
-    def apply_scale_shift(
+    def sample_noise(
         self,
-        robot_state,
-        joint_scale_shift=None,
-        inverse=False,
-        scale_only=False,
+        noise_shape: List[int],
+        hist_robot_state: torch.Tensor,
+        noise_type: Literal[VALID_NOISE_TYPES],
     ):
-        if joint_scale_shift is None:
-            return robot_state
+        """Samples noise based on noise_shape and noise_type.
 
-        if robot_state.shape[0] != joint_scale_shift.shape[0]:
-            num_parallel = robot_state.shape[0] // joint_scale_shift.shape[0]
-            joint_scale_shift = joint_scale_shift.repeat_interleave(
-                num_parallel, dim=0
-            )
-        scale = joint_scale_shift[:, None, :, 0:1]
-        if not scale_only:
-            shift = joint_scale_shift[:, None, :, 1:2]
-        else:
-            shift = 0
-        if not inverse:
-            robot_state = torch.cat(
-                [(robot_state[..., :1] - shift) / scale, robot_state[..., 1:]],
-                dim=-1,
-            )
-        else:
-            robot_state = torch.cat(
-                [robot_state[..., :1] * scale + shift, robot_state[..., 1:]],
-                dim=-1,
-            )
-        return robot_state
+        Args:
+            noise_shape (tuple[int, ...]): Shape of the output noise tensor
+                (e.g., [bs, num_steps, num_joint, state_dims]).
+            hist_robot_state (torch.Tensor): Historical robot state tensor,
+                used when get "local" noise_type.
+            noise_type (VALID_NOISE_TYPE): Type of noise to sample.
 
-    def forward_kinematics(self, joint_state, inputs):
-        if joint_state.shape[-1] == 1:
-            joint_state = joint_state.squeeze(-1)
-        robot_state = []
-        kinematics = inputs["kinematics"]
-        embodiedment_mat = inputs.get(
-            "embodiedment_mat", [None] * len(kinematics)
-        )
-        if len(kinematics) <= 1 or (
-            all(x == kinematics[0] for x in kinematics[1:])
-        ):
-            num_steps = joint_state.shape[1]
-            embodiedment_mat = embodiedment_mat[:, None].repeat(
-                1, num_steps, 1, 1
-            )
-            num_parallel = joint_state.shape[0] // embodiedment_mat.shape[0]
-            if num_parallel != 1:
-                embodiedment_mat = embodiedment_mat.repeat_interleave(
-                    num_parallel, dim=0
-                )
-            robot_state = kinematics[0].joint_state_to_robot_state(
-                joint_state, embodiedment_mat
-            )
-        else:
-            for i in range(len(joint_state)):
-                robot_state.append(
-                    inputs["kinematics"][i].joint_state_to_robot_state(
-                        joint_state[i], embodiedment_mat[i]
-                    )
-                )
-            robot_state = torch.stack(robot_state)
-        return robot_state
-
-    def recompute(self, robot_state, inputs):
-        if "kinematics" not in inputs:
-            return robot_state
-        joint_state = self.apply_scale_shift(
-            robot_state[..., :1],
-            inputs.get("joint_scale_shift"),
-            inverse=True,
-        )
-        robot_state = torch.cat(
-            [
-                robot_state[..., :1],
-                self.forward_kinematics(joint_state, inputs)[..., 1:],
-            ],
-            dim=-1,
-        )
-        return robot_state
-
-    def sample_noise(self, noise_shape, hist_robot_state, noise_type):
+        Returns:
+            torch.Tensor: Sampled noise tensor of shape noise_shape.
+        """
         if not noise_type.endswith("pose"):
             noise = torch.randn([*noise_shape[:-1], 1])
         else:
@@ -353,11 +333,32 @@ class SEMActionDecoder(nn.Module):
         return noise
 
     def get_prediction(
-        self, model_pred, hist_robot_state, joint_scale_shift, joint_mask
+        self,
+        model_pred: torch.Tensor,
+        hist_robot_state: torch.Tensor,
+        joint_scale_shift: torch.Tensor,
+        joint_mask: torch.Tensor,
     ):
+        """Adjusts model_pred to absolute result based on prediction_type.
+
+        Args:
+            model_pred (torch.Tensor): Model output, shape [bs, num_steps,
+                num_joint, c] (channel 0 = joint position).
+            hist_robot_state (torch.Tensor): Historical robot state, shape
+                [bs, num_hist_steps, num_joint, c].
+            joint_scale_shift (torch.Tensor): Scale/shift params for
+                joint position normalization, shape [bs, num_joint].
+            joint_mask (torch.Tensor): Boolean mask for joints, shape
+                [bs, num_joint].
+
+        Returns:
+            torch.Tensor: Absolute prediction tensor (normalized joint
+                position), shape same as model_pred.
+        """
+
         origin_model_pred = model_pred.clone()
         if not self.pred_scaled_joint:
-            model_pred = self.apply_scale_shift(
+            model_pred = apply_scale_shift(
                 model_pred, joint_scale_shift, scale_only=True
             )
 
@@ -393,7 +394,18 @@ class SEMActionDecoder(nn.Module):
             pred = torch.cat([pred_joint_state, pred[..., 1:]], dim=-1)
         return pred
 
-    def _repeat(self, n, *inputs):
+    def _repeat(self, n: int, *inputs):
+        """Repeats each input tensor along the batch dimension.
+
+        Args:
+            n (int): Number of repetitions along batch dimension.
+            *inputs (torch.Tensor): Tensors to repeat, each of shape [bs, ...].
+
+        Returns:
+            tuple[torch.Tensor, ...]: Repeated tensors, each of shape
+                [bs * n, ...].
+        """
+
         output = []
         for x in inputs:
             if x is None:
@@ -405,6 +417,18 @@ class SEMActionDecoder(nn.Module):
         return output
 
     def forward(self, feature_maps, inputs, text_dict=None, **kwargs):
+        """Forward pass of SEM decoder for trajectory prediction.
+
+        Encodes historical robot state from inputs via self.robot_encoder, then
+        processes through diffusion-based denoising network.
+        Branches based on training mode:
+
+        - Training: Applies single noise step, executes forward_layers once to
+          predict  num_parallel_training_sample trajectories per sample.
+        - Inference: Iteratively refines predictions over
+          num_inference_timesteps steps, outputting num_test_traj
+          trajectories per sample.
+        """
         inputs = inputs.copy()
         text_dict = text_dict.copy() if text_dict is not None else {}
         img_feature = self.format_img_feature_maps(feature_maps)
@@ -417,7 +441,7 @@ class SEMActionDecoder(nn.Module):
             hist_robot_state = inputs["hist_robot_state"]
 
         joint_scale_shift = inputs.get("joint_scale_shift")
-        hist_robot_state = self.apply_scale_shift(
+        hist_robot_state = apply_scale_shift(
             hist_robot_state, joint_scale_shift
         )
         bs, hist_steps, num_joint, state_dims = hist_robot_state.shape
@@ -451,7 +475,7 @@ class SEMActionDecoder(nn.Module):
             noise_type = self.noise_type
 
         if self.training:
-            pred_robot_state = self.apply_scale_shift(
+            pred_robot_state = apply_scale_shift(
                 inputs["pred_robot_state"], joint_scale_shift
             )
             pred_steps = pred_robot_state.shape[1]
@@ -460,10 +484,10 @@ class SEMActionDecoder(nn.Module):
             ).long()
 
             if (
-                self.num_parallel_training_sample is not None
-                and self.num_parallel_training_sample > 1
+                self.training_cfg.num_parallel_training_sample is not None
+                and self.training_cfg.num_parallel_training_sample > 1
             ):
-                bs = self.num_parallel_training_sample * bs
+                bs = self.training_cfg.num_parallel_training_sample * bs
                 (
                     pred_robot_state,
                     hist_robot_state,
@@ -478,7 +502,7 @@ class SEMActionDecoder(nn.Module):
                     text_dict["embedded"],
                     text_dict["text_token_mask"],
                 ) = self._repeat(
-                    self.num_parallel_training_sample,
+                    self.training_cfg.num_parallel_training_sample,
                     pred_robot_state,
                     hist_robot_state,
                     img_feature,
@@ -504,25 +528,26 @@ class SEMActionDecoder(nn.Module):
                 noisy_action = self.training_noise_scheduler.add_noise(
                     pred_robot_state[..., :1], noise, timesteps
                 )
-                noisy_action = self.recompute(noisy_action, inputs)
+                noisy_action = recompute(noisy_action, inputs)
             else:
                 noisy_action = self.training_noise_scheduler.add_noise(
                     pred_robot_state, noise, timesteps
                 )
 
             if (
-                self.teacher_forcing_rate is not None
-                and self.teacher_forcing_rate > 0
+                self.training_cfg.teacher_forcing_rate is not None
+                and self.training_cfg.teacher_forcing_rate > 0
             ):
                 mask = torch.logical_and(
                     torch.poisson(
                         noisy_action.new_full(
-                            [bs, 1], self.teacher_forcing_mean_steps
+                            [bs, 1],
+                            self.training_cfg.teacher_forcing_mean_steps,
                         )
                     )
                     > torch.arange(pred_steps).to(noisy_action),
                     torch.rand(bs)[:, None].to(noisy_action)
-                    < self.teacher_forcing_rate,
+                    < self.training_cfg.teacher_forcing_rate,
                 )[..., None, None]
                 noisy_action = torch.where(
                     mask, pred_robot_state, noisy_action
@@ -560,7 +585,7 @@ class SEMActionDecoder(nn.Module):
                 "pred_mobile_traj": pred_mobile_traj,
                 "target_mobile_traj": inputs.get("mobile_traj"),
                 "timesteps": timesteps,
-                "num_parallel": self.num_parallel_training_sample,
+                "num_parallel": self.training_cfg.num_parallel_training_sample,
             }
         else:  # inference
             if (
@@ -573,7 +598,7 @@ class SEMActionDecoder(nn.Module):
                     .to(img_feature)
                     .unsqueeze(-1)
                 )
-                remaining_actions = self.apply_scale_shift(
+                remaining_actions = apply_scale_shift(
                     remaining_actions,
                     joint_scale_shift,
                 )
@@ -627,7 +652,7 @@ class SEMActionDecoder(nn.Module):
 
             for t in self.test_noise_scheduler.timesteps:
                 if not noise_type.endswith("pose"):
-                    noisy_action = self.recompute(noisy_action, inputs)
+                    noisy_action = recompute(noisy_action, inputs)
                 pred, pred_mobile_traj = self.forward_layers(
                     noisy_action,
                     img_feature,
@@ -688,7 +713,7 @@ class SEMActionDecoder(nn.Module):
 
     def forward_layers(
         self,
-        noisy_action,
+        noisy_action: torch.Tensor,
         img_feature,
         text_dict=None,
         robot_feature=None,
@@ -697,6 +722,31 @@ class SEMActionDecoder(nn.Module):
         noisy_mobile_traj=None,
         joint_mask=None,
     ):
+        """Forward sem transformer decoder and head.
+
+        Args:
+            noisy_action (torch.Tensor): Noisy action [bs, steps, joints, c].
+            img_feature (torch.Tensor): Flattened img feature [bs, n, c].
+            text_dict (dict, optional): Dict with text embeddings [bs, m, c]
+                and token_mask [bs, m].
+            robot_feature (torch.Tensor, optional): Robot state features
+                [bs, num_hist_chunk, c]. Defaults to None.
+            timesteps (torch.Tensor, optional): Timestep indicators for
+                diffusion, [bs].
+            joint_relative_pos (torch.Tensor, optional): Relative joint
+                positions [bs, joints, joints]. Defaults to None.
+            noisy_mobile_traj (torch.Tensor, optional): Noisy mobile trajectory
+                [bs, steps, mobile_traj_state_dims]. Defaults to None.
+            joint_mask (torch.Tensor, optional): Boolean joint mask
+                [bs, joints]. Defaults to None.
+
+        Returns:
+            pred (torch.Tensor): Predicted robot state
+                [bs, steps, joints, state_dims].
+            pred_mobile_traj (torch.Tensor): Predicted mobile trajectory
+                [bs, steps, joints, mobile_traj_state_dims]. None
+                when with_mobile is False
+        """
         t_embed = self.t_embed(timesteps)
 
         bs, pred_steps, num_joint, state_dims = noisy_action.shape
@@ -704,14 +754,7 @@ class SEMActionDecoder(nn.Module):
         noisy_action = noisy_action.permute(0, 2, 1, 3)
 
         if joint_mask is not None:
-            noisy_joint_state = torch.where(
-                joint_mask[..., None, None],
-                noisy_action.new_tensor(-1),
-                noisy_action[..., :1],
-            )
-            noisy_action = torch.cat(
-                [noisy_joint_state, noisy_action[..., 1:]], dim=-1
-            )
+            noisy_action = apply_joint_mask(noisy_action, joint_mask)
 
         noisy_action = noisy_action.reshape(bs, num_joint, num_chunk, -1)
         x = self.input_layers(noisy_action)
@@ -746,8 +789,8 @@ class SEMActionDecoder(nn.Module):
             ),
             num_hist_chunk,
         )
-        if self.temporal_attn_drop is not None and self.training:
-            attn_drop = torch.rand(bs) < self.temporal_attn_drop
+        if self.training_cfg.temporal_attn_drop is not None and self.training:
+            attn_drop = torch.rand(bs) < self.training_cfg.temporal_attn_drop
             attn_drop = attn_drop[:, None, None].to(x.device)
             temp_attn_mask = temp_attn_mask[None].repeat(bs, 1, 1)
             temp_attn_mask[..., :num_hist_chunk] = attn_drop
@@ -916,12 +959,33 @@ class SEMActionDecoder(nn.Module):
         return pred, pred_mobile_traj
 
     def post_process(self, model_outs, inputs, **kwargs):
+        """Post-processes model inference outputs.
+
+        Converts raw model outputs (dict) from inference mode into a list of
+        dictionaries, each corresponding to a sample in the batch. Denormalize
+        the joint position.
+
+        Args:
+            model_outs (dict): Model inference outputs (dict), containing
+                raw predicted action and mobile trajectory.
+            inputs (dict): Input data contains joint_scale_shift.
+
+        Returns:
+            list[dict]: Per-sample prediction results, length = batch size.
+                Each dict contains:
+                - pred_actions (torch.Tensor): Predicted robot action, shape
+                [num_traj, num_steps, num_joint, state_dim].
+                - pred_mobile_trajs (torch.Tensor): Predicted mobile
+                trajectories, shape [num_traj, num_steps, num_joint,
+                mobile_traj_state_dims].
+        """
+
         bs = model_outs["pred_actions"].shape[0]
         results = []
         for i in range(bs):
             pred_actions = model_outs["pred_actions"][i]
             if "joint_scale_shift" in inputs:
-                pred_actions = self.apply_scale_shift(
+                pred_actions = apply_scale_shift(
                     pred_actions,
                     inputs["joint_scale_shift"][i][None],
                     inverse=True,

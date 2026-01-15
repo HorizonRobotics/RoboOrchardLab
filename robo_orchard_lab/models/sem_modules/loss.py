@@ -21,6 +21,8 @@ import torch.nn.functional as F
 from pytorch3d.transforms import quaternion_to_matrix
 from torch import nn
 
+from robo_orchard_lab.models.sem_modules.utils import recompute
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +53,6 @@ class SEMActionLoss(nn.Module):
         self.with_consistent_loss = with_consistent_loss
         self.timestep_loss_weight = timestep_loss_weight
         self.parallel_loss_weight = parallel_loss_weight
-        self.recompute = None
 
     def forward(self, model_outs, inputs, **kwargs):
         pred = model_outs["pred"]
@@ -70,8 +71,7 @@ class SEMActionLoss(nn.Module):
         )
         fk_loss_weight = inputs.get("fk_loss_weight", self.fk_loss_weight)
         if fk_loss_weight is not None:
-            assert self.recompute is not None
-            fk_pred = self.recompute(pred, inputs)
+            fk_pred = recompute(pred, inputs)
             output.update(
                 self.robot_state_loss(
                     fk_pred,

@@ -62,52 +62,10 @@ config = dict(
         "robotwin2_0_franka_panda",
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
-)
-
-
-# v2.0
-# config.update(
-#     num_vlm_layers=0,
-#     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-08-25/16-58/sem_alldata_layers0_resume2-20250825-153143.959699-COPY/output/checkpoints/checkpoint_15/model.safetensors",  # pretrain  # noqa: E501
-# )
-
-# v3.0
-# config.update(
-#     num_vlm_layers=1,
-#     freeze_vlm=False,
-#     checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-09-30/14-53/sem_v3_nomobile-20250930-145313.591034/output/checkpoints/checkpoint_40/model.safetensors",   # pretrain  # noqa: E501
-#     checkpoint="http://goosefs-svcspawner.tcloud.hobot.cc/user/homespace/yun01.du/plat_gpu/2025-10-03/23-21/sem_v3.0_with_mobile_traj-20251003-232109.677152/output/checkpoints/checkpoint_40/model.safetensors",  # pretrain with mobile trajectory prediction  # noqa: E501
-# )
-
-# v4.0.a qwen3
-# config.update(
-#     vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
-#     num_vlm_layers=2,
-#     # The Qwen3 patch size is 32. dst_wh must be divisible by the patch size  # noqa: E501
-#     dst_wh=(352, 288),
-#     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-11-12/09-47/sem_alldata_qwen3_resume2-20251112-094307.065259-COPY/output/checkpoints/checkpoint_11/model.safetensors",  # noqa: E501
-# )
-
-
-# v4.0.b qwen2.5 offset
-config.update(
+    # v5.0 setting
     num_vlm_layers=1,
     freeze_vlm=False,
-    decoder_kwargs=dict(
-        use_joint_mask=True,
-        noise_type="local_joint",
-        pred_scaled_joint=False,
-        prediction_type="relative_joint_relative_pose",
-        # temporal_attn_drop=0.05,
-        # num_parallel_training_sample=4,
-        # teacher_forcing_rate=0.02,
-    ),
-    # loss_kwargs=dict(
-    #     timestep_loss_weight=1000,
-    #     parallel_loss_weight=0.1,
-    #     smooth_l1_beta=0.04,
-    # ),
-    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-11-12/21-18/sem_alldata_offset_resume-20251112-211801.410966/output/checkpoints/checkpoint_10/model.safetensors",
+    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-12-28/14-47/sem_v5_alldata_3digtal_cam2ego_resume-20251228-144735.177976/output/checkpoints/checkpoint_16/model.safetensors",
 )
 # isaac pick place dataset
 # config.update(
@@ -148,7 +106,12 @@ def build_model(config):
         SEM_Qwen3VLConfig,
         SEMActionDecoder,
         SEMActionLoss,
+        SEMDecoderBaseConfig,
+        SEMDecoderTransformerConfig,
+        SEMEncoderBaseConfig,
+        SEMEncoderTransformerConfig,
         SEMRobotStateEncoder,
+        SEMTrainingConfig,
         TemporalJointGraphAttention,
         TextTemplate,
         UpsampleHead,
@@ -188,10 +151,6 @@ def build_model(config):
 
     decoder_operation_order = [
         "t_norm",
-        # "joint_self_attn",
-        # "gate_msa",
-        # "norm",
-        # "temp_cross_attn",
         "temp_joint_attn",
         "gate_msa",
         "norm",
@@ -271,86 +230,20 @@ def build_model(config):
             ),
             decoder=dict(
                 type=SEMActionDecoder,
-                embed_dims=embed_dims,
                 head=head,
-                with_mobile=with_mobile,
                 mobile_head=mobile_head,
-                **config.get("decoder_kwargs", {}),
-                loss=dict(
-                    type=SEMActionLoss,
-                    **config.get("loss_kwargs", {}),
-                ),
-                img_cross_attn=dict(
-                    type=RotaryAttention,
-                    embed_dims=embed_dims,
-                    num_heads=8,
-                    max_position_embeddings=32,
-                ),
-                temp_joint_attn=dict(
-                    type=TemporalJointGraphAttention,
-                    embed_dims=embed_dims,
-                    num_heads=8,
-                    max_position_embeddings=32,
-                ),
-                norm_layer=dict(
-                    type=decoder_norm,
-                    normalized_shape=embed_dims,
-                ),
-                ffn=dict(
-                    type=FFN,
-                    embed_dims=embed_dims,
-                    feedforward_channels=2048,
-                    act_cfg=dict(type=nn.SiLU, inplace=True),
-                ),
-                training_noise_scheduler=dict(
-                    type=DDPMScheduler,
-                    num_train_timesteps=1000,
-                    beta_schedule="squaredcos_cap_v2",
-                    prediction_type="sample",
-                    clip_sample=False,
-                ),
-                test_noise_scheduler=dict(
-                    type=DPMSolverMultistepScheduler,
-                    num_train_timesteps=1000,
-                    beta_schedule="squaredcos_cap_v2",
-                    prediction_type="sample",
-                ),
-                num_inference_timesteps=10,
-                joint_self_attn=dict(
-                    type=JointGraphAttention,
-                    embed_dims=embed_dims,
-                    num_heads=8,
-                ),
-                temp_cross_attn=dict(
-                    type=RotaryAttention,
-                    embed_dims=embed_dims,
-                    num_heads=8,
-                    max_position_embeddings=32,
-                ),
-                text_cross_attn=dict(
-                    type=RotaryAttention,
-                    embed_dims=embed_dims,
-                    num_heads=8,
-                    max_position_embeddings=512,
-                ),
-                pred_steps=config["pred_steps"],
-                timestep_norm_layer=dict(
-                    type=AdaRMSNorm,
-                    normalized_shape=embed_dims,
-                    condition_dims=256,
-                    zero=True,
-                ),
-                operation_order=decoder_operation_order,
-                feature_level=[0],
-                act_cfg=dict(type=nn.SiLU, inplace=True),
-                robot_encoder=dict(
-                    type=SEMRobotStateEncoder,
-                    embed_dims=embed_dims,
-                    chunk_size=min(8, config["hist_steps"]),
-                    joint_self_attn=dict(
-                        type=JointGraphAttention,
+                transformer_cfg=SEMDecoderTransformerConfig(
+                    img_cross_attn=dict(
+                        type=RotaryAttention,
                         embed_dims=embed_dims,
                         num_heads=8,
+                        max_position_embeddings=32,
+                    ),
+                    temp_joint_attn=dict(
+                        type=TemporalJointGraphAttention,
+                        embed_dims=embed_dims,
+                        num_heads=8,
+                        max_position_embeddings=32,
                     ),
                     norm_layer=dict(
                         type=decoder_norm,
@@ -362,26 +255,110 @@ def build_model(config):
                         feedforward_channels=2048,
                         act_cfg=dict(type=nn.SiLU, inplace=True),
                     ),
-                    temp_self_attn=dict(
+                    joint_self_attn=dict(
+                        type=JointGraphAttention,
+                        embed_dims=embed_dims,
+                        num_heads=8,
+                    ),
+                    temp_cross_attn=dict(
                         type=RotaryAttention,
                         embed_dims=embed_dims,
                         num_heads=8,
                         max_position_embeddings=32,
                     ),
-                    act_cfg=dict(type=nn.SiLU, inplace=True),
-                    operation_order=[
-                        "norm",
-                        "joint_self_attn",
-                        None,
-                        None,
-                        "norm",
-                        "ffn",
-                    ]
-                    * 4
-                    + ["norm"],
-                    state_dims=state_dims,
+                    text_cross_attn=dict(
+                        type=RotaryAttention,
+                        embed_dims=embed_dims,
+                        num_heads=8,
+                        max_position_embeddings=512,
+                    ),
+                    timestep_norm_layer=dict(
+                        type=AdaRMSNorm,
+                        normalized_shape=embed_dims,
+                        condition_dims=256,
+                        zero=True,
+                    ),
+                    operation_order=decoder_operation_order,
                 ),
-                state_dims=state_dims,
+                base_cfg=SEMDecoderBaseConfig(
+                    use_joint_mask=True,
+                    noise_type="local_joint",
+                    pred_scaled_joint=False,
+                    prediction_type="relative_joint_relative_pose",
+                    pred_steps=config["pred_steps"],
+                    state_dims=state_dims,
+                    embed_dims=embed_dims,
+                    with_mobile=with_mobile,
+                    training_noise_scheduler=dict(
+                        type=DDPMScheduler,
+                        num_train_timesteps=1000,
+                        beta_schedule="squaredcos_cap_v2",
+                        prediction_type="sample",
+                        clip_sample=False,
+                    ),
+                    test_noise_scheduler=dict(
+                        type=DPMSolverMultistepScheduler,
+                        num_train_timesteps=1000,
+                        beta_schedule="squaredcos_cap_v2",
+                        prediction_type="sample",
+                    ),
+                    num_inference_timesteps=10,
+                    feature_level=[0],
+                    act_cfg=dict(type=nn.SiLU, inplace=True),
+                ),
+                training_cfg=SEMTrainingConfig(
+                    temporal_attn_drop=0.05,
+                    num_parallel_training_sample=4,
+                    teacher_forcing_rate=0.02,
+                    loss=dict(
+                        type=SEMActionLoss,
+                        timestep_loss_weight=1000,
+                        parallel_loss_weight=0.1,
+                        smooth_l1_beta=0.04,
+                    ),
+                ),
+                robot_encoder=dict(
+                    type=SEMRobotStateEncoder,
+                    transformer_cfg=SEMEncoderTransformerConfig(
+                        joint_self_attn=dict(
+                            type=JointGraphAttention,
+                            embed_dims=embed_dims,
+                            num_heads=8,
+                        ),
+                        norm_layer=dict(
+                            type=decoder_norm,
+                            normalized_shape=embed_dims,
+                        ),
+                        ffn=dict(
+                            type=FFN,
+                            embed_dims=embed_dims,
+                            feedforward_channels=2048,
+                            act_cfg=dict(type=nn.SiLU, inplace=True),
+                        ),
+                        temp_self_attn=dict(
+                            type=RotaryAttention,
+                            embed_dims=embed_dims,
+                            num_heads=8,
+                            max_position_embeddings=32,
+                        ),
+                        operation_order=[
+                            "norm",
+                            "joint_self_attn",
+                            None,
+                            None,
+                            "norm",
+                            "ffn",
+                        ]
+                        * 4
+                        + ["norm"],
+                    ),
+                    base_cfg=SEMEncoderBaseConfig(
+                        embed_dims=embed_dims,
+                        chunk_size=min(8, config["hist_steps"]),
+                        act_cfg=dict(type=nn.SiLU, inplace=True),
+                        state_dims=state_dims,
+                    ),
+                ),
             ),
         )
     )

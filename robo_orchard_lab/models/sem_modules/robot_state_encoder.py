@@ -14,11 +14,67 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import List, Optional, Union
+
 import torch
+from robo_orchard_core.utils.config import Config
 from torch import nn
 
+from robo_orchard_lab.models.mixin import TorchModuleCfgType_co
 from robo_orchard_lab.models.sem_modules.layers import linear_act_ln
-from robo_orchard_lab.utils.build import build
+from robo_orchard_lab.models.sem_modules.utils import apply_joint_mask
+from robo_orchard_lab.utils.build import DelayInitDictType, build
+
+MODULE_TYPE = TorchModuleCfgType_co | DelayInitDictType
+
+
+class SEMEncoderTransformerConfig(Config):
+    """Transformer config of SEM robot state encoder.
+
+    Args:
+        joint_self_attn (Optional[MODULE_TYPE]): Joint dimension self-attention
+            module.
+        norm_layer (MODULE_TYPE): Normalization layer.
+        ffn (MODULE_TYPE): Feed-forward network.
+        operation_order (Optional[List[str]]): Sequence of operations
+            (attn/FFN/norm) in transformer decoder.
+        temp_cross_attn (Optional[MODULE_TYPE]): Self attention module across
+            time steps.
+        pre_norm (bool): Use pre-normalization or post-normalization.
+    """
+
+    joint_self_attn: Optional[MODULE_TYPE]
+    norm_layer: MODULE_TYPE
+    ffn: MODULE_TYPE
+    operation_order: List[Union[str, None]]
+    temp_self_attn: Optional[MODULE_TYPE] = None
+    pre_norm: bool = True
+
+    @property
+    def op_config_map(self) -> dict:
+        return {
+            "norm": self.norm_layer,
+            "ffn": self.ffn,
+            "joint_self_attn": self.joint_self_attn,
+            "temp_cross_attn": self.temp_self_attn,
+        }
+
+
+class SEMEncoderBaseConfig(Config):
+    """Base config of SEM robot state encoder.
+
+    Args:
+        embed_dims (int): Embedding dimension size.
+        state_dims (int): Dimension size of robot state. Defaults to 8, refer
+            to [a, x, y, z, qw, qx, qy, qz].
+        act_cfg (Optional[MODULE_TYPE]): Activation function configuration.
+        chunk_size (int): Step size for chunking prediction horizon.
+    """
+
+    embed_dims: int = 256
+    state_dims: int = 8
+    act_cfg: Optional[MODULE_TYPE] = None
+    chunk_size: int = 1
 
 
 class SEMRobotStateEncoder(nn.Module):
@@ -30,48 +86,35 @@ class SEMRobotStateEncoder(nn.Module):
 
     def __init__(
         self,
-        embed_dims,
-        joint_self_attn,
-        norm_layer,
-        ffn,
-        temp_self_attn=None,
-        state_dims=8,
-        num_encoder=4,
-        act_cfg=None,
-        operation_order=None,
-        chunk_size=5,
-        pre_norm=True,
+        transformer_cfg: SEMEncoderTransformerConfig,
+        base_cfg: SEMEncoderBaseConfig,
     ):
         super().__init__()
-        self.embed_dims = embed_dims
-        self.chunk_size = chunk_size
-        self.pre_norm = pre_norm
+        transformer_cfg = SEMEncoderTransformerConfig.model_validate(
+            transformer_cfg
+        )
+        base_cfg = SEMEncoderBaseConfig.model_validate(base_cfg)
+        self.embed_dims = base_cfg.embed_dims
+        self.chunk_size = base_cfg.chunk_size
+        self.state_dims = base_cfg.state_dims
+        self.act_cfg = base_cfg.act_cfg
+        self.pre_norm = transformer_cfg.pre_norm
 
         self.input_fc = nn.Sequential(
             *linear_act_ln(
-                embed_dims, 2, 2, state_dims * chunk_size, act_cfg=act_cfg
+                self.embed_dims,
+                2,
+                2,
+                self.state_dims * self.chunk_size,
+                act_cfg=self.act_cfg,
             ),
-            nn.Linear(embed_dims, embed_dims),
+            nn.Linear(self.embed_dims, self.embed_dims),
         )
-
         self.layers = []
-        self.operation_order = operation_order
-        if self.operation_order is None:
-            self.operation_order = [
-                "joint_self_attn",
-                "norm",
-                "ffn",
-                "norm",
-            ] * num_encoder
-        self.op_config_map = {
-            "joint_self_attn": joint_self_attn,
-            "temp_self_attn": temp_self_attn,
-            "norm": norm_layer,
-            "ffn": ffn,
-        }
+        self.operation_order = transformer_cfg.operation_order
         self.layers = nn.ModuleList(
             [
-                build(self.op_config_map.get(op, None))
+                build(transformer_cfg.op_config_map.get(op, None))
                 for op in self.operation_order
             ]
         )
@@ -81,14 +124,7 @@ class SEMRobotStateEncoder(nn.Module):
         robot_state = robot_state.permute(0, 2, 1, 3)
 
         if joint_mask is not None:
-            joint_state = torch.where(
-                joint_mask[..., None, None],
-                robot_state.new_tensor(-1),
-                robot_state[..., :1],
-            )
-            robot_state = torch.cat(
-                [joint_state, robot_state[..., 1:]], dim=-1
-            )
+            robot_state = apply_joint_mask(robot_state, joint_mask)
 
         num_chunk = num_step // self.chunk_size
         robot_state = robot_state.reshape(bs, num_link, num_chunk, -1)
