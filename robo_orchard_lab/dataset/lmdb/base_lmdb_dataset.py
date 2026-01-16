@@ -42,6 +42,7 @@ class BaseIndexData(BaseModel):
     embodiment: Optional[str] = None
     date: Optional[str] = None
     simulation: bool = False
+    error: bool = False
 
     model_config = ConfigDict(extra="allow")
 
@@ -128,6 +129,8 @@ class BaseLmdbManipulationDataset(Dataset):
             self._init_lmdb()
 
     def _check_valid(self, index_data):
+        if index_data.error:
+            return False
         if (self.task_names is not None) and (
             index_data.task_name not in self.task_names
         ):
