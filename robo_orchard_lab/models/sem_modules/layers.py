@@ -450,6 +450,7 @@ class UpsampleHead(nn.Module):
         super().__init__()
         self.norm_act_idx = norm_act_idx
         self.upsamples = nn.ModuleList()
+        self.convs = nn.ModuleList()
         self.act_and_norm = nn.ModuleList()
         dims = [input_dim] + dims
         for i, size in enumerate(upsample_sizes):
@@ -460,12 +461,14 @@ class UpsampleHead(nn.Module):
                 )
             else:
                 self.act_and_norm.append(None)
+
             self.upsamples.append(
-                nn.Sequential(
-                    nn.Upsample(size=size, mode="linear", align_corners=True),
-                    nn.Conv1d(dims[i], dims[i + 1], 3, padding=1),
-                )
+                nn.Upsample(
+                    size=(size, 1), mode="bilinear", align_corners=True
+                ),
             )
+            self.convs.append(nn.Conv1d(dims[i], dims[i + 1], 3, padding=1))
+
         self.num_output_layers = num_output_layers
         if num_output_layers >= 1:
             self.output_layers = nn.Sequential()
@@ -485,7 +488,7 @@ class UpsampleHead(nn.Module):
             if i in self.norm_act_idx:
                 x = self.act_and_norm[i](x)
             x = x.permute(0, 2, 1)
-            x = layer(x)
+            x = self.convs[i](layer(x.unsqueeze(-1)).squeeze(-1))
             x = x.permute(0, 2, 1)
         x = x.unflatten(0, (bs, num_joint))
 
