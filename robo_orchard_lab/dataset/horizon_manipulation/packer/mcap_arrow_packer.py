@@ -51,6 +51,7 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodePackaging,
     InstructionData,
     RobotData,
+    RobotDescriptionFormat,
     TaskData,
 )
 
@@ -186,7 +187,8 @@ class McapEpisodePackaging(EpisodePackaging):
             episode=EpisodeData(),
             robot=RobotData(
                 name=os.path.basename(self.urdf_path),
-                urdf_content=urdf_content,
+                content=urdf_content,
+                content_format=RobotDescriptionFormat.URDF,
             ),
             task=TaskData(
                 name=self.meta_data["task_name"],

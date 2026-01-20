@@ -69,10 +69,7 @@ class RePackingEpisodeHelper(EpisodePackaging):
         assert orm_robot is not None
         orm_task: Task = self.dataset.get_meta(Task, row["task_index"])
         assert orm_task is not None
-        robot: RobotData = RobotData(
-            name=orm_robot.name,
-            urdf_content=orm_robot.urdf_content,
-        )
+        robot: RobotData = RobotData.from_orm(orm_robot)
         task = TaskData(
             name=orm_task.name,
             description=orm_task.description,

@@ -350,7 +350,14 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         return ret_names
 
     def _get_obs(self) -> dict[str, Any] | None:
-        """Get the current observation from the environment."""
+        """Get the current observation from the environment.
+
+        Note that in current RoboTwin implementation, the joints of the robot
+        are provided in the "joint_action" key of the observation, and it
+        actually represents the joint target positions! This is a design
+        flaw in RoboTwin, and we leave it as is to be consistent with RoboTwin!
+
+        """
         ret = self._task.get_obs()
         ret["instructions"] = self.instructions
         if self.cfg.format_datatypes:

@@ -87,6 +87,7 @@ from robo_orchard_lab.dataset.robot import (
     EpisodeMeta,
     EpisodePackaging,
     RobotData,
+    RobotDescriptionFormat,
     RODataset,
     TaskData,
 )
@@ -201,7 +202,9 @@ class McapEpisodePackager(EpisodePackaging):
         self.decoder_config = decoder_config
         self.monitor_topic = monitor_topic
 
-        self.mock_robot = RobotData("robot_from_mcap", "<urdf>...")
+        self.mock_robot = RobotData(
+            "robot_from_mcap", "<urdf>...", RobotDescriptionFormat.URDF
+        )
         self.mock_task = TaskData("task_from_mcap", "...")
 
     def generate_episode_meta(self) -> EpisodeMeta:

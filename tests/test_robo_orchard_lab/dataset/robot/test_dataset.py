@@ -22,6 +22,8 @@ from typing import Generator
 import datasets as hg_datasets
 import pytest
 import torch
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransformGraph,
@@ -33,10 +35,12 @@ from robo_orchard_lab.dataset.robot.dataset import (
     RODataset,
     ROMultiRowDataset,
 )
+from robo_orchard_lab.dataset.robot.dataset_db_engine import need_upgrade
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
     Robot,
+    TableInfo,
     Task,
 )
 from robo_orchard_lab.dataset.robot.merge import (
@@ -51,6 +55,7 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodePackaging,
     InstructionData,
     RobotData,
+    RobotDescriptionFormat,
     TaskData,
 )
 from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
@@ -141,16 +146,31 @@ class DummyEpisodePackaging(EpisodePackaging):
 
 
 @pytest.fixture(scope="module")
-def example_dataset_path_no_shard(tmp_local_folder: str) -> str:
+def example_robots() -> list[RobotData]:
+    return [
+        RobotData(
+            name="robot_0",
+            content="robot_0_urdf",
+            content_format=RobotDescriptionFormat.URDF,
+        ),
+        RobotData(
+            name="robot_1",
+            content="robot_1_mjcf",
+            content_format=RobotDescriptionFormat.MJCF,
+        ),
+    ]
+
+
+@pytest.fixture(scope="module")
+def example_dataset_path_no_shard(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
     dataset_dir = os.path.join(
         tmp_local_folder,
         "example_dataset_path_"
         + "".join(random.choices(string.ascii_lowercase, k=8)),
     )
-    robots = [
-        RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-        RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-    ]
+    robots = example_robots
     tasks = [
         TaskData(name="task_0", description="task_0_description"),
         TaskData(name="task_1", description="task_1_description"),
@@ -191,16 +211,15 @@ def example_dataset_path_no_shard(tmp_local_folder: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def example_dataset_path_shard(tmp_local_folder: str) -> str:
+def example_dataset_path_shard(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
     dataset_dir = os.path.join(
         tmp_local_folder,
         "example_dataset_path_"
         + "".join(random.choices(string.ascii_lowercase, k=8)),
     )
-    robots = [
-        RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-        RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-    ]
+    robots = example_robots
     tasks = [
         TaskData(name="task_0", description="task_0_description"),
         TaskData(name="task_1", description="task_1_description"),
@@ -246,16 +265,15 @@ def example_dataset_path_shard(tmp_local_folder: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def example_dataset_pickle_path_no_shard(tmp_local_folder: str) -> str:
+def example_dataset_pickle_path_no_shard(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
     dataset_dir = os.path.join(
         tmp_local_folder,
         "example_dataset_path_"
         + "".join(random.choices(string.ascii_lowercase, k=8)),
     )
-    robots = [
-        RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-        RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-    ]
+    robots = example_robots
     tasks = [
         TaskData(name="task_0", description="task_0_description"),
         TaskData(name="task_1", description="task_1_description"),
@@ -312,13 +330,6 @@ def example_dataset_path(request) -> str:
 
 
 class TestDatasetPackaging:
-    @pytest.fixture
-    def example_robots(self) -> list[RobotData]:
-        return [
-            RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-            RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-        ]
-
     @pytest.fixture
     def example_tasks(self) -> list[TaskData]:
         return [
@@ -410,6 +421,21 @@ class TestDataset:
             assert episode.frame_num is not None
             assert episode.dataset_begin_index == total_frame_num
             total_frame_num += episode.frame_num
+
+        url = dataset.db_engine.url
+        assert need_upgrade(url) is False
+
+    def test_check_db_engine_tableinfo(self, example_dataset_path: str):
+        dataset = RODataset(dataset_path=example_dataset_path)
+        assert dataset.db_engine is not None
+        engine = dataset.db_engine
+        with Session(engine) as session:
+            stmt = select(TableInfo)
+            results = session.execute(stmt).scalars().all()
+            assert len(results) > 0
+            print("TableInfo entries:")
+            for table_info in results:
+                print(table_info)
 
     def test_check_frame_db(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)

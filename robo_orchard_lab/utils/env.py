@@ -17,7 +17,19 @@
 import contextlib
 import os
 
-__all__ = ["set_env"]
+__all__ = ["set_env", "get_robo_orchard_home"]
+
+
+def get_robo_orchard_home() -> str:
+    """Get the RoboOrchard home directory from environment or default location.
+
+    Returns:
+        str: The path to the RoboOrchard home directory.
+    """
+    return os.environ.get(
+        "ROBO_ORCHARD_HOME",
+        os.path.expanduser(os.path.join("~", ".robo_orchard")),
+    )
 
 
 @contextlib.contextmanager

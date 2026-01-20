@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from sqlalchemy import ForeignKey
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.types import BIGINT, INTEGER
 
 from robo_orchard_lab.dataset.robot.db_orm.base import (
@@ -26,6 +26,10 @@ from robo_orchard_lab.dataset.robot.db_orm.base import (
 )
 from robo_orchard_lab.dataset.robot.db_orm.robot import Robot
 from robo_orchard_lab.dataset.robot.db_orm.task import Task
+from robo_orchard_lab.dataset.robot.db_orm.upgrade import (
+    TableUpgradeRegistry,
+    Version,
+)
 
 __all__ = ["Episode"]
 
@@ -94,3 +98,24 @@ class Episode(DatasetORMBase):
             "Episode",
             back_populates="prev_episode",
         )
+
+
+@TableUpgradeRegistry.register_upgrade(
+    table_name=Episode.__tablename__,
+    from_version=None,
+    to_version=Version("0.0.1"),
+    from_orm_type=Episode,
+)
+def upgrade_episode_to_0_0_1(session: Session, row: dict) -> dict:
+    """Upgrade an Episode row to version 0.0.1.
+
+    Since this is the initial version, no changes are made.
+
+    Args:
+        session (Session): The database session.
+        row (dict): The Episode row to upgrade.
+
+    Returns:
+        dict: The upgraded Episode row.
+    """
+    return row

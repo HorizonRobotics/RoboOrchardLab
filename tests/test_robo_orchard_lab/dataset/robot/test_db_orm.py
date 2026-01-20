@@ -25,9 +25,11 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
     Robot,
+    RobotDescriptionFormat,
     Task,
 )
 from robo_orchard_lab.dataset.robot.engine import (
+    create_tables,
     create_temp_engine,
 )
 
@@ -39,10 +41,9 @@ def ut_database_engine_duckdb(tmp_local_folder: str):
     with create_temp_engine(
         dir=tmp_local_folder,
         prefix="ut_database_engine_duckdb",
-        create_table=True,
         drivername="duckdb",
-        base=DatasetORMBase,
     ) as engine:
+        create_tables(engine, base=DatasetORMBase)
         yield engine
 
 
@@ -53,10 +54,9 @@ def ut_database_engine_sqlite(tmp_local_folder: str):
     with create_temp_engine(
         dir=tmp_local_folder,
         prefix="ut_database_engine_sqlite",
-        create_table=True,
         drivername="sqlite",
-        base=DatasetORMBase,
     ) as engine:
+        create_tables(engine, base=DatasetORMBase)
         yield engine
 
 
@@ -64,7 +64,10 @@ def prepare_data(engine: Engine):
     with Session(engine) as session:
         # Create a Robot instance
         robot = Robot(
-            index=0, name="robot_1", urdf_content="robot_1_urdf_content"
+            index=0,
+            name="robot_1",
+            content="robot_1_urdf_content",
+            content_format=RobotDescriptionFormat.URDF,
         )
         robot.update_md5()
         session.add(robot)

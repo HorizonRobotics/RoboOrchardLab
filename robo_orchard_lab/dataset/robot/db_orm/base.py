@@ -29,6 +29,7 @@ __all__ = [
     "ColumnValueUnmatchedError",
     "PrimaryKeyMixin",
     "register_table_mapper",
+    "DeprecatedDatasetORMBase",
 ]
 
 TABLE_NAME2Mapper: Dict[str, Mapper[Any]] = dict()
@@ -208,11 +209,18 @@ class PrimaryKeyMixin:
         return where_cond
 
 
-class DatasetORMBase(PrimaryKeyMixin, DeclarativeBase):
+class ORMBase(PrimaryKeyMixin, DeclarativeBase):
     """Base class for all ORM classes working with all db engines."""
 
+    __version__: str
+
     @classmethod
-    def column_equal(cls, lhs: Any, rhs: Any, skip_left_null=False) -> bool:
+    def column_equal(
+        cls,
+        lhs: dict | DeclarativeBase,
+        rhs: dict | DeclarativeBase,
+        skip_left_null=False,
+    ) -> bool:
         """Whether two objects are equal by their columns.
 
         Args:
@@ -232,7 +240,9 @@ class DatasetORMBase(PrimaryKeyMixin, DeclarativeBase):
         return True
 
     @classmethod
-    def column_copy(cls, src: Any, dst: Any):
+    def column_copy(
+        cls, src: dict | DeclarativeBase, dst: dict | DeclarativeBase
+    ):
         """Copy columns from src to dst."""
         if src is None or dst is None:
             raise ValueError("src and dst must not be None")
@@ -342,3 +352,15 @@ class DatasetORMBase(PrimaryKeyMixin, DeclarativeBase):
     def __repr__(self) -> str:
         """Return a string representation of the object."""
         return f"{type(self).__name__}({self.get_column_kv(keep_null=True)})"
+
+
+class DatasetORMBase(ORMBase, DeclarativeBase):
+    """Base class for ORM classes working with RoboOrchard datasets."""
+
+    pass
+
+
+class DeprecatedDatasetORMBase(ORMBase, DeclarativeBase):
+    """Deprecated ORM classes that should not be used with new datasets."""
+
+    pass

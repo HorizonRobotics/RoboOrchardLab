@@ -17,6 +17,7 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import shutil
 from contextlib import contextmanager
 from typing import (
     Any,
@@ -43,8 +44,12 @@ from typing_extensions import Self
 
 # import all datatypes and features
 from robo_orchard_lab.dataset.datatypes import *  # noqa: F403,F401
-from robo_orchard_lab.dataset.robot.columns import (
-    PreservedIndexColumnsKeys,
+from robo_orchard_lab.dataset.robot.columns import PreservedIndexColumnsKeys
+from robo_orchard_lab.dataset.robot.dataset_db_engine import (
+    create_engine,
+    get_local_db_md5,
+    get_local_db_url,
+    try_upgrade_database,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
@@ -52,7 +57,6 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Robot,
     Task,
 )
-from robo_orchard_lab.dataset.robot.engine import create_engine
 from robo_orchard_lab.dataset.robot.row_sampler import (
     CachedIndexDataset,
     MultiRowSampler,
@@ -76,6 +80,13 @@ class RODataset(TorchDataset):
     separate database to store the episode-level information. The huggingface
     datasets (pyarrow_dataset) is used as table format, and SQLAlchemy with
     DuckDB are used to manage the database.
+
+
+    Note:
+        The dataset loading process will automatically check the version of the
+        meta database, and upgrade it to the latest version if necessary.
+        Please call the `RODataset.upgrade_meta(dataset_path)` method to
+        upgrade the database permanently!
 
     Args:
         dataset_path (str): The path to the dataset directory.
@@ -227,28 +238,39 @@ class RODataset(TorchDataset):
         self.__dict__.update(state)
 
     def _load_db(self, dataset_path: str) -> Engine:
-        fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
-        file_list = fs.ls(dataset_path, detail=False)
-        db_candidate = [
-            f for f in file_list if os.path.basename(f).startswith("meta_db.")
-        ]
-        if len(db_candidate) == 0:
-            raise ValueError(
-                f"No meta db file found in {dataset_path}. "
-                "Please ensure the dataset has been properly packaged."
-            )
-        if len(db_candidate) > 1:
-            raise ValueError(
-                f"Multiple meta db files found in {dataset_path}: {db_candidate}"  # noqa: E501
-            )
-        db_path = db_candidate[0]
-        # get drivername from file extension
-        _, ext = os.path.splitext(db_path)
-        drivername = ext[1:]
         return create_engine(
-            url=URL.create(drivername=drivername, database=db_path),
-            readonly=True,
+            url=_get_dataset_db_url(dataset_path), readonly=True
         )
+
+    @staticmethod
+    def upgrade_meta(
+        dataset_path: str,
+    ):
+        """Upgrade the meta database to the latest version.
+
+        Note:
+            This method is not thread-safe. It is the caller's responsibility
+            to ensure that no other process is accessing the database
+            during the upgrade process.
+
+        Args:
+            dataset_path (str): The path to the dataset directory.
+                It should contain a `dataset.arrow` file and a `meta_db.*`
+                file.
+        """
+        db_url = _get_dataset_db_url(dataset_path)
+        _, file_content_md5 = get_local_db_md5(db_url)
+        new_url = try_upgrade_database(db_url)
+        # overwrite the old db file with the new db file
+        new_db_path = new_url.database
+        assert new_db_path is not None
+        assert os.path.exists(new_db_path)
+        # move old db file to f"{old_path}.{md5}"
+        old_db_path = db_url.database
+        assert old_db_path is not None
+        backup_db_path = f"{old_db_path}.{file_content_md5}"
+        shutil.move(old_db_path, backup_db_path)
+        shutil.move(new_db_path, old_db_path)
 
     @property
     def features(self) -> Features:
@@ -1089,3 +1111,25 @@ class ConcatRODataset(TorchDataset):
             row[self.dataset_index_key] = dataset_idx
             ret.append(row)
         return ret
+
+
+def _get_dataset_db_url(dataset_path: str) -> URL:
+    fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
+    file_list = fs.ls(dataset_path, detail=False)
+    db_candidate = [
+        f for f in file_list if os.path.basename(f).startswith("meta_db.")
+    ]
+    if len(db_candidate) == 0:
+        raise ValueError(
+            f"No meta db file found in {dataset_path}. "
+            "Please ensure the dataset has been properly packaged."
+        )
+    if len(db_candidate) > 1:
+        raise ValueError(
+            f"Multiple meta db files found in {dataset_path}: {db_candidate}"  # noqa: E501
+        )
+    db_path = db_candidate[0]
+    # get drivername from file extension
+    _, ext = os.path.splitext(db_path)
+    drivername = ext[1:]
+    return get_local_db_url(drivername=drivername, db_path=db_path)

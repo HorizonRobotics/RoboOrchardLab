@@ -48,6 +48,7 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
     Robot,
+    RobotDescriptionFormat,
     Task,
 )
 
@@ -87,8 +88,13 @@ class Dataset2Mcap:
         Returns:
             StampedMessage[URDF]: The converted URDF protobuf message.
         """
+        if robot.content_format != RobotDescriptionFormat.URDF:
+            raise ValueError(
+                f"Robot {robot.name} has unsupported description format: "
+                f"{robot.content_format}. Only URDF format is supported."
+            )
         return StampedMessage(
-            data=URDF(name=robot.name, xml_content=robot.urdf_content),
+            data=URDF(name=robot.name, xml_content=robot.content),
             log_time=log_time,
             pub_time=pub_time,
         )

@@ -120,6 +120,7 @@ from robo_orchard_lab.dataset.robot import (
     EpisodePackaging,
     InstructionData,
     RobotData,
+    RobotDescriptionFormat,
     RODataset,
     TaskData,
 )
@@ -167,7 +168,11 @@ pprint.pprint(DATASET_FEATURES)
 # object across many episodes.
 #
 
-MOCK_ROBOT = RobotData(name="my_robot_v1", urdf_content="<xml>...</xml>")
+MOCK_ROBOT = RobotData(
+    name="my_robot_v1",
+    content="<xml>...</xml>",
+    content_format=RobotDescriptionFormat.URDF,
+)
 MOCK_TASK = TaskData(name="stack_blocks", description="Stack red on blue")
 
 # We can also define instructions that might change frame-by-frame

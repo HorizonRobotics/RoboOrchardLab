@@ -25,6 +25,10 @@ from robo_orchard_lab.dataset.robot.db_orm.base import (
     register_table_mapper,
 )
 from robo_orchard_lab.dataset.robot.db_orm.md5 import MD5FieldMixin
+from robo_orchard_lab.dataset.robot.db_orm.upgrade import (
+    TableUpgradeRegistry,
+    Version,
+)
 
 __all__ = ["Instruction"]
 
@@ -52,22 +56,14 @@ class Instruction(DatasetORMBase, MD5FieldMixin["Instruction"]):
                 ret.append(key)
         return ret
 
-    def update_md5(self) -> bytes:
-        """Generate a unique MD5 hash for the instruction content.
-
-        The MD5 hash is generated from the JSON content and name.
-        """
-        # TODO:
+    def calculate_md5(self) -> bytes:
         content_str = (
             json.dumps(self.json_content, sort_keys=True)
             if self.json_content
             else ""
         )
         combined_str = f"{self.name}{content_str}".encode("utf-8")
-        ret = hashlib.md5(combined_str).digest()
-        if self.md5 != ret:
-            self.md5 = ret
-        return self.md5
+        return hashlib.md5(combined_str).digest()
 
     @staticmethod
     def query_by_content_with_md5(
@@ -81,3 +77,24 @@ class Instruction(DatasetORMBase, MD5FieldMixin["Instruction"]):
             name=name,
             json_content=json_content,
         )
+
+
+@TableUpgradeRegistry.register_upgrade(
+    table_name=Instruction.__tablename__,
+    from_version=None,
+    to_version=Version("0.0.1"),
+    from_orm_type=Instruction,
+)
+def upgrade_instruction_to_0_0_1(session: Session, row: dict) -> dict:
+    """Upgrade an Instruction row to version 0.0.1.
+
+    Since this is the initial version, no changes are made.
+
+    Args:
+        session (Session): The database session.
+        row (dict): The Instruction row to upgrade.
+
+    Returns:
+        dict: The upgraded Instruction row.
+    """
+    return row

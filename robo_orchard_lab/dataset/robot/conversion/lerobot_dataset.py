@@ -189,7 +189,8 @@ class LerobotDatasetEpisodePackaging(EpisodePackaging):
         # We must provide a placeholder for urdf_content.
         robot_data = RobotData(
             name=self.dataset.meta.robot_type or "UNKNOWN",
-            urdf_content=None,
+            content=None,
+            content_format=None,
         )
 
         # 3. Create EpisodeData

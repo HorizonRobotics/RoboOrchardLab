@@ -30,20 +30,23 @@ from datasets.arrow_dataset import (
 )
 from datasets.arrow_writer import ArrowWriter
 from datasets.features.features import _check_if_features_can_be_aligned
-from sqlalchemy import URL, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
+from robo_orchard_lab.dataset.robot import (
+    create_engine,
+    create_tables,
+    get_local_db_url,
+)
 from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.db_orm import (
-    DatasetORMBase,
     Episode,
     Instruction,
     Robot,
     Task,
 )
 from robo_orchard_lab.dataset.robot.db_orm.md5 import MD5ObjCache
-from robo_orchard_lab.dataset.robot.engine import create_engine, create_tables
 
 __all__ = [
     "create_merged_dataset",
@@ -388,13 +391,13 @@ def create_merged_dataset(
     if os.path.exists(dst_db_path):
         os.remove(dst_db_path)
     meta_db_engine = create_engine(
-        url=URL.create(
+        url=get_local_db_url(
             drivername=db_driver,
-            database=dst_db_path,
+            db_path=dst_db_path,
         ),
         echo=False,
     )
-    create_tables(engine=meta_db_engine, base=DatasetORMBase)
+    create_tables(engine=meta_db_engine)
     frame_dataset = HFDataset.from_dict(
         features=features, mapping={k: [] for k in features.keys()}
     )
@@ -434,9 +437,9 @@ def create_merged_dataset(
             pbar.update(1)
     meta_db_engine.dispose()
     meta_db_engine = create_engine(
-        url=URL.create(
+        url=get_local_db_url(
             drivername=db_driver,
-            database=dst_db_path,
+            db_path=dst_db_path,
         ),
         echo=False,
         readonly=True,

@@ -27,23 +27,27 @@ from typing import Any, Generator, Iterable
 
 import datasets as hg_datasets
 import fsspec
-from sqlalchemy import URL
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
+from typing_extensions import deprecated
 
+from robo_orchard_lab.dataset.robot import (
+    create_engine,
+    create_tables,
+    get_local_db_url,
+)
 from robo_orchard_lab.dataset.robot.columns import (
     PreservedColumnsKeys,
     PreservedIndexColumns,
     PreservedIndexColumnsKeys,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
-    DatasetORMBase,
     Episode,
     Instruction,
     Robot,
+    RobotDescriptionFormat,
     Task,
 )
-from robo_orchard_lab.dataset.robot.engine import create_engine, create_tables
 
 __all__ = [
     "DatasetPackaging",
@@ -235,12 +239,11 @@ class DatasetPackaging:
             raise FileExistsError(
                 f"The meta database path '{db_path}' already exists."
             )
-        url = URL.create(
-            drivername=self._database_driver,
-            database=db_path,
+        url = get_local_db_url(
+            drivername=self._database_driver, db_path=db_path
         )
         engine = create_engine(url=url, echo=False)
-        create_tables(engine=engine, base=DatasetORMBase)
+        create_tables(engine=engine)
 
         def frame_generator(episode: EpisodePackaging):
             try:
@@ -572,8 +575,18 @@ class RobotData:
 
     name: str
     """The name of the robot."""
-    urdf_content: str | None
-    """The URDF content of the robot."""
+
+    content: str | None
+    content_format: RobotDescriptionFormat | None
+
+    @classmethod
+    def from_orm(cls, orm_robot: Robot) -> RobotData:
+        """Create a RobotData instance from an ORM Robot instance."""
+        return cls(
+            name=orm_robot.name,
+            content=orm_robot.content,
+            content_format=orm_robot.content_format,
+        )
 
     def make_transient_orm(
         self, index_state: DatasetIndexState, session: Session | None
@@ -605,6 +618,22 @@ class RobotData:
                 return make_new()
         else:
             return make_new()
+
+    @property
+    @deprecated("Use 'content' and 'content_format' instead.")  # type: ignore
+    def urdf_content(self) -> str | None:
+        """The URDF content of the robot."""
+        if self.content_format == RobotDescriptionFormat.URDF:
+            return self.content
+        else:
+            return None
+
+    @urdf_content.setter
+    @deprecated("Use 'content' and 'content_format' instead.")  # type: ignore
+    def urdf_content(self, value: str | None):
+        """Set the URDF content of the robot."""
+        self.content = value
+        self.content_format = RobotDescriptionFormat.URDF
 
 
 @dataclass

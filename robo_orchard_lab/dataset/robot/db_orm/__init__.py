@@ -18,4 +18,5 @@ from .base import *
 from .episode import *
 from .instruction import *
 from .robot import *
+from .table_info import *
 from .task import *

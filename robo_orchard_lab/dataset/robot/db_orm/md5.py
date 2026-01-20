@@ -27,17 +27,6 @@ T = TypeVar("T", bound="MD5FieldMixin")
 class MD5FieldMixin(Generic[T]):
     md5: Mapped[bytes] = mapped_column(BLOB(length=16), index=True)
 
-    # TODO: Seperate the md5 calculation logic from update_md5 method.
-    @abstractmethod
-    def update_md5(self) -> bytes:
-        """Generate a unique MD5 hash for the class.
-
-        The MD5 hash is generated from the JSON content and name.
-        """
-        raise NotImplementedError(
-            "Subclasses must implement the update_md5 method."
-        )
-
     @staticmethod
     def query_by_content_with_md5(
         session: Session, cls: Type[T], **kwargs
@@ -51,7 +40,6 @@ class MD5FieldMixin(Generic[T]):
         """
 
         md5 = cls(**kwargs).update_md5()
-
         stmt = select(cls).where(cls.md5 == md5)
         for result in session.execute(stmt).scalars():
             if all(getattr(result, k) == kwargs[k] for k in kwargs):
@@ -64,6 +52,20 @@ class MD5FieldMixin(Generic[T]):
         raise NotImplementedError(
             "Subclasses must implement the md5_content_fields method."
         )
+
+    @abstractmethod
+    def calculate_md5(self) -> bytes:
+        """Calculate the MD5 hash based on the content fields."""
+        raise NotImplementedError(
+            "Subclasses must implement the calculate_md5 method."
+        )
+
+    def update_md5(self) -> bytes:
+        """Update the MD5 hash based on the content fields."""
+        ret = self.calculate_md5()
+        if self.md5 != ret:
+            self.md5 = ret
+        return self.md5
 
 
 MD5_ORM_TYPE = TypeVar("MD5_ORM_TYPE", bound=MD5FieldMixin)
