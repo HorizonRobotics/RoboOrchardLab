@@ -52,7 +52,60 @@ cd projects/sem/common
 python3 export.py --config configs/config_sem_common.py $@
 ```
 
-## Docker image
+# Do evaluation in Orchard Isaac Envs
+## Local run
+### Prerequisites
+
+Docker: `hub.hobot.cc/auto/robot_lab/mengao.zhao:ubuntu22.04-gcc11.4-py3.11-cuda12.8-isaac_lab-v2.0.2-sem-ext-v0.2`
+
+Before running the evaluation, make sure you have:
+
+- Cloned the `robo_orchard` repository
+```bash
+git clone git@jh-gitlab.hobot.cc:dep/robot-lab/robo_orchard.git
+cd robo_orchard
+git checkout feature/sim_dev # TODO: replace with a tagged version
+```
+- Properly set up Xvfb and x11vnc for Isaac Sim offscreen rendering
+```bash
+id=1 # id can be any unused display number.
+Xvfb :$id -screen 0 1920x1200x24 -ac +extension GLX +render -noreset &
+x11vnc -display :$id -forever -bg -ncache
+```
+### Run Evaluation
+```bash
+export ORCHARD_ISAAC_DIR=$WORKING_PATH/robo_orchard  # update to the robo_orchard directory
+cp projects/sem/common/isaac_eval.py $ORCHARD_ISAAC_DIR
+cp -r robo_orchard_lab $ORCHARD_ISAAC_DIR/python/robo_orchard_lab
+export PYTHONPATH=python/robo_orchard_isaac:$PYTHONPATH
+export PYTHONPATH=python/robo_orchard_planner:$PYTHONPATH
+export PYTHONPATH=python/robo_orchard_lab:$PYTHONPATH
+cd $ORCHARD_ISAAC_DIR
+
+vlm_ckpt_dir=/horizon-bucket/robot_lab/users/xuewu.lin/ckpt
+urdf_dir=/horizon-bucket/robot_lab/users/xuewu.lin/urdf
+seed=100000
+task_names=stack_block_two,place_mouse_pad
+model_config="xxx"  # local directory or the http url
+model_processor=isaac_pick_place_processor
+
+DISPLAY=:$id python3 isaac_eval.py \
+    --task_names ${task_names} \
+    --model_config ${model_config} \
+    --vlm_ckpt_dir ${vlm_ckpt_dir} \
+    --urdf_dir ${urdf_dir} \
+    --model_processor ${model_processor} \
+    --seed ${seed} \
+    --model_prefix model_0 \
+    --test_num 100 \
+```
+
+## Cluster run
+```bash
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/sem/common/submit_cfg_isaac_eval.json
+```
+
+# Docker image
 - **New version image (supports Qwen3):**  
   `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch260-robotwin2-transformer4571-20251030`
 
