@@ -23,90 +23,22 @@ import os
 
 import numpy as np
 import pytorch_kinematics as pk
-import torch
 from mcap.reader import make_reader
 from mcap_ros2.decoder import DecoderFactory
 from scipy.spatial.transform import Rotation
 
+from robo_orchard_lab.dataset.horizon_manipulation.tools.utils import (
+    format_time,
+    get_frequency,
+    pose_to_mat,
+    sample,
+)
 from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
     BaseLmdbManipulationDataPacker,
 )
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-def sample(tgt_time, src_time, src_data=None, prefix=""):
-    time_diff = np.abs(tgt_time[:, None] - src_time)
-    logger.info(
-        f"{prefix:<50} - "
-        + f"max time diff: {time_diff.min(axis=-1).max():.4f}, "
-        + f"mean time diff: {time_diff.min(axis=-1).mean():.4f}"
-    )
-    index = np.argmin(time_diff, axis=1)
-    output_time = src_time[index]
-    if src_data is not None:
-        output = []
-        for src in src_data:
-            _output = []
-            for i in index:
-                _output.append(src[i])
-            output.append(_output)
-        return output_time, output
-    return output_time
-
-
-def format_time(timestamp):
-    timestamp = np.array(timestamp, dtype="float64")
-    timestamp = timestamp[:, 0] + timestamp[:, 1] / 1e9
-    return timestamp
-
-
-def pose_to_mat(pose):
-    if isinstance(pose, dict):
-        x, y, z = pose["position"]
-        qx, qy, qz, w = pose["orientation"]
-    elif hasattr(pose, "position"):
-        x, y, z = pose.position.x, pose.position.y, pose.position.z
-        qx, qy, qz, w = (
-            pose.orientation.x,
-            pose.orientation.y,
-            pose.orientation.z,
-            pose.orientation.w,
-        )
-    else:
-        x, y, z = pose.translation.x, pose.translation.y, pose.translation.z
-        qx, qy, qz, w = (
-            pose.rotation.x,
-            pose.rotation.y,
-            pose.rotation.z,
-            pose.rotation.w,
-        )
-
-    trans = np.array([x, y, z])
-    rot = Rotation.from_quat([qx, qy, qz, w], scalar_first=False).as_matrix()
-    ret = np.eye(4)
-    ret[:3, 3] = trans
-    ret[:3, :3] = rot
-    return ret
-
-
-def get_frequency(timestamp, prefix="", window_size=3):
-    if not isinstance(timestamp, np.ndarray):
-        timestamp = np.array(timestamp)
-    time_diff = np.diff(timestamp)
-    time_diff = torch.from_numpy(time_diff)[None, None]
-    time_diff = torch.nn.functional.avg_pool1d(
-        time_diff, window_size, 1
-    ).numpy()[0, 0]
-    freq = 1 / time_diff
-    logger.info(
-        f"{prefix:<50} - "
-        f"duration: {timestamp[-1] - timestamp[0]:.2f}s, "
-        + f"min frequency: {freq.min():.1f}Hz, "
-        + f"mean frequency: {freq.mean():.1f}Hz"
-    )
-    return freq
 
 
 class PiperMcapPacker(BaseLmdbManipulationDataPacker):
@@ -676,12 +608,40 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         self.index_pack_file.write("__len__", num_valid_ep)
         self.close()
 
+    def add_error_tag(self, error_uuid_list):
+        from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
+            BaseIndexData,
+        )
+        from robo_orchard_lab.dataset.lmdb.lmdb_wrapper import Lmdb
+
+        self.index_pack_file = Lmdb(
+            os.path.join(self.output_path, "index"),
+            writable=True,
+            commit_step=1,
+            **self.lmdb_kwargs,
+        )
+        for episode_idx in self.index_pack_file.keys():
+            if episode_idx == "__len__":
+                continue
+            meta = BaseIndexData.model_validate(
+                self.index_pack_file.get(episode_idx)
+            )
+            if meta.uuid in error_uuid_list:
+                logger.info(f"Find error data: {meta.uuid}")
+                meta.error = True
+                self.write_index(episode_idx, meta.model_dump())
+        self.index_pack_file.close()
+
 
 if __name__ == "__main__":
     import argparse
 
     from robo_orchard_lab.utils import log_basic_config
 
+    log_basic_config(
+        format="%(asctime)s %(levelname)s-%(lineno)d: %(message)s",
+        level=logging.INFO,
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str)
     parser.add_argument("--output_path", type=str)
@@ -746,9 +706,5 @@ if __name__ == "__main__":
                 ],
             },
         },
-    )
-    log_basic_config(
-        format="%(asctime)s %(levelname)s:%(lineno)d %(message)s",
-        level=logging.INFO,
     )
     packer()
