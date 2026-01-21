@@ -11,6 +11,8 @@ data/
 
 
 # Pack
+
+## Local run
 ```bash
 python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.mcap_packer \
     --input_path ${input_path} \
@@ -23,7 +25,13 @@ python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.mcap_packer \
     $@
 ```
 
+## Cluster run
+```bash
+RoboOrchardJob-AIDISubmit submit_from_config --config robo_orchard_lab/dataset/horizon_manipulation/tools/submit_pack.json  # example sumbit config
+```
+
 # Data check and save as video
+## Local run
 ```bash
 ulimit -n 65536
 python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.mcap_checker \
@@ -35,6 +43,11 @@ python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.mcap_checker \
     --date_prefix ${date_prefix} \
     --num_workers 10 \
     $@
+```
+
+## Cluster run
+```bash
+RoboOrchardJob-AIDISubmit submit_from_config --config robo_orchard_lab/dataset/horizon_manipulation/tools/submit_check.json  # example sumbit config
 ```
 
 # Upload data to bucket

@@ -1,0 +1,33 @@
+{
+    "job_name": "example_data_check",
+    "workspace_folder": "submit-check",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "cpu_per_worker": 16,
+    "cpu_mem_ratio": 16,
+    "wall_time": 14400,
+    "cmd": [
+        "ulimit -n 65536",
+        "ln -s /horizon-bucket/robot_lab/users/xuewu.lin/urdf ${WORKING_PATH}/urdf",
+        "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH",
+        "date_prefix=2026_01_20",
+        "user_name=yufei.tan",
+        "task_name=fold_paper_box",
+        "python robo_orchard_lab/dataset/horizon_manipulation/tools/mcap_checker.py \\",
+        "    --input_path /horizon-bucket/robot_lab/users/xuewu.lin/self-collected-data/raw_data \\",
+        "    --output_path /job_data \\",
+        "    --urdf ./urdf/piper_description_dualarm_new.urdf \\",
+        "    --user_names ${user_name} \\",
+        "    --task_names ${task_name} \\",
+        "    --date_prefix ${date_prefix} \\",
+        "    --num_workers 16"
+    ],
+    "to_upload": [
+        "robo_orchard_lab"
+    ],
+    "job_password": "1227",
+    "queue_name": "share-cpu-bcloud",
+    "project_id": "Robot-lab"
+}

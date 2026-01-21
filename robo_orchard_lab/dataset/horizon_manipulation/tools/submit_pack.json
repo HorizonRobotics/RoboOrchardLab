@@ -1,0 +1,33 @@
+{
+    "job_name": "example_data_pack",
+    "workspace_folder": "submit-pack",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "cpu_per_worker": 8,
+    "cpu_mem_ratio": 16,
+    "wall_time": 14400,
+    "cmd": [
+        "ulimit -n 65536",
+        "ln -s /horizon-bucket/robot_lab/users/xuewu.lin/urdf ${WORKING_PATH}/urdf",
+        "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH",
+        "date_prefix=2026_01_20",
+        "user_name=zhixu.zhao ",
+        "task_name=fold_paper_box",
+        "python robo_orchard_lab/dataset/horizon_manipulation/tools/mcap_packer.py \\",
+        "    --input_path /horizon-bucket/robot_lab/users/xuewu.lin/self-collected-data/raw_data \\",
+        "    --output_path /job_data/${user_name}-${task_name}-${date_prefix} \\",
+        "    --urdf ./urdf/piper_description_dualarm_new.urdf \\",
+        "    --user_names ${user_name} \\",
+        "    --task_names ${task_name} \\",
+        "    --num_steps_per_shard 200 \\",
+        "    --date_prefix ${date_prefix}"
+    ],
+    "to_upload": [
+        "robo_orchard_lab"
+    ],
+    "job_password": "1227",
+    "queue_name": "share-cpu-bcloud",
+    "project_id": "Robot-lab"
+}
