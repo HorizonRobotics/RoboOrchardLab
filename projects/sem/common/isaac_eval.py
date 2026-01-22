@@ -49,6 +49,50 @@ bash_command_template = (
     "  --maximum_step 1000"  # TODO, make it configurable
 )
 
+
+def log_task_table(all_task_data, logger):
+    def center(val, width):
+        s = f"{val:.2f}"
+        left_pad = (width - len(s)) // 2
+        right_pad = width - len(s) - left_pad
+        return " " * left_pad + s + " " * right_pad
+
+    rows = [
+        (
+            task_name,
+            sum(d["task_success"].values()) / len(d["task_success"]),
+            sum(d["task_progress"].values()) / len(d["task_progress"]),
+        )
+        for task_name, d in all_task_data.items()
+    ]
+    rows.append(
+        (
+            "mean",
+            sum(r[1] for r in rows) / len(rows),
+            sum(r[2] for r in rows) / len(rows),
+        )
+    )
+
+    task_w = max(len("task"), *(len(r[0]) for r in rows))
+    succ_w = max(len("success rate"), 4)
+    prog_w = max(len("progress score"), 4)
+
+    header = (
+        f"| {'task':<{task_w}} | "
+        f"{'success rate':^{succ_w}} | "
+        f"{'progress score':^{prog_w}} |"
+    )
+    sep = f"|{'-' * (task_w + 2)}|{'-' * (succ_w + 2)}|{'-' * (prog_w + 2)}|"
+    lines = [header, sep]
+
+    lines += [
+        f"| {t:<{task_w}} | {center(s, succ_w)} | {center(p, prog_w)} |"
+        for t, s, p in rows
+    ]
+
+    logger.info("\n" + "\n".join(lines))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_config", type=str)
@@ -126,22 +170,6 @@ if __name__ == "__main__":
         results[task_name] = task_res
 
     results = dict(sorted(results.items()))
-    task_means = []
-    task_progresses = []
-    for task_name, task_data in results.items():
-        successes = list(task_data["task_success"].values())
-        task_mean = sum(successes) / len(successes)
-        task_means.append(task_mean)
-        processes = list(task_data["task_progress"].values())
-        task_progresses.append(sum(processes) / len(processes))
-        logger.info(
-            f"Task {task_name}: Success Rate = {task_mean:.4f}, "
-            f"Avg Progress = {sum(processes) / len(processes):.4f}"
-        )
-    mean_success_rate = sum(task_means) / len(task_means)
-    mean_progress = sum(task_progresses) / len(task_progresses)
-    results["num_tasks"] = len(results)
-    results["mean_success"] = mean_success_rate
-    results["mean_progress"] = mean_progress
-    results["test_num_per_task"] = args.test_num
     logger.info(json.dumps(results, indent=4))
+
+    log_task_table(results, logger)
