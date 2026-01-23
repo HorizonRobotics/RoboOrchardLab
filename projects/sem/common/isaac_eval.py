@@ -50,7 +50,7 @@ bash_command_template = (
 )
 
 
-def log_task_table(all_task_data, logger):
+def log_task_table(all_task_data):
     def center(val, width):
         s = f"{val:.2f}"
         left_pad = (width - len(s)) // 2
@@ -172,4 +172,4 @@ if __name__ == "__main__":
     results = dict(sorted(results.items()))
     logger.info(json.dumps(results, indent=4))
 
-    log_task_table(results, logger)
+    log_task_table(results)
