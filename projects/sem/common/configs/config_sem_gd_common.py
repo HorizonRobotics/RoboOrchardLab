@@ -49,6 +49,9 @@ config = dict(
         "agibot",
         "droid",
         "egodex",
+        "interna1_arx_lift2",
+        "interna1_agile_split_aloha",
+        # "interna1_genieg1",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -456,6 +459,9 @@ def build_training_dataset(config, lazy_init=False):
     from config_agibot_dataset import build_datasets as build_agibot_datasets
     from config_agilex_dataset import build_datasets as build_agilex_datasets
     from config_droid_dataset import build_datasets as build_droid_datasets
+    from config_interna1_dataset import (
+        build_datasets as build_interna1_datasets,
+    )
     from config_rh20t_dataset import build_datasets as build_rh20t_datasets
     from config_robotwin_dataset import (
         build_datasets as build_robotwin_datasets,
@@ -464,6 +470,14 @@ def build_training_dataset(config, lazy_init=False):
     from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
 
     datasets = []
+    datasets.extend(
+        build_interna1_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
     datasets.extend(
         build_robotwin_datasets(
             config,
