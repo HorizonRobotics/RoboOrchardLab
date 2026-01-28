@@ -13,38 +13,43 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-from glob import glob
 
-dataset_lmdb_config = dict(
-    interna1_arx_lift2=dict(
-        data_paths=glob(
-            "./data/InternData_A1_lmdb/ARX_Lift2/lmdb_dataset_ARX_Lift2*"
+
+def get_dataset_lmdb_config():
+    from glob import glob
+
+    dataset_lmdb_config = dict(
+        interna1_arx_lift2=dict(
+            data_paths=glob(
+                "./data/InternData_A1_lmdb/ARX_Lift2/lmdb_dataset_ARX_Lift2*"
+            ),
+            urdf="./urdf/InternData-A1_urdf/ARX_Lift2_fix/lift.urdf",
+            cam_names=["head", "hand_left", "hand_right"],
+            robot_type="ARX Lift-2",
+            task_names=None,
+            load_extrinsic=True,
         ),
-        urdf="./urdf/InternData-A1_urdf/ARX_Lift2_fix/lift.urdf",
-        cam_names=["head", "hand_left", "hand_right"],
-        robot_type="ARX Lift-2",
-        task_names=None,
-        load_extrinsic=True,
-    ),
-    interna1_agile_split_aloha=dict(
-        data_paths=glob(
-            "./data/InternData_A1_lmdb/AgileX_Split_Aloha/lmdb_dataset_AgileX_Split_Aloha*"
+        interna1_agile_split_aloha=dict(
+            data_paths=glob(
+                "./data/InternData_A1_lmdb/AgileX_Split_Aloha/lmdb_dataset_AgileX_Split_Aloha*"
+            ),
+            urdf="./urdf/InternData-A1_urdf/AgileX_Split_Aloha_piper100/split_aloha_mid_360_with_piper.urdf",
+            cam_names=["head", "hand_left", "hand_right"],
+            robot_type="AgileX Split Aloha",
+            task_names=None,
+            load_extrinsic=True,
         ),
-        urdf="./urdf/InternData-A1_urdf/AgileX_Split_Aloha_piper100/split_aloha_mid_360_with_piper.urdf",
-        cam_names=["head", "hand_left", "hand_right"],
-        robot_type="AgileX Split Aloha",
-        task_names=None,
-        load_extrinsic=True,
-    ),
-    interna1_genieg1=dict(
-        data_paths=[],
-        urdf="./urdf/InternData-A1_urdf/G1_120s/G1_120s.urdf",
-        cam_names=["head", "hand_left", "hand_right"],
-        robot_type="Genie-1",
-        task_names=None,
-        load_extrinsic=True,
-    ),
-)
+        interna1_genieg1=dict(
+            data_paths=[],
+            urdf="./urdf/InternData-A1_urdf/G1_120s/G1_120s.urdf",
+            cam_names=["head", "hand_left", "hand_right"],
+            robot_type="Genie-1",
+            task_names=None,
+            load_extrinsic=True,
+        ),
+    )
+
+    return dataset_lmdb_config
 
 
 def build_lmdb_transforms(
@@ -409,6 +414,7 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
         InstructionReader,
     )
 
+    dataset_lmdb_config = get_dataset_lmdb_config()
     datasets = []
     for dataset_name, data_config in dataset_lmdb_config.items():
         if dataset_name not in dataset_names:
@@ -449,6 +455,7 @@ def build_processors(config, dataset_names):
         SEMProcessorCfg,
     )
 
+    dataset_lmdb_config = get_dataset_lmdb_config()
     processors = {}
     for dataset_name, data_config in dataset_lmdb_config.items():
         if dataset_name not in dataset_names:
