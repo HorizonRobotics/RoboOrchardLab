@@ -76,6 +76,7 @@ x11vnc -display :$id -forever -bg -ncache
 ```bash
 export ORCHARD_ISAAC_DIR=$WORKING_PATH/robo_orchard  # update to the robo_orchard directory
 cp projects/sem/common/isaac_eval.py $ORCHARD_ISAAC_DIR
+cp -r projects/sem/common/isaac_task_config $ORCHARD_ISAAC_DIR
 cp -r robo_orchard_lab $ORCHARD_ISAAC_DIR/python/robo_orchard_lab
 export PYTHONPATH=python/robo_orchard_isaac:$PYTHONPATH
 export PYTHONPATH=python/robo_orchard_planner:$PYTHONPATH
@@ -88,6 +89,7 @@ seed=100000
 task_names=stack_block_two,place_mouse_pad
 model_config="xxx"  # local directory or the http url
 model_processor=isaac_pick_place_processor
+multi_task_config=isaac_task_config/multi_task_setting.yaml
 
 DISPLAY=:$id python3 isaac_eval.py \
     --task_names ${task_names} \
@@ -98,6 +100,7 @@ DISPLAY=:$id python3 isaac_eval.py \
     --seed ${seed} \
     --model_prefix model_0 \
     --test_num 100 \
+    --multi_task_config ${multi_task_config}
 ```
 
 ## Cluster run

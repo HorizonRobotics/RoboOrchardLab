@@ -1,0 +1,31 @@
+# Multi-Task Environment Settings
+# This file defines default settings and task-specific overrides
+# Task-specific sections will be deep-merged with _default settings
+
+_default:
+  data_type: seen
+  # Event random
+  enable_light_random: false
+  enable_obj_tex_random: false
+  enable_table_tex_random: false
+  # Clutter object configuration
+  clutter_obj_random:
+    enabled: false
+    num: 1
+    seen_asset_path: "/horizon-bucket/robot_lab/users/chaodong.huang/eval_assets/distractor_set_1_23/seen/"
+    unseen_asset_path: "/horizon-bucket/robot_lab/users/chaodong.huang/eval_assets/distractor_set_1_23/unseen/"
+
+# Task-specific overrides
+stack_block_two:
+  enable_light_random: false
+  enable_table_tex_random: false
+
+place_mouse_pad:
+  enable_light_random: false
+  enable_table_tex_random: false
+
+place_a2b:
+  enable_light_random: false
+  enable_table_tex_random: false
+  clutter_obj_random:
+    enabled: false

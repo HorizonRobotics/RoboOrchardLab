@@ -22,6 +22,8 @@ import os
 import pickle
 import subprocess
 
+import yaml
+
 from robo_orchard_lab.utils import log_basic_config
 
 os.environ["NV_ASSET_ROOT_DIR"] = (
@@ -34,8 +36,69 @@ log_basic_config(
     level=logging.INFO,
 )
 
+
+def load_multi_task_config(config_path):
+    """Load and parse the multi-task YAML config file.
+
+    Args:
+        config_path: Path to the multi-task config YAML file
+
+    Returns:
+        Parsed config dictionary
+    """
+    if not os.path.exists(config_path):
+        logger.warning(f"Multi-task config file not found: {config_path}")
+        return {}
+
+    try:
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+        logger.info(f"Loaded multi-task config from: {config_path}")
+        return config if config else {}
+    except Exception as e:
+        logger.error(f"Failed to load multi-task config: {e}")
+        return {}
+
+
+def get_task_config(multi_task_config, task_name):
+    """Get complete config for a specific task by.
+
+    Args:
+        multi_task_config: The full multi-task configuration dictionary
+        task_name: Name of the task to get config for
+
+    Returns:
+        Complete task configuration with defaults merged
+    """
+
+    def deep_merge_dict(base, override):
+        result = base.copy()
+        for key, value in override.items():
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(value, dict)
+            ):
+                result[key] = deep_merge_dict(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+    default_config = multi_task_config.get("_default", {})
+    task_specific_config = multi_task_config.get(task_name, {})
+
+    # Merge default with task-specific config
+    merged_config = deep_merge_dict(default_config, task_specific_config)
+
+    logger.info(
+        f"Task '{task_name}' config: {json.dumps(merged_config, indent=2)}"
+    )
+    return merged_config
+
+
 bash_command_template = (
-    "python3 examples/manipulation-app/pick_place/config/gen_dualarm_piper_{task_name}.py && "  # noqa: E501
+    "python3 examples/manipulation-app/pick_place/config/gen_dualarm_piper_{task_name}.py "  # noqa: E501
+    "  --task_config {task_config} && "
     "python3 examples/manipulation-app/pick_place/scripts/eval_policy_sem.py "  # noqa: E501
     "  --model_config {model_config} "
     "  --model_processor {model_processor} "
@@ -46,6 +109,7 @@ bash_command_template = (
     "  --seed {seed}"
     "  --rollouts {test_num}"
     "  --output_dir {output_dir}"
+    "  --task_config {task_config} "
     "  --maximum_step 1000"  # TODO, make it configurable
 )
 
@@ -105,17 +169,32 @@ if __name__ == "__main__":
     parser.add_argument("--urdf_dir", type=str, default=None)
     parser.add_argument("--test_num", type=int, default=100)
     parser.add_argument("--seed", type=int, default=100000)
+    parser.add_argument(
+        "--multi_task_config",
+        type=str,
+        default="isaac_task_config/multi_task_setting.yaml",
+        help="Path to multi-task environment settings YAML file",
+    )
     args = parser.parse_args()
     logger.info("\n" + json.dumps(vars(args), indent=4))
 
     task_names = args.task_names.strip().split(",")
     logger.info(f"Evaluating tasks: {task_names}")
 
+    # Load multi-task configuration
+    multi_task_config = load_multi_task_config(args.multi_task_config)
+
     if_cluster = os.environ.get("CLUSTER") is not None
     if not if_cluster:
         log_root = "eval_result/"
+        temp_config_dir = "eval_result/task_configs/"
     else:
         log_root = "/job_data/"
+        temp_config_dir = "/job_data/task_configs/"
+
+    # Create temp config directory
+    os.makedirs(temp_config_dir, exist_ok=True)
+    logger.info(f"Temp task config directory: {temp_config_dir}")
 
     processes = []
     task_to_proc = {}
@@ -126,6 +205,17 @@ if __name__ == "__main__":
 
         log_dir = os.path.join(log_root, task_name)
         os.makedirs(log_dir, exist_ok=True)
+
+        # Get merged task config and write to temp file
+        task_config = get_task_config(multi_task_config, task_name)
+        task_config_path = os.path.join(
+            temp_config_dir, f"{task_name}_env_setting.yaml"
+        )
+        with open(task_config_path, "w") as f:
+            yaml.dump(task_config, f, default_flow_style=False)
+        logger.info(
+            f"Generated temp config for {task_name}: {task_config_path}"
+        )
 
         command = [
             "bash",
@@ -142,6 +232,7 @@ if __name__ == "__main__":
                     test_num=args.test_num,
                     seed=args.seed,
                     output_dir=log_dir,
+                    task_config=task_config_path,
                 )
             ),
         ]

@@ -21,14 +21,16 @@
         "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
         "  --model_processor piper_processor \\",
         "  --model_prefix model_0 \\",
-        "  --test_num 100"
+        "  --test_num 100 \\",
+        "  --multi_task_config isaac_task_config/multi_task_setting.yaml"
     ],
     "to_upload": [
         "robo_orchard_lab",
         "robo_orchard/python/robo_orchard_isaac",
         "robo_orchard/python/robo_orchard_planner",
         "robo_orchard/examples",
-        "projects/sem/common/isaac_eval.py"
+        "projects/sem/common/isaac_eval.py",
+        "projects/sem/common/isaac_task_config"
     ],
     "job_password": "1227",
     "queue_name": "project-5090-robot-lab-bcloud-bj",
