@@ -82,6 +82,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         hist_steps=None,
         pred_steps=None,
         reset_step=10000,
+        dataset_name="b1k"
     ):
         super().__init__(
             paths=paths,
@@ -105,6 +106,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
 
         self.hist_steps = hist_steps
         self.pred_steps = pred_steps
+        self.dataset_name = dataset_name
 
     def _concat_shards(self, *shards):
         shards = [x for x in shards if x is not None]

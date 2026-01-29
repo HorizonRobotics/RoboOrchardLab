@@ -194,8 +194,11 @@ class BehaviorPacker:
             skill_id = skill["skill_id"]
             skill_type = skill["skill_type"][0]
             if skill_type in ["uncoordinated", "coordinated"]:
-
                 skill_type = "manipulation"
+            elif skill_type in ["navigation"]:
+                skill_type = "navigation"
+            else:
+                skill_type = "navigation"
 
             raw_skills.append(
                 {
