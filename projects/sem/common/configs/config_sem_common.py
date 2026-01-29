@@ -64,7 +64,7 @@ config = dict(
         "robotwin2_0_ur5_wsg",
         "robotwin2_0_arx_x5a",
         "robotwin2_0_franka_panda",
-        "isaac_pick_place"
+        "isaac_pick_place",
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     # v5.0 setting

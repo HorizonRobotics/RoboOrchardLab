@@ -62,7 +62,7 @@ config = dict(
         "robotwin2_0_ur5_wsg",
         "robotwin2_0_arx_x5a",
         "robotwin2_0_franka_panda",
-        "isaac_pick_place"
+        "isaac_pick_place",
     ],
     dst_wh=(320, 256),
     patch_size=64,

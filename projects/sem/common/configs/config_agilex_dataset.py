@@ -749,6 +749,8 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             load_calibration=data_config.get("load_calibration", False),
             instruction_reader=instruction_reader,
             flag=data_config.get("flag", 100001),
+            hist_steps=config["hist_steps"],
+            pred_steps=config["pred_steps"],
         )
         datasets.append(dataset)
 

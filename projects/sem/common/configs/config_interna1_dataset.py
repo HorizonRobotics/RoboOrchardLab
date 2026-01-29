@@ -24,7 +24,7 @@ def get_dataset_lmdb_config():
                 "./data/InternData_A1_lmdb/ARX_Lift2/lmdb_dataset_ARX_Lift2*"
             ),
             urdf="./urdf/InternData-A1_urdf/ARX_Lift2_fix/lift.urdf",
-            cam_names=["head", "hand_left", "hand_right"],
+            cam_names=["hand_left", "hand_right", "head"],
             robot_type="ARX Lift-2",
             task_names=None,
             load_extrinsic=True,
@@ -34,7 +34,7 @@ def get_dataset_lmdb_config():
                 "./data/InternData_A1_lmdb/AgileX_Split_Aloha/lmdb_dataset_AgileX_Split_Aloha*"
             ),
             urdf="./urdf/InternData-A1_urdf/AgileX_Split_Aloha_piper100/split_aloha_mid_360_with_piper.urdf",
-            cam_names=["head", "hand_left", "hand_right"],
+            cam_names=["hand_left", "hand_right", "head"],
             robot_type="AgileX Split Aloha",
             task_names=None,
             load_extrinsic=True,
@@ -42,7 +42,7 @@ def get_dataset_lmdb_config():
         interna1_genieg1=dict(
             data_paths=[],
             urdf="./urdf/InternData-A1_urdf/G1_120s/G1_120s.urdf",
-            cam_names=["head", "hand_left", "hand_right"],
+            cam_names=["hand_left", "hand_right", "head"],
             robot_type="Genie-1",
             task_names=None,
             load_extrinsic=True,
@@ -72,6 +72,7 @@ def build_lmdb_transforms(
         GetProjectionMat,
         IdentityTransform,
         ItemSelection,
+        MoveEgoToCam,
         Resize,
         SimpleStateSampling,
         ToTensor,
@@ -135,6 +136,7 @@ def build_lmdb_transforms(
         dst_wh=config.get("dst_wh", (308, 252)),
     )
     to_tensor = dict(type=ToTensor)
+    ego_to_cam = dict(type=MoveEgoToCam)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
@@ -333,6 +335,7 @@ def build_lmdb_transforms(
             resize,
             to_tensor,
             calib_to_ext,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -365,6 +368,7 @@ def build_lmdb_transforms(
             resize,
             to_tensor,
             calib_to_ext,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -396,6 +400,7 @@ def build_lmdb_transforms(
             resize,
             to_tensor,
             calib_to_ext,
+            ego_to_cam,
             projection_mat,
             scale_shift,
             convert_dtype,
@@ -433,6 +438,7 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
             lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
             instruction_path="./data/instructions/task2instruction_0928.json",
         )
+        data_config["data_paths"].sort()
         dataset = InternA1LmdbDataset(
             paths=data_config["data_paths"],
             lazy_init=lazy_init or mode != "training",
@@ -443,6 +449,8 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
             load_extrinsic=data_config.get("load_extrinsic", False),
             load_calibration=data_config.get("load_calibration", False),
             instruction_reader=instruction_reader,
+            hist_steps=config["hist_steps"],
+            pred_steps=config["pred_steps"],
         )
         datasets.append(dataset)
 
