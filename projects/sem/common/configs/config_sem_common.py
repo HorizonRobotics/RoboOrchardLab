@@ -54,6 +54,7 @@ config = dict(
         "interna1_arx_lift2",
         "interna1_agile_split_aloha",
         # "interna1_genieg1",
+        # "isaac_pick_place",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -63,18 +64,14 @@ config = dict(
         "robotwin2_0_ur5_wsg",
         "robotwin2_0_arx_x5a",
         "robotwin2_0_franka_panda",
+        "isaac_pick_place"
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     # v5.0 setting
     num_vlm_layers=1,
     freeze_vlm=False,
-    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-12-28/14-47/sem_v5_alldata_3digtal_cam2ego_resume-20251228-144735.177976/output/checkpoints/checkpoint_16/model.safetensors",
+    checkpoint="./ckpt/sem_v6_newconfig/model.safetensors",
 )
-# isaac pick place dataset
-# config.update(
-#     training_datasets=["isaac_pick_place"],
-#     deploy_datasets=["isaac_pick_place"],
-# )
 
 
 def build_model(config):
@@ -284,6 +281,7 @@ def build_model(config):
                     operation_order=decoder_operation_order,
                 ),
                 base_cfg=SEMDecoderBaseConfig(
+                    chunk_size=config.get("chunk_size", 8),
                     use_joint_mask=True,
                     noise_type="local_joint",
                     pred_scaled_joint=False,

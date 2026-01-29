@@ -52,6 +52,7 @@ config = dict(
         "interna1_arx_lift2",
         "interna1_agile_split_aloha",
         # "interna1_genieg1",
+        # "isaac_pick_place",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -61,13 +62,14 @@ config = dict(
         "robotwin2_0_ur5_wsg",
         "robotwin2_0_arx_x5a",
         "robotwin2_0_franka_panda",
+        "isaac_pick_place"
     ],
     dst_wh=(320, 256),
     patch_size=64,
     multi_task=True,
     bert_checkpoint="./ckpt/bert-base-uncased",
-    checkpoint="./ckpt/groundingdino_swint_ogc_mmdet-822d7e9d-rename.pth",
-    # checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2025-12-28/23-57/sem_gd_v5_alldata_3digtal_cam2ego-20251228-235751.246239/output/checkpoints/checkpoint_40/model.safetensors",  # v5.0  # noqa: E501
+    checkpoint="./ckpt/sem_gd_v6_newconfig/model.safetensors",
+    # checkpoint="./ckpt/groundingdino_swint_ogc_mmdet-822d7e9d-rename.pth",
 )
 
 
@@ -370,6 +372,7 @@ def build_model(config):
                     operation_order=decoder_operation_order,
                 ),
                 base_cfg=SEMDecoderBaseConfig(
+                    chunk_size=config.get("chunk_size", 8),
                     use_joint_mask=True,
                     noise_type="local_joint",
                     pred_scaled_joint=False,
@@ -462,6 +465,7 @@ def build_training_dataset(config, lazy_init=False):
     from config_interna1_dataset import (
         build_datasets as build_interna1_datasets,
     )
+    from config_isaac_dataset import build_datasets as build_isaac_datasets
     from config_rh20t_dataset import build_datasets as build_rh20t_datasets
     from config_robotwin_dataset import (
         build_datasets as build_robotwin_datasets,
@@ -512,6 +516,14 @@ def build_training_dataset(config, lazy_init=False):
     )
     datasets.extend(
         build_droid_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_isaac_datasets(
             config,
             config["training_datasets"],
             mode="training",
@@ -587,6 +599,7 @@ def build_processors(config):
     from config_agilex_dataset import (
         build_processors as build_agilex_processors,
     )
+    from config_isaac_dataset import build_processors as build_isaac_processors
     from config_robotwin_dataset import (
         build_processors as build_robotwin_processors,
     )
@@ -594,5 +607,8 @@ def build_processors(config):
     processors = build_agilex_processors(config, config["deploy_datasets"])
     processors.update(
         build_robotwin_processors(config, config["deploy_datasets"])
+    )
+    processors.update(
+        build_isaac_processors(config, config["deploy_datasets"])
     )
     return processors
