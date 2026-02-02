@@ -55,6 +55,7 @@ config = dict(
         "interna1_agile_split_aloha",
         # "interna1_genieg1",
         # "isaac_pick_place",
+        # "libero",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -65,6 +66,7 @@ config = dict(
         "robotwin2_0_arx_x5a",
         "robotwin2_0_franka_panda",
         "isaac_pick_place",
+        "libero",
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     # v5.0 setting
@@ -375,6 +377,7 @@ def build_training_dataset(config, lazy_init=False):
         build_datasets as build_interna1_datasets,
     )
     from config_isaac_dataset import build_datasets as build_isaac_datasets
+    from config_libero_dataset import build_datasets as build_libero_datasets
     from config_rh20t_dataset import build_datasets as build_rh20t_datasets
     from config_robotwin_dataset import (
         build_datasets as build_robotwin_datasets,
@@ -442,6 +445,14 @@ def build_training_dataset(config, lazy_init=False):
     )
     datasets.extend(
         build_isaac_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+            lazy_init=lazy_init,
+        )
+    )
+    datasets.extend(
+        build_libero_datasets(
             config,
             config["training_datasets"],
             mode="training",
@@ -524,6 +535,9 @@ def build_processors(config):
         build_processors as build_agilex_processors,
     )
     from config_isaac_dataset import build_processors as build_isaac_processors
+    from config_libero_dataset import (
+        build_processors as build_libero_processors,
+    )
     from config_robotwin_dataset import (
         build_processors as build_robotwin_processors,
     )
@@ -534,5 +548,8 @@ def build_processors(config):
     )
     processors.update(
         build_isaac_processors(config, config["deploy_datasets"])
+    )
+    processors.update(
+        build_libero_processors(config, config["deploy_datasets"])
     )
     return processors

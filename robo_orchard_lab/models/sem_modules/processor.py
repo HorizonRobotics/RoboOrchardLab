@@ -100,6 +100,9 @@ class MultiArmManipulationOutput:
     """The predicted action tensor. This could represent target joint
     positions, end-effector velocities, or another action space format."""
 
+    pose: TENSOR_TYPE
+    """The predicted joint angle position and 6d pose of each joint"""
+
 
 class Struct2Dict:
     def __init__(
@@ -187,9 +190,11 @@ class SEMProcessor(ProcessorMixin):
         # only output one trajectory in joint angle format
         # action shape: num_pred_steps x num_joint
         action = model_outputs[0]["pred_actions"][0][..., 0]
+        pose = model_outputs[0]["pred_actions"][0]
         if self.cfg.valid_action_step is not None:
             action = action[: self.cfg.valid_action_step]
-        return MultiArmManipulationOutput(action=action)
+            pose = pose[: self.cfg.valid_action_step]
+        return MultiArmManipulationOutput(action=action, pose=pose)
 
     def save(self, path, processor_name, urdf_dir="./urdf"):
         os.makedirs(path, exist_ok=True)

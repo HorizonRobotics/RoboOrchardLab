@@ -108,6 +108,56 @@ DISPLAY=:$id python3 isaac_eval.py \
 RoboOrchardJob-AIDISubmit submit_from_config --config projects/sem/common/submit_cfg_isaac_eval.json
 ```
 
+# Do evaluation in LIBERO Envs
+## Local run
+### Prerequisites
+Before running the evaluation, make sure you have:
+- Cloned the LIBERO repo:
+```bash
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
+cd LIBERO
+pip install -r requirements.txt # Please note the specific Torch version requirements.
+```
+### Run Evaluation
+```bash
+export CUDA_VISIBLE_DEVICES=0,1  # Specify GPUs (e.g., use 2 GPUs)
+export PYTHONPATH=$PYTHONPATH:.  # Ensure eval_policy.py can be found
+export LIBERO_DIR=$WORKING_PATH/LIBERO 
+cp -r projects/sem/common/sem_libero_policy $LIBERO_DIR
+cp -r projects/sem/common/libero_eval.py $LIBERO_DIR
+cp projects/sem/libero/eval_policy.py $LIBERO_DIR
+cp projects/sem/libero/libero_utils.py $LIBERO_DIR
+
+model_config="[http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/](http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/)..." # URL or local path
+vlm_ckpt_dir="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt"
+urdf_dir="/horizon-bucket/robot_lab/users/xuewu.lin/urdf"
+
+# Option 1: Run a specific benchmark suite (e.g., libero_goal)
+python3 libero_eval.py \
+    --model_config ${model_config} \
+    --model_prefix model_0 \
+    --vlm_ckpt_dir ${vlm_ckpt_dir} \
+    --urdf_dir ${urdf_dir} \
+    --model_processor libero_processor \
+    --task_suite libero_goal \
+    --num_trials_per_task 50 \
+    --save_video True
+
+# Run ALL benchmark suites (spatial, object, goal, 10). Set --task_suite to -1
+python3 libero_eval.py \
+    --model_config ${model_config} \
+    --model_prefix model_0 \
+    --vlm_ckpt_dir ${vlm_ckpt_dir} \
+    --urdf_dir ${urdf_dir} \
+    --model_processor libero_processor \
+    --num_trials_per_task 50 \
+    --save_video True
+```
+## Cluster run
+```bash
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/sem/common/submit_cfg_libero_eval.json # Adjust relevant config parameters accordingly
+```
+
 # Docker image
 - **New version image (supports Qwen3):**  
   `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch260-robotwin2-transformer4571-20251030`

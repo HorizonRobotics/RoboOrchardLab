@@ -47,7 +47,7 @@ class MoveEgoToCam:
 
     def __call__(self, data):
         if isinstance(self.cam_idx, str):
-            cam_idx = data["cam_name"].index(self.cam_idx)
+            cam_idx = data["cam_names"].index(self.cam_idx)
         else:
             cam_idx = self.cam_idx
         data["T_base2ego"] = data["T_world2cam"][cam_idx] @ data.get(
@@ -380,7 +380,7 @@ class ToTensor:
 
 
 class ConvertDataType:
-    def __init__(self, convert_map, strict=True):
+    def __init__(self, convert_map, strict=False):
         self.convert_map = convert_map
         self.strict = strict
 

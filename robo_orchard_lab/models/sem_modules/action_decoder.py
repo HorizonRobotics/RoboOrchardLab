@@ -470,7 +470,7 @@ class SEMActionDecoder(nn.Module):
 
         if "noise_type" in inputs:
             noise_type = inputs["noise_type"][0]
-            assert noise_type in self.VALID_NOISE_TYPES, noise_type
+            assert noise_type in VALID_NOISE_TYPES, noise_type
         else:
             noise_type = self.noise_type
 
