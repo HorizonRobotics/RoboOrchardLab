@@ -42,16 +42,10 @@ complex sample into a simple dictionary of tensors before it gets batched.
 # --------------------------------
 #
 
-import io
-
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from PIL import Image
 from robo_orchard_core.datatypes.camera_data import (
     BatchCameraData,
-    BatchImageData,
-    ImageMode,
 )
 from torch.utils.data import DataLoader
 
@@ -80,20 +74,11 @@ from robo_orchard_lab.dataset.robot import (
 #
 
 
-def simple_decoder(image_bytes: bytes, format: str) -> BatchImageData:
-    pil_img = Image.open(io.BytesIO(image_bytes))
-    # Convert to tensor and add batch dimension
-    img_tensor = torch.from_numpy(np.array(pil_img)).unsqueeze(0)
-    return BatchImageData(sensor_data=img_tensor, pix_fmt=ImageMode.RGB)
-
-
 # required input type dict is sample and output type is dict
 def transform(sample: dict) -> dict[str, torch.Tensor]:
     # 1. Decode camera
     #   (BatchCameraDataEncoded -> BatchCameraData)
-    env_camera_data: BatchCameraData = sample["middle"].decode(
-        decoder=simple_decoder
-    )
+    env_camera_data: BatchCameraData = sample["middle"].decode()
 
     # 2. Extract image tensor (Shape: [1, H, W, C] -> [H, W, C])
     # We squeeze(0) to remove the batch dim, as the DataLoader will add it back
@@ -177,9 +162,7 @@ def multi_row_transform(sample: dict) -> dict[str, torch.Tensor]:
     """Converts a multi-row sample (with lists of data) into a collatable dictionary of stacked tensors."""
 
     # Decode camera
-    env_camera_data: BatchCameraData = sample["middle"].decode(
-        decoder=simple_decoder
-    )
+    env_camera_data: BatchCameraData = sample["middle"].decode()
     obs_camera = env_camera_data.sensor_data.squeeze(0)
 
     # 'joints' is a list[BatchJointsState] of length 8

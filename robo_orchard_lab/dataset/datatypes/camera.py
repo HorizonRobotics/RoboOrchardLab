@@ -86,9 +86,9 @@ class DistortionFeature(RODictDataFeature, TypedDictFeatureDecode):
 
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
-    _decode_type: type = Distortion
 
     def __post_init__(self):
+        self._decode_type = Distortion
         self._dict = {
             "model": hg_datasets.features.features.Value("string"),
             "coefficients": TypedTensorFeature(
@@ -124,9 +124,9 @@ class BatchCameraInfoFeature(RODictDataFeature, TypedDictFeatureDecode):
 
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
-    _decode_type: type = BatchCameraInfo
 
     def __post_init__(self):
+        self._decode_type = BatchCameraInfo
         self._dict = {
             "topic": hg_datasets.features.features.Value("string"),
             "frame_id": hg_datasets.features.features.Value("string"),
@@ -170,10 +170,10 @@ class BatchCameraDataEncodedFeature(BatchCameraInfoFeature):
 
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
-    _decode_type: type = BatchCameraDataEncoded
 
     def __post_init__(self):
         super().__post_init__()
+        self._decode_type = BatchCameraDataEncoded
         self._dict.update(
             {
                 "sensor_data": hg_datasets.features.features.Sequence(
@@ -214,10 +214,10 @@ class BatchCameraDataFeature(BatchCameraInfoFeature):
 
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
-    _decode_type: type = BatchCameraData
 
     def __post_init__(self):
         super().__post_init__()
+        self._decode_type = BatchCameraData
         self._dict.update(
             {
                 "sensor_data": AnyTensorFeature(),

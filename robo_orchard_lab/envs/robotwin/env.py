@@ -30,10 +30,15 @@ from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
+from robo_orchard_lab.dataset.datatypes import (
+    BatchFrameTransform,
+    BatchFrameTransformGraph,
+)
 from robo_orchard_lab.envs.robotwin.obs import (
     get_joints,
     get_observation_cams,
 )
+from robo_orchard_lab.envs.sapien import sapien_pose_to_orchard
 
 if TYPE_CHECKING:
     from envs._base_task import Base_Task
@@ -43,13 +48,13 @@ EVAL_INSTRUCTION_NUM = 100
 logger = LoggerManager().get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
-
+RoboTwinObsType: TypeAlias = dict[str, Any] | None
 __all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
 
 
 @dataclass
-class RoboTwinEnvStepReturn(EnvStepReturn[dict[str, Any] | None, bool]):
-    observations: dict[str, Any] | None
+class RoboTwinEnvStepReturn(EnvStepReturn[RoboTwinObsType, bool]):
+    observations: RoboTwinObsType
     terminated: bool
     rewards: bool
     """The rewards is a boolean indicating whether the task was successful."""
@@ -57,7 +62,7 @@ class RoboTwinEnvStepReturn(EnvStepReturn[dict[str, Any] | None, bool]):
     """Whether the episode was truncated due to reaching the step limit."""
 
 
-class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
+class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     """RoboTwin environment.
 
     This class provides RoboTwin environment with robo_orchard_core interface.
@@ -230,7 +235,12 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         self._task.take_action(action)
 
         # when reach step limit, truncated is True
-        if self._task.take_action_cnt >= self._task.step_lim:  # type: ignore
+        # Note that step_lim is None for default unlimited steps.
+        # It will be set in evaluation mode.
+        if (
+            self._task.step_lim is not None
+            and self._task.take_action_cnt >= self._task.step_lim
+        ):
             truncated = True
         else:
             truncated = False
@@ -259,7 +269,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         task_name: str | None = None,
         clear_cache: bool = False,
         return_obs: bool = True,
-    ) -> tuple[dict[str, Any] | None, dict]:
+    ) -> tuple[RoboTwinObsType, dict]:
         """Reset the environment.
 
         If the environment has not been reset before, or the seed is
@@ -286,6 +296,11 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
                 Defaults to None.
             clear_cache (bool, optional): Whether to clear the cache
                 when closing the environment. Defaults to False.
+
+        Returns:
+            tuple[RoboTwinObsType, dict]:
+                A tuple containing the initial observation and
+                environment info after reset.
 
         """
         if env_ids is not None:
@@ -349,7 +364,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         ret_names.append(self._task.robot.right_gripper_name["base"])
         return ret_names
 
-    def _get_obs(self) -> dict[str, Any] | None:
+    def _get_obs(self) -> dict[str, Any]:
         """Get the current observation from the environment.
 
         Note that in current RoboTwin implementation, the joints of the robot
@@ -367,7 +382,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             ret.pop("joint_action", None)
             ret["cameras"] = get_observation_cams(ret)
             ret.pop("observation")
-
+        ret["tf"] = self._get_tf()
         return ret
 
     @property
@@ -402,6 +417,62 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
     def unwrapped_env(self) -> Base_Task:
         """Get the original RoboTwin environment."""
         return self._task
+
+    def _get_tf(self) -> BatchFrameTransformGraph:
+        """Get the frame transforms in the environment.
+
+        The transforms include the robot base transform(s).
+
+        Returns:
+            BatchFrameTransformGraph:
+                The robot base transform(s). If the robot is dual-arm and
+                use seperate urdf files, two base transforms corresponding to
+                left and right arms will be included. Otherwise, only one base
+                transform will be included.
+        """
+        left_base_tf = sapien_pose_to_orchard(
+            self._task.robot.left_entity_origion_pose
+        )
+        right_base_tf = sapien_pose_to_orchard(
+            self._task.robot.right_entity_origion_pose
+        )
+        tf_list = []
+        static_list = []
+        if left_base_tf == right_base_tf:
+            tf_list.append(
+                BatchFrameTransform(
+                    xyz=left_base_tf.xyz,
+                    quat=left_base_tf.quat,
+                    timestamps=left_base_tf.timestamps,
+                    parent_frame_id="world",
+                    child_frame_id="robot_base",
+                )
+            )
+            static_list.append(True)
+        else:
+            tf_list.append(
+                BatchFrameTransform(
+                    xyz=left_base_tf.xyz,
+                    quat=left_base_tf.quat,
+                    timestamps=left_base_tf.timestamps,
+                    parent_frame_id="world",
+                    child_frame_id="left_robot_base",
+                )
+            )
+            tf_list.append(
+                BatchFrameTransform(
+                    xyz=right_base_tf.xyz,
+                    quat=right_base_tf.quat,
+                    timestamps=right_base_tf.timestamps,
+                    parent_frame_id="world",
+                    child_frame_id="right_robot_base",
+                )
+            )
+            static_list.extend([True, True])
+        return BatchFrameTransformGraph(
+            tf_list=tf_list,
+            static_tf=static_list,
+        )
 
 
 class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
@@ -469,6 +540,8 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             replace the original "observation" key.
         - other keys in the original observation will be kept.
 
+    The default is False for compatibility with original RoboTwin code.
+    We highly recommend to set this field to True for better usability!
     """
 
     task_config_path: str | None = None

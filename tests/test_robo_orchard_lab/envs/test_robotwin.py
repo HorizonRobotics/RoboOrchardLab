@@ -14,19 +14,39 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import pytest
+
 from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
 
 
-class TestRoboTwinEnv:
-    def test_init_without_expert_check(self):
-        env = RoboTwinEnv(
-            RoboTwinEnvCfg(
-                task_name="place_object_scale",
-                check_expert=False,
-                seed=1,
-                check_task_init=False,  # for fast initialization
-            )
+@pytest.fixture()
+def dummy_env_without_expert_check():
+    env = RoboTwinEnv(
+        RoboTwinEnvCfg(
+            task_name="place_object_basket",
+            check_expert=False,
+            seed=1,
+            check_task_init=False,  # for fast initialization
         )
-        env.reset()
-        assert env is not None
-        assert env._task is not None
+    )
+    yield env
+    env.close()
+
+
+class TestRoboTwinEnv:
+    def test_tf_in_obs(self, dummy_env_without_expert_check: RoboTwinEnv):
+        env = dummy_env_without_expert_check
+        obs, info = env.reset()
+        assert obs is not None
+        assert "tf" in obs
+
+    def test_step(self, dummy_env_without_expert_check: RoboTwinEnv):
+        # Note that not all env can step because of robotwin BUG!
+        env = dummy_env_without_expert_check
+        obs, info = env.reset()
+        assert obs is not None
+
+        action = [1.0] * 14
+        step_return = env.step(action)
+        assert step_return.observations is not None
+        assert "tf" in step_return.observations

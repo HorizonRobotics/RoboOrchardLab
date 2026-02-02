@@ -213,6 +213,7 @@ if __name__ == "__main__":
         "requests",
         "huggingface_hub",
         "cloudpickle",
+        "pyzstd",
         # metric
         "torchmetrics>=1.6",
         "datasets>=4.0.0",
@@ -224,10 +225,14 @@ if __name__ == "__main__":
         "numpydantic",
         "ray[default]>=2.49.1",
         "pytorch-kinematics>=0.7.5",
-        # use git url to install the latest version.
+        # Use git url to install the latest version.
         # This is for non-release version only.
+        # If you are releasing a new version, please change it to the
+        # specific version.
+        # Do not delete the line below, just comment it out and add the
+        # new line.
         # "robo_orchard_core==0.2.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@63ec9b0057c95310233055c4065197324de2b824",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@094b4c60430cc2d34fa17d03fb3bcd174bfdc67e",
     ]
     # optional dependencies
     extras_require = {

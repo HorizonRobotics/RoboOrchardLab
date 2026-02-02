@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 import datasets as hg_datasets
 import numpy as np
 import pyarrow as pa
+import pyzstd
 import torch
 from datasets.features.features import register_feature
 from pydantic import BaseModel
@@ -221,6 +222,8 @@ class PickleFeature(RODataFeature, FeatureDecodeMixin):
 
     binary_type: Literal["binary", "large_binary"] = "binary"
 
+    compression: Literal["zstd"] | None = None
+
     def __post_init__(self):
         # make sure that class_type is string for serialization
         if not isinstance(self.class_type, str):
@@ -262,12 +265,12 @@ class PickleFeature(RODataFeature, FeatureDecodeMixin):
             if class_type is torch.Tensor and isinstance(
                 value, (np.ndarray, list, tuple)
             ):
-                return pickle.dumps(value)
+                return self._encode_obj(value)
 
             raise TypeError(
                 f"Value must be of type {class_type}, but got {type(value)}."
             )
-        return pickle.dumps(value)
+        return self._encode_obj(value)
 
     def decode_example(
         self,
@@ -279,12 +282,23 @@ class PickleFeature(RODataFeature, FeatureDecodeMixin):
                 "Decoding is disabled for this feature. Please use "
                 "PickleFeature(decode=True) instead."
             )
-        ret = pickle.loads(value)
+        ret = self._decode_obj(value)
         class_type = self._get_class_type()
         if class_type is torch.Tensor and not isinstance(ret, torch.Tensor):
             ret = torch.tensor(ret)
 
         return ret
+
+    def _encode_obj(self, obj: Any) -> bytes:
+        ret = pickle.dumps(obj)
+        if self.compression == "zstd":
+            ret = pyzstd.compress(ret)
+        return ret
+
+    def _decode_obj(self, data: bytes) -> Any:
+        if self.compression == "zstd":
+            data = pyzstd.decompress(data)
+        return pickle.loads(data)
 
 
 def guess_hg_features(
@@ -316,6 +330,10 @@ def guess_hg_features(
     if dataset_feature_kwargs is None:
         dataset_feature_kwargs = {}
 
+    from robo_orchard_lab.dataset.datatypes.hg_features.tensor import (
+        TypedTensorFeature,
+    )
+
     def guess_feature(obj: Any):
         if isinstance(obj, (hg_datasets.Features, RODataFeature)):
             return obj
@@ -333,6 +351,15 @@ def guess_hg_features(
             return hg_datasets.Sequence(feature=guess_feature(value))
         elif isinstance(obj, ToDataFeatureMixin):
             return obj.dataset_feature(**dataset_feature_kwargs)
+        elif isinstance(obj, (np.ndarray, torch.Tensor)):
+            dtype = (
+                obj.dtype if isinstance(obj, np.ndarray) else obj.numpy().dtype
+            )
+            as_torch_tensor = isinstance(obj, torch.Tensor)
+            return TypedTensorFeature(
+                dtype=str(dtype),
+                as_torch_tensor=as_torch_tensor,
+            )
         else:
             return hg_datasets.features.features.generate_from_arrow_type(
                 pa.array([obj]).type

@@ -76,9 +76,9 @@ class BatchTransform3DFeature(RODictDataFeature, TypedDictFeatureDecode):
 
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
-    _decode_type: type = BatchTransform3D
 
     def __post_init__(self):
+        self._decode_type = BatchTransform3D
         typed_tensor_feature = TypedTensorFeature(
             dtype=self.dtype, as_torch_tensor=True
         )
@@ -120,10 +120,9 @@ class BatchPoseFeature(BatchTransform3DFeature):
     with additional metadata about the poses.
     """
 
-    _decode_type: type = BatchPose
-
     def __post_init__(self):
         super().__post_init__()
+        self._decode_type = BatchPose
         self._dict["frame_id"] = hg_datasets.Value("string")
 
 
@@ -154,9 +153,8 @@ class BatchFrameTransformFeature(BatchTransform3DFeature):
     with additional metadata about the frame transforms.
     """
 
-    _decode_type: type = BatchFrameTransform
-
     def __post_init__(self):
         super().__post_init__()
+        self._decode_type = BatchFrameTransform
         self._dict["parent_frame_id"] = hg_datasets.Value("string")
         self._dict["child_frame_id"] = hg_datasets.Value("string")

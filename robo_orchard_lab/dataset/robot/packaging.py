@@ -113,11 +113,15 @@ class DataFrame:
 
 class EpisodePackaging(metaclass=ABCMeta):
     @abstractmethod
-    def generate_episode_meta(self) -> EpisodeMeta:
-        """Generate metadata for the episode.
+    def generate_episode_meta(self) -> EpisodeMeta | None:
+        """Generate metadata for the episode if it should be included.
+
+        Should return None if the episode is to be skipped.
 
         Returns:
-            EpisodeMeta: Metadata containing the episode, robot, and task.
+            EpisodeMeta | None: Metadata containing the episode, robot,
+                and task. If None is returned, the episode will be skipped
+                during packaging.
         """
         raise NotImplementedError(
             "This method should be implemented by subclasses to "
@@ -277,6 +281,8 @@ class DatasetPackaging:
         for episode in episodes:
             try:
                 episode_meta = episode.generate_episode_meta()
+                if episode_meta is None:
+                    continue
             except Exception as e:
                 warnings.warn(
                     f"Failed to generate episode metadata for {episode}. "

@@ -74,9 +74,9 @@ class BatchFrameTransformGraphStateFeature(
     dtype: Literal["float32", "float64"] = "float32"
 
     decode: bool = True
-    _decode_type: type = BatchFrameTransformGraphState
 
     def __post_init__(self):
+        self._decode_type = BatchFrameTransformGraphState
         self._dict = {
             "tf_list": hg_datasets.features.features.Sequence(
                 BatchFrameTransformFeature(dtype=self.dtype)

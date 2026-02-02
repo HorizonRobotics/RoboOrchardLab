@@ -97,18 +97,12 @@ that we use. These are defined in our `core data types tutorial <https://horizon
 # visualization. We also import Image and io to handle image decoding,
 # as BatchCameraDataEncoded typically stores compressed bytes.
 #
-import io
 import pprint
 
 import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from PIL import Image
 from robo_orchard_core.datatypes.camera_data import (
     BatchCameraData,
     BatchCameraDataEncoded,
-    BatchImageData,
-    ImageMode,
 )
 
 from robo_orchard_lab.dataset.robot import (
@@ -176,21 +170,12 @@ print(f"Joints: {sample['joints']}")
 #
 
 
-def simple_decoder(image_bytes: bytes, format: str) -> BatchImageData:
-    pil_img = Image.open(io.BytesIO(image_bytes))
-    # Convert to tensor and add batch dimension
-    img_tensor = torch.from_numpy(np.array(pil_img)).unsqueeze(0)
-    return BatchImageData(sensor_data=img_tensor, pix_fmt=ImageMode.RGB)
-
-
 fig, axes = plt.subplots(1, 3, figsize=(12, 5))
 fig.suptitle("Camera Feeds", fontsize=16)
 
 for ax, col_name in zip(axes, ["left", "middle", "right"], strict=True):  # type: ignore
     camera_data: BatchCameraDataEncoded = sample[col_name]
-    decode_camera_data: BatchCameraData = camera_data.decode(
-        decoder=simple_decoder
-    )
+    decode_camera_data: BatchCameraData = camera_data.decode()
     img_to_plot = decode_camera_data.sensor_data[0].numpy()
     # Plot the image on the correct axis
     ax.imshow(img_to_plot)

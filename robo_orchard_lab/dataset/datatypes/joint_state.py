@@ -65,9 +65,8 @@ class BatchJointsStateFeature(RODictDataFeature, TypedDictFeatureDecode):
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
 
-    _decode_type: type = BatchJointsState
-
     def __post_init__(self):
+        self._decode_type = BatchJointsState
         _typed_tensor_feature = TypedTensorFeature(
             dtype=self.dtype, as_torch_tensor=True
         )

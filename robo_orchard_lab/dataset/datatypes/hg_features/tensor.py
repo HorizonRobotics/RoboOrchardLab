@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
+import warnings
 from dataclasses import dataclass
 from io import BytesIO
 from typing import TypedDict
@@ -105,6 +106,7 @@ class TypedTensorFeature(RODictDataFeature, FeatureDecodeMixin):
                 hg_datasets.features.Value("int32")
             ),
         }
+        self._warning_issued = False
 
     def encode_example(
         self, value: np.ndarray | torch.Tensor | None
@@ -116,9 +118,15 @@ class TypedTensorFeature(RODictDataFeature, FeatureDecodeMixin):
             value = value.numpy()
 
         if value.dtype != self.dtype:
-            raise ValueError(
-                f"Expected tensor of type {self.dtype}, but got {value.dtype}"
-            )
+            # warn at most once per feature instance
+            if not self._warning_issued:
+                warnings.warn(
+                    f"Input tensor dtype {value.dtype} does not match "
+                    f"feature dtype {self.dtype}. Casting.",
+                    UserWarning,
+                )
+                self._warning_issued = True
+            value = value.astype(dtype=self.dtype)
 
         serialized = TensorFeatureSerialized(
             data=value.flatten(),

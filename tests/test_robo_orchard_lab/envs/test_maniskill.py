@@ -13,11 +13,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import pytest
+
+try:
+    import mani_skill  # noqa: F401
+except ImportError:
+    pytest.skip("mani_skill is not installed", allow_module_level=True)
 
 from robo_orchard_lab.envs.maniskill import ManiSkillEnv, ManiSkillEnvCfg
 
 
-class TestRoboTwinEnv:
+class TestManiSkillEnv:
     def test_env_create(self):
         env = ManiSkillEnv(
             ManiSkillEnvCfg(env_id="PickCube-v1", obs_mode="rgbd")
