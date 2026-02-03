@@ -73,7 +73,6 @@ class BehaviorPacker:
         self.tasks = tasks
         self.num_steps_per_shard = num_steps_per_shard
 
-
         self.manip_packer = BehaviorManipulationPacker(
             input_path,
             output_path + "_manipulation_lmdb",
@@ -178,10 +177,8 @@ class BehaviorPacker:
                     "start": start,
                     "end": end,
                     "subtask_text": subtask_text,
-                    "subtask_id": subtask_id
-
+                    "subtask_id": subtask_id,
                 }
-
             )
         subtasks.sort(key=lambda x: x["idx"])
 
@@ -208,7 +205,7 @@ class BehaviorPacker:
                     "skill_text": skill_text,
                     "skill_id": skill_id,
                     "skill_type": skill_type,
-                    "task_text": task_desc
+                    "task_text": task_desc,
                 }
             )
         raw_skills.sort(key=lambda x: x["idx"])
@@ -236,9 +233,7 @@ class BehaviorPacker:
 
         # skill to subtask
         for skill in pad_skill:
-            st = self._assign_subtask_to_skill(
-                skill, subtasks, min_ratio=0.5
-            )
+            st = self._assign_subtask_to_skill(skill, subtasks, min_ratio=0.5)
             if st is None:
                 skill["subtask_id"] = -1
                 skill["subtask_text"] = "null"
@@ -248,7 +243,9 @@ class BehaviorPacker:
 
         return pad_skill
 
-    def load_parquet(self, path: str) -> tuple[
+    def load_parquet(
+        self, path: str
+    ) -> tuple[
         np.ndarray,  # mobile_traj
         np.ndarray,  # state
         np.ndarray,  # action
@@ -265,9 +262,7 @@ class BehaviorPacker:
         # )
         # timestamp =  np.array(df["timestamp"].tolist(), dtype=np.float32)
 
-        full_obs = np.array(
-            df["observation.state"].tolist(), dtype=np.float32
-        )
+        full_obs = np.array(df["observation.state"].tolist(), dtype=np.float32)
 
         # joint state
         state = [
@@ -299,9 +294,7 @@ class BehaviorPacker:
 
         # base traj
         mobile_traj = self._build_mobile_traj(
-            robot_pos,
-            robot_ori_sin,
-            robot_ori_cos
+            robot_pos, robot_ori_sin, robot_ori_cos
         )
 
         # extrinsic / intrinsic
@@ -332,13 +325,7 @@ class BehaviorPacker:
             intr[:, :3, :3] = utils.CAMERA_INTRINSICS["R1Pro"][cam]
             intrinsic[:, cam_idx] = intr
 
-        return (
-            mobile_traj,
-            state,
-            action,
-            extrinsic,
-            intrinsic
-        )
+        return (mobile_traj, state, action, extrinsic, intrinsic)
 
     def load_frames(
         self,
@@ -415,8 +402,7 @@ class BehaviorPacker:
             )
 
     def _select_packer(
-        self,
-        skill_type: str
+        self, skill_type: str
     ) -> BaseLmdbManipulationDataPacker:
         if skill_type == "navigation":
             return self.nav_packer
@@ -502,18 +488,25 @@ class BehaviorPacker:
         cam: str,
         uuid_prefix: str,
         skills: list[dict],
-        episode_keep_indices: np.ndarray,
+        skill_keep_masks: list[np.ndarray],
     ) -> None:
-        keep_prefix = np.cumsum(episode_keep_indices, dtype=np.int32)
+        skills = sorted(
+            enumerate(skills),
+            key=lambda x: x[1]["start"],
+        )
+        skill_indices, skills = zip(*skills, strict=False)
+        skill_indices = list(skill_indices)
+        skills = list(skills)
+
+        skill_prefix = [
+            np.cumsum(mask.astype(np.int32)) for mask in skill_keep_masks
+        ]
 
         skill_idx = 0
         cur = skills[skill_idx]
         frame_idx = 0
-        for frame in utils.decode_video_to_frames_ffmpeg(video_path):
-            if not episode_keep_indices[frame_idx]:
-                frame_idx += 1
-                continue
 
+        for frame in utils.decode_video_to_frames_ffmpeg(video_path):
             while frame_idx >= cur["end"]:
                 skill_idx += 1
                 if skill_idx >= len(skills):
@@ -524,18 +517,28 @@ class BehaviorPacker:
                 frame_idx += 1
                 continue
 
-            assert cur["start"] <= frame_idx < cur["end"], (
-                f"frame {frame_idx} not in skill {cur['start']}~{cur['end']}"
-            )
-
-            base = keep_prefix[cur["start"] - 1] if cur["start"] > 0 else 0
-            local_idx = keep_prefix[frame_idx] - base - 1
-            uuid = f"{uuid_prefix}{skill_idx}/{cam}/{local_idx}"
+            # encode once
             _, fbuf = cv2.imencode(".jpg", frame.astype(np.uint8))
 
-            skill_type = cur["skill_type"]
-            packer = self._select_packer(skill_type)
-            packer.image_pack_file.write(uuid, fbuf)
+            # find all skill contain cur frame_idx
+            j = skill_idx
+            while (
+                j < len(skills)
+                and skills[j]["start"] <= frame_idx < skills[j]["end"]
+            ):
+                orig_idx = skill_indices[j]
+                keep_mask = skill_keep_masks[orig_idx]
+
+                if keep_mask[frame_idx]:
+                    local_idx = skill_prefix[orig_idx][frame_idx] - 1
+
+                    uuid = f"{uuid_prefix}{orig_idx}/{cam}/{local_idx}"
+
+                    skill_type = skills[j]["skill_type"]
+                    packer = self._select_packer(skill_type)
+                    packer.image_pack_file.write(uuid, fbuf)
+
+                j += 1
 
             frame_idx += 1
 
@@ -545,19 +548,25 @@ class BehaviorPacker:
         cam: str,
         uuid_prefix: str,
         skills: list[dict],
-        episode_keep_indices: np.ndarray,
+        skill_keep_masks: list[np.ndarray],
     ) -> None:
-        keep_prefix = np.cumsum(episode_keep_indices, dtype=np.int32)
+        skills = sorted(
+            enumerate(skills),
+            key=lambda x: x[1]["start"],
+        )
+        skill_indices, skills = zip(*skills, strict=False)
+        skill_indices = list(skill_indices)
+        skills = list(skills)
+
+        skill_prefix = [
+            np.cumsum(mask.astype(np.int32)) for mask in skill_keep_masks
+        ]
 
         skill_idx = 0
         cur = skills[skill_idx]
         frame_idx = 0
 
         for frame in utils.decode_depth_to_frames_ffmpeg(video_path):
-            if not episode_keep_indices[frame_idx]:
-                frame_idx += 1
-                continue
-
             while frame_idx >= cur["end"]:
                 skill_idx += 1
                 if skill_idx >= len(skills):
@@ -568,22 +577,27 @@ class BehaviorPacker:
                 frame_idx += 1
                 continue
 
-            assert cur["start"] <= frame_idx < cur["end"], (
-                f"frame {frame_idx} not in skill {cur['start']}~{cur['end']}"
-            )
-
             frame_scaled = frame * 1000
-            _, fbuf = cv2.imencode(
-                ".png", frame_scaled.astype(np.uint16)
-            )
+            _, fbuf = cv2.imencode(".png", frame_scaled.astype(np.uint16))
 
-            base = keep_prefix[cur["start"] - 1] if cur["start"] > 0 else 0
-            local_idx = keep_prefix[frame_idx] - base - 1
-            uuid = f"{uuid_prefix}{skill_idx}/{cam}/{local_idx}"
+            j = skill_idx
+            while (
+                j < len(skills)
+                and skills[j]["start"] <= frame_idx < skills[j]["end"]
+            ):
+                orig_idx = skill_indices[j]
+                keep_mask = skill_keep_masks[orig_idx]
 
-            skill_type = cur["skill_type"]
-            packer = self._select_packer(skill_type)
-            packer.depth_pack_file.write(uuid, fbuf)
+                if keep_mask[frame_idx]:
+                    local_idx = skill_prefix[orig_idx][frame_idx] - 1
+
+                    uuid = f"{uuid_prefix}{orig_idx}/{cam}/{local_idx}"
+
+                    skill_type = skills[j]["skill_type"]
+                    packer = self._select_packer(skill_type)
+                    packer.depth_pack_file.write(uuid, fbuf)
+
+                j += 1
 
             frame_idx += 1
 
@@ -615,9 +629,8 @@ class BehaviorPacker:
                 intrinsic,
             ) = self.load_parquet(parquet_file)
 
-
             num_steps = state.shape[0]
-            episode_keep_indices = np.zeros(num_steps, dtype=bool)
+            skill_keep_masks = []
             for i, skill in enumerate(skills):
                 skill_uuid = f"{task_id}_{episode_id}_{suffix}{i}"
                 start, end = skill["start"], skill["end"]
@@ -634,10 +647,17 @@ class BehaviorPacker:
                     state=state[start:end],
                     action=action[start:end],
                     extrinsic=extrinsic[start:end],
-                    intrinsic=intrinsic[start:end]
+                    intrinsic=intrinsic[start:end],
                 )
 
-                episode_keep_indices[start:end] |= skill_keep
+                keep_full = np.zeros(num_steps, dtype=bool)
+                keep_full[start:end] = skill_keep
+                skill_keep_masks.append(keep_full)
+
+                print(
+                    f"{skill_uuid}: {len(skill_keep)} steps "
+                    f"-> {skill_keep.sum()} steps"
+                )
 
                 self.write_meta_data(
                     skill_uuid=skill_uuid,
@@ -657,11 +677,7 @@ class BehaviorPacker:
                     success=True,
                     simulation=True,
                 )
-                self.write_index_data(
-                    ep_idx,
-                    index_data,
-                    skill["skill_type"]
-                )
+                self.write_index_data(ep_idx, index_data, skill["skill_type"])
                 ep_idx += 1
 
             # not a good idea, but load all frames into memory maybe oom
@@ -673,7 +689,7 @@ class BehaviorPacker:
                         cam=cam,
                         uuid_prefix=uuid_prefix,
                         skills=skills,
-                        episode_keep_indices=episode_keep_indices
+                        skill_keep_masks=skill_keep_masks,
                     )
                 elif "depth" in cam:
                     self.write_depth_data(
@@ -681,7 +697,7 @@ class BehaviorPacker:
                         cam=cam,
                         uuid_prefix=uuid_prefix,
                         skills=skills,
-                        episode_keep_indices=episode_keep_indices
+                        skill_keep_masks=skill_keep_masks,
                     )
         self.manip_packer.close()
         self.nav_packer.close()
@@ -700,6 +716,6 @@ if __name__ == "__main__":
         input_path=args.input_path,
         output_path=args.output_path,
         tasks=args.tasks,
-        num_steps_per_shard=args.num_steps_per_shard
+        num_steps_per_shard=args.num_steps_per_shard,
     )
     bp.process()

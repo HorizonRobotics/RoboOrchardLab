@@ -82,7 +82,8 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         hist_steps=None,
         pred_steps=None,
         reset_step=10000,
-        dataset_name="b1k"
+        dataset_name="b1k",
+        **kwargs,
     ):
         super().__init__(
             paths=paths,
@@ -93,7 +94,8 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             task_names=task_names,
             lazy_init=lazy_init,
             num_episode=num_episode,
-            reset_step=reset_step
+            reset_step=reset_step,
+            **kwargs,
         )
 
         if cam_names is not None:
@@ -180,12 +182,8 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
                 f"{uuid}/robot_action/joint_position"
             ]
 
-            extrinsic = self.meta_lmdbs[lmdb_index][
-                f"{uuid}/extrinsic"
-            ]
-            intrinsic = self.meta_lmdbs[lmdb_index][
-                f"{uuid}/intrinsic"
-            ]
+            extrinsic = self.meta_lmdbs[lmdb_index][f"{uuid}/extrinsic"]
+            intrinsic = self.meta_lmdbs[lmdb_index][f"{uuid}/intrinsic"]
 
         else:
             mobile_traj, step_index_in_shard = self._get_meta_with_shard(
@@ -232,7 +230,8 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         data = dict(
             uuid=uuid,
             step_index=(
-                step_index if step_index_in_shard is None
+                step_index
+                if num_steps_per_shard is None
                 else step_index_in_shard
             ),
             mobile_traj=mobile_traj,
@@ -259,7 +258,6 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
                 ]
 
                 image = cv2.imdecode(image, cv2.IMREAD_UNCHANGED)
-                #image = image.astype(np.float32) / 255.0
                 images.append(image)
 
             if self.load_depth:
@@ -293,4 +291,3 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             data = transform(data)
 
         return data
-

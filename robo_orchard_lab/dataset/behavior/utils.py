@@ -106,35 +106,17 @@ PROPRIOCEPTION_INDICES = {
     ),
     "R1Pro": OrderedDict(
         {
-            "joint_qpos": np.s_[
-                0:28
-            ],
-            "joint_qpos_sin": np.s_[
-                28:56
-            ],
-            "joint_qpos_cos": np.s_[
-                56:84
-            ],
+            "joint_qpos": np.s_[0:28],
+            "joint_qpos_sin": np.s_[28:56],
+            "joint_qpos_cos": np.s_[56:84],
             "joint_qvel": np.s_[84:112],
             "joint_qeffort": np.s_[112:140],
-            "robot_pos": np.s_[
-                140:143
-            ],
-            "robot_ori_cos": np.s_[
-                143:146
-            ],
-            "robot_ori_sin": np.s_[
-                146:149
-            ],
-            "robot_2d_ori": np.s_[
-                149:150
-            ],
-            "robot_2d_ori_cos": np.s_[
-                150:151
-            ],
-            "robot_2d_ori_sin": np.s_[
-                151:152
-            ],
+            "robot_pos": np.s_[140:143],
+            "robot_ori_cos": np.s_[143:146],
+            "robot_ori_sin": np.s_[146:149],
+            "robot_2d_ori": np.s_[149:150],
+            "robot_2d_ori_cos": np.s_[150:151],
+            "robot_2d_ori_sin": np.s_[151:152],
             "robot_lin_vel": np.s_[152:155],
             "robot_ang_vel": np.s_[155:158],
             "arm_left_qpos": np.s_[158:165],
@@ -155,15 +137,9 @@ PROPRIOCEPTION_INDICES = {
             "gripper_right_qvel": np.s_[234:236],
             "trunk_qpos": np.s_[236:240],
             "trunk_qvel": np.s_[240:244],
-            "base_qpos": np.s_[
-                244:247
-            ],
-            "base_qpos_sin": np.s_[
-                247:250
-            ],
-            "base_qpos_cos": np.s_[
-                250:253
-            ],
+            "base_qpos": np.s_[244:247],
+            "base_qpos_sin": np.s_[247:250],
+            "base_qpos_cos": np.s_[250:253],
             "base_qvel": np.s_[253:256],
         }
     ),
@@ -291,7 +267,8 @@ def decode_depth_to_frames_ffmpeg(
         ffmpeg.input(video_path)
         .output(
             "pipe:", format="rawvideo", pix_fmt="gray16le", loglevel="error"
-        ).run_async(pipe_stdout=True)
+        )
+        .run_async(pipe_stdout=True)
     )
 
     frame_size = width * height * 2
@@ -339,7 +316,7 @@ def compute_episode_keep_indices(
     action: np.ndarray,
     extrinsic: np.ndarray,
     intrinsic: np.ndarray,
-    #static_threshold: float = 1e-3,
+    # static_threshold: float = 1e-3,
     static_threshold: float = 1e-3,
     base_time: np.ndarray | None = None,
     head_time_to_filter: float | None = None,
@@ -349,22 +326,19 @@ def compute_episode_keep_indices(
     static_mask = np.ones(num_steps, dtype=bool)
 
     if static_threshold > 0:
+
         def diff_func(x):
             x = np.asarray(x)
             if x.ndim == 1:
                 x = x[:, None]
             return np.any(
-                np.abs(np.diff(x, axis=0)) > static_threshold,
-                axis=1
+                np.abs(np.diff(x, axis=0)) > static_threshold, axis=1
             )
 
         diff_mobile_traj = diff_func(mobile_traj)
         diff_state = diff_func(state)
 
-        dynamic = (
-            diff_mobile_traj |
-            diff_state
-        )
+        dynamic = diff_mobile_traj | diff_state
 
         static_mask[1:] = dynamic
 
@@ -379,8 +353,6 @@ def compute_episode_keep_indices(
         time_mask[time_to_end < tail_time_to_filter] = False
 
     keep_indices = static_mask & time_mask
-
-    print(f"Filtering: {num_steps} steps -> {keep_indices.sum()} steps")
 
     mobile_traj_filt = mobile_traj[keep_indices]
     state_filt = state[keep_indices]
@@ -409,8 +381,7 @@ def traj_world_to_local(xy_yaw_world: np.ndarray):
     # rotation: world -> local
     c, s = np.cos(yaw0), np.sin(yaw0)
     world_to_local = np.array(
-        [[ c,  s],
-         [-s,  c]],
+        [[c, s], [-s, c]],
         dtype=xy_world.dtype,
     )
 
@@ -423,4 +394,3 @@ def traj_world_to_local(xy_yaw_world: np.ndarray):
 
     traj_local = np.column_stack([xy_local, yaw_local])
     return traj_local
-

@@ -257,7 +257,6 @@ class SimpleStateSampling:
         # assert len(hist_joint_state) >= 2
         # hist_joint_state[-1, :] = data["action"][step_index, :]
 
-
         data.update(
             hist_joint_state=hist_joint_state,
         )
@@ -285,7 +284,7 @@ class SimpleStateSampling:
                 mask_joint[-pad_len:] = 0.0
 
             mobile_traj = data["mobile_traj"][
-                step_index:step_index + pred_steps,
+                step_index : step_index + pred_steps,
             ]
             if mobile_traj.shape[0] == 1:
                 pred_mobile_traj = np.zeros((pred_steps, 3), dtype=np.float32)
@@ -299,8 +298,7 @@ class SimpleStateSampling:
                     pad_len = pred_steps - pred_mobile_traj.shape[0]
                     padding = np.tile(pred_mobile_traj[-1:], (pad_len, 1))
                     pred_mobile_traj = np.concatenate(
-                        [pred_mobile_traj, padding],
-                        axis=0
+                        [pred_mobile_traj, padding], axis=0
                     )
                     mask_mobile[-pad_len:] = 0.0
 
@@ -347,7 +345,7 @@ class CameraCrop:
         y0 = random.randint(0, h - ch)
         x0 = random.randint(0, w - cw)
 
-        cropped_rgb = img[y0:y0 + ch, x0:x0 + cw]
+        cropped_rgb = img[y0 : y0 + ch, x0 : x0 + cw]
         data["imgs"][i] = cv2.resize(
             cropped_rgb,
             (w, h),
@@ -355,7 +353,7 @@ class CameraCrop:
         )
 
         depth = data["depths"][i]
-        cropped_depth = depth[y0:y0 + ch, x0:x0 + cw]
+        cropped_depth = depth[y0 : y0 + ch, x0 : x0 + cw]
         data["depths"][i] = cv2.resize(
             cropped_depth,
             (w, h),
@@ -366,10 +364,7 @@ class CameraCrop:
 
 
 class CameraDropout:
-    def __init__(self,
-        drop_prob=None,
-        min_keep=1
-    ):
+    def __init__(self, drop_prob=None, min_keep=1):
         if drop_prob is None:
             self.drop_prob = {0: 0.3, 1: 0.3, 2: 0.2}
 
@@ -431,14 +426,14 @@ class CameraMask:
                 x0 = random.randint(0, max(0, img_w - w))
 
                 # img
-                img_patch = img[y0:y0 + h, x0:x0 + w]
+                img_patch = img[y0 : y0 + h, x0 : x0 + w]
                 fill = img_patch.mean(axis=(0, 1), keepdims=True)
-                img[y0:y0 + h, x0:x0 + w] = fill
+                img[y0 : y0 + h, x0 : x0 + w] = fill
 
                 # depth
-                d_patch = depth[y0:y0 + h, x0:x0 + w]
+                d_patch = depth[y0 : y0 + h, x0 : x0 + w]
                 fill_val = np.nanmean(d_patch)
-                depth[y0:y0 + h, x0:x0 + w] = fill_val
+                depth[y0 : y0 + h, x0 : x0 + w] = fill_val
 
             imgs[cam] = img
             depths[cam] = depth
@@ -696,9 +691,7 @@ class R1ProDualArmKinematics:
         ]
         joint_relative_pos = []
         for i, single_arm_joint_id_a in enumerate(arm_joint_id):
-            joint_ids_a = torch.arange(
-                len(single_arm_joint_id_a)
-            )
+            joint_ids_a = torch.arange(len(single_arm_joint_id_a))
             joint_relative_pos_per_arm = []
             for j, single_arm_joint_id_b in enumerate(arm_joint_id):
                 if j == i:
@@ -706,9 +699,7 @@ class R1ProDualArmKinematics:
                 else:
                     joint_ids_b = torch.arange(
                         -1,
-                        -(
-                            len(single_arm_joint_id_b) + 1
-                        ),
+                        -(len(single_arm_joint_id_b) + 1),
                         -1,
                     )
                 joint_relative_pos_per_arm.append(
@@ -837,13 +828,16 @@ class GetProjectionMat:
             projection_mat = intrinsic @ data["T_world2cam"]
             embodiedment_mat = torch.eye(4).to(projection_mat)
         elif self.target_coordinate == "ego":
-            projection_mat = (
-                intrinsic
-                @ data["T_base2cam"]
-                @ data["T_base2world"]
-                @ torch.linalg.inv(data["T_base2ego"])
-            )
-            embodiedment_mat = data["T_base2ego"]
+            # shape: (3,4,4) = base → cam
+            t_base2cam = data["T_world2cam"]
+
+            # base -> ego == high camera
+            t_base2ego = t_base2cam[2]
+            t_ego2cam = t_base2cam @ torch.linalg.inv(t_base2ego)
+
+            projection_mat = intrinsic @ t_ego2cam
+            embodiedment_mat = t_base2ego
+
         data["projection_mat"] = projection_mat
         data["embodiedment_mat"] = embodiedment_mat
         return data

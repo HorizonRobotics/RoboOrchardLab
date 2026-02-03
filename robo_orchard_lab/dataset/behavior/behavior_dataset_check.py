@@ -30,9 +30,9 @@ def draw_traj_board(
     *,
     board_h,
     board_w,
-    scale=50,              # pixels per meter (physical)
-    viz_scale=1.0,    # visualization-only scale (>=1.0 makes traj longer)
-    grid_meter=1.0,        # grid spacing in meters
+    scale=50,  # pixels per meter (physical)
+    viz_scale=1.0,  # visualization-only scale (>=1.0 makes traj longer)
+    grid_meter=1.0,  # grid spacing in meters
     traj_color=(0, 0, 255),
     robot_color=(0, 0, 0),
     axis_color=(0, 0, 0),
@@ -52,7 +52,7 @@ def draw_traj_board(
     if torch.is_tensor(local_traj):
         local_traj = local_traj.detach().cpu().numpy()
 
-    #local_traj = np.asarray(local_traj, dtype=np.float32)
+    # local_traj = np.asarray(local_traj, dtype=np.float32)
 
     board = np.ones((board_h, board_w, 3), dtype=np.uint8) * 255
     cx, cy = board_w // 2, board_h // 2
@@ -107,8 +107,8 @@ def draw_traj_board(
 
     pts = []
     for x, y in local_traj[:, :2]:
-        px = int(cx - y * scale_viz)   # y left
-        py = int(cy - x * scale_viz)   # x forward
+        px = int(cx - y * scale_viz)  # y left
+        py = int(cy - x * scale_viz)  # x forward
         pts.append((px, py))
 
     if len(pts) >= 2:
@@ -161,9 +161,7 @@ def draw_joint(
                 trans = joints[j, 1:4]
 
                 quat = joints[j, 4:]
-                rot = Rotation.from_quat(
-                    quat, scalar_first=True
-                ).as_matrix()
+                rot = Rotation.from_quat(quat, scalar_first=True).as_matrix()
 
                 global_joint_idx = js.start + j
                 axis_len = 0.06 if global_joint_idx in ee_indices else 0.04
@@ -212,12 +210,13 @@ def draw_joint(
 
     return vis_imgs
 
+
 def visualize_episode_joints(
     dataset,
     episode_index,
     output_path,
     fps=30,
-    traj_viz_range=5.0, # 5 meter
+    traj_viz_range=5.0,  # 5 meter
     traj_viz_scale=4.0,
 ):
     os.makedirs(output_path, exist_ok=True)
@@ -235,7 +234,6 @@ def visualize_episode_joints(
 
     video_writer = None
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
 
     for idx in tqdm(
         range(start_idx, end_idx),
@@ -294,14 +292,13 @@ def visualize_episode_joints(
 
         if video_writer is None:
             h, w = vis_img.shape[:2]
-            video_writer = cv2.VideoWriter(
-                save_file, fourcc, fps, (w, h)
-            )
+            video_writer = cv2.VideoWriter(save_file, fourcc, fps, (w, h))
 
         video_writer.write(vis_img)
 
     video_writer.release()
     return save_file
+
 
 """
 copy behavior_dataset_check.py project/sem/common
@@ -313,20 +310,16 @@ if __name__ == "__main__":
     config = load_config(config_path)
 
     concat_dataset = config.build_training_dataset(config.config)
-    cur_dataset = concat_dataset.datasets[0]
-    print(cur_dataset.cumsum_steps)
+    num = len(concat_dataset.datasets)
 
-    ep_num = len(cur_dataset.cumsum_steps)
-    for i in range(ep_num):
-        visualize_episode_joints(
-            cur_dataset,
-            episode_index=i,
-            output_path="./data_check_res"
-        )
+    for i in range(num):
+        cur_dataset = concat_dataset.datasets[i]
 
-    # visualize_episode_joints(
-    #     cur_dataset,
-    #     episode_index=8,
-    #     output_path="./data_check_res"
-    # )
-
+        ep_num = len(cur_dataset.cumsum_steps)
+        # eps_idx = random.sample(range(0, ep_num), 10)
+        eps_idx = list(range(ep_num))
+        print(eps_idx)
+        for j in eps_idx:
+            visualize_episode_joints(
+                cur_dataset, episode_index=j, output_path="./data_check_res"
+            )

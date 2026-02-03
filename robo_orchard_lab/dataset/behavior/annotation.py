@@ -58,7 +58,7 @@ class Annotation:
         frame_duration = skill["frame_duration"]
         start_raw, end_raw = frame_duration
         start = _extract_frame_value(start_raw, is_start=True)
-        end = _extract_frame_value(end_raw,   is_start=False)
+        end = _extract_frame_value(end_raw, is_start=False)
         skill["frame_duration"] = [start, end]
 
         return skill
@@ -83,7 +83,7 @@ class Annotation:
         frame_duration = primitive["frame_duration"]
         start_raw, end_raw = frame_duration
         start = _extract_frame_value(start_raw, is_start=True)
-        end = _extract_frame_value(end_raw,   is_start=False)
+        end = _extract_frame_value(end_raw, is_start=False)
         primitive["frame_duration"] = [start, end]
 
         return primitive
@@ -275,8 +275,7 @@ class Annotation:
                 src_name = src[-1] if isinstance(src, list) else src
                 return (
                     f"pick up {' and '.join(picked_items)} from {src_name}"
-                    .replace(" no top", "")
-                )
+                ).replace(" no top", "")
 
         # 15–19. place
         if desc.startswith("place"):
@@ -473,4 +472,3 @@ class Annotation:
 
         # fallback
         return desc.strip()
-

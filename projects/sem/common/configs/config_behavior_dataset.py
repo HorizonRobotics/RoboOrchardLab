@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 dataset_config = dict(
-    behavior1k=dict(
+    behavior1k_manipulation=dict(
+        dataset_name="b1k_manipulation",
         kinematics_config=dict(
             urdf="./urdf/r1_pro_with_gripper.urdf",
             torso_link_keys=[
@@ -84,9 +85,56 @@ dataset_config = dict(
             [1.0000, 0.0000],
         ],
         data_paths=[
-            "dataset/behavior1k_lmdb_data_v3/task_0000_manipulation_lmdb/",
-            "dataset/behavior1k_lmdb_data_v3/task_0000_navigation_lmdb/"
-
+            "data/behavior1k_lmdb_data/task_0000_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0001_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0002_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0003_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0004_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0005_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0006_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0007_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0008_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0009_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0010_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0011_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0012_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0013_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0014_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0015_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0016_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0017_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0018_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0019_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0020_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0021_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0022_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0023_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0024_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0025_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0026_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0027_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0028_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0029_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0030_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0031_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0032_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0033_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0034_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0035_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0036_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0037_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0038_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0039_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0040_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0041_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0042_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0043_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0044_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0045_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0046_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0047_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0048_manipulation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0049_manipulation_lmdb/",
         ],
         dst_wh=[476, 476],
         cam_names=[
@@ -94,13 +142,132 @@ dataset_config = dict(
             "right_wrist",
             "head",
         ],
-    )
+    ),
+    behavior1k_navigation=dict(
+        dataset_name="b1k_nvigation",
+        kinematics_config=dict(
+            urdf="./urdf/r1_pro_with_gripper.urdf",
+            torso_link_keys=[
+                "torso_link1",
+                "torso_link2",
+                "torso_link3",
+                "torso_link4",
+            ],
+            left_arm_link_keys=[
+                "left_arm_link1",
+                "left_arm_link2",
+                "left_arm_link3",
+                "left_arm_link4",
+                "left_arm_link5",
+                "left_arm_link6",
+                "left_arm_link7",
+            ],
+            left_finger_keys=[
+                "left_gripper_finger_link1",
+                # "left_gripper_finger_link2",
+            ],
+            right_arm_link_keys=[
+                "right_arm_link1",
+                "right_arm_link2",
+                "right_arm_link3",
+                "right_arm_link4",
+                "right_arm_link5",
+                "right_arm_link6",
+                "right_arm_link7",
+            ],
+            right_finger_keys=[
+                "right_gripper_finger_link1",
+                # "right_gripper_finger_link2",
+            ],
+        ),
+        scale_shift=[
+            # torso
+            [1.4836, 0.3491],
+            [2.6616, -0.1309],
+            [1.7017, -0.1309],
+            [3.0543, 0.0000],
+            # left arm
+            [2.8798, -1.5708],
+            [1.6580, 1.4835],
+            [2.3562, 0.0000],
+            [1.2218, -0.8726],
+            [2.3562, 0.0000],
+            [1.0472, 0.0000],
+            [1.5708, 0.0000],
+            [1.0000, 0.0000],
+            # right arm
+            [2.8798, -1.5708],
+            [1.6580, -1.4835],
+            [2.3562, 0.0000],
+            [1.2218, -0.8726],
+            [2.3562, 0.0000],
+            [1.0472, 0.0000],
+            [1.5708, 0.0000],
+            [1.0000, 0.0000],
+        ],
+        data_paths=[
+            "data/behavior1k_lmdb_data/task_0000_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0001_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0002_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0003_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0004_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0005_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0006_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0007_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0008_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0009_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0010_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0011_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0012_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0013_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0014_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0015_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0016_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0017_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0018_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0019_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0020_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0021_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0022_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0023_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0024_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0025_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0026_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0027_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0028_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0029_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0030_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0031_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0032_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0033_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0034_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0035_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0036_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0037_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0038_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0039_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0040_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0041_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0042_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0043_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0044_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0045_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0046_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0047_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0048_navigation_lmdb/",
+            "data/behavior1k_lmdb_data/task_0049_navigation_lmdb/",
+        ],
+        dst_wh=[476, 476],
+        cam_names=[
+            "left_wrist",
+            "right_wrist",
+            "head",
+        ],
+    ),
 )
 
 
-def build_transforms(
-    config, mode, kinematics_config, scale_shift, dst_wh
-):
+def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
     from robo_orchard_lab.dataset.behavior.transforms import (
         AddItems,
         AddScaleShift,
@@ -127,11 +294,15 @@ def build_transforms(
 
     joint_mask = (
         # torso
-        [True] * 4 +
+        [True] * 4
+        +
         # left arm
-        [True] * 7 + [False] +
+        [True] * 7
+        + [False]
+        +
         # right arm
-        [True] * 7 + [False]
+        [True] * 7
+        + [False]
     )
 
     add_data_relative_items = dict(
@@ -140,13 +311,13 @@ def build_transforms(
         fk_loss_weight=loss_weights,
         T_base2ego=np.eye(4).tolist(),
         T_base2world=np.eye(4).tolist(),
-        joint_mask=joint_mask
+        joint_mask=joint_mask,
     )
 
     resize = dict(type=Resize, dst_wh=dst_wh)
 
     to_tensor = dict(type=ToTensor)
-    projection_mat = dict(type=GetProjectionMat, target_coordinate="base")
+    projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
         convert_map=dict(
@@ -267,6 +438,8 @@ def build_datasets(
             reset_step=1000,
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
+            dataset_name=data_config.get("dataset_name", "b1k"),
+            flag=data_config.get("flag", 100001),
         )
 
         datasets.append(dataset)

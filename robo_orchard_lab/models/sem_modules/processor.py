@@ -84,6 +84,9 @@ class MultiArmManipulationInput:
     remaining_actions: TENSOR_TYPE | None = None
     """The remaining actions from last pred, if rtc is used."""
 
+    remaining_trajs: TENSOR_TYPE | None = None
+    """The remaining trajs from last pred, if rtc is used."""
+
     delay_horizon: int | None = None
     """The number of time steps to delay action execution, if rtc is used."""
 
@@ -102,6 +105,8 @@ class MultiArmManipulationOutput:
 
     pose: TENSOR_TYPE
     """The predicted joint angle position and 6d pose of each joint"""
+
+    mobile_traj: TENSOR_TYPE | None = None
 
 
 class Struct2Dict:
@@ -157,7 +162,10 @@ class Struct2Dict:
                 raise ValueError(
                     "delay_horizon must be provided when remaining_actions is given."  # noqa: E501
                 )
+
             input_data["remaining_actions"] = data.remaining_actions
+            if data.remaining_trajs is not None:
+                input_data["remaining_trajs"] = data.remaining_trajs
             input_data["delay_horizon"] = data.delay_horizon
 
         return input_data

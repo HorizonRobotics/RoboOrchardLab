@@ -77,7 +77,7 @@ class SimpleStateSampling:
             padding = np.tile(
                 action[-1:], (pred_steps - pred_state.shape[0], 1, 1)
             )
-            pred_mask[-padding.shape[0]:] = False
+            pred_mask[-padding.shape[0] :] = False
             pred_state = np.concatenate([pred_state, padding], axis=0)
 
         data.update(
