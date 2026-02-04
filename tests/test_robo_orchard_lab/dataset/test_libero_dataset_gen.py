@@ -22,7 +22,13 @@ try:
     import libero  # noqa: F401
 except ImportError:
     pytest.skip("libero is not installed", allow_module_level=True)
-from robo_orchard_lab.dataset.datatypes import BatchFrameTransformGraph
+from robo_orchard_lab.dataset.datatypes import (
+    BatchCameraDataEncodedFeature,
+    BatchFrameTransformFeature,
+    BatchFrameTransformGraph,
+    BatchFrameTransformGraphFeature,
+    BatchJointsStateFeature,
+)
 from robo_orchard_lab.dataset.libero.generate_dataset import (
     make_libero_dataset,
 )
@@ -55,15 +61,21 @@ def test_dataset_datatypes_has_timestamps(
 
     frame = dataset[2]
 
-    assert frame["joints"].timestamps is not None
-    assert frame["joints"].timestamps[0] > 0
-
-    assert frame["agentview_image"].timestamps is not None
-    assert frame["agentview_image"].timestamps[0] > 0
-
-    tf_graph: BatchFrameTransformGraph = frame["tf_world"]
-    tf_list = tf_graph.as_state().tf_list
-    assert len(tf_list) > 0
-    for tf in tf_list:
-        assert tf.timestamps is not None
-        assert tf.timestamps[0] > 0
+    for key, feature in dataset.features.items():
+        if isinstance(
+            feature,
+            (
+                BatchJointsStateFeature,
+                BatchFrameTransformFeature,
+                BatchCameraDataEncodedFeature,
+            ),
+        ):
+            assert frame[key].timestamps is not None
+            assert frame[key].timestamps[0] > 0
+        elif isinstance(feature, BatchFrameTransformGraphFeature):
+            tf_graph: BatchFrameTransformGraph = frame[key]
+            tf_list = tf_graph.as_state().tf_list
+            assert len(tf_list) > 0
+            for tf in tf_list:
+                assert tf.timestamps is not None
+                assert tf.timestamps[0] > 0

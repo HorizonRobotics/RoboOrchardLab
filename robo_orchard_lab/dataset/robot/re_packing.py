@@ -14,7 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from typing import Generator, Iterable
+from typing import Generator, Generic, Iterable, TypeVar
 
 import datasets as hg_datasets
 
@@ -39,8 +39,13 @@ from robo_orchard_lab.dataset.robot.packaging import (
 __all__ = ["repack_dataset"]
 
 
-class RePackingEpisodeHelper(EpisodePackaging):
+class DefaultRePackingEpisodeHelper(EpisodePackaging):
     """Helper class to re-package an episode from an existing dataset.
+
+    User can inherit this class to customize the episode meta or frame
+    generation by optionally overriding:
+    - `generate_episode_meta` to customize the episode meta.
+    - `generate_frames` to customize the frame data.
 
     Args:
         dataset (RODataset): The dataset to re-package from.
@@ -123,7 +128,12 @@ class RePackingEpisodeHelper(EpisodePackaging):
                 yield frame
 
 
-class RePackingDatasetHelper:
+RePackingEpisodeType = TypeVar(
+    "RePackingEpisodeType", bound=DefaultRePackingEpisodeHelper
+)
+
+
+class RePackingDatasetHelper(Generic[RePackingEpisodeType]):
     """Iterator to generate episodes for re-packaging.
 
     Args:
@@ -133,14 +143,24 @@ class RePackingDatasetHelper:
             grouped together!
     """
 
-    def __init__(self, dataset: RODataset, frame_indices: Iterable[int]):
+    def __init__(
+        self,
+        dataset: RODataset,
+        frame_indices: Iterable[int],
+        packing_impl: type[
+            RePackingEpisodeType
+        ] = DefaultRePackingEpisodeHelper,
+    ):
         self.dataset = dataset
         self.frame_indices = frame_indices
+        self.packing_impl = packing_impl
 
     def __iter__(self):
         return self._next_helper()
 
-    def _next_helper(self) -> Generator[RePackingEpisodeHelper, None, None]:
+    def _next_helper(
+        self,
+    ) -> Generator[RePackingEpisodeType, None, None]:
         current_episode_index = None
         current_episode_frames = []
 
@@ -158,7 +178,7 @@ class RePackingDatasetHelper:
 
                 if episode_index != current_episode_index:
                     # yield the previous episode
-                    yield RePackingEpisodeHelper(
+                    yield self.packing_impl(
                         self.dataset, current_episode_frames
                     )
                     current_episode_index = episode_index
@@ -176,7 +196,7 @@ class RePackingDatasetHelper:
         if batch_frame_indices:
             yield from process_batch(batch_frame_indices)
         if current_episode_frames:
-            yield RePackingEpisodeHelper(self.dataset, current_episode_frames)
+            yield self.packing_impl(self.dataset, current_episode_frames)
 
 
 def repack_dataset(
@@ -187,6 +207,7 @@ def repack_dataset(
     writer_batch_size: int = 1024,
     max_shard_size: str | int = "8GB",
     force_overwrite: bool = False,
+    packing_impl: type[RePackingEpisodeType] = DefaultRePackingEpisodeHelper,
 ):
     """Re-package a RoboOrchard dataset with selected frames for each episode.
 
@@ -205,6 +226,9 @@ def repack_dataset(
             Default is '8GB'.
         force_overwrite (bool): Whether to overwrite the target path if it
             already exists. Default is False.
+        packing_impl (type[RePackingEpisodeType]): The implementation class
+            for packaging each episode. Default is
+            `DefaultRePackingEpisodeHelper`.
 
     """
     if columns is not None:
@@ -222,7 +246,9 @@ def repack_dataset(
 
     packing = DatasetPackaging(features=hg_datasets.Features(features))
     packing.packaging(
-        episodes=RePackingDatasetHelper(dataset, frame_indices),
+        episodes=RePackingDatasetHelper(
+            dataset, frame_indices, packing_impl=packing_impl
+        ),
         dataset_path=target_path,
         writer_batch_size=writer_batch_size,
         max_shard_size=max_shard_size,

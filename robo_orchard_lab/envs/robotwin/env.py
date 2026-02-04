@@ -27,6 +27,9 @@ import gymnasium as gym
 import numpy as np
 import yaml
 from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
+from robo_orchard_core.kinematics.chain import (
+    KinematicChain,
+)
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
@@ -232,7 +235,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         # the take_action method will do internal check if reach step limit
         # or task is successful. Either case, the task will not take further
         # actions.
-        self._task.take_action(action)
+        self._task.take_action(action, action_type=self.cfg.action_type)
 
         # when reach step limit, truncated is True
         # Note that step_lim is None for default unlimited steps.
@@ -342,7 +345,26 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
         obs = self._get_obs() if return_obs else None
 
+        self._robot_urdf_chains = {
+            k: KinematicChain.from_content(v, format="urdf")
+            for k, v in self.get_robot_urdf().items()
+        }
+
         return obs, self._get_info()
+
+    def _joints2ee_pose(self, joints: np.ndarray) -> dict[str, np.ndarray]:
+        """Convert joint positions to end-effector poses.
+
+        Args:
+            joints (np.ndarray): The joint positions of the robot.
+
+        Returns:
+            dict[str, np.ndarray]: A dictionary mapping from robot side
+                ("left" or "right") to the end-effector pose as a
+                (4, 4) numpy array.
+
+        """
+        raise NotImplementedError("_joints2ee_pose not implemented yet.")
 
     def _get_info(self) -> dict[str, Any]:
         info = {"seed": self.cfg.seed, "task": self.cfg.task_name}
@@ -474,6 +496,26 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             static_tf=static_list,
         )
 
+    def get_robot_urdf(self) -> dict[str, str]:
+        """Get the URDF file content of the robot(s) in the environment.
+
+        Returns:
+            dict[str, str]: A dictionary mapping from robot side
+                ("left" or "right") to the URDF content.
+        """
+        urdf_contents = {}
+
+        assert self._task.robot.left_urdf_path is not None
+        with in_robotwin_workspace():
+            with open(self._task.robot.left_urdf_path, "rb") as f:
+                urdf_contents["left"] = f.read()
+            if self._task.robot.is_dual_arm is False:
+                assert self._task.robot.right_urdf_path is not None
+                with open(self._task.robot.right_urdf_path, "rb") as f:
+                    urdf_contents["right"] = f.read()
+
+        return urdf_contents
+
 
 class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """Configuration for the RoboTwin environment."""
@@ -492,6 +534,9 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     episode_id: int = 0
     """The episode ID for the environment, used for logging and tracking."""
+
+    action_type: Literal["qpos", "ee"] = "qpos"
+    """The type of action to use in the environment."""
 
     check_expert: bool = False
     """Whether to check the expert trajectory for the task.
@@ -552,6 +597,10 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     Note that we only support RoboTwin2.0 for now.
     """
+
+    endpose: bool | None = None
+    """Whether to output endpose in observation. If None, use the value
+    in task configuration file."""
 
     def __post_init__(self):
         if self.task_config_path is None:
@@ -676,6 +725,11 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
         with open(self.camera_config_path, "r", encoding="utf-8") as f:
             camera_config = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+        data_type = task_args["data_type"]
+        if self.endpose is not None and data_type["endpose"] != self.endpose:
+            logger.info(f"Overriding endpose in task config to {self.endpose}")
+            data_type["endpose"] = self.endpose
 
         head_camera_type = task_args["camera"]["head_camera_type"]
         task_args["head_camera_h"] = camera_config[head_camera_type]["h"]

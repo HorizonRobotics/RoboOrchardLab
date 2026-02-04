@@ -21,7 +21,7 @@ import filelock
 from robo_orchard_core.utils.logging import LoggerManager
 from sqlalchemy import URL
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, make_transient
 from sqlalchemy.sql import select
 
 from robo_orchard_lab.dataset.robot._table_manager import (
@@ -235,6 +235,8 @@ class DatasetMetaDBHandler:
             for i, obj in enumerate(
                 src_session.execute(select(step.orm_class)).scalars()
             ):
+                # make obj transient
+                make_transient(obj)
                 target_session.add(obj)
                 if (i + 1) % batch_size == 0:
                     target_session.commit()

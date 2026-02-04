@@ -38,11 +38,22 @@ def robotwin_ro_dataset_path(ROBO_ORCHARD_TEST_WORKSPACE: str) -> str:
     )
 
 
+@pytest.fixture()
+def libero_old_v0_dataset_path(
+    ROBO_ORCHARD_TEST_WORKSPACE: str,
+) -> str:
+    return os.path.join(
+        ROBO_ORCHARD_TEST_WORKSPACE,
+        "robo_orchard_workspace/datasets/old_version/libero_dataset_v0",
+    )
+
+
 @pytest.fixture(
     params=[
         "robotwin_ro_dataset_path",
+        "libero_old_v0_dataset_path",
     ],
-    ids=["robotwin_ro_V_None"],
+    ids=["robotwin_ro_V_None", "libero_ro_v0"],
 )
 def old_version_dataset(request) -> str:
     """Provide a database engine from different backends."""

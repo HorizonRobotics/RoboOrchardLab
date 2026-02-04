@@ -17,6 +17,7 @@
 from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
     McapBatchEncoderConfig,
     McapBatchFromBatchCameraDataEncodedConfig,
+    McapBatchFromBatchFrameTransformConfig,
     McapBatchFromBatchFrameTransformGraphConfig,
     McapBatchFromBatchJointStateConfig,
 )
@@ -29,6 +30,10 @@ def default_dataset_to_mcap_config() -> dict[str, McapBatchEncoderConfig]:
             target_topic="/observation/robot_state/joints",
         ),
     }
+    config["action_goal_eef"] = McapBatchFromBatchFrameTransformConfig(
+        target_topic="/action/goal_eef",
+    )
+
     for camera_name in [
         "agentview",
         "robot0_eye_in_hand",

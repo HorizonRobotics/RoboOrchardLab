@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import copy
 import io
 from dataclasses import dataclass
 from typing import Generator
@@ -102,18 +103,19 @@ def get_libero_suite_statistics() -> list[LiberoSuiteStatistics]:
 
 LiberoDatasetFeatures = hg_datasets.Features(
     {
-        "agentview_image": BatchCameraDataEncodedFeature(dtype="float32"),
-        "agentview_depth": BatchCameraDataEncodedFeature(dtype="float32"),
+        "agentview_image": BatchCameraDataEncodedFeature(dtype="float64"),
+        "agentview_depth": BatchCameraDataEncodedFeature(dtype="float64"),
         "robot0_eye_in_hand_image": BatchCameraDataEncodedFeature(
-            dtype="float32"
+            dtype="float64"
         ),
         "robot0_eye_in_hand_depth": BatchCameraDataEncodedFeature(
-            dtype="float32"
+            dtype="float64"
         ),
-        "joints": BatchJointsStateFeature(dtype="float32"),
-        "tf_world": BatchFrameTransformGraphFeature(dtype="float32"),
+        "joints": BatchJointsStateFeature(dtype="float64"),
+        "env_state": TypedTensorFeature(dtype="float64"),
+        "tf_world": BatchFrameTransformGraphFeature(dtype="float64"),
         "action": TypedTensorFeature(dtype="float64"),
-        "action_goal_eef": BatchFrameTransformFeature(dtype="float32"),
+        "action_goal_eef": BatchFrameTransformFeature(dtype="float64"),
         "reward": hg_datasets.Value("float64"),
         "terminated": hg_datasets.Value("bool"),
     }
@@ -219,25 +221,34 @@ class LiberoEpisodePacking(EpisodePackaging):
             orig_states: np.ndarray = demo_data["states"][()]  # type: ignore
             obs, _ = env.reset(seed=0, init_state=orig_states[0])
             frame = {}
+            frame["env_state"] = orig_states[0]
             self._convert_ob2frame(obs, frame)
             for _, action in enumerate(orig_actions):
                 frame["action"] = action
                 step_ret = env.step(action)
                 last_action = env.get_last_action()
                 assert last_action is not None
+
+                joints: BatchJointsState = frame["joints"]
+                last_action.goal_eef.timestamps = copy.copy(joints.timestamps)
+                last_action.goal_eef.child_frame_id = "goal_eef"
+
                 frame["action_goal_eef"] = last_action.goal_eef
                 frame["reward"] = step_ret.rewards
                 frame["terminated"] = step_ret.terminated
                 cache.cached_frames.append(frame)
                 frame = {}
-
                 obs = step_ret.observations
                 self._convert_ob2frame(obs, frame)
+                frame["env_state"] = env.get_sim_state()
 
             if step_ret.rewards > 0:
                 cache.success = True
 
-            episode_data = EpisodeData()
+            episode_data = EpisodeData(
+                truncated=False,
+                success=cache.success,
+            )
             robot = RobotData(
                 name="libero_panda",
                 content=env.get_robot_xml(),
@@ -260,16 +271,9 @@ class LiberoEpisodePacking(EpisodePackaging):
     def generate_episode_meta(self) -> EpisodeMeta | None:
         """Generate episode meta information.
 
-        This method first checks if the episode was successful by examining
-        the `success` attribute of the episode cache. If the episode was not
-        successful, it returns `None`. Otherwise, it constructs and returns an
-        `EpisodeMeta` object containing metadata about the episode, including
-        details about the robot and task.
-
+        For failed episodes, this method still generates the episode meta
+        information.
         """
-        if self.episode_cache.success is False:
-            return None
-
         return self.episode_cache.episode_meta
 
     def generate_frames(self) -> Generator[DataFrame, None, None]:

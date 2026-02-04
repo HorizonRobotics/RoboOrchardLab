@@ -50,3 +50,10 @@ class TestRoboTwinEnv:
         step_return = env.step(action)
         assert step_return.observations is not None
         assert "tf" in step_return.observations
+
+    def test_get_urdf(self, dummy_env_without_expert_check: RoboTwinEnv):
+        env = dummy_env_without_expert_check
+        env.reset()
+        urdf_dict = env.get_robot_urdf()
+        assert urdf_dict is not None
+        assert "left" in urdf_dict

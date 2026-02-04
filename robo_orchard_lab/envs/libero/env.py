@@ -39,6 +39,7 @@ from robo_orchard_core.utils.math import (
 from robosuite import macros
 from robosuite.controllers.osc import OperationalSpaceController
 from robosuite.environments.base import MujocoEnv
+from robosuite.utils.binding_utils import MjSim
 from typing_extensions import Literal
 
 from robo_orchard_lab.envs.libero.obs import (
@@ -160,6 +161,7 @@ class LiberoEnv(EnvBase):
         self._task = libero_task.task
         self._task_bddl_file = libero_task.task_bddl_file
         self._last_action: np.ndarray | None = None
+        self._last_obs: dict | None = None
 
         env = OffScreenRenderEnv(
             bddl_file_name=libero_task.task_bddl_file,
@@ -170,7 +172,7 @@ class LiberoEnv(EnvBase):
         self._env = env
 
         self._check_env_config()
-
+        self._control_dim: int = env.robots[0].controller.control_dim  # type: ignore # noqa
         self._robot_chain = KinematicChain.from_content(
             data=self.get_robot_xml(), format="mjcf", dtype=torch.float64
         )
@@ -199,6 +201,9 @@ class LiberoEnv(EnvBase):
         assert controller.orientation_limits is None, (
             "LiberoEnv currently only supports unlimited orientation limits."
         )
+        assert controller.control_dim == 6, (
+            "LiberoEnv currently only supports 6-DoF OSC control."
+        )
 
     def step(self, action: ArrayLike) -> LiberoEnvStepReturn:
         """Take a step in the environment.
@@ -211,6 +216,12 @@ class LiberoEnv(EnvBase):
         See :class:`robosuite.controllers.osc.OperationalSpaceController`
         and :class:`robosuite.manipulator.Manipulator` for more details.
 
+        This is the default action type for LiberoEnv, but users can also
+        choose to use the target end-effector pose as action by setting
+        `use_action_type` to "osc_delta_pose" in the config.
+        In that case, the action should be a 7-dimensional vector representing
+        the target end-effector pose (x, y, z, q_w, q_x, q_y, q_z) in world
+        frame, followed by gripper command.
 
         Note: Different from step function in libero env, we force update
         the observations after each step to ensure that the observations
@@ -220,11 +231,7 @@ class LiberoEnv(EnvBase):
         because some method of LiberoEnv directly access the simulation state.
 
         """
-        if isinstance(action, torch.Tensor):
-            action = action.numpy()
-        if isinstance(action, list):
-            action = np.array(action)
-
+        action = self._convert_action_if_needed(action)
         self._last_action = action
 
         _, reward, done, info = self._env.step(action)
@@ -235,6 +242,52 @@ class LiberoEnv(EnvBase):
             truncated=None,
             info=info,
         )
+
+    def _convert_action_if_needed(self, action: ArrayLike) -> np.ndarray:
+        """Convert the action to numpy array if needed."""
+        if isinstance(action, torch.Tensor):
+            action = action.numpy()
+        if isinstance(action, list):
+            action = np.array(action)
+
+        if self.cfg.use_action_type == "libero":
+            assert isinstance(action, np.ndarray), (
+                "Action must be a numpy array."
+            )
+            return action
+
+        assert self.cfg.use_action_type == "orchard_osc_target_eef", (
+            "Only 'libero' and 'orchard_osc_target_eef' action "
+            "types are supported."
+        )
+
+        # handle osc_delta_pose action type: convert the target
+        # pose to osc delta pose
+        if action.shape[-1] != 8:
+            raise ValueError(
+                "For 'orchard_osc_target_eef' action type, "
+                "the action must be a 8-dimensional vector: "
+                "[x, y, z, q_w, q_x, q_y, q_z , gripper_command]. "
+                f"Got action with shape {action.shape}."
+            )
+        source_pose = self._last_obs["tf_world"][self.eef_name]  # type: ignore
+
+        target_pose = BatchTransform3D(
+            xyz=torch.from_numpy(action[:3]).reshape(1, 3),
+            quat=torch.from_numpy(action[3:7]).reshape(1, 4),
+        )
+        gripper_action = action[7:]
+        arm_action_torch = self.get_arm_osc_delta_pose_from_target_pose(
+            target_pose=target_pose, source_pose=source_pose
+        )
+        arm_action = arm_action_torch[0].numpy()
+
+        return np.concatenate([arm_action, gripper_action], axis=0)
+
+    def get_sim_state(self) -> np.ndarray:
+        """Get the current simulator state as a flattened tensor."""
+        sim: MjSim = self._env.sim
+        return sim.get_state().flatten().copy()
 
     def _get_obs(self, force_update=True):
         """Get the current observation from the environment.
@@ -248,6 +301,7 @@ class LiberoEnv(EnvBase):
         obs = self._env.env._get_observations(force_update=force_update)
         if self.cfg.format_datatypes:
             obs = self._format_observation(obs)
+        self._last_obs = obs
         return obs
 
     def _format_observation(self, obs: LiberoObsType) -> LiberoObsType:
@@ -534,6 +588,25 @@ class LiberoEnvCfg(EnvBaseCfg[LiberoEnvType]):
     BatchFrameTransform.
 
     """
+
+    use_action_type: Literal["libero", "orchard_osc_target_eef"] = "libero"
+    """The type of action to use in the environment:
+    - "libero": use the original Libero action type defined in the robot
+    controller.
+    - "orchard_osc_target_eef": use the target end-effector pose as the action,
+    which will be converted to OSC delta pose internally in the environment.
+
+    """
+
+    def __post_init__(self):
+        if self.use_action_type == "orchard_osc_target_eef":
+            if self.format_datatypes is False:
+                raise ValueError(
+                    "format_datatypes must be True when using "
+                    "orchard_osc_target_eef action type, because the target "
+                    "eef pose in the action info requires the observation to "
+                    "be formatted with BatchFrameTransform."
+                )
 
 
 class LiberoEvalEnvCfg(LiberoEnvCfg[LiberoEvalEnv]):

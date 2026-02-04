@@ -60,6 +60,7 @@ rosbag2*
 
 ## tmp & debug
 dummy/
+dummy*
 
 ## pkl
 *.pkl

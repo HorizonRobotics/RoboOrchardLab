@@ -33,7 +33,6 @@ class TakeKeys(DictTransform):
     """A transform to take only the specified keys from the input dict."""
 
     cfg: TakeKeysConfig
-    is_variadic: bool = True
 
     def __init__(self, cfg: TakeKeysConfig) -> None:
         super().__init__()

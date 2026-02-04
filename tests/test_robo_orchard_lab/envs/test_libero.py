@@ -225,3 +225,52 @@ class TestLiberoEvalEnv:
             assert torch.isclose(
                 point_depth.to(depth_value), depth_value, atol=5e-2
             )
+
+    def test_action_type_target_eef(
+        self, dummy_libero_eval_env_formatted: LiberoEvalEnv
+    ):
+        env = dummy_libero_eval_env_formatted
+
+        # first step with default action type
+        obs, info = env.reset()
+        action = torch.tensor(
+            [0.4, 0.1, -0.2, 0.1, -0.1, 0.2, -1], dtype=torch.float32
+        )
+        _ = env.step(action)
+        last_action = env.get_last_action()
+        assert last_action is not None
+        assert isinstance(last_action.goal_eef, BatchFrameTransform)
+        assert isinstance(last_action.osc_arm_action, torch.Tensor)
+        assert isinstance(last_action.osc_gripper_action, torch.Tensor)
+
+        eef_action = torch.cat(
+            [
+                last_action.goal_eef.xyz[0],
+                last_action.goal_eef.quat[0],
+                torch.tensor([-1], dtype=torch.float32),
+            ]
+        )
+
+        # reset and step with target eef action type
+        env.reset()
+        env.cfg.use_action_type = "orchard_osc_target_eef"
+
+        env.step(eef_action.numpy())
+        last_action_by_eef = env.get_last_action()
+        assert last_action_by_eef is not None
+        assert isinstance(last_action_by_eef.goal_eef, BatchFrameTransform)
+        print("last_action_by_eef: ", last_action_by_eef)
+        print("last_action: ", last_action)
+        # compare the recorded goal eef with the one from previous action
+
+        assert torch.allclose(
+            last_action.goal_eef.xyz,
+            last_action_by_eef.goal_eef.xyz,
+            atol=4e-5,
+        )
+
+        assert torch.allclose(
+            last_action.goal_eef.quat,
+            last_action_by_eef.goal_eef.quat,
+            atol=4e-5,
+        )

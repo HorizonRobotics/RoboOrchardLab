@@ -574,6 +574,15 @@ class EpisodeData:
     automatically during packaging.
     """
 
+    truncated: bool | None = None
+    """Whether the episode was truncated."""
+
+    success: bool | None = None
+    """Whether the episode was successful."""
+
+    info: dict[str, Any] | None = None
+    """Additional information about the episode."""
+
 
 @dataclass
 class RobotData:
