@@ -56,6 +56,7 @@ config = dict(
         # "interna1_genieg1",
         # "isaac_pick_place",
         # "libero",
+        # "agibot_digit_challenge_task",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -67,6 +68,7 @@ config = dict(
         "robotwin2_0_franka_panda",
         "isaac_pick_place",
         "libero",
+        "agibot_digit_challenge",
     ],
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     # v5.0 setting
@@ -370,6 +372,9 @@ def build_model(config):
 
 def build_training_dataset(config, lazy_init=False):
     from config_agibot_dataset import build_datasets as build_agibot_datasets
+    from config_agibot_digit_dataset import (
+        build_datasets as build_agibot_digit_datasets,
+    )
     from config_agilex_dataset import build_datasets as build_agilex_datasets
     from config_droid_dataset import build_datasets as build_droid_datasets
     from config_egodex_dataset import build_datasets as build_egodex_datasets
@@ -459,6 +464,13 @@ def build_training_dataset(config, lazy_init=False):
             lazy_init=lazy_init,
         )
     )
+    datasets.extend(
+        build_agibot_digit_datasets(
+            config,
+            config["training_datasets"],
+            mode="training",
+        )
+    )
     dataset = ConcatDatasetWithFlag(datasets=datasets)
     return dataset
 
@@ -531,6 +543,9 @@ def build_optimizer(config, model):
 
 
 def build_processors(config):
+    from config_agibot_digit_dataset import (
+        build_processors as build_agibot_digit_processors,
+    )
     from config_agilex_dataset import (
         build_processors as build_agilex_processors,
     )
@@ -551,5 +566,8 @@ def build_processors(config):
     )
     processors.update(
         build_libero_processors(config, config["deploy_datasets"])
+    )
+    processors.update(
+        build_agibot_digit_processors(config, config["deploy_datasets"])
     )
     return processors
