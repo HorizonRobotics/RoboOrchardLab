@@ -48,7 +48,7 @@ pyright[nodejs]
 # build
 packaging>=25.0
 twine>=6.1.0
-setuptools>=77.0.3
+setuptools>=77.0.3,<80.0.0
 
 # numpy
 numpy<2
