@@ -14,6 +14,12 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataset_factory import (
+    processor_register,
+    train_dataset_register,
+    validation_dataset_register,
+)
+
 
 def parse_arrow_dirs(base_dir: str, limit: int = -1) -> list[str]:
     from pathlib import Path
@@ -415,7 +421,9 @@ def build_transforms(
     return transforms
 
 
-def build_datasets(config, dataset_names, mode="training"):
+@train_dataset_register()
+@validation_dataset_register()
+def build_datasets(config, dataset_names, mode="training", **kwargs):
 
     from torchvision.transforms import Compose
 
@@ -483,6 +491,7 @@ def build_datasets(config, dataset_names, mode="training"):
     return datasets
 
 
+@processor_register()
 def build_processors(config, dataset_names):
     from robo_orchard_lab.models.sem_modules import (
         SEMProcessor,

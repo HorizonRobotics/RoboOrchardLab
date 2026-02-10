@@ -17,6 +17,7 @@
 import logging
 
 import numpy as np
+from dataset_factory import processor_register, train_dataset_register
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +410,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
     return transforms
 
 
+@train_dataset_register()
 def build_datasets(
     config,
     dataset_names,
@@ -416,7 +418,12 @@ def build_datasets(
     mode="training",
 ):
     """Build Behavior datasets for training."""
+    if "behavior" not in dataset_names:
+        return []
     assert mode == "training", "only support training mode"
+
+    import uuid
+
     from robo_orchard_lab.dataset.behavior.behavior_lmdb_dataset import (
         BehaviorLmdbDataset,
     )
@@ -439,7 +446,7 @@ def build_datasets(
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
             dataset_name=data_config.get("dataset_name", "b1k"),
-            flag=data_config.get("flag", 100001),
+            flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "behavior").hex[:4], 16),
         )
 
         datasets.append(dataset)
@@ -447,7 +454,11 @@ def build_datasets(
     return datasets
 
 
+@processor_register()
 def build_processors(config, dataset_names):
+    if "behavior" not in dataset_names:
+        return []
+
     from robo_orchard_lab.models.sem_modules import (
         SEMProcessor,
         SEMProcessorCfg,

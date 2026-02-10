@@ -14,6 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import uuid
+
+from dataset_factory import (
+    processor_register,
+    train_dataset_register,
+    validation_dataset_register,
+)
+
 all_calibrations = dict(
     challenge=dict(
         front={
@@ -199,7 +207,7 @@ dataset_config = dict(
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
         depth_restore=True,
-        flag=100002,
+        flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "challenge").hex[:4], 16),
     ),
     challenge_finetune=dict(
         data_paths=[
@@ -713,6 +721,8 @@ def build_transforms(
     return transforms
 
 
+@train_dataset_register()
+@validation_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
@@ -748,7 +758,10 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             load_extrinsic=data_config.get("load_extrinsic", False),
             load_calibration=data_config.get("load_calibration", False),
             instruction_reader=instruction_reader,
-            flag=data_config.get("flag", 100001),
+            flag=data_config.get(
+                "flag",
+                int(uuid.uuid5(uuid.NAMESPACE_DNS, "agilex").hex[:4], 16),
+            ),
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
         )
@@ -757,6 +770,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     return datasets
 
 
+@processor_register()
 def build_processors(config, dataset_names):
     from robo_orchard_lab.models.sem_modules import (
         SEMProcessor,

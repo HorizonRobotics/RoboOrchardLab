@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataset_factory import train_dataset_register
 
 data_paths = [
     "./data/egodex/lmdb/part1",
@@ -132,6 +133,7 @@ def build_transforms(config, mode):
     return transforms
 
 
+@train_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
     if "egodex" not in dataset_names:
         return []

@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataset_factory import processor_register, train_dataset_register
+
 dataset_config = dict(
     isaac_pick_place=dict(
         data_paths=[
@@ -344,6 +346,7 @@ def build_transforms(
     return transforms
 
 
+@train_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
     assert mode == "training", "only support training mode"
     from robo_orchard_lab.dataset.robot.dataset import (
@@ -387,6 +390,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     return datasets
 
 
+@processor_register()
 def build_processors(config, dataset_names):
     from robo_orchard_lab.models.sem_modules import (
         SEMProcessor,

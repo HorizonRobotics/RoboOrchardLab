@@ -14,6 +14,9 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+
+from dataset_factory import train_dataset_register
+
 kinematics_config = dict(
     cfg1=dict(
         urdf="./urdf/rh20t/flexiv/robot_pvt3.urdf",
@@ -557,6 +560,7 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
     return transforms
 
 
+@train_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
     assert mode == "training", "only support training mode"
     from robo_orchard_lab.dataset.horizon_manipulation import (

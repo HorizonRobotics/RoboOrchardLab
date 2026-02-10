@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataset_factory import train_dataset_register
+
 
 def get_dataset_lmdb_config():
     from glob import glob
@@ -411,6 +413,7 @@ def build_lmdb_transforms(
     return transforms
 
 
+@train_dataset_register()
 def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.interna1 import (
         InternA1LmdbDataset,

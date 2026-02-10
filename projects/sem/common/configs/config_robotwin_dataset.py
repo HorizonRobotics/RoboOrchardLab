@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataset_factory import processor_register, train_dataset_register
+
 dataset_config = dict(
     robotwin1_0=dict(
         kinematics_config=dict(
@@ -487,6 +489,7 @@ def build_transforms(
     return transforms
 
 
+@train_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.robotwin.robotwin_lmdb_dataset import (
         RoboTwinLmdbDataset,
@@ -520,6 +523,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     return datasets
 
 
+@processor_register()
 def build_processors(config, dataset_names):
     from robo_orchard_lab.models.sem_modules import (
         SEMProcessor,

@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataset_factory import processor_register, train_dataset_register
+
 data_paths = dict(
     libero_goal="./data/libero/lmdb_goal_abs",
     libero_object="./data/libero/lmdb_object_abs",
@@ -50,15 +52,20 @@ def build_transforms(config, mode):
     joint_relative_pos = (0,)
     loss_weights = np.array([[1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]])
     # loss_weights = np.ones([1, 8])
-    temporal_weights = np.concatenate(
-        [
-            np.ones(config["pred_steps"] // 4),
-            np.linspace(
-                1.0, 0.1, config["pred_steps"] // 2 - config["pred_steps"] // 4
-            ),
-            np.zeros(config["pred_steps"] // 2),
-        ]
-    )[:, None, None] * 4
+    temporal_weights = (
+        np.concatenate(
+            [
+                np.ones(config["pred_steps"] // 4),
+                np.linspace(
+                    1.0,
+                    0.1,
+                    config["pred_steps"] // 2 - config["pred_steps"] // 4,
+                ),
+                np.zeros(config["pred_steps"] // 2),
+            ]
+        )[:, None, None]
+        * 4
+    )
     loss_weights = loss_weights * temporal_weights
     loss_weights = loss_weights.tolist()
 
@@ -219,7 +226,10 @@ def build_transforms(config, mode):
     return transforms
 
 
+@train_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
+    import uuid
+
     from robo_orchard_lab.dataset.libero.libero_lmdb_dataset import (
         LiberoLmdbDataset,
     )
@@ -238,12 +248,13 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             transforms=transforms,
             cam_names=cam_names,
             dataset_name=dataset_name,
-            flag=300001,
+            flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "libero").hex[:4], 16),
         )
         datasets.append(dataset)
     return datasets
 
 
+@processor_register()
 def build_processors(config, dataset_names):
     from robo_orchard_lab.models.sem_modules.processor import (
         SEMProcessor,

@@ -370,132 +370,6 @@ def build_model(config):
     return model
 
 
-def build_training_dataset(config, lazy_init=False):
-    from config_agibot_dataset import build_datasets as build_agibot_datasets
-    from config_agibot_digit_dataset import (
-        build_datasets as build_agibot_digit_datasets,
-    )
-    from config_agilex_dataset import build_datasets as build_agilex_datasets
-    from config_droid_dataset import build_datasets as build_droid_datasets
-    from config_egodex_dataset import build_datasets as build_egodex_datasets
-    from config_interna1_dataset import (
-        build_datasets as build_interna1_datasets,
-    )
-    from config_isaac_dataset import build_datasets as build_isaac_datasets
-    from config_libero_dataset import build_datasets as build_libero_datasets
-    from config_rh20t_dataset import build_datasets as build_rh20t_datasets
-    from config_robotwin_dataset import (
-        build_datasets as build_robotwin_datasets,
-    )
-
-    from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
-
-    datasets = []
-    datasets.extend(
-        build_interna1_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-
-    datasets.extend(
-        build_robotwin_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_agilex_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_rh20t_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_agibot_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_droid_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_egodex_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_isaac_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_libero_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    datasets.extend(
-        build_agibot_digit_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-        )
-    )
-    dataset = ConcatDatasetWithFlag(datasets=datasets)
-    return dataset
-
-
-def build_validation_dataset(config, lazy_init=False):
-    from config_agilex_dataset import build_datasets as build_agilex_datasets
-
-    from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
-
-    datasets = []
-    datasets.extend(
-        build_agilex_datasets(
-            config,
-            config.get("validation_datasets", []),
-            mode="validation",
-            lazy_init=lazy_init,
-        )
-    )
-    if len(datasets) == 0:
-        return None
-    else:
-        dataset = ConcatDatasetWithFlag(datasets=datasets)
-        return dataset
-
-
 def build_optimizer(config, model):
     import torch
     from torch import optim
@@ -542,32 +416,31 @@ def build_optimizer(config, model):
     return optimizer, lr_scheduler
 
 
-def build_processors(config):
-    from config_agibot_digit_dataset import (
-        build_processors as build_agibot_digit_processors,
-    )
-    from config_agilex_dataset import (
-        build_processors as build_agilex_processors,
-    )
-    from config_isaac_dataset import build_processors as build_isaac_processors
-    from config_libero_dataset import (
-        build_processors as build_libero_processors,
-    )
-    from config_robotwin_dataset import (
-        build_processors as build_robotwin_processors,
+def build_training_dataset(config, lazy_init=False):
+    from dataset_factory import (
+        apply_dataset_register,
+        build_training_dataset as build,
     )
 
-    processors = build_agilex_processors(config, config["deploy_datasets"])
-    processors.update(
-        build_robotwin_processors(config, config["deploy_datasets"])
+    apply_dataset_register()
+    return build(config, lazy_init)
+
+
+def build_validation_dataset(config, lazy_init=False):
+    from dataset_factory import (
+        apply_dataset_register,
+        build_validation_dataset as build,
     )
-    processors.update(
-        build_isaac_processors(config, config["deploy_datasets"])
+
+    apply_dataset_register()
+    return build(config, lazy_init)
+
+
+def build_processors(config):
+    from dataset_factory import (
+        apply_dataset_register,
+        build_processors as build,
     )
-    processors.update(
-        build_libero_processors(config, config["deploy_datasets"])
-    )
-    processors.update(
-        build_agibot_digit_processors(config, config["deploy_datasets"])
-    )
-    return processors
+
+    apply_dataset_register()
+    return build(config)

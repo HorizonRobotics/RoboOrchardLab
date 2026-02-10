@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from dataset_factory import train_dataset_register
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +320,7 @@ def build_transforms(config):
     ]
 
 
+@train_dataset_register()
 def build_datasets(
     config,
     dataset_names,
