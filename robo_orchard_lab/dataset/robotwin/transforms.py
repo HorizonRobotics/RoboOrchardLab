@@ -32,13 +32,16 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
 
 __all__ = [
     "ArrowDataParse",
+    "CalibrationToExtrinsic",
     "EpisodeSamplerConfig",
     "AddItems",
     "AddScaleShift",
     "ConvertDataType",
+    "IdentityTransform",
     "ImageChannelFlip",
     "ItemSelection",
     "JointStateNoise",
+    "MoveEgoToCam",
     "SimpleStateSampling",
     "Resize",
     "ToTensor",
@@ -46,6 +49,21 @@ __all__ = [
     "GetProjectionMat",
     "UnsqueezeBatch",
 ]
+
+
+class MoveEgoToCam:
+    def __init__(self, cam_idx=-1):
+        self.cam_idx = cam_idx
+
+    def __call__(self, data):
+        if isinstance(self.cam_idx, str):
+            cam_idx = data["cam_name"].index(self.cam_idx)
+        else:
+            cam_idx = self.cam_idx
+        data["T_base2ego"] = data["T_world2cam"][cam_idx] @ data.get(
+            "T_base2world", np.eye(4)
+        )
+        return data
 
 
 class IdentityTransform:
@@ -651,6 +669,11 @@ class DualArmKinematics:
         link_poses = link_poses.get_matrix()  # [N * xxx, 4, 4]
 
         if embodiedment_mat is not None:
+            if embodiedment_mat.ndim != 2:
+                embodiedment_mat = embodiedment_mat.flatten(0, -3)  # [x, 4, 4]
+                embodiedment_mat = embodiedment_mat.repeat(
+                    len(self.keys), 1, 1
+                )
             link_poses = embodiedment_mat @ link_poses
 
         if return_matrix:
@@ -708,7 +731,7 @@ class CalibrationToExtrinsic(DualArmKinematics):
         urdf (str): Path to the URDF file.
         calibration (dict, optional): A dicti containing camera calibration.
             Keys are camera names (e.g., 'left', 'right'), and values are
-                dicts with:
+            dicts with:
             - 'position': list or array-like of [x, y, z].
             - 'orientation': list or array-like of [qx, qy, qz, w].
             If None, no calibration data is loaded initially.

@@ -244,10 +244,12 @@ if __name__ == "__main__":
             "ninja",
         ],
         "sem": [
-            "robo_orchard_lab[bip3d]",
+            "transformers<=4.57.1",
+            "pytorch3d==0.7.8",
+            "pytorch-kinematics",
+            "ninja",
             "diffusers",
             "lmdb",
-            "pytorch-kinematics",
             "h5py",
         ],
         "mcap_datasets": [

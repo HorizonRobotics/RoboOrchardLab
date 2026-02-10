@@ -1,0 +1,14 @@
+policy_name: holobrain_robotwin_eval
+setting: null 
+model_config: ./model
+model_processor: robotwin2_0_processor
+model_prefix: model
+vlm_ckpt_dir: null
+urdf_dir: null
+ckpt_setting: null
+
+task_name: null  
+seed: 0
+instruction_type: unseen 
+expert_data_num: null 
+checkpoint_num: null 
