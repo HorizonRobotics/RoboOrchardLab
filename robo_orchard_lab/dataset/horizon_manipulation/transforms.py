@@ -15,13 +15,20 @@
 # permissions and limitations under the License.
 
 import copy
+from typing import Type
 
 import cv2
 import numpy as np
 import pytorch_kinematics as pk
 import torch
+from datasets import Dataset as HFDataset
 from pytorch3d.transforms import euler_angles_to_matrix, matrix_to_quaternion
 from scipy.spatial.transform import Rotation
+
+from robo_orchard_lab.dataset.robot.row_sampler import (
+    MultiRowSampler,
+    MultiRowSamplerConfig,
+)
 
 __all__ = [
     "AddItems",
@@ -39,6 +46,211 @@ __all__ = [
     "ExtrinsicNoise",
     "RandomCropPaddingResize",
 ]
+
+
+class EpisodeChunkSampler(MultiRowSampler):
+
+    def __init__(self, cfg: "EpisodeChunkSamplerConfig") -> None:
+        self.cfg = cfg
+        self.hist_steps = cfg.hist_steps
+        self.pred_steps = cfg.pred_steps
+        self.chunk_size = self.hist_steps + self.pred_steps
+
+    @property
+    def column_rows_keys(self) -> dict[str, list[str]]:
+        ret = {}
+        for column in self.cfg.target_columns:
+            ret[column] = [f"chunk_row_{i}" for i in range(self.chunk_size)]
+        return ret
+
+    def sample_row_idx(
+        self,
+        index_dataset: HFDataset,
+        index: int,
+    ) -> dict[str, list[int | None]]:
+
+        cur_row = index_dataset[index]
+        cur_episode_idx = cur_row["episode_index"]
+        dataset_len = len(index_dataset)
+
+        raw_start_idx = index - self.hist_steps + 1
+        raw_end_idx = index + self.pred_steps
+
+        start_idx = max(raw_start_idx, 0)
+        while start_idx < dataset_len:
+            start_row = index_dataset[start_idx]
+            if start_row["episode_index"] == cur_episode_idx:
+                break
+            start_idx += 1
+
+        end_idx = min(raw_end_idx, dataset_len - 1)
+        while end_idx >= 0:
+            end_row = index_dataset[end_idx]
+            if end_row["episode_index"] == cur_episode_idx:
+                break
+            end_idx -= 1
+
+        raw_indices = np.arange(raw_start_idx, raw_end_idx + 1)
+        padded_indices = np.clip(raw_indices, start_idx, end_idx)
+
+        chunk_indices: list[int] = padded_indices.tolist()
+
+        ret = {}
+        for column in self.cfg.target_columns:
+            ret[column] = chunk_indices
+
+        return ret
+
+
+class EpisodeChunkSamplerConfig(MultiRowSamplerConfig[EpisodeChunkSampler]):
+    """Configuration for the EpisodeSampler."""
+
+    class_type: Type[EpisodeChunkSampler] = EpisodeChunkSampler
+
+    target_columns: list[str]
+
+    hist_steps: int = 1
+    pred_steps: int = 64
+
+
+class ArrowDataParse:
+    """The dataset class for manipulation tasks in RoboOrchard.
+
+    Args:
+        dataset_path (str): Path to the dataset.
+        cam_names (list[str]): List of camera names to load data from.
+        load_image (bool): Whether to load image data. Default is True.
+        load_depth (bool): Whether to load depth data. Default is True.
+        load_extrinsic (bool): Whether to load camera extrinsic data.
+            Default is True.
+        load_ee_state (bool): Whether to load end-effector state data.
+            Default is False.
+        transforms (list[dict] or dict, optional): List of transformations to
+            apply to the data.
+        depth_scale (float): Scale factor for depth data. Default is 1000.
+        **kwargs: Additional arguments for the base RODataset class.
+    """
+
+    def __init__(
+        self,
+        cam_names: list[str],
+        load_image=True,
+        load_depth=True,
+        load_extrinsic=True,
+        load_ee_state=False,
+        depth_scale=1000,
+        use_detailed_instruction=False,
+        hist_steps=1,
+    ):
+        """Initialize the ManipulationRODataset."""
+        self.cam_names = cam_names
+        self.load_image = load_image
+        self.load_depth = load_depth
+        self.load_extrinsic = load_extrinsic
+        self.load_ee_state = load_ee_state
+        self.depth_scale = depth_scale
+        self.use_detailed_instruction = use_detailed_instruction
+        self.hist_steps = hist_steps
+
+    def get_instruction(self, data):
+        """Parse instruction text from the data."""
+        text = data["instruction"].json_content["description"]
+        return {"text": text}
+
+    def get_depths(self, data):
+        """Parse depth images from the data."""
+        depths = []
+        for cam_name in self.cam_names:
+            frame_id = f"{cam_name}_depth"
+            depth_buffer = data[frame_id].sensor_data[0]
+            decoded_depth = cv2.imdecode(
+                np.frombuffer(depth_buffer, np.uint8), cv2.IMREAD_UNCHANGED
+            )
+            depth = decoded_depth / self.depth_scale
+            depths.append(depth)
+        depths = np.stack(depths)
+        return {"depths": depths}
+
+    def get_images(self, data):
+        """Parse rgb images from the data."""
+        images = []
+        for cam_name in self.cam_names:
+            frame_id = f"{cam_name}"
+            img_buffer = data[frame_id].sensor_data[0]
+            img_buffer = np.ndarray(
+                shape=(1, len(img_buffer)), dtype=np.uint8, buffer=img_buffer
+            )
+            img = cv2.imdecode(img_buffer, cv2.IMREAD_ANYCOLOR)
+            images.append(img)
+            # del mcap_dataitem[frame_id]
+        images = np.stack(images)
+
+        return {"imgs": images}
+
+    def get_intrinsic(self, data):
+        """Parse camera intrinsic matrices from the data."""
+        intrinsic = []
+        for cam_name in self.cam_names:
+            frame_id = f"{cam_name}"
+            cam_instrinsic = np.eye(4, dtype=np.float64)
+            cam_instrinsic[:3, :3] = data[frame_id].intrinsic_matrices[0]
+            intrinsic.append(cam_instrinsic)
+        intrinsic = np.stack(intrinsic)
+        return {"intrinsic": intrinsic}
+
+    def get_joints(self, data):
+        """Parse robot joint states from the data."""
+        joint_state = [item.position for item in data["joints"]]
+        joint_state = np.stack(joint_state).squeeze(1).astype(np.float64)
+        return {"joint_state": joint_state}
+
+    def get_master_joints(self, data):
+        """Parse master (controller) joint states from the data."""
+        master_joint_state = [item.position for item in data["actions"]]
+        master_joint_state = (
+            np.stack(master_joint_state).squeeze(1).astype(np.float64)
+        )
+        return {"master_joint_state": master_joint_state}
+
+    def get_extrinsic(self, data):
+        """Parse camera extrinsic matrices from the data."""
+        T_world2cam = []  # noqa: N806
+        for cam_name in self.cam_names:
+            frame_id = data[cam_name].frame_id
+            cam_extrinsic = data[cam_name].pose
+
+            assert cam_extrinsic.parent_frame_id == "world"
+            assert (
+                cam_extrinsic.child_frame_id == frame_id
+                or cam_extrinsic.child_frame_id == cam_name
+            )
+
+            extrinsic = np.linalg.inv(
+                data[cam_name].pose.as_Transform3D_M().get_matrix()[0].numpy()
+            )
+            T_world2cam.append(extrinsic)
+
+        T_world2cam = np.stack(T_world2cam).astype(np.float64)  # noqa: N806
+        return {"T_world2cam": T_world2cam}
+
+    def __call__(self, data):
+
+        data.update(self.get_instruction(data))
+        data.update(self.get_intrinsic(data))
+        data.update(self.get_joints(data))
+        data.update(self.get_master_joints(data))
+
+        if self.load_image:
+            data.update(self.get_images(data))
+        if self.load_depth:
+            data.update(self.get_depths(data))
+        if self.load_extrinsic:
+            data.update(self.get_extrinsic(data))
+
+        data["step_index"] = data["frame_index"]
+        data["step_index_in_chunk"] = self.hist_steps - 1
+        data["task_name"] = data["task"].name
+        return data
 
 
 class MoveEgoToCam:
@@ -167,6 +379,8 @@ class SimpleStateSampling:
 
         if "step_index_in_shard" in data:
             step_index = data["step_index_in_shard"]
+        elif "step_index_in_chunk" in data:
+            step_index = data["step_index_in_chunk"]
         else:
             step_index = data["step_index"]
         hist_steps = self.hist_steps
