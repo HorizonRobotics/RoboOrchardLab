@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 from contextlib import contextmanager
+from dataclasses import asdict
 from typing import (
     Any,
     Callable,
@@ -33,6 +34,7 @@ import fsspec
 import torch
 from datasets import (
     Dataset as HFDataset,
+    DatasetInfo,
     Features,
 )
 from datasets.arrow_dataset import (
@@ -40,6 +42,7 @@ from datasets.arrow_dataset import (
 )
 from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
+from sqlalchemy.sql import func
 from typing_extensions import Self
 
 # import all datatypes and features
@@ -63,7 +66,12 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
     MultiRowSamplerConfig,
 )
 
-__all__ = ["RODataset", "ROMultiRowDataset", "ConcatRODataset"]
+__all__ = [
+    "RODataset",
+    "ROMultiRowDataset",
+    "ConcatRODataset",
+    "_complete_dataset_info",
+]
 
 MetaType = TypeVar("MetaType", Episode, Instruction, Robot, Task)
 """A type variable for metadata types in the RoboOrchard dataset."""
@@ -284,6 +292,30 @@ class RODataset(TorchDataset):
     def transform(self) -> Callable[[dict], dict] | None:
         return self._transform
 
+    @property
+    def episode_num(self) -> int:
+        """Get the number of episodes in the dataset."""
+        with Session(self.db_engine) as session:
+            result = session.execute(select(func.count(Episode.index)))
+            episode_num = result.scalar_one()
+        return episode_num
+
+    @property
+    def task_num(self) -> int:
+        """Get the number of tasks in the dataset."""
+        with Session(self.db_engine) as session:
+            result = session.execute(select(func.count(Task.index)))
+            task_num = result.scalar_one()
+        return task_num
+
+    @property
+    def robot_num(self) -> int:
+        """Get the number of robots in the dataset."""
+        with Session(self.db_engine) as session:
+            result = session.execute(select(func.count(Robot.index)))
+            robot_num = result.scalar_one()
+        return robot_num
+
     def set_transform(self, transform: Callable[[dict], dict] | None):
         self._transform = transform
 
@@ -431,6 +463,20 @@ class RODataset(TorchDataset):
             num_proc=num_proc,
             storage_options=storage_options,
         )
+
+        # save dataset info if needed
+        need_dataset_info_save, info = _complete_dataset_info(
+            dataset_path, arrow_dataset=self.frame_dataset
+        )
+        if need_dataset_info_save:
+            info_path = os.path.join(
+                dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
+            )  # noqa: E501
+            info = asdict(info)
+            with open(info_path, "w") as f:
+                sorted_keys_dataset_info = {k: info[k] for k in sorted(info)}
+                json.dump(sorted_keys_dataset_info, f, indent=2)
+
         hg_datasets_config.DEFAULT_MAX_BATCH_SIZE = old_batch_size
         src_meta_db_path = self.db_engine.url.database
         assert src_meta_db_path is not None
@@ -1133,3 +1179,69 @@ def _get_dataset_db_url(dataset_path: str) -> URL:
     _, ext = os.path.splitext(db_path)
     drivername = ext[1:]
     return get_local_db_url(drivername=drivername, db_path=db_path)
+
+
+def _complete_dataset_info(
+    dataset_path: str, arrow_dataset: HFDataset | None
+) -> tuple[bool, DatasetInfo]:
+    import datasets.config as hg_datasets_config
+    from datasets import SplitInfo
+
+    def _get_all_arrow_files_total_size(dataset_path: str) -> int:
+        dataset_state_path = os.path.join(
+            dataset_path, hg_datasets_config.DATASET_STATE_JSON_FILENAME
+        )
+        if not os.path.exists(dataset_state_path):
+            raise FileNotFoundError(
+                f"Dataset state file not found in {dataset_path}."
+            )
+        with open(dataset_state_path, "r", encoding="utf-8") as f:
+            dataset_state = json.load(f)
+
+        arrow_files: list[str] = [
+            t["filename"] for t in dataset_state["_data_files"]
+        ]
+        total_size = 0
+        for arrow_file in arrow_files:
+            if not os.path.exists(os.path.join(dataset_path, arrow_file)):
+                raise FileNotFoundError(
+                    f"Arrow file {arrow_file} not found in {dataset_path}."
+                )
+            total_size += os.path.getsize(
+                os.path.join(dataset_path, arrow_file)
+            )
+        return total_size
+
+    dataset_info_path = os.path.join(
+        dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
+    )
+    if not os.path.exists(dataset_info_path):
+        raise FileNotFoundError(
+            f"Dataset info file not found in {dataset_path}."
+        )
+    with open(dataset_info_path, "r", encoding="utf-8") as f:
+        dataset_info = DatasetInfo.from_dict(json.load(f))
+
+    need_update = (
+        dataset_info.dataset_size is None or dataset_info.splits is None
+    )
+    if not need_update:
+        return False, dataset_info
+
+    total_size = _get_all_arrow_files_total_size(dataset_path)
+    if arrow_dataset is not None:
+        total_rows = len(arrow_dataset)
+    else:
+        arrow_dataset = HFDataset.load_from_disk(dataset_path)
+        total_rows = len(arrow_dataset)
+    if dataset_info.dataset_size is None:
+        dataset_info.dataset_size = total_size
+    if dataset_info.splits is None:
+        dataset_info.splits = {
+            "train": SplitInfo(
+                name="train",
+                num_bytes=total_size,
+                num_examples=total_rows,
+            )
+        }
+    return True, dataset_info

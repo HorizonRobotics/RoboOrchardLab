@@ -412,6 +412,11 @@ class TestDataset:
         assert dataset.dataset_format_version is not None
         print("dataset_format_version: ", dataset.dataset_format_version)
 
+        assert dataset.episode_num == 2
+        # only one robot is referenced in packing.
+        assert dataset.robot_num == 1
+        assert dataset.task_num == 2
+
     def test_check_db_engine(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)
         assert dataset.db_engine is not None
@@ -1248,6 +1253,17 @@ class TestMergeDataset:
         merged_dataset = RODataset(
             dataset_path=target_dataset_dir, meta_index2meta=True
         )
+        # check dataset info
+        dataset_info = merged_dataset.frame_dataset.info
+        assert dataset_info.dataset_size is not None
+
+        assert dataset_info.splits is not None
+        rows = 0
+        for split in dataset_info.splits.values():
+            rows += split.num_examples
+        assert rows == len(merged_dataset)
+
+        # check that
         for i in row_to_check:
             merged_row = merged_dataset[i]
             dataset_idx = 0 if i < len(datasets[0]) else 1
