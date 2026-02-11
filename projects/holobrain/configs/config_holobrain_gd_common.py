@@ -344,6 +344,7 @@ def build_model(config):
                     operation_order=decoder_operation_order,
                 ),
                 base_cfg=HoloBrainDecoderBaseConfig(
+                    chunk_size=config.get("chunk_size", 8),
                     use_joint_mask=True,
                     noise_type="local_joint",
                     pred_scaled_joint=False,
@@ -429,49 +430,6 @@ def build_model(config):
     return model
 
 
-def build_training_dataset(config, lazy_init=False):
-    from config_robotwin_dataset import (
-        build_datasets as build_robotwin_datasets,
-    )
-
-    from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
-
-    datasets = []
-    datasets.extend(
-        build_robotwin_datasets(
-            config,
-            config["training_datasets"],
-            mode="training",
-            lazy_init=lazy_init,
-        )
-    )
-    dataset = ConcatDatasetWithFlag(datasets=datasets)
-    return dataset
-
-
-def build_validation_dataset(config, lazy_init=False):
-    from config_robotwin_dataset import (
-        build_datasets as build_robotwin_datasets,
-    )
-
-    from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
-
-    datasets = []
-    datasets.extend(
-        build_robotwin_datasets(
-            config,
-            config.get("validation_datasets", []),
-            mode="validation",
-            lazy_init=lazy_init,
-        )
-    )
-    if len(datasets) == 0:
-        return None
-    else:
-        dataset = ConcatDatasetWithFlag(datasets=datasets)
-        return dataset
-
-
 def build_optimizer(config, model):
     from torch import optim
 
@@ -512,10 +470,19 @@ def build_optimizer(config, model):
     return optimizer, lr_scheduler
 
 
-def build_processors(config):
-    from config_robotwin_dataset import (
-        build_processors as build_robotwin_processors,
-    )
+def build_training_dataset(config, lazy_init=False):
+    from dataset_factory import build_training_dataset as build
 
-    processors = build_robotwin_processors(config, config["deploy_datasets"])
-    return processors
+    return build(config, lazy_init)
+
+
+def build_validation_dataset(config, lazy_init=False):
+    from dataset_factory import build_validation_dataset as build
+
+    return build(config, lazy_init)
+
+
+def build_processors(config):
+    from dataset_factory import build_processors as build
+
+    return build(config)

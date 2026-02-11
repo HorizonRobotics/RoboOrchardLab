@@ -3,6 +3,7 @@ setting: null
 model_config: ./model
 model_processor: robotwin2_0_processor
 model_prefix: model
+valid_action_step: 32
 vlm_ckpt_dir: null
 urdf_dir: null
 ckpt_setting: null

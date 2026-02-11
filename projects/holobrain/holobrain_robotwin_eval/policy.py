@@ -40,6 +40,7 @@ class HoloBrainRoboTwinPolicy:
         vlm_ckpt_dir=None,
         urdf_dir=None,
         model_prefix="model",
+        valid_action_step=32,
     ):
         if processor is None:
             processor = "processor"
@@ -64,6 +65,7 @@ class HoloBrainRoboTwinPolicy:
         )
         self.model.to(self.device)
         self.take_action_cnt = 0
+        self.valid_action_step = valid_action_step
 
     def data_preprocess(self, obs, instruction):
         images = {}
@@ -107,8 +109,7 @@ class HoloBrainRoboTwinPolicy:
         data = self.data_preprocess(observation, instruction)
         model_outs = self.model(data)
         actions = self.processor.post_process(data, model_outs).action
-        valid_action_step = 32
-        actions = actions[:valid_action_step].cpu().numpy()
+        actions = actions[:self.valid_action_step].cpu().numpy()
         return actions
 
 
@@ -119,6 +120,7 @@ def get_model(usr_args):  # from your deploy_policy.yml
         usr_args["vlm_ckpt_dir"],
         usr_args["urdf_dir"],
         usr_args["model_prefix"],
+        usr_args["valid_action_step"],
     )
     return policy
 
