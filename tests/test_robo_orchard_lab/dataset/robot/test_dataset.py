@@ -1185,6 +1185,99 @@ class TestConcatRODataset:
         assert multi_row["joints"][0] == dataset[100]["joints"]
 
 
+@pytest.fixture(scope="module")
+def example_all_empty_meta_dataset_path(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
+    dataset_dir = os.path.join(
+        tmp_local_folder,
+        "example_dataset_path_"
+        + "".join(random.choices(string.ascii_lowercase, k=8)),
+    )
+    instructions = [
+        InstructionData(
+            name="instruction_0",
+            json_content={
+                "instruction": "Do task 0 with robot 0",
+                "robot": "robot_0",
+                "task": "task_0",
+            },
+        ),
+        InstructionData(
+            name="instruction_1",
+            json_content={
+                "instruction": "Do task 1 with robot 1",
+                "robot": "robot_1",
+                "task": "task_1",
+            },
+        ),
+    ]
+    episodes = [
+        DummyEpisodePackaging(
+            gen_frame_num=5,
+            robots=None,
+            tasks=None,
+            instructions=instructions[0:1],
+        ),
+        DummyEpisodePackaging(gen_frame_num=3, tasks=None),
+    ]
+    features = episodes[0].features
+    dataset_packaging = DatasetPackaging(
+        features=features, database_driver="duckdb"
+    )
+    dataset_packaging.packaging(episodes=episodes, dataset_path=dataset_dir)
+    return dataset_dir
+
+
+@pytest.fixture(scope="module")
+def example_some_empty_meta_dataset_path(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
+    dataset_dir = os.path.join(
+        tmp_local_folder,
+        "example_dataset_path_"
+        + "".join(random.choices(string.ascii_lowercase, k=8)),
+    )
+    robots = example_robots
+    tasks = [
+        TaskData(name="task_0", description="task_0_description"),
+        TaskData(name="task_1", description="task_1_description"),
+    ]
+    instructions = [
+        InstructionData(
+            name="instruction_0",
+            json_content={
+                "instruction": "Do task 0 with robot 0",
+                "robot": "robot_0",
+                "task": "task_0",
+            },
+        ),
+        InstructionData(
+            name="instruction_1",
+            json_content={
+                "instruction": "Do task 1 with robot 1",
+                "robot": "robot_1",
+                "task": "task_1",
+            },
+        ),
+    ]
+    episodes = [
+        DummyEpisodePackaging(
+            gen_frame_num=5,
+            robots=robots[0:1],
+            tasks=None,
+            instructions=instructions[0:1],
+        ),
+        DummyEpisodePackaging(gen_frame_num=3, tasks=tasks[0:2]),
+    ]
+    features = episodes[0].features
+    dataset_packaging = DatasetPackaging(
+        features=features, database_driver="duckdb"
+    )
+    dataset_packaging.packaging(episodes=episodes, dataset_path=dataset_dir)
+    return dataset_dir
+
+
 class TestMergeDataset:
     @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
     def test_merge_datasets(
@@ -1275,3 +1368,60 @@ class TestMergeDataset:
                 merged_row["instruction"].md5
                 == original_row["instruction"].md5
             )
+
+    def test_merge_datasets_with_empty_meta(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+        tmp_local_folder: str,
+        example_all_empty_meta_dataset_path: str,
+        example_some_empty_meta_dataset_path: str,
+    ):
+        datasets = [
+            RODataset(
+                example_all_empty_meta_dataset_path, meta_index2meta=True
+            ),
+            RODataset(
+                example_some_empty_meta_dataset_path, meta_index2meta=True
+            ),
+        ]
+
+        target_dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_merge_datasets_with_empty_meta_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+
+        print("datasets to merge: ", datasets)
+        # save merge dataset to disk
+        merge_datasets(
+            datasets=datasets,
+            target_path=target_dataset_dir,
+        )
+        merged_dataset = RODataset(
+            dataset_path=target_dataset_dir, meta_index2meta=True
+        )
+        # check dataset info
+        dataset_info = merged_dataset.frame_dataset.info
+        assert dataset_info.dataset_size is not None
+
+        assert dataset_info.splits is not None
+        rows = 0
+        for split in dataset_info.splits.values():
+            rows += split.num_examples
+        assert rows == len(merged_dataset)
+
+        # check that
+        row_to_check = range(len(merged_dataset))
+        for i in row_to_check:
+            merged_row = merged_dataset[i]
+            dataset_idx = 0 if i < len(datasets[0]) else 1
+            dataset_row_idx = i if dataset_idx == 0 else i - len(datasets[0])
+            original_row = datasets[dataset_idx][dataset_row_idx]
+            assert merged_row["joints"] == original_row["joints"]
+            if merged_row["task"] is not None:
+                assert merged_row["task"].md5 == original_row["task"].md5
+            if merged_row["instruction"] is not None:
+                assert (
+                    merged_row["instruction"].md5
+                    == original_row["instruction"].md5
+                )

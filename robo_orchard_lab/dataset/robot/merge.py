@@ -63,6 +63,14 @@ def _merge_md5_table(
     src_index_mapping: np.ndarray | dict[int, int],
     batch_size: int = 500,
 ) -> None:
+    """Merge MD5-based table from src_session to dst_session.
+
+    This method merges the MD5-based table (Instruction, Robot, Task) from the
+    source session and write to destination session.
+    The src_index_mapping will be updated to map from source index to
+    destination index as well for future reference when merging Episode table.
+
+    """
     dst_max_index = (
         dst_session.query(orm_type.index)
         .order_by(orm_type.index.desc())
@@ -96,7 +104,9 @@ def _merge_md5_table(
                     select(orm_type).where(orm_type.md5.in_(batch_md5))
                 ).all()
             )
-
+            # check each src_obj, if exists in dst_session (cache),
+            # if yes, use existing index, if not, create new dst_obj and
+            # add to dst_session
             for src_obj in src_batch:
                 if (existing_obj := cache.find(src_obj)) is not None:
                     # already exists, use existing index
@@ -137,6 +147,7 @@ def _merge_episode_table(
     src_index_mapping: np.ndarray | dict[int, int],
     batch_size: int = 500,
 ):
+    """Merge Episode table from src_session to dst_session."""
     # get next available episode index in dst_session
     src_max_episode_index = (
         dst_session.query(Episode.index).order_by(Episode.index.desc()).first()
@@ -203,6 +214,8 @@ def _merge_meta_db(
             .order_by(orm_type.index.desc())
             .first()
         )
+        if max_src_index is None:
+            return {}
         max_src_index = max_src_index[0] if max_src_index is not None else -1
         max_src_index += 1
         # create mmap numpy array to store the mapping
@@ -288,25 +301,32 @@ def _remap_meta_index(
         ("robot_index", "robot"),
         ("episode_index", "episode"),
     ]
+    new_column: list[int | None] = []
     for column_name, src_name in tqdm(
         mapping_columns, desc=" Remapping columns "
     ):
         column_idx_mapping = index_mapping[src_name]
         origin_column = frame_dataset[column_name]
         if isinstance(column_idx_mapping, dict):
-            new_column = np.array(
-                [
-                    column_idx_mapping.get(int(idx), -1)
-                    for idx in origin_column
-                ],
-                dtype=np.int64,
-            )
+            new_column: list[int | None] = []
+            for idx in origin_column:
+                if idx is None:
+                    new_column.append(None)
+                else:
+                    new_column.append(column_idx_mapping.get(int(idx), -1))
+
         else:
-            new_column: np.ndarray = column_idx_mapping[origin_column]
-        # check that all indices are valid
-        if np.any(new_column < 0):
+            new_column: list[int | None] = []
+            for idx in origin_column:
+                if idx is None:
+                    new_column.append(None)
+                else:
+                    new_column.append(column_idx_mapping[idx])
+
+        assert isinstance(new_column, list)
+        if any(idx is not None and idx < 0 for idx in new_column):
             raise ValueError(f"Invalid index found in column {column_name}.")
-        mapped_arrays.append(pa.array(new_column))
+        mapped_arrays.append(pa.array(new_column, pa.int64()))
 
     # Offset `index` by target_index_start
     origin_index_column = frame_dataset["index"]
