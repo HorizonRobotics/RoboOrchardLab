@@ -202,7 +202,17 @@ class SEMProcessor(ProcessorMixin):
         if self.cfg.valid_action_step is not None:
             action = action[: self.cfg.valid_action_step]
             pose = pose[: self.cfg.valid_action_step]
-        return MultiArmManipulationOutput(action=action, pose=pose)
+
+        if "pred_mobile_trajs" in model_outputs[0]:
+            mobile_traj = model_outputs[0]["pred_mobile_trajs"][0]
+            if self.cfg.valid_action_step is not None:
+                mobile_traj = mobile_traj[: self.cfg.valid_action_step]
+        else:
+            mobile_traj = None
+
+        return MultiArmManipulationOutput(
+            action=action, pose=pose, mobile_traj=mobile_traj
+        )
 
     def save(self, path, processor_name, urdf_dir="./urdf"):
         os.makedirs(path, exist_ok=True)

@@ -272,11 +272,12 @@ def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
     from robo_orchard_lab.dataset.behavior.transforms import (
         AddItems,
         AddScaleShift,
-        # CameraMask,
+        CameraMask,
         ConvertDataType,
         GetProjectionMat,
         ItemSelection,
-        # JointStateNoise,
+        JointStateNoise,
+        MoveEgoToCam,
         R1ProDualArmKinematics,
         Resize,
         SimpleStateSampling,
@@ -310,14 +311,12 @@ def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
         type=AddItems,
         state_loss_weights=loss_weights,
         fk_loss_weight=loss_weights,
-        T_base2ego=np.eye(4).tolist(),
-        T_base2world=np.eye(4).tolist(),
         joint_mask=joint_mask,
     )
 
     resize = dict(type=Resize, dst_wh=dst_wh)
-
     to_tensor = dict(type=ToTensor)
+    ego_to_cam = dict(type=MoveEgoToCam)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
@@ -365,6 +364,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
         add_data_relative_items,
         resize,
         to_tensor,
+        ego_to_cam,
         projection_mat,
         scale_shift,
         convert_dtype,
@@ -381,11 +381,11 @@ def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
         )
         transforms.insert(0, state_sampling)
 
-        # joint_noise = dict(type=JointStateNoise, noise_range=[-0.02, 0.02])
-        # transforms.insert(1, joint_noise)
+        joint_noise = dict(type=JointStateNoise, noise_range=[-0.02, 0.02])
+        transforms.insert(1, joint_noise)
 
-        # camera_mask = dict(type=CameraMask, max_masks=3)
-        # transforms.insert(2, camera_mask)
+        camera_mask = dict(type=CameraMask, max_masks=3)
+        transforms.insert(2, camera_mask)
     elif mode == "validation":
         state_sampling = dict(
             type=SimpleStateSampling,

@@ -814,6 +814,21 @@ class R1ProDualArmKinematics:
         return robot_states
 
 
+class MoveEgoToCam:
+    def __init__(self, cam_idx=-1):
+        self.cam_idx = cam_idx
+
+    def __call__(self, data):
+        if isinstance(self.cam_idx, str):
+            cam_idx = data["cam_name"].index(self.cam_idx)
+        else:
+            cam_idx = self.cam_idx
+
+        # T_world2cam == T_base2cam in behavior1k
+        data["T_base2ego"] = data["T_world2cam"][cam_idx]
+        return data
+
+
 class GetProjectionMat:
     def __init__(self, target_coordinate="ego"):
         assert target_coordinate in ["base", "world", "ego"]
@@ -824,19 +839,18 @@ class GetProjectionMat:
         if self.target_coordinate == "world":
             projection_mat = intrinsic @ data["T_world2cam"]
             embodiedment_mat = data["T_base2world"]
+
         elif self.target_coordinate == "base":
             projection_mat = intrinsic @ data["T_world2cam"]
             embodiedment_mat = torch.eye(4).to(projection_mat)
+
         elif self.target_coordinate == "ego":
-            # shape: (3,4,4) = base → cam
-            t_base2cam = data["T_world2cam"]
-
-            # base -> ego == high camera
-            t_base2ego = t_base2cam[2]
-            t_ego2cam = t_base2cam @ torch.linalg.inv(t_base2ego)
-
-            projection_mat = intrinsic @ t_ego2cam
-            embodiedment_mat = t_base2ego
+            projection_mat = (
+                intrinsic
+                @ data["T_world2cam"]
+                @ torch.linalg.inv(data["T_base2ego"])
+            )
+            embodiedment_mat = data["T_base2ego"]
 
         data["projection_mat"] = projection_mat
         data["embodiedment_mat"] = embodiedment_mat

@@ -17,6 +17,7 @@
 
 import argparse
 import json
+from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 import cv2
@@ -90,6 +91,10 @@ class BehaviorPacker:
         self.nav_packer._init_lmdbs()
 
         self.input_path_handler(input_path)
+
+        self.rgb_counts = defaultdict(int)
+        self.depth_counts = defaultdict(int)
+        self.state_counts = {}
 
     def _assign_subtask_to_skill(
         self,
@@ -521,11 +526,15 @@ class BehaviorPacker:
             _, fbuf = cv2.imencode(".jpg", frame.astype(np.uint8))
 
             # find all skill contain cur frame_idx
-            j = skill_idx
-            while (
-                j < len(skills)
-                and skills[j]["start"] <= frame_idx < skills[j]["end"]
-            ):
+            for j in range(skill_idx, len(skills)):
+                s = skills[j]
+
+                if s["start"] > frame_idx:
+                    break
+
+                if not (s["start"] <= frame_idx < s["end"]):
+                    continue
+
                 orig_idx = skill_indices[j]
                 keep_mask = skill_keep_masks[orig_idx]
 
@@ -534,11 +543,12 @@ class BehaviorPacker:
 
                     uuid = f"{uuid_prefix}{orig_idx}/{cam}/{local_idx}"
 
-                    skill_type = skills[j]["skill_type"]
+                    skill_type = s["skill_type"]
                     packer = self._select_packer(skill_type)
                     packer.image_pack_file.write(uuid, fbuf)
 
-                j += 1
+                    skill_uuid = f"{uuid_prefix}{orig_idx}"
+                    self.rgb_counts[skill_uuid] += 1
 
             frame_idx += 1
 
@@ -580,11 +590,16 @@ class BehaviorPacker:
             frame_scaled = frame * 1000
             _, fbuf = cv2.imencode(".png", frame_scaled.astype(np.uint16))
 
-            j = skill_idx
-            while (
-                j < len(skills)
-                and skills[j]["start"] <= frame_idx < skills[j]["end"]
-            ):
+            # find all skill contain cur frame_idx
+            for j in range(skill_idx, len(skills)):
+                s = skills[j]
+
+                if s["start"] > frame_idx:
+                    break
+
+                if not (s["start"] <= frame_idx < s["end"]):
+                    continue
+
                 orig_idx = skill_indices[j]
                 keep_mask = skill_keep_masks[orig_idx]
 
@@ -593,11 +608,12 @@ class BehaviorPacker:
 
                     uuid = f"{uuid_prefix}{orig_idx}/{cam}/{local_idx}"
 
-                    skill_type = skills[j]["skill_type"]
+                    skill_type = s["skill_type"]
                     packer = self._select_packer(skill_type)
                     packer.depth_pack_file.write(uuid, fbuf)
 
-                j += 1
+                    skill_uuid = f"{uuid_prefix}{orig_idx}"
+                    self.depth_counts[skill_uuid] += 1
 
             frame_idx += 1
 
@@ -616,6 +632,10 @@ class BehaviorPacker:
             ) = ep
 
             print(int(task_id.split("-")[-1]), episode_id)
+
+            self.rgb_counts.clear()
+            self.depth_counts.clear()
+            self.state_counts.clear()
 
             # load skills
             skills = self.load_skill(anno_file, task_desc)
@@ -649,6 +669,8 @@ class BehaviorPacker:
                     extrinsic=extrinsic[start:end],
                     intrinsic=intrinsic[start:end],
                 )
+
+                self.state_counts[skill_uuid] = len(state_f)
 
                 keep_full = np.zeros(num_steps, dtype=bool)
                 keep_full[start:end] = skill_keep
@@ -699,6 +721,20 @@ class BehaviorPacker:
                         skills=skills,
                         skill_keep_masks=skill_keep_masks,
                     )
+
+            for uuid, state_len in self.state_counts.items():
+                # [left, right, head]
+                rgb_len = self.rgb_counts.get(uuid, 0) // 3
+                depth_len = self.depth_counts.get(uuid, 0) // 3
+
+                if not (state_len == rgb_len == depth_len):
+                    raise RuntimeError(
+                        f"[EP CHECK FAIL] {uuid} "
+                        f"state={state_len} rgb={rgb_len} depth={depth_len}"
+                    )
+
+            print(f"[OK] episode {episode_id} passed consistency check")
+
         self.manip_packer.close()
         self.nav_packer.close()
 

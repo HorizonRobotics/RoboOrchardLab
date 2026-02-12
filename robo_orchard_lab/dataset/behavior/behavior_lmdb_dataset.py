@@ -15,8 +15,6 @@
 # permissions and limitations under the License.
 
 
-import copy
-
 import cv2
 import numpy as np
 
@@ -77,8 +75,6 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         lazy_init=False,
         num_episode=None,
         cam_names=None,
-        T_base2world=None,  # noqa: N803
-        T_base2ego=None,  # noqa: N803
         hist_steps=None,
         pred_steps=None,
         reset_step=10000,
@@ -102,9 +98,6 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             self.cam_names = cam_names
         else:
             self.cam_names = ROBOT_CAMERA_NAMES["R1Pro"]
-
-        self.T_base2world = T_base2world
-        self.T_base2ego = T_base2ego
 
         self.hist_steps = hist_steps
         self.pred_steps = pred_steps
@@ -150,7 +143,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             self.pred_steps is not None
             and num_steps_per_shard - step_index_in_shard < self.pred_steps
         ):
-            # maby out of bound, return None
+            # maybe out of bound, return None
             next_shard = self.meta_lmdbs[lmdb_index][
                 f"{uuid}/{shard_index + 1}/{key}"
             ]
@@ -239,8 +232,6 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             action=action,
             intrinsic=intrinsic,
             T_world2cam=extrinsic,
-            T_base2world=copy.deepcopy(self.T_base2world),
-            T_base2ego=copy.deepcopy(self.T_base2ego),
         )
 
         if num_steps_per_shard is not None:

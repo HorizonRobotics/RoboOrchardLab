@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 
+import subprocess
 from collections import OrderedDict
 
 import ffmpeg
@@ -238,8 +239,11 @@ def decode_video_to_frames_ffmpeg(
 
     process = (
         ffmpeg.input(video_path)
-        .output("pipe:", format="rawvideo", pix_fmt="bgr24", loglevel="error")
-        .run_async(pipe_stdout=True)
+        .output("pipe:", format="rawvideo", pix_fmt="bgr24", loglevel="quiet")
+        .run_async(
+            pipe_stdout=True,
+            pipe_stderr=subprocess.DEVNULL,
+        )
     )
 
     frame_size = width * height * 3
@@ -249,7 +253,6 @@ def decode_video_to_frames_ffmpeg(
             break
         frame = np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3])
         yield frame
-    process.wait()
 
 
 def decode_depth_to_frames_ffmpeg(
@@ -266,9 +269,12 @@ def decode_depth_to_frames_ffmpeg(
     process = (
         ffmpeg.input(video_path)
         .output(
-            "pipe:", format="rawvideo", pix_fmt="gray16le", loglevel="error"
+            "pipe:", format="rawvideo", pix_fmt="gray16le", loglevel="quiet"
         )
-        .run_async(pipe_stdout=True)
+        .run_async(
+            pipe_stdout=True,
+            pipe_stderr=subprocess.DEVNULL,
+        )
     )
 
     frame_size = width * height * 2
@@ -279,7 +285,6 @@ def decode_depth_to_frames_ffmpeg(
         frame = np.frombuffer(in_bytes, np.uint16).reshape([height, width])
         frame = dequantize_depth(frame)
         yield frame
-    process.wait()
 
 
 def dequantize_depth(
