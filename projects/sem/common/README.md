@@ -158,6 +158,16 @@ python3 libero_eval.py \
 RoboOrchardJob-AIDISubmit submit_from_config --config projects/sem/common/submit_cfg_libero_eval.json # Adjust relevant config parameters accordingly
 ```
 
+## Data visualization
+```bash
+cd project/sem/common
+
+python3 data_visualize.py \
+    --config configs/config_sem_common.py \
+    --dataset_names horizon_beijing droid \
+    $@
+```
+
 # Docker image
 - **New version image (supports Qwen3):**  
   `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch260-robotwin2-transformer4571-20251030`
