@@ -26,7 +26,7 @@ PYTHON_BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 LICENSE_HEADER = """# Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -231,8 +231,8 @@ if __name__ == "__main__":
         # specific version.
         # Do not delete the line below, just comment it out and add the
         # new line.
-        # "robo_orchard_core==0.2.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@094b4c60430cc2d34fa17d03fb3bcd174bfdc67e",
+        "robo_orchard_core==0.4.0",
+        # "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@ff16649dc899b99bf1d24966d0a00f90a849fdce",
     ]
     # optional dependencies
     extras_require = {
@@ -270,7 +270,7 @@ if __name__ == "__main__":
             "mcap>=1.2.2",
             "foxglove-schemas-protobuf>=0.3.0",
             "opencv-python",
-            "robo_orchard_schemas==0.1.1",
+            "robo_orchard_schemas==0.2.0",
         ],
         "aux_think": [
             "transformers",

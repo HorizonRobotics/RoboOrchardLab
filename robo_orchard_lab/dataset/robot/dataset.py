@@ -18,6 +18,7 @@ import bisect
 import json
 import os
 import shutil
+import warnings
 from contextlib import contextmanager
 from dataclasses import asdict
 from typing import (
@@ -139,9 +140,24 @@ class RODataset(TorchDataset):
         meta_index2meta: bool = False,
     ):
         dataset_path = os.path.expanduser(dataset_path)
-        self.frame_dataset = HFDataset.load_from_disk(
-            dataset_path, storage_options=storage_options
-        )
+
+        try:
+            self.frame_dataset = HFDataset.load_from_disk(
+                dataset_path, storage_options=storage_options
+            )
+        except ValueError as e:  # noqa
+            from robo_orchard_lab.dataset.robot._hf_dataset import (
+                load_from_disk,
+            )
+
+            warnings.warn(
+                "Failed to load dataset using `datasets.load_from_disk`. "
+                "Falling back to use wrapped version. "
+            )
+            self.frame_dataset = load_from_disk(
+                dataset_path, storage_options=storage_options
+            )
+
         self.index_dataset = self.frame_dataset.select_columns(
             column_names=list(PreservedIndexColumnsKeys)
         )

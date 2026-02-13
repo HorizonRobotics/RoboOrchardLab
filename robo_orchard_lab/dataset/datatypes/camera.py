@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import datasets as hg_datasets
+import pyarrow as pa
+from datasets.table import array_cast
 from robo_orchard_core.datatypes.camera_data import (
     BatchCameraData,
     BatchCameraDataEncoded,
@@ -136,9 +138,49 @@ class BatchCameraInfoFeature(RODictDataFeature, TypedDictFeatureDecode):
             "intrinsic_matrices": TypedTensorFeature(
                 dtype=self.dtype, as_torch_tensor=True
             ),
+            "transform_matrices": TypedTensorFeature(
+                dtype=self.dtype, as_torch_tensor=True
+            ),
             "distortion": DistortionFeature(dtype=self.dtype),
             "pose": BatchFrameTransformFeature(dtype=self.dtype),
         }
+
+    def cast_storage(self, storage: pa.StructArray) -> pa.StructArray:
+        """Cast the storage array to the expected schema.
+
+        When loading arrow table with old schema, we need to update
+        the schema to current version.
+
+        Note:
+            This method only handles missing fields. If the field
+            type is changed, it will not be handled here!
+
+        """
+        # Cast the storage array to the expected schema
+        storage_type: pa.StructType = storage.type
+        feature_type: pa.StructType = self.pa_type
+        # we only handle the case when storage is a struct array,
+        # and leave other cases to the default array_cast implementation.
+        if pa.types.is_struct(storage_type):
+            if storage_type == feature_type:
+                return storage
+            # find all field
+            existing_fields = set(storage_type.names)
+
+            # reconstruct storage with missing fields filled with null values
+            arrays = []
+            for field in feature_type:
+                if field.name in existing_fields:
+                    arrays.append(storage.field(field.name))
+                else:
+                    arrays.append(
+                        pa.array([None] * len(storage), type=field.type)
+                    )
+            storage = pa.StructArray.from_arrays(
+                arrays, names=feature_type.names, mask=storage.is_null()
+            )
+        # return storage
+        return array_cast(storage, self.pa_type)
 
 
 @classmethod
