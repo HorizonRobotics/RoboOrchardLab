@@ -45,7 +45,7 @@ config = dict(
     vlm_pretrain="Qwen/Qwen2.5-VL-3B-Instruct",
     num_vlm_layers=1,
     freeze_vlm=False,
-    checkpoint="hf://model/HorizonRobotics/HoloBrain-v0.0_Qwen/model.safentensors",  # noqa: E501
+    checkpoint="hf://model/HorizonRobotics/HoloBrain_v0.0_Qwen/pretrain/model.safetensors",  # noqa: E501
 )
 
 

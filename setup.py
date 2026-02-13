@@ -252,6 +252,18 @@ if __name__ == "__main__":
             "lmdb",
             "h5py",
         ],
+        "holobrain_0": [
+            "torch>=2.6.0",
+            "transformers<=4.57.1",
+            "pytorch3d==0.7.8",
+            "pytorch-kinematics",
+            "ninja",
+            "diffusers",
+            "lmdb",
+            "h5py",
+            "terminaltables",
+            "flash-attn",
+        ],
         "mcap_datasets": [
             "mcap-protobuf-support>=0.5.3",
             "mcap-ros2-support",

@@ -41,9 +41,10 @@ config = dict(
         "robotwin2_0_ur5_wsg",
     ],
     dst_wh=(320, 256),
+    patch_size=64,
     multi_task=True,
     bert_checkpoint="google-bert/bert-base-uncased",
-    checkpoint="hf://model/HorizonRobotics/HoloBrain-v0.0_GD/model.safetensors",  # noqa: E501
+    checkpoint="hf://model/HorizonRobotics/HoloBrain_v0.0_GD/pretrain/model.safetensors",  # noqa: E501
 )
 
 

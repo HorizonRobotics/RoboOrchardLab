@@ -56,7 +56,11 @@ class HoloBrainRoboTwinPolicy:
             os.symlink(urdf_dir, target_urdf_dir)
 
         self.processor = HoloBrainProcessor.load(config, f"{processor}.json")
-        self.model = ModelMixin.load_model(config, load_impl="native")
+        self.model = ModelMixin.load_model(
+            config,
+            model_prefix=model_prefix,
+            load_impl="native",
+        )
         self.model.eval()
         self.model.requires_grad_()
 
@@ -109,7 +113,7 @@ class HoloBrainRoboTwinPolicy:
         data = self.data_preprocess(observation, instruction)
         model_outs = self.model(data)
         actions = self.processor.post_process(data, model_outs).action
-        actions = actions[:self.valid_action_step].cpu().numpy()
+        actions = actions[: self.valid_action_step].cpu().numpy()
         return actions
 
 

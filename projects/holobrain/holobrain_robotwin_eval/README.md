@@ -11,7 +11,7 @@ Follow the setup instructions in RoboTwin to set up the evaluation environment.
 
 ```bash
 export HYDRA_FULL_ERROR=1
-python3 projects/holobrain/holobrain_robotwin_eval/policy.py \
+python3 projects/holobrain/holobrain_robotwin_eval/eval.py \
   --task_config demo_clean \
   --task_names place_empty_cup,adjust_bottle,stack_blocks_three \
   --model_config ${MODEL_TO_EVAL} \
