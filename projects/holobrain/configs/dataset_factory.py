@@ -84,7 +84,7 @@ def build_validation_dataset(config, lazy_init=False):
             build_func(
                 config,
                 config.get("validation_datasets", []),
-                mode="training",
+                mode="validation",
                 lazy_init=lazy_init,
             )
         )

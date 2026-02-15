@@ -397,17 +397,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
                     )
             vis_imgs.append(img)
 
-        if len(vis_imgs) % 2 == 0:
-            num_imgs = len(vis_imgs)
-            vis_imgs = np.concatenate(
-                [
-                    np.concatenate(vis_imgs[: num_imgs // 2], axis=1),
-                    np.concatenate(vis_imgs[num_imgs // 2 :], axis=1),
-                ],
-                axis=0,
-            )
-        else:
-            vis_imgs = np.concatenate(vis_imgs, axis=1)
+        vis_imgs = np.concatenate(vis_imgs, axis=1)
         vis_imgs = np.uint8(vis_imgs)
         if channel_conversion:
             vis_imgs = vis_imgs[..., ::-1]

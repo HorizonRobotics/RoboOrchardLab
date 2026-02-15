@@ -50,6 +50,13 @@ python3 -m robo_orchard_lab.dataset.robotwin.robotwin_packer.py \
     --config_name demo_clean
 ```
 
+Visualize data for checking.
+```
+cd projects/holobrain
+CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
+python3 data_visualize.py --config ${CONFIG}  $@
+```
+
 ### 3. Run Training
 ```bash
 cd projects/holobrain
