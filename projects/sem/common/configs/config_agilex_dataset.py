@@ -731,7 +731,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         InstructionReader,
     )
 
-    datasets = []
+    datasets = {}
     for dataset_name, data_config in dataset_config.items():
         if dataset_name not in dataset_names:
             continue
@@ -765,7 +765,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
         )
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
 
     return datasets
 

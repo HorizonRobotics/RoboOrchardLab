@@ -136,7 +136,7 @@ def build_transforms(config, mode):
 @train_dataset_register()
 def build_datasets(config, dataset_names, mode, lazy_init=True):
     if "egodex" not in dataset_names:
-        return []
+        return {}
     assert mode == "training", "only support training mode"
 
     from robo_orchard_lab.dataset.egodex.egodex_lmdb_dataset import (
@@ -151,4 +151,4 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         dataset_name="egodex",
         reset_step=1000,
     )
-    return [dataset]
+    return dict(egodex=dataset)

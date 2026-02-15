@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 dataset_config = dict(
     behavior1k_manipulation=dict(
-        dataset_name="b1k_manipulation",
         kinematics_config=dict(
             urdf="./urdf/r1_pro_with_gripper.urdf",
             torso_link_keys=[
@@ -137,7 +136,6 @@ dataset_config = dict(
             "data/behavior1k_lmdb_data/task_0048_manipulation_lmdb/",
             "data/behavior1k_lmdb_data/task_0049_manipulation_lmdb/",
         ],
-        dst_wh=[476, 476],
         cam_names=[
             "left_wrist",
             "right_wrist",
@@ -145,7 +143,6 @@ dataset_config = dict(
         ],
     ),
     behavior1k_navigation=dict(
-        dataset_name="b1k_nvigation",
         kinematics_config=dict(
             urdf="./urdf/r1_pro_with_gripper.urdf",
             torso_link_keys=[
@@ -258,7 +255,6 @@ dataset_config = dict(
             "data/behavior1k_lmdb_data/task_0048_navigation_lmdb/",
             "data/behavior1k_lmdb_data/task_0049_navigation_lmdb/",
         ],
-        dst_wh=[476, 476],
         cam_names=[
             "left_wrist",
             "right_wrist",
@@ -268,7 +264,7 @@ dataset_config = dict(
 )
 
 
-def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
+def build_transforms(config, mode, kinematics_config, scale_shift):
     from robo_orchard_lab.dataset.behavior.transforms import (
         AddItems,
         AddScaleShift,
@@ -314,7 +310,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift, dst_wh):
         joint_mask=joint_mask,
     )
 
-    resize = dict(type=Resize, dst_wh=dst_wh)
+    resize = dict(type=Resize, dst_wh=config.get("dst_wh", (476, 476)))
     to_tensor = dict(type=ToTensor)
     ego_to_cam = dict(type=MoveEgoToCam)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
@@ -418,8 +414,6 @@ def build_datasets(
     mode="training",
 ):
     """Build Behavior datasets for training."""
-    if "behavior" not in dataset_names:
-        return []
     assert mode == "training", "only support training mode"
 
     import uuid
@@ -428,14 +422,18 @@ def build_datasets(
         BehaviorLmdbDataset,
     )
 
-    datasets = []
-    for _, data_config in dataset_config.items():
+    datasets = {}
+    for dataset_name, data_config in dataset_config.items():
+        if (
+            "behavior" not in dataset_names
+            and dataset_name not in dataset_names
+        ):
+            continue
         transforms = build_transforms(
             config,
             mode,
             data_config["kinematics_config"],
             data_config["scale_shift"],
-            data_config["dst_wh"],
         )
 
         dataset = BehaviorLmdbDataset(
@@ -445,20 +443,17 @@ def build_datasets(
             reset_step=1000,
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
-            dataset_name=data_config.get("dataset_name", "b1k"),
+            dataset_name=dataset_name,
             flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "behavior").hex[:4], 16),
         )
 
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
 
     return datasets
 
 
 @processor_register()
 def build_processors(config, dataset_names):
-    if "behavior" not in dataset_names:
-        return []
-
     from robo_orchard_lab.models.sem_modules import (
         SEMProcessor,
         SEMProcessorCfg,
@@ -466,12 +461,16 @@ def build_processors(config, dataset_names):
 
     processors = {}
     for dataset_name, data_config in dataset_config.items():
+        if (
+            "behavior" not in dataset_names
+            and dataset_name not in dataset_names
+        ):
+            continue
         transforms = build_transforms(
             config,
             "deploy",
             data_config["kinematics_config"],
             data_config["scale_shift"],
-            data_config["dst_wh"],
         )
 
         processor = SEMProcessor(

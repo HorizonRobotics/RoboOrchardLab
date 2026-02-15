@@ -357,7 +357,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         EpisodeSamplerConfig,
     )
 
-    datasets = []
+    datasets = {}
     for dataset_name, data_config in dataset_config.items():
         if (
             "isaac_pick_place" not in dataset_names
@@ -383,7 +383,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             arrow_dataset.set_transform(transforms)
             dataset_list.append(arrow_dataset)
         dataset = ConcatRODataset(dataset_list)
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
 
         # viz_arrow_dataset(dataset)
 

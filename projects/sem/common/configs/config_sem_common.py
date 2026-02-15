@@ -417,30 +417,18 @@ def build_optimizer(config, model):
 
 
 def build_training_dataset(config, lazy_init=False):
-    from dataset_factory import (
-        apply_dataset_register,
-        build_training_dataset as build,
-    )
+    from dataset_factory import build_training_dataset as build
 
-    apply_dataset_register()
     return build(config, lazy_init)
 
 
 def build_validation_dataset(config, lazy_init=False):
-    from dataset_factory import (
-        apply_dataset_register,
-        build_validation_dataset as build,
-    )
+    from dataset_factory import build_validation_dataset as build
 
-    apply_dataset_register()
     return build(config, lazy_init)
 
 
 def build_processors(config):
-    from dataset_factory import (
-        apply_dataset_register,
-        build_processors as build,
-    )
+    from dataset_factory import build_processors as build
 
-    apply_dataset_register()
     return build(config)

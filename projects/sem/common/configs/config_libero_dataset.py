@@ -234,7 +234,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         LiberoLmdbDataset,
     )
 
-    datasets = []
+    datasets = {}
     for dataset_name, data_path in data_paths.items():
         if "libero" not in dataset_names and dataset_name not in dataset_names:
             continue
@@ -250,7 +250,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             dataset_name=dataset_name,
             flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "libero").hex[:4], 16),
         )
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
     return datasets
 
 

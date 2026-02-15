@@ -70,9 +70,10 @@ def apply_dataset_register():
 def build_training_dataset(config, lazy_init=False):
     from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
 
-    datasets = []
+    apply_dataset_register()
+    datasets = {}
     for build_func in TRAIN_DATASET_BUILD_FUNCS:
-        datasets.extend(
+        datasets.update(
             build_func(
                 config,
                 config["training_datasets"],
@@ -80,31 +81,37 @@ def build_training_dataset(config, lazy_init=False):
                 lazy_init=lazy_init,
             )
         )
-    dataset = ConcatDatasetWithFlag(datasets=datasets)
+    dataset = ConcatDatasetWithFlag(datasets=list(datasets.values()))
+    if isinstance(config.get("dataset_sample_weights"), dict):
+        config["dataset_sample_weights"] = [
+            config["dataset_sample_weights"][name] for name in datasets.keys()
+        ]
     return dataset
 
 
 def build_validation_dataset(config, lazy_init=False):
     from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
 
-    datasets = []
+    apply_dataset_register()
+    datasets = {}
     for build_func in VALIDATION_DATASET_BUILD_FUNCS:
-        datasets.extend(
+        datasets.update(
             build_func(
                 config,
                 config.get("validation_datasets", []),
-                mode="training",
+                mode="validation",
                 lazy_init=lazy_init,
             )
         )
     if len(datasets) == 0:
         return None
     else:
-        dataset = ConcatDatasetWithFlag(datasets=datasets)
+        dataset = ConcatDatasetWithFlag(datasets=list(datasets.values()))
         return dataset
 
 
 def build_processors(config):
+    apply_dataset_register()
     processors = {}
     for build_func in PROCESSOR_BUILD_FUNCS:
         processors.update(build_func(config, config["deploy_datasets"]))

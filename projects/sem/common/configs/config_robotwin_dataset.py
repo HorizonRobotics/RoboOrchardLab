@@ -66,7 +66,16 @@ dataset_config = dict(
         ],
         paths=[
             "./data/robotwin2.0/aloha_agilex_demo_clean",
-            "./data/robotwin2.0/aloha_agilex_demo_randomized",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part1",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part2",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part3",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part4",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part5",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part6",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part7",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part8",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part9",
+            "./data/robotwin2.0/agilex_demo_randomized_500_part10",
         ],
         scale_shift=[
             [1.12735104, -0.11648428],
@@ -495,7 +504,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         RoboTwinLmdbDataset,
     )
 
-    datasets = []
+    datasets = {}
     for dataset_name, data_config in dataset_config.items():
         if (
             "robotwin" not in dataset_names
@@ -519,7 +528,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             cam_names=data_config["cam_names"],
             reset_step=1000,
         )
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
     return datasets
 
 

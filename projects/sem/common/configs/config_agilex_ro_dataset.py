@@ -369,7 +369,6 @@ def build_transforms(
 @train_dataset_register()
 @validation_dataset_register()
 def build_datasets(config, dataset_names, mode, **kwargs):
-
     from torchvision.transforms import Compose
 
     from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
@@ -388,7 +387,7 @@ def build_datasets(config, dataset_names, mode, **kwargs):
         pred_steps=config["pred_steps"],
     )
 
-    datasets = []
+    datasets = {}
     for data_name, data_config in dataset_config.items():
         if data_name not in dataset_names:
             continue
@@ -420,6 +419,6 @@ def build_datasets(config, dataset_names, mode, **kwargs):
             "flag",
             int(uuid.uuid5(uuid.NAMESPACE_DNS, "agilex").hex[:4], 16),
         )
-        datasets.append(dataset)
+        datasets[data_name] = dataset
 
     return datasets

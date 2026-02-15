@@ -444,7 +444,7 @@ def build_datasets(config, dataset_names, mode="training", **kwargs):
         }
 
     if not valid_dataset_paths:
-        return []
+        return {}
 
     adc_anno_results = load_adc_anno_results(adc_anno_results_dir)
     transforms = build_transforms(
@@ -457,7 +457,7 @@ def build_datasets(config, dataset_names, mode="training", **kwargs):
     )
     composed_transforms = Compose([build(x) for x in as_sequence(transforms)])
 
-    datasets = []
+    datasets = {}
     for data_name, data_paths in valid_dataset_paths.items():
         resolved_paths = []
         for path in data_paths:
@@ -486,7 +486,7 @@ def build_datasets(config, dataset_names, mode="training", **kwargs):
         assert len(ro_datasets) > 0, f"No datasets found for {data_name}"
 
         dataset = ConcatRODataset(ro_datasets)
-        datasets.append(dataset)
+        datasets[data_name] = dataset
 
     return datasets
 

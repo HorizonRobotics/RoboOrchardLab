@@ -359,9 +359,9 @@ def build_datasets(
             interval=interval,
             reset_step=1000,
         )
-        train_datasets = [agibot_dataset]
+        train_datasets = dict(agibot=agibot_dataset)
     else:
-        train_datasets = []
+        train_datasets = {}
         for name, data_path in data_paths.items():
             if name not in dataset_names:
                 continue
@@ -374,5 +374,5 @@ def build_datasets(
                 task_info_reader=instruction_reader,
                 interval=interval,
             )
-            train_datasets.append(agibot_dataset)
+            train_datasets[name] = agibot_dataset
     return train_datasets

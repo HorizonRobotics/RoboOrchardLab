@@ -49,7 +49,6 @@ __all__ = [
 
 
 class EpisodeChunkSampler(MultiRowSampler):
-
     def __init__(self, cfg: "EpisodeChunkSamplerConfig") -> None:
         self.cfg = cfg
         self.hist_steps = cfg.hist_steps
@@ -68,7 +67,6 @@ class EpisodeChunkSampler(MultiRowSampler):
         index_dataset: HFDataset,
         index: int,
     ) -> dict[str, list[int | None]]:
-
         cur_row = index_dataset[index]
         cur_episode_idx = cur_row["episode_index"]
         dataset_len = len(index_dataset)
@@ -234,7 +232,6 @@ class ArrowDataParse:
         return {"T_world2cam": T_world2cam}
 
     def __call__(self, data):
-
         data.update(self.get_instruction(data))
         data.update(self.get_intrinsic(data))
         data.update(self.get_joints(data))

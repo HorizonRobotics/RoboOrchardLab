@@ -423,7 +423,7 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
     )
 
     dataset_lmdb_config = get_dataset_lmdb_config()
-    datasets = []
+    datasets = {}
     for dataset_name, data_config in dataset_lmdb_config.items():
         if dataset_name not in dataset_names:
             continue
@@ -441,7 +441,8 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
             lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
             instruction_path="./data/instructions/task2instruction_0928.json",
         )
-        data_config["data_paths"].sort()
+        if isinstance(data_config["data_paths"], list):
+            data_config["data_paths"].sort()
         dataset = InternA1LmdbDataset(
             paths=data_config["data_paths"],
             lazy_init=lazy_init or mode != "training",
@@ -455,7 +456,7 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
         )
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
 
     return datasets
 

@@ -570,7 +570,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         InstructionReader,
     )
 
-    datasets = []
+    datasets = {}
     for dataset_name, paths in data_paths.items():
         if (
             "rh20t" not in dataset_names
@@ -596,5 +596,5 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             num_views=3,
             instruction_reader=instruction_reader,
         )
-        datasets.append(dataset)
+        datasets[dataset_name] = dataset
     return datasets
