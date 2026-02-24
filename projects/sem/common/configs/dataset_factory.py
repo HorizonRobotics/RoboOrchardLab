@@ -81,10 +81,14 @@ def build_training_dataset(config, lazy_init=False):
                 lazy_init=lazy_init,
             )
         )
-    dataset = ConcatDatasetWithFlag(datasets=list(datasets.values()))
+    dataset_names = list(datasets.keys())
+    dataset_names.sort()
+    dataset = ConcatDatasetWithFlag(
+        datasets=[datasets[name] for name in dataset_names]
+    )
     if isinstance(config.get("dataset_sample_weights"), dict):
         config["dataset_sample_weights"] = [
-            config["dataset_sample_weights"][name] for name in datasets.keys()
+            config["dataset_sample_weights"][name] for name in dataset_names
         ]
     return dataset
 
@@ -106,7 +110,11 @@ def build_validation_dataset(config, lazy_init=False):
     if len(datasets) == 0:
         return None
     else:
-        dataset = ConcatDatasetWithFlag(datasets=list(datasets.values()))
+        dataset_names = list(datasets.keys())
+        dataset_names.sort()
+        dataset = ConcatDatasetWithFlag(
+            datasets=[datasets[name] for name in dataset_names]
+        )
         return dataset
 
 

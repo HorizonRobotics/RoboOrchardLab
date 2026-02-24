@@ -16,6 +16,7 @@
 
 import logging
 import os
+from collections import deque
 from typing import Callable, List, Optional, Union
 
 import numpy as np
@@ -28,6 +29,15 @@ from robo_orchard_lab.utils.build import build
 from robo_orchard_lab.utils.misc import as_sequence
 
 logger = logging.getLogger(__name__)
+
+
+MAX_VIRTUAL_MEM = 1024**3 * 64  # 64 TB
+
+
+def get_virtual_mem():
+    with open(f"/proc/{os.getpid()}/statm", "r") as f:
+        statm = f.read().split()
+    return int(statm[0]) * 4
 
 
 class BaseIndexData(BaseModel):
@@ -92,6 +102,10 @@ class BaseLmdbManipulationDataset(Dataset):
             access. Default: False.
         encoding_mode (str): Encoding mode of keys from LMDB.
             Default: "utf-8".
+        lru_queue_length (Optional[int]): The length of the queue that tracks
+            recently accessed LMDB indexes. This queue is used to close the
+            least recently accessed LMDB to prevent virtual memory from
+            exceeding the limit. Default: None.
     """
 
     def __init__(
@@ -109,6 +123,7 @@ class BaseLmdbManipulationDataset(Dataset):
         reset_step: int = 10000,
         lmdb_kwargs: Optional[dict] = None,
         flag: Optional[int] = None,
+        lru_queue_length: Optional[int] = None,
     ):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
@@ -124,6 +139,7 @@ class BaseLmdbManipulationDataset(Dataset):
         self.reset_step = reset_step
         self.lmdb_kwargs = lmdb_kwargs if lmdb_kwargs is not None else {}
         self.flag = flag
+        self.lru_queue_length = lru_queue_length
         self.initialized = False
         if not lazy_init:
             self._init_lmdb()
@@ -138,9 +154,14 @@ class BaseLmdbManipulationDataset(Dataset):
         return True
 
     def _init_lmdb(self):
+        if self.initialized:
+            return
         self.meta_lmdbs = [None for path in self.paths]
         self.img_lmdbs = [None for path in self.paths]
         self.depth_lmdbs = [None for path in self.paths]
+        self.read_times = [0 for _ in self.paths]
+        if self.lru_queue_length is not None:
+            self.lru_queue = deque()
         self.idx_lmdbs = [
             Lmdb(
                 uri=os.path.join(path, "index"),
@@ -206,6 +227,28 @@ class BaseLmdbManipulationDataset(Dataset):
         else:
             return self.cumsum_steps[-1] // self.interval
 
+    def _mem_manager(self, lmdb_index):
+        self.read_times[lmdb_index] += 1
+        if self.lru_queue_length is not None:
+            while self.lru_queue_length <= len(self.lru_queue):
+                earliest_index = self.lru_queue.pop()
+                self.read_times[earliest_index] -= 1
+            self.lru_queue.append(lmdb_index)
+
+        for lmdb_index_to_close in np.argsort(self.read_times):
+            if get_virtual_mem() < MAX_VIRTUAL_MEM:
+                break
+            if (
+                self.load_image
+                and self.img_lmdbs[lmdb_index_to_close] is not None
+            ):
+                self.img_lmdbs[lmdb_index_to_close].close()
+            if (
+                self.load_depth
+                and self.depth_lmdbs[lmdb_index_to_close] is not None
+            ):
+                self.depth_lmdbs[lmdb_index_to_close].close()
+
     def _get_indices(self, index):
         if not self.initialized:
             self._init_lmdb()
@@ -219,6 +262,8 @@ class BaseLmdbManipulationDataset(Dataset):
         else:
             step_index = index - self.cumsum_steps[episode_index - 1]
         episode_index = self.episode_indices[episode_index]
+
+        self._mem_manager(lmdb_index)
         if self.meta_lmdbs[lmdb_index] is None:
             self.meta_lmdbs[lmdb_index] = Lmdb(
                 uri=os.path.join(self.paths[lmdb_index], "meta"),
