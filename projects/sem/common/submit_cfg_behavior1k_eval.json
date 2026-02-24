@@ -1,7 +1,7 @@
 {
     "job_name": "eval_behavior1k_sem",
     "workspace_folder": "submit-sem",
-    "docker_image": "hub.hobot.cc/auto/robot_lab_base:ubuntu2204-gcc11.4-cu118-torch260-b1k-v1.0",
+    "docker_image": "hub.hobot.cc/auto/robot_lab_base:ubuntu2204-gcc11.4-py310-cu128-torch270-b1k-v1.0",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,

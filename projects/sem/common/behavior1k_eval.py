@@ -55,7 +55,7 @@ bash_command_template = (
 )
 
 
-def cal_q_score(log_dir):
+def cal_q_score(metric_dir):
     logger = logging.getLogger(__name__)
 
     task_scores = defaultdict(list)
@@ -64,17 +64,17 @@ def cal_q_score(log_dir):
         # assumes "..._<int>_<something>.json"
         return int(fname.split("_")[-2])
 
-    if not os.path.exists(log_dir):
-        logger.error(f"metrics dir not found: {log_dir}")
+    if not os.path.exists(metric_dir):
+        logger.error(f"metrics dir not found: {metric_dir}")
         return
 
-    for fname in sorted(os.listdir(log_dir), key=extract_key):
+    for fname in sorted(os.listdir(metric_dir), key=extract_key):
         if not fname.endswith(".json"):
             continue
 
         task = fname.rsplit("_", 2)[0]
 
-        path = os.path.join(log_dir, fname)
+        path = os.path.join(metric_dir, fname)
         with open(path, "r") as f:
             data = json.load(f)
 
@@ -233,7 +233,21 @@ def worker_loop(gpu_id: int, worker_local_id: int, job_queue, args, results):
 
         ok = True
         try:
-            ret = subprocess.run(command, shell=True, text=True)
+            inst_tag = f"{inst_list[0]}_{inst_list[-1]}"
+            log_file = os.path.join(
+                args.job_log_dir,
+                f"job_{task_name}_{inst_tag}.log",
+            )
+
+            with open(log_file, "w") as f:
+                ret = subprocess.run(
+                    command,
+                    shell=True,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+
             if ret.returncode != 0:
                 ok = False
                 logger.error(
@@ -283,6 +297,10 @@ if __name__ == "__main__":
     parts = args.model_path.strip("/").split("/")
     suffix = [parts[-4], parts[-1]]
     args.log_path = os.path.join("/job_data/", *suffix)
+
+    # job-level log dir
+    args.job_log_dir = os.path.join("/job_data", "job_logs")
+    os.makedirs(args.job_log_dir, exist_ok=True)
 
     logger.info("\n" + json.dumps(vars(args), indent=4))
 
