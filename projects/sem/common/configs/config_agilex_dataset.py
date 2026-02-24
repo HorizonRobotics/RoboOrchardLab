@@ -179,29 +179,47 @@ all_calibrations = dict(
     ),
 )
 
+
+def get_data_paths(dataset_name):
+    from glob import glob
+
+    data_paths = []
+    if dataset_name == "challenge":
+        patterns = [
+            "./data/challenge/倒水*/*",
+            "./data/challenge/叠毛巾*/叠毛巾-白黑格纹/*",
+            "./data/challenge/叠毛巾*/叠毛巾517mm*",
+            "./data/challenge/叠盘子*/*",
+            "./data/challenge/叠短裤*/*",
+            "./data/challenge/盖笔帽*/*",
+        ]
+    elif dataset_name == "horizon_beijing":
+        patterns = [
+            "./data/horizon_beijing/xuewu.lin-empty_cup_place",
+            "./data/horizon_beijing/xuewu.lin-collect_bottles",
+            "./data/horizon_beijing/xuewu.lin-collect_bottles-20250707-v2",
+            "./data/horizon_beijing/xuewu.lin-place_to_slot",
+            "./data/horizon_beijing/xuewu.lin-place_to_slot-20250709",
+            "./data/horizon_beijing/xuewu.lin-two_fold_towel-20250710",
+            "./data/horizon_beijing/xuewu.lin-two_fold_towel-20250712",
+            "./data/horizon_beijing/zhixu.zhao-*",
+            "./data/horizon_beijing/*-place_objects_to_basket-*",
+            "./data/horizon_beijing/*-fold_paper_box-*",
+        ]
+    elif dataset_name == "agilex":
+        patterns = ["./data/agilex_collect/lmdb_dataset*"]
+    else:
+        raise ValueError
+    for pattern in patterns:
+        data_paths.extend(glob(pattern))
+    data_paths = list(set(data_paths))
+    data_paths.sort()
+    return data_paths
+
+
 dataset_config = dict(
     challenge=dict(
-        data_paths=[
-            "./data/challenge/倒水-AH202502130001/倒水517mm-灰白",
-            "./data/challenge/倒水-AH202502130001/倒水517mm-绿白",
-            "./data/challenge/倒水-AH202502130001/倒水517mm",
-            "./data/challenge/叠毛巾-AH202502130002/叠毛巾-白黑格纹/叠毛巾-517-3-白黑格纹",
-            "./data/challenge/叠毛巾-AH202502130002/叠毛巾-白黑格纹/叠毛巾-517-3-白黑格纹-2",
-            "./data/challenge/叠毛巾-AH202502130002/叠毛巾-白黑格纹/叠毛巾补数据",
-            "./data/challenge/叠毛巾-AH202502130002/叠毛巾517mm-灰白",
-            "./data/challenge/叠毛巾-AH202502130002/叠毛巾517mm-白背景",  # 7
-            "./data/challenge/叠毛巾-AH202502130002/叠毛巾517mm-绿白",
-            "./data/challenge/叠盘子-AH202501130003/叠盘子-517-3-绿白格纹",
-            "./data/challenge/叠盘子-AH202501130003/叠盘子517mm-1",
-            "./data/challenge/叠盘子-AH202501130003/叠盘子补采集-灰白",
-            "./data/challenge/叠盘子-AH202501130003/叠盘子补采集-黑色桌面",
-            "./data/challenge/叠短裤-AH202503060005/叠短裤517mm-灰白",  # 13
-            "./data/challenge/叠短裤-AH202503060005/叠短裤517mm-绿白",
-            "./data/challenge/叠短裤-AH202503060005/叠短裤517mm-青白",
-            "./data/challenge/盖笔帽-AH202501250001/盖笔帽-517-3-绿白格纹",
-            "./data/challenge/盖笔帽-AH202501250001/盖笔帽-517-3-灰白格纹",
-            "./data/challenge/盖笔帽-AH202501250001/盖笔帽-517-3-白黑格纹",
-        ],
+        data_paths=lambda: get_data_paths("challenge"),
         calibration=all_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_old.urdf",
         cam_names=["left", "right", "front"],
@@ -210,9 +228,7 @@ dataset_config = dict(
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "challenge").hex[:4], 16),
     ),
     challenge_finetune=dict(
-        data_paths=[
-            "./data/challenge/finetune",
-        ],
+        data_paths=["./data/challenge/finetune"],
         calibration=all_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "right", "front"],
@@ -229,67 +245,7 @@ dataset_config = dict(
         load_extrinsic=True,
     ),
     horizon_beijing=dict(
-        data_paths=[
-            # "./data/horizon_beijing/agilex_data_0424_blocks_stack_hard",
-            # "./data/horizon_beijing/agilex_data_0425_shoe_place",
-            # "./data/horizon_beijing/agilex_data_0425_blocks_stack_easy",
-            # "./data/horizon_beijing/agilex_data_0428_blocks_stack_easy",
-            # "./data/horizon_beijing/agilex_data_0428_blocks_stack_hard",
-            # "./data/horizon_beijing/agilex_data_0429_diverse_bottles_pick",
-            # "./data/horizon_beijing/agilex_data_0429-22_diverse_bottles_pick",  # noqa: E501
-            "./data/horizon_beijing/xuewu.lin-empty_cup_place",
-            "./data/horizon_beijing/xuewu.lin-collect_bottles",
-            "./data/horizon_beijing/xuewu.lin-collect_bottles-20250707-v2",
-            "./data/horizon_beijing/xuewu.lin-place_to_slot",
-            "./data/horizon_beijing/xuewu.lin-place_to_slot-20250709",
-            "./data/horizon_beijing/xuewu.lin-two_fold_towel-20250710",
-            "./data/horizon_beijing/xuewu.lin-two_fold_towel-20250712",
-            "./data/horizon_beijing/zhixu.zhao-place_shoe-20251022",
-            "./data/horizon_beijing/zhixu.zhao-place_to_slot-20251015-1016",
-            "./data/horizon_beijing/zhixu.zhao-put_bottles_dustbin-20251023-1024",
-            "./data/horizon_beijing/zhixu.zhao-stack_blocks_three-20251016-1017",
-            "./data/horizon_beijing/zhixu.zhao-stack_bowls_three-20251023",
-            "./data/horizon_beijing/zhixu.zhao-empty_cup_place-20251017",
-            "./data/horizon_beijing/zhixu.zhao-fold_towel-20251020-1021",
-            "./data/horizon_beijing/zhixu.zhao-compelte_state-20251028",
-            "./data/horizon_beijing/xuewu.lin-place_objects_to_basket-20251125",
-            "./data/horizon_beijing/xuewu.lin-place_objects_to_basket-complete-20251103",
-            "./data/horizon_beijing/xuewu.lin-place_objects_to_basket-completed_state-20251117",
-            "./data/horizon_beijing/xuewu.lin-place_objects_to_basket-complete_state-20251205",
-            "./data/horizon_beijing/xuewu.lin-place_objects_to_basket-put_basket-20251119",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251029",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251030",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251031",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251103",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251104",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251105",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251106",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251107",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251110",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251111",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251112",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251113",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251114",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251117",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251118",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251119_part1",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251119_part2",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251120",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251121",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251124",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251125",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251126",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251127",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251128",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251201",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251202",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251203",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251203-v2",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-20251204",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-demo-20251121",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-demo-20251124",
-            "./data/horizon_beijing/zhixu.zhao-place_objects_to_basket-demo-20251125",
-        ],
+        data_paths=lambda: get_data_paths("horizon_beijing"),
         calibration=all_calibrations["horizon_beijing"],
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "right", "middle"],
@@ -378,23 +334,7 @@ dataset_config = dict(
     ),
     # Agilex External Dataset
     agilex=dict(
-        data_paths=[
-            "./data/agilex_collect/lmdb_dataset_buss_table",
-            "./data/agilex_collect/lmdb_dataset_fold_towel",
-            "./data/agilex_collect/lmdb_dataset_hand_out",
-            "./data/agilex_collect/lmdb_dataset_make_coffee",
-            "./data/agilex_collect/lmdb_dataset_move_chair",
-            "./data/agilex_collect/lmdb_dataset_pick_larger_value",
-            "./data/agilex_collect/lmdb_dataset_plug_charger",
-            "./data/agilex_collect/lmdb_dataset_pour_water",
-            "./data/agilex_collect/lmdb_dataset_sort_toy_by_color",
-            "./data/agilex_collect/lmdb_dataset_spell_yes",
-            "./data/agilex_collect/lmdb_dataset_twist_off_the_cap",
-            "./data/agilex_collect/lmdb_dataset_unplug_the_charging_cable",
-            "./data/agilex_collect/lmdb_dataset_wash_pan",
-            "./data/agilex_collect/lmdb_dataset_wipe_wine",
-            "./data/agilex_collect/lmdb_dataset_ziploc_slide",
-        ],
+        data_paths=lambda: get_data_paths("agilex"),
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "right", "mid"],
         task_names=[
@@ -748,8 +688,11 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
             instruction_path="./data/instructions/task2instruction_0928.json",
         )
+        data_paths = data_config["data_paths"]
+        if callable(data_paths):
+            data_paths = data_paths()
         dataset = HorizonManipulationLmdbDataset(
-            paths=data_config["data_paths"],
+            paths=data_paths,
             lazy_init=lazy_init or mode != "training",
             transforms=transforms,
             dataset_name=dataset_name,
