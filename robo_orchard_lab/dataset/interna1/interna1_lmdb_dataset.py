@@ -26,7 +26,6 @@ from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
     BaseIndexData,
     BaseLmdbManipulationDataset,
 )
-from robo_orchard_lab.utils.build import build
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,6 @@ class InternA1LmdbDataset(BaseLmdbManipulationDataset):
         load_ee_state=False,
         bgr2rgb=False,
         depth_scale=1000,
-        instruction_reader=None,
         hist_steps=None,
         pred_steps=None,
         **kwargs,
@@ -110,7 +108,6 @@ class InternA1LmdbDataset(BaseLmdbManipulationDataset):
         self.load_calibration = load_calibration
         self.bgr2rgb = bgr2rgb
         self.depth_scale = depth_scale
-        self.instruction_reader = build(instruction_reader)
         self.hist_steps = hist_steps
         self.pred_steps = pred_steps
 

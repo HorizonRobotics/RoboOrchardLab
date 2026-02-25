@@ -667,7 +667,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
     )
-    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
+    from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
         InstructionReader,
     )
 
@@ -683,10 +683,11 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             depth_restore=config.get("depth_restore", False),
             do_calib_to_ext=not data_config.get("load_extrinsic", False),
         )
-        instruction_reader = dict(
-            type=InstructionReader,
-            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-            instruction_path="./data/instructions/task2instruction_0928.json",
+        instruction_reader = InstructionReader(
+            paths=[
+                "./data/instructions_v2/agilex",
+                "./data/instructions_v2/challenge",
+            ]
         )
         data_paths = data_config["data_paths"]
         if callable(data_paths):

@@ -566,7 +566,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         RH20TManipulationDataset,
     )
-    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
+    from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
         InstructionReader,
     )
 
@@ -583,10 +583,8 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             scale_shift_config[dataset_name],
             kinematics_config[dataset_name],
         )
-        instruction_reader = dict(
-            type=InstructionReader,
-            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-            instruction_path="./data/instructions/task2instruction.json",
+        instruction_reader = InstructionReader(
+            paths="./data/instructions_v2/rh20t"
         )
         dataset = RH20TManipulationDataset(
             paths=paths,
@@ -596,5 +594,5 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             num_views=3,
             instruction_reader=instruction_reader,
         )
-        datasets[dataset_name] = dataset
+        datasets[f"rh20t-{dataset_name}"] = dataset
     return datasets

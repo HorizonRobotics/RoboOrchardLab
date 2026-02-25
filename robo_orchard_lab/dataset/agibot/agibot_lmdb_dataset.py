@@ -29,9 +29,6 @@ from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
 )
 from robo_orchard_lab.utils.build import build
 
-# from robo_orchard_lab.dataset.task_info_reader import TaskInfoReader
-TaskInfoReader = None
-
 logger = logging.getLogger(__file__)
 
 
@@ -82,7 +79,6 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         default_space="base",
         lmdb_kwargs=None,
         dataset_name="",
-        task_info_reader: Optional[TaskInfoReader] = None,
         **kwargs,
     ):
         # Filter out invalid paths before calling the parent constructor.
@@ -118,7 +114,6 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
             num_episode=num_episode,
             dataset_name=dataset_name,
             **kwargs,
-            # task_info_reader=task_info_reader,
         )
         self.cam_names = cam_names
         assert default_space in ["base", "world", "ego"]
@@ -126,7 +121,6 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
 
         # Define standard camera order: hands first, head last
         self.expected_cam_types = ["hand_left", "hand_right", "head"]
-        self.task_info_reader = build(task_info_reader)
         self.default_head_extrinsic = {
             'rotation_matrix': [
                 [-0.012095615235643373, -0.7550696190766631, 0.62648361453548],
@@ -426,18 +420,12 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         meta_data = self.meta_lmdbs[lmdb_index][f"{uuid}/meta_data"]
         instruction = ""
         subtask = ""
-        if self.task_info_reader is not None:
-            task_info = self.task_info_reader.get_instruction(
-                uuid,
-                task_name=None,
-                step_index=step_index,
-            )
-            instruction = task_info["text"]
+        if self.instruction_reader is not None:
+            task_info = self.instruction_reader.get(uuid, step_index)
+            if task_info is None:
+                task_info = {"instruction": "", "subtask": ""}
+            instruction = task_info["instruction"]
             subtask = task_info.get("subtask")
-            # instruction = self.task_info_reader.get_instruction(uuid)
-            # subtask = self.task_info_reader.get_subtask_by_frame_idx(
-            #     uuid, step_index
-            # )
         if instruction == "":
             instruction = meta_data.get("instruction", "")
         if subtask == "":

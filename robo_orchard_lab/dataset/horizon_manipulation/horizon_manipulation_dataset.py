@@ -31,7 +31,6 @@ from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
     BaseIndexData,
     BaseLmdbManipulationDataset,
 )
-from robo_orchard_lab.utils.build import build
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         load_ee_state=False,
         bgr2rgb=False,
         depth_scale=1000,
-        instruction_reader=None,
         hist_steps=None,
         pred_steps=None,
         **kwargs,
@@ -115,28 +113,33 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         self.load_calibration = load_calibration
         self.bgr2rgb = bgr2rgb
         self.depth_scale = depth_scale
-        self.instruction_reader = build(instruction_reader)
         self.hist_steps = hist_steps
         self.pred_steps = pred_steps
 
-    def get_instruction(self, lmdb_index, data, by_reader=True):
-        if self.instruction_reader is not None and by_reader:
-            return self.instruction_reader.get_instruction(
+    def get_instruction(self, lmdb_index, data):
+        result = None
+        if self.instruction_reader is not None:
+            # read frame or episode level instruction
+            result = self.instruction_reader.get(
                 data["uuid"],
-                data["task_name"],
                 data["step_index"],
-                return_subtask=True,
             )
-        meta = self.meta_lmdbs[lmdb_index][f"{data['uuid']}/meta_data"]
-        instructions = meta.get("instruction", "")
-        if isinstance(instructions, str):
-            text = instructions
-        elif len(instructions) == 0:
-            text = ""
-        else:
-            idx = np.random.randint(len(instructions))
-            text = instructions[idx]
-        return {"text": text}
+            if result is None:
+                # without frame or episode level, read task level instruction
+                result = self.instruction_reader.get(data["task_name"])
+
+        if result is None:
+            meta = self.meta_lmdbs[lmdb_index][f"{data['uuid']}/meta_data"]
+            result = {"instruction": meta.get("instruction"), "subtask": None}
+
+        instruction = result["instruction"]
+        if instruction is None or len(instruction) == 0:
+            instruction = ""
+        elif isinstance(instruction, (list, tuple)):
+            idx = np.random.randint(len(instruction))
+            instruction = instruction[idx]
+        result["text"] = instruction
+        return result
 
     def get_depths(self, lmdb_index, data):
         depths = []

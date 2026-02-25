@@ -70,20 +70,12 @@ def build_lmdb_dataset(config):
             with the specified configuration.
     """
     from robo_orchard_lab.dataset.interna1 import InternA1LmdbDataset
-    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
-        InstructionReader,
-    )
 
     train_transforms = build_lmdb_transforms(
         config=config,
         mode="training",
         urdf=config["urdf"],
         robot_type=config["robot_type"],
-    )
-    instruction_reader = dict(
-        type=InstructionReader,
-        lmdb_path="/horizon-bucket/robot_lab2/datasets/all_data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-        instruction_path="/horizon-bucket/robot_lab2/datasets/all_data/instructions/task2instruction_0928.json",
     )
     dataset = InternA1LmdbDataset(
         paths=config["data_path"],
@@ -96,7 +88,6 @@ def build_lmdb_dataset(config):
         load_calibration=False,
         load_depth=True,
         load_ee_state=True,
-        instruction_reader=instruction_reader,
     )
     return dataset
 

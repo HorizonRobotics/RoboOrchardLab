@@ -334,15 +334,13 @@ def build_datasets(
     from robo_orchard_lab.dataset.agibot.agibot_lmdb_dataset import (
         AgiBotLmdbDataset,
     )
-    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
+    from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
         InstructionReader,
     )
 
     transforms = build_transforms(config)
-    instruction_reader = dict(
-        type=InstructionReader,
-        lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-        instruction_path="./data/instructions/task2instruction.json",
+    instruction_reader = InstructionReader(
+        paths="./data/instructions_v2/agibot",
     )
     interval = 2
     if "agibot" in dataset_names:
@@ -355,7 +353,7 @@ def build_datasets(
             transforms=transforms,
             cam_names=None,
             dataset_name="agibot",
-            task_info_reader=instruction_reader,
+            instruction_reader=instruction_reader,
             interval=interval,
             reset_step=1000,
         )
@@ -371,7 +369,7 @@ def build_datasets(
                 transforms=transforms,
                 cam_names=None,
                 dataset_name=name,
-                task_info_reader=instruction_reader,
+                instruction_reader=instruction_reader,
                 interval=interval,
             )
             train_datasets[name] = agibot_dataset

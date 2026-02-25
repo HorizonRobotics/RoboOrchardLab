@@ -418,9 +418,6 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
     from robo_orchard_lab.dataset.interna1 import (
         InternA1LmdbDataset,
     )
-    from robo_orchard_lab.dataset.lmdb.instruction_reader import (
-        InstructionReader,
-    )
 
     dataset_lmdb_config = get_dataset_lmdb_config()
     datasets = {}
@@ -436,11 +433,6 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
             depth_restore=config.get("depth_restore", False),
             do_calib_to_ext=not data_config.get("load_extrinsic", False),
         )
-        instruction_reader = dict(
-            type=InstructionReader,
-            lmdb_path="./data/instructions/subtasks_agibot_rh20t_agilex_20250714/",
-            instruction_path="./data/instructions/task2instruction_0928.json",
-        )
         if isinstance(data_config["data_paths"], list):
             data_config["data_paths"].sort()
         dataset = InternA1LmdbDataset(
@@ -452,9 +444,9 @@ def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
             task_names=data_config.get("task_names"),
             load_extrinsic=data_config.get("load_extrinsic", False),
             load_calibration=data_config.get("load_calibration", False),
-            instruction_reader=instruction_reader,
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
+            reset_step=200,
         )
         datasets[dataset_name] = dataset
 

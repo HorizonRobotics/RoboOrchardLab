@@ -14,10 +14,11 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import bisect
 import logging
 import os
 from collections import deque
-from typing import Callable, List, Optional, Union
+from typing import Callable, ClassVar, List, Optional, Tuple, Union
 
 import numpy as np
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -57,6 +58,106 @@ class BaseIndexData(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class StepLevelTags(BaseModel):
+    """Base data structure for step level tags, such as subtask and skill.
+
+    The subtask data is a list of (end_step, tag) tuples, where:
+    - end_step: The last step index of this subtask (exclusive)
+    - tag: Text tag for that step range
+
+    Data Structure Examples:
+        [(100, "Grasp the red block."), (200, "Place the red block.")]
+        [(100, "Pick"), (200, "Place")]
+    """
+
+    data: List[Tuple[int, str]]
+    BLANK_VALUES: ClassVar[frozenset[str]] = frozenset(
+        ["none", "null", "None", ""]
+    )
+
+    def get_step_tag(self, step_index):
+        idx = bisect.bisect_left(self.data, (step_index, ""))
+        if idx >= len(self.data):
+            return None
+        subtask = self.data[idx][1]
+        if subtask in self.BLANK_VALUES:
+            return None
+        return subtask
+
+
+class InstructionReader:
+    """A reader for instruction data stored in LMDB format.
+
+    This class provides efficient read-only access to instruction and subtask
+    data stored across multiple LMDB databases. It supports fallback lookup
+    across multiple database paths.
+
+    Data Structure Example:
+        Key: "{prefix}/instruction"
+        Value: "Pick up the pen cap and the pen with both arms."
+
+        Key: "{prefix}/subtask"
+        Value: [(100, "Grasp the red block."), (200, "Place the red block.")]
+
+    Args:
+        paths: A single path or list of paths to LMDB databases
+        encoding_mode: Character encoding for the data (default: "utf-8")
+    """
+
+    def __init__(self, paths: List[str] | str, encoding_mode: str = "utf-8"):
+        if not isinstance(paths, (list, tuple)):
+            paths = [paths]
+        self.paths = paths
+        self.encoding_mode = encoding_mode
+        self.initialized = False
+
+    def init_lmdb(self):
+        if self.initialized:
+            return
+        self.lmdbs = [
+            Lmdb(
+                uri=path,
+                writable=False,
+                encoding_mode=self.encoding_mode,
+            )
+            for path in self.paths
+        ]
+        self.initialized = True
+
+    def get(self, prefix, step_index=None):
+        """Retrieve instruction and/or subtask data.
+
+        Three retrieval modes:
+        1. Task-level instruction: `prefix` = task_name, `step_index` = None
+        2. Episode-level instruction: `prefix` = uuid, `step_index` = None
+        3. Step-level subtask: `prefix` = uuid, `step_index` = step_index
+
+        Args:
+            prefix: task_name (mode 1) or episode uuid (modes 2-3)
+            step_index: step index for subtask retrieval (mode 3 only)
+        """
+        instruction = None
+        for lmdb in self.lmdbs:
+            instruction = lmdb[f"{prefix}/instruction"]
+            if instruction is not None:
+                break
+
+        if instruction is None:
+            return None
+
+        if step_index is not None:
+            subtask = None
+            for lmdb in self.lmdbs:
+                subtask = lmdb[f"{prefix}/subtask"]
+                if subtask is not None:
+                    break
+            if subtask is not None:
+                subtask = StepLevelTags(data=subtask).get_step_tag(step_index)
+        else:
+            subtask = None
+        return {"instruction": instruction, "subtask": subtask}
+
+
 class BaseLmdbManipulationDataset(Dataset):
     """A dataset class for manipulation tasks stored in LMDB format.
 
@@ -67,7 +168,7 @@ class BaseLmdbManipulationDataset(Dataset):
 
         **index** and **meta** are organized by episode as the basic unit.
 
-        **depth** and **image** are stored by frame as the basic unit.
+        **depth** and **image** are stored by step as the basic unit.
 
     An example:
 
@@ -124,6 +225,7 @@ class BaseLmdbManipulationDataset(Dataset):
         lmdb_kwargs: Optional[dict] = None,
         flag: Optional[int] = None,
         lru_queue_length: Optional[int] = None,
+        instruction_reader: Optional[InstructionReader] = None,
     ):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
@@ -140,6 +242,7 @@ class BaseLmdbManipulationDataset(Dataset):
         self.lmdb_kwargs = lmdb_kwargs if lmdb_kwargs is not None else {}
         self.flag = flag
         self.lru_queue_length = lru_queue_length
+        self.instruction_reader = instruction_reader
         self.initialized = False
         if not lazy_init:
             self._init_lmdb()
@@ -156,6 +259,8 @@ class BaseLmdbManipulationDataset(Dataset):
     def _init_lmdb(self):
         if self.initialized:
             return
+        if self.instruction_reader is not None:
+            self.instruction_reader.init_lmdb()
         self.meta_lmdbs = [None for path in self.paths]
         self.img_lmdbs = [None for path in self.paths]
         self.depth_lmdbs = [None for path in self.paths]
