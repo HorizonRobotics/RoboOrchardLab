@@ -13,11 +13,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import copy
+import os
+import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
+from robo_orchard_core.utils.config import load_config_class
 
 from robo_orchard_lab.inference.processor import (
     ClassType_co,
@@ -25,8 +29,9 @@ from robo_orchard_lab.inference.processor import (
     ProcessorMixinCfg,
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
+from robo_orchard_lab.utils.path import in_cwd
 
-__all__ = ["SEMProcessor", "SEMProcessorCfg"]
+__all__ = ["HoloBrainProcessor", "HoloBrainProcessorCfg"]
 
 TENSOR_TYPE = np.ndarray | torch.Tensor
 
@@ -76,6 +81,15 @@ class MultiArmManipulationInput:
     """The URDF (Unified Robot Description Format) of the robot as a
     string, describing its kinematic and dynamic properties."""
 
+    remaining_actions: TENSOR_TYPE | None = None
+    """The remaining actions from last pred, if rtc is used."""
+
+    remaining_trajs: TENSOR_TYPE | None = None
+    """The remaining trajs from last pred, if rtc is used."""
+
+    delay_horizon: int | None = None
+    """The number of time steps to delay action execution, if rtc is used."""
+
 
 @dataclass
 class MultiArmManipulationOutput:
@@ -88,6 +102,11 @@ class MultiArmManipulationOutput:
     action: TENSOR_TYPE
     """The predicted action tensor. This could represent target joint
     positions, end-effector velocities, or another action space format."""
+
+    pose: TENSOR_TYPE
+    """The predicted joint angle position and 6d pose of each joint"""
+
+    mobile_traj: TENSOR_TYPE | None = None
 
 
 class Struct2Dict:
@@ -137,13 +156,25 @@ class Struct2Dict:
             "" if data.instruction is None else data.instruction
         )
         input_data["cam_names"] = cam_names
+
+        if data.remaining_actions is not None:
+            if data.delay_horizon is None:
+                raise ValueError(
+                    "delay_horizon must be provided when remaining_actions is given."  # noqa: E501
+                )
+
+            input_data["remaining_actions"] = data.remaining_actions
+            if data.remaining_trajs is not None:
+                input_data["remaining_trajs"] = data.remaining_trajs
+            input_data["delay_horizon"] = data.delay_horizon
+
         return input_data
 
 
-class SEMProcessor(ProcessorMixin):
-    cfg: "SEMProcessorCfg"  # for type hint
+class HoloBrainProcessor(ProcessorMixin):
+    cfg: "HoloBrainProcessorCfg"  # for type hint
 
-    def __init__(self, cfg: "SEMProcessorCfg"):
+    def __init__(self, cfg: "HoloBrainProcessorCfg"):
         super().__init__(cfg)
         self.struction_to_dict = Struct2Dict(
             load_image=self.cfg.load_image,
@@ -163,17 +194,65 @@ class SEMProcessor(ProcessorMixin):
             data = ts_i(data)
         return data
 
-    def post_process(self, model_outputs, _) -> MultiArmManipulationOutput:
+    def post_process(self, batch, model_outputs) -> MultiArmManipulationOutput:
         # only output one trajectory in joint angle format
         # action shape: num_pred_steps x num_joint
         action = model_outputs[0]["pred_actions"][0][..., 0]
+        pose = model_outputs[0]["pred_actions"][0]
         if self.cfg.valid_action_step is not None:
             action = action[: self.cfg.valid_action_step]
-        return MultiArmManipulationOutput(action=action)
+            pose = pose[: self.cfg.valid_action_step]
+
+        if "pred_mobile_trajs" in model_outputs[0]:
+            mobile_traj = model_outputs[0]["pred_mobile_trajs"][0]
+            if self.cfg.valid_action_step is not None:
+                mobile_traj = mobile_traj[: self.cfg.valid_action_step]
+        else:
+            mobile_traj = None
+
+        return MultiArmManipulationOutput(
+            action=action, pose=pose, mobile_traj=mobile_traj
+        )
+
+    def save(self, path, processor_name, urdf_dir="./urdf"):
+        os.makedirs(path, exist_ok=True)
+        cfg = copy.deepcopy(self.cfg)
+        urdfs = []
+        for transform in cfg.transforms:
+            if "urdf" in transform:
+                urdf_file = transform["urdf"]
+                urdfs.append(urdf_file)
+                transform["urdf"] = os.path.join(
+                    urdf_dir, os.path.basename(urdf_file)
+                )
+
+        if len(urdfs) > 0:
+            if not os.path.isabs(path):
+                target_urdf_path = os.path.join(path, urdf_dir)
+            else:
+                target_urdf_path = urdf_dir
+            os.makedirs(target_urdf_path, exist_ok=True)
+            for urdf in urdfs:
+                try:
+                    shutil.copy2(urdf, target_urdf_path)
+                except shutil.SameFileError:
+                    pass
+
+        with open(os.path.join(path, processor_name), "w") as fh:
+            fh.write(cfg.model_dump_json(indent=4))
+
+    @staticmethod
+    def load(path, processor_name):
+        processor_cfg = load_config_class(
+            open(os.path.join(path, processor_name)).read()
+        )
+        with in_cwd(path):
+            processor = processor_cfg()
+        return processor
 
 
-class SEMProcessorCfg(ProcessorMixinCfg[SEMProcessor]):
-    class_type: ClassType_co[SEMProcessor] = SEMProcessor
+class HoloBrainProcessorCfg(ProcessorMixinCfg[HoloBrainProcessor]):
+    class_type: ClassType_co[HoloBrainProcessor] = HoloBrainProcessor
     load_image: bool = True
     load_depth: bool = True
     cam_names: Optional[List[str]] = None

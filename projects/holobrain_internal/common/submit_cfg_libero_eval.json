@@ -1,0 +1,34 @@
+{
+    "job_name": "eval_holobrain_libero",
+    "workspace_folder": "submit-eval-holobrain-libero",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-libero",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "gpu_per_worker": 4,
+    "wall_time": 14400,
+    "cmd": [
+        "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+        "export HYDRA_FULL_ERROR=1",
+        "ln -s /horizon-bucket/robot_lab/users/shijie.wu/LIBERO-datasets/assets libero/libero/assets",
+        "yes | python3 libero_eval.py \\",
+        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2026-01-31/17-13/sem_v6_libero_rgb_cos-20260131-171331.924306/output/checkpoints/checkpoint_20/' \\",
+        "  --model_prefix model_0 \\",
+        "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
+        "  --model_processor libero_processor \\",
+        "  --num_trials_per_task 50 \\",
+        "  --save_video True \\"
+    ],
+    "to_upload": [
+        "robo_orchard_lab",
+        "projects/holobrain_internal/common/holobrain_libero_policy",
+        "projects/holobrain_internal/common/libero_eval.py",
+        "projects/holobrain_internal/libero/eval_policy.py",
+        "projects/holobrain_internal/libero/libero_utils.py",
+        "LIBERO/libero"
+    ],
+    "job_password": "1227",
+    "queue_name": "project-5090-robot-lab-debug-bcloud-bj",
+    "project_id": "Robot-lab"
+}

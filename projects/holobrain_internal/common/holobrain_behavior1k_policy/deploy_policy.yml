@@ -1,0 +1,20 @@
+# Basic experiment configuration
+
+# modify this !!!!!
+policy_name: holobrain_behavior1k_policy
+setting: null 
+model_dir: ./model
+model_processor: behavior1k_processor
+model_prefix: model_0
+#vlm_ckpt_dir: null
+#urdf_dir: null
+vlm_ckpt_dir: /work/bucket/ckpt/
+urdf_dir: /work/bucket/urdf
+ckpt_setting: null
+
+# keep unchanged
+task_name: null  
+seed: 0
+instruction_type: unseen 
+expert_data_num: null 
+checkpoint_num: null 
