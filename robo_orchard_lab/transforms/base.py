@@ -21,7 +21,7 @@ import functools
 import inspect
 from abc import ABCMeta, abstractmethod
 from dataclasses import is_dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from pydantic import AliasChoices, BaseModel, Field
 from robo_orchard_core.utils.config import (
@@ -37,8 +37,6 @@ from robo_orchard_lab.utils.state import (
     State,
     StateList,
     StateSaveLoadMixin,
-    obj2state,
-    state2obj,
 )
 
 __all__ = [
@@ -51,6 +49,20 @@ __all__ = [
     "ConcatDictTransform",
     "ConcatDictTransformConfig",
 ]
+
+
+def _to_dict(obj: dict | BaseModel | Any) -> dict | Any:
+    if isinstance(obj, dict):
+        return obj
+    elif isinstance(obj, BaseModel):
+        return {k: getattr(obj, k) for k in obj.model_fields}
+    elif is_dataclass(obj):
+        return {
+            field.name: getattr(obj, field.name)
+            for field in obj.__dataclass_fields__.values()
+        }
+    else:
+        return obj
 
 
 class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
@@ -98,6 +110,10 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         transformed values added to the original row dict.
 
         """
+        row = _to_dict(row)
+        if not isinstance(row, dict):
+            raise TypeError(f"Expected row to be a dict, but got {type(row)}.")
+
         mapped_input = row.copy()
         # mapping input columns if needed
         if isinstance(self.cfg.input_columns, dict):
@@ -118,18 +134,7 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                 raise KeyError(f"Input column `{col}` not found in row dict.")
             ts_input[col] = mapped_input.get(col, None)
 
-        columns_after = self.transform(**ts_input)
-        if isinstance(columns_after, BaseModel):
-            columns_after = {
-                k: getattr(columns_after, k)
-                for k in columns_after.model_fields
-            }
-        elif is_dataclass(columns_after):
-            columns_after = {
-                field.name: getattr(columns_after, field.name)
-                for field in columns_after.__dataclass_fields__.values()
-            }
-
+        columns_after = _to_dict(self.transform(**ts_input))
         if not isinstance(columns_after, dict):
             raise TypeError(
                 f"Transform {self.__class__.__name__} must return a dict, "
@@ -203,8 +208,8 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                 f"Expected input_columns to be a dict, list, tuple or None, "
                 f"but got {type(self.cfg.input_columns)}."
             )
-        # handle duplicate columns
-        self._input_columns = list(set(self._input_columns))
+        # handle duplicate columns and retain order
+        self._input_columns = list(dict.fromkeys(self._input_columns).keys())
         return self._input_columns
 
     @functools.cached_property
@@ -296,34 +301,27 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         ret += ")"
         return ret
 
-    def __getstate__(self) -> State:
-        """Return the state of the object for pickling."""
-        state = self.__dict__.copy()
-        # Remove any cached properties to avoid pickling issues
-        for key in [
+    def _get_ignore_save_attributes(self) -> list[str]:
+        return [
             "_input_columns",
             "_output_columns",
             "_mapped_input_columns",
             "_mapped_output_columns",
-        ]:
-            state.pop(key, None)
+        ]
 
-        config = state.pop("cfg")
-        state = obj2state(state)
+    def _get_state(self) -> State:
+        """Get the state of the object for saving."""
+        # pull out cfg from state for better clarity
+        ret = super()._get_state()
+        ret.config = ret.state.pop("cfg", None)
+        return ret
 
-        return State(
-            state=state,
-            config=config,
-            parameters=None,
-            save_to_path=None,
-            class_type=type(self),
-        )
-
-    def __setstate__(self, state: State) -> None:
+    def _set_state(self, state: State) -> None:
         """Set the state of the object from the unpickled state."""
-        self.cfg = state.config  # type: ignore
-        self.__dict__.update(state.parameters or {})
-        self.__dict__.update(state2obj(state.state))
+        # push cfg back to state for consistency
+        state.state["cfg"] = state.config
+        state.config = None
+        super()._set_state(state)
 
     def __add__(
         self, other: DictTransform | ConcatDictTransform
@@ -534,24 +532,21 @@ class ConcatDictTransform(DictTransform):
             row = transform(row)
         return row
 
-    def __getstate__(self) -> State:
-        state = obj2state(
-            dict(
-                # use StateList to enable pickling the transforms separately
-                transforms=StateList(self._transforms, save_to_path=True)
-            )
-        )
+    def _get_state(self) -> State:
         return State(
-            state=state,
+            state=dict(
+                # use StateList to enable pickling the transforms separately
+                transforms=StateList(self._transforms)
+            ),
             config=self.cfg,
-            save_to_path=None,
+            hierarchical_save=None,
             class_type=type(self),
         )
 
-    def __setstate__(self, state: State) -> None:
+    def _set_state(self, state: State) -> None:
         """Set the state of the object from the unpickled state."""
         self.cfg = state.config  # type: ignore
-        self._transforms = state2obj(state.state["transforms"])
+        self._transforms = state.state["transforms"]
 
 
 class ConcatDictTransformConfig(

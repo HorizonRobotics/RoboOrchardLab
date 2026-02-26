@@ -26,7 +26,7 @@ PYTHON_BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 LICENSE_HEADER = """# Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -138,7 +138,7 @@ def wrap_github_dependency(
 
     replace_pair = (
         "github.com/HorizonRobotics/",
-        "jh-gitlab.hobot.cc/dep/robot-lab/open-source/",
+        "robot-lab-gitlab-internal.hobot.cc/robot-lab-internal/open-source/",
     )
 
     if isinstance(dependencies, list):
@@ -212,6 +212,8 @@ if __name__ == "__main__":
         "timeout-decorator",
         "requests",
         "huggingface_hub",
+        "cloudpickle",
+        "pyzstd",
         # metric
         "torchmetrics>=1.6",
         "datasets>=4.0.0",
@@ -221,10 +223,16 @@ if __name__ == "__main__":
         "fsspec",
         "sortedcontainers",
         "numpydantic",
-        # use git url to install the latest version.
+        "ray[default]>=2.49.1",
+        "pytorch-kinematics>=0.7.5",
+        # Use git url to install the latest version.
         # This is for non-release version only.
-        # "robo_orchard_core==0.2.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@7cfd9e8758cf79c0265730b315e1c905f4466058",
+        # If you are releasing a new version, please change it to the
+        # specific version.
+        # Do not delete the line below, just comment it out and add the
+        # new line.
+        # "robo_orchard_core==0.4.0",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@ae83c81b8b37ab9a99f4d0c4d994eac4f492e1ee",
     ]
     # optional dependencies
     extras_require = {
@@ -236,11 +244,25 @@ if __name__ == "__main__":
             "ninja",
         ],
         "sem": [
-            "robo_orchard_lab[bip3d]",
+            "transformers<=4.57.1",
+            "pytorch3d==0.7.8",
+            "pytorch-kinematics",
+            "ninja",
             "diffusers",
             "lmdb",
-            "pytorch-kinematics",
             "h5py",
+        ],
+        "holobrain_0": [
+            "torch>=2.6.0",
+            "transformers<=4.57.1",
+            "pytorch3d==0.7.8",
+            "pytorch-kinematics",
+            "ninja",
+            "diffusers",
+            "lmdb",
+            "h5py",
+            "terminaltables",
+            "flash-attn",
         ],
         "mcap_datasets": [
             "mcap-protobuf-support>=0.5.3",
@@ -248,9 +270,25 @@ if __name__ == "__main__":
             "mcap>=1.2.2",
             "foxglove-schemas-protobuf>=0.3.0",
             "opencv-python",
-            "robo_orchard_schemas==0.1.1",
+            "robo_orchard_schemas==0.2.0",
         ],
         "aux_think": [
+            "transformers",
+            "tokenizers",
+            "peft",
+            "markdown2[all]",
+            "scikit-learn>=1.2.2",
+            "opencv-python",
+            "uvicorn",
+            "fastapi",
+            "timm",
+            "ninja",
+            "tyro",
+            "loguru",
+            "hydra-core",
+            "deepspeed",
+        ],
+        "monodream": [
             "transformers",
             "tokenizers",
             "peft",

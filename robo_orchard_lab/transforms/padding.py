@@ -41,7 +41,6 @@ class PaddingList(DictTransform):
     """
 
     cfg: PaddingListConfig
-    is_variadic: bool = True
 
     def __init__(self, cfg: PaddingListConfig) -> None:
         super().__init__()

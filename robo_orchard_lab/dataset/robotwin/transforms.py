@@ -32,13 +32,16 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
 
 __all__ = [
     "ArrowDataParse",
+    "CalibrationToExtrinsic",
     "EpisodeSamplerConfig",
     "AddItems",
     "AddScaleShift",
     "ConvertDataType",
+    "IdentityTransform",
     "ImageChannelFlip",
     "ItemSelection",
     "JointStateNoise",
+    "MoveEgoToCam",
     "SimpleStateSampling",
     "Resize",
     "ToTensor",
@@ -728,7 +731,7 @@ class CalibrationToExtrinsic(DualArmKinematics):
         urdf (str): Path to the URDF file.
         calibration (dict, optional): A dicti containing camera calibration.
             Keys are camera names (e.g., 'left', 'right'), and values are
-                dicts with:
+            dicts with:
             - 'position': list or array-like of [x, y, z].
             - 'orientation': list or array-like of [qx, qy, qz, w].
             If None, no calibration data is loaded initially.

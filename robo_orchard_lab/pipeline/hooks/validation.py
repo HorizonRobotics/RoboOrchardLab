@@ -16,12 +16,15 @@
 from __future__ import annotations
 from typing import Callable
 
+import torch
+
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
     PipelineHookArgs,
     PipelineHooks,
     PipelineHooksConfig,
 )
+from robo_orchard_lab.utils.torch import switch_model_mode
 
 __all__ = ["ValidationHook", "ValidationHookConfig"]
 
@@ -34,16 +37,8 @@ class ValidationHook(PipelineHooks):
 
 
     Args:
-        eval_callback (Callable[[], None]): A callback function to be called
-            for evaluation. This function should not take no argument and
-            should not return any values. A common use case is to pass a
-            closure that performs the evaluation.
-        step_eval_freq (int | None): The frequency of evaluation in terms of
-            steps. If specified, the evaluation will be performed every
-            `step_eval_freq` steps.
-        epoch_eval_freq (int | None): The frequency of evaluation in terms of
-            epochs. If specified, the evaluation will be performed every
-            `epoch_eval_freq` epochs.
+        cfg (ValidationHookConfig): The configuration for the ValidationHook.
+            Please refer to ValidationHookConfig for details.
 
     """
 
@@ -52,7 +47,7 @@ class ValidationHook(PipelineHooks):
         cfg: ValidationHookConfig,
     ):
         super().__init__()
-        self.eval_callback = cfg.eval_callback
+        self.cfg = cfg
         self.step_eval_freq = cfg.step_eval_freq
         self.epoch_eval_freq = cfg.epoch_eval_freq
 
@@ -71,6 +66,29 @@ class ValidationHook(PipelineHooks):
                 ),
             )
 
+        if cfg.eval_at_begin:
+            self.register_hook(
+                "on_loop",
+                HookContext.from_callable(
+                    before=self._on_loop_begin, after=None
+                ),
+            )
+
+    def _on_loop_begin(
+        self,
+        hook_args: PipelineHookArgs,
+    ) -> None:
+        """Called at the beginning of the training loop.
+
+        This method checks if evaluation is needed at the beginning of
+        training and calls the evaluation callback if necessary.
+
+        Args:
+            hook_args (PipelineHookArgs): The current training progress state.
+        """
+        if self.cfg.eval_at_begin:
+            self.evaluate(hook_args)
+
     def _on_step_end(
         self,
         hook_args: PipelineHookArgs,
@@ -84,7 +102,7 @@ class ValidationHook(PipelineHooks):
             hook_args (PipelineHookArgs): The current training progress state.
         """
         if self.need_eval(hook_args):
-            self.eval_callback()
+            self.evaluate(hook_args)
 
     def _on_epoch_end(
         self,
@@ -99,7 +117,18 @@ class ValidationHook(PipelineHooks):
             hook_args (PipelineHookArgs): The current training progress state.
         """
         if self.need_eval(hook_args):
-            self.eval_callback()
+            self.evaluate(hook_args)
+
+    def evaluate(self, hook_args: PipelineHookArgs) -> None:
+        """Performs evaluation by calling the evaluation callback.
+
+        Args:
+            hook_args (PipelineHookArgs): The current training progress state.
+        """
+        if hook_args.model is None:
+            raise ValueError("Model is not set in the hook arguments.")
+        with switch_model_mode(hook_args.model, target_mode="eval"):
+            self.cfg.eval_callback(hook_args.model)
 
     def need_eval(
         self,
@@ -137,9 +166,9 @@ class ValidationHookConfig(PipelineHooksConfig[ValidationHook]):
 
     class_type: type[ValidationHook] = ValidationHook
 
-    eval_callback: Callable[[], None]
+    eval_callback: Callable[[torch.nn.Module], None]
     """A callback function to be called for evaluation. This function should
-    not take no argument and should not return any values. A common use case
+    take model as input and should not return any values. A common use case
     is to pass a closure that performs the evaluation.
     """
     step_eval_freq: int | None = None
@@ -148,6 +177,9 @@ class ValidationHookConfig(PipelineHooksConfig[ValidationHook]):
     epoch_eval_freq: int | None = None
     """The frequency of evaluation in terms of epochs. If specified, the
     evaluation will be performed every `epoch_eval_freq` epochs."""
+
+    eval_at_begin: bool = False
+    """If True, evaluation will be performed at the beginning of training. """
 
     def __post_init__(self):
         if self.step_eval_freq is None and self.epoch_eval_freq is None:

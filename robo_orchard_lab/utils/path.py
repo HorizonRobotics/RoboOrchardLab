@@ -17,7 +17,7 @@
 import os
 from contextlib import contextmanager
 
-__all__ = ["DirectoryNotEmptyError", "is_empty_directory", "in_cwd"]
+__all__ = ["DirectoryNotEmptyError", "is_empty_directory", "in_cwd", "abspath"]
 
 
 class DirectoryNotEmptyError(Exception):
@@ -72,3 +72,8 @@ def in_cwd(destination: str):
         yield destination
     finally:
         os.chdir(original_path)
+
+
+def abspath(path: str) -> str:
+    """Get absolute path."""
+    return os.path.abspath(os.path.expanduser(path))

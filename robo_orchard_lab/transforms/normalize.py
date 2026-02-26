@@ -47,9 +47,20 @@ class Normalize(DictTransform):
     cfg: NormalizeConfig[Normalize]
 
     def __init__(self, cfg: NormalizeConfig[Normalize]):
-        super().__init__()
+        self._setup(cfg)
+
+    def _setup(self, cfg: NormalizeConfig[Normalize]) -> None:
         self.cfg = cfg
         self._codec = cfg.generate_codec_cfg()()
+
+    def _get_ignore_save_attributes(self) -> list[str]:
+        return super()._get_ignore_save_attributes() + [
+            "_codec",
+        ]
+
+    def _set_state(self, state) -> None:
+        super()._set_state(state)
+        self._setup(self.cfg)
 
     def transform(self, **kwargs) -> dict:
         ret = {}
@@ -68,9 +79,20 @@ class UnNormalize(DictTransform):
     cfg: NormalizeConfig[UnNormalize]
 
     def __init__(self, cfg: NormalizeConfig[UnNormalize]):
-        super().__init__()
+        self._setup(cfg)
+
+    def _setup(self, cfg: NormalizeConfig[UnNormalize]) -> None:
         self.cfg = cfg
         self._codec = cfg.generate_codec_cfg()()
+
+    def _get_ignore_save_attributes(self) -> list[str]:
+        return super()._get_ignore_save_attributes() + [
+            "_codec",
+        ]
+
+    def _set_state(self, state) -> None:
+        super()._set_state(state)
+        self._setup(self.cfg)
 
     def transform(self, **kwargs) -> dict:
         ret = {}

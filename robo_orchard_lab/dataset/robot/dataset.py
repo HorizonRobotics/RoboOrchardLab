@@ -17,7 +17,10 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import shutil
+import warnings
 from contextlib import contextmanager
+from dataclasses import asdict
 from typing import (
     Any,
     Callable,
@@ -32,17 +35,25 @@ import fsspec
 import torch
 from datasets import (
     Dataset as HFDataset,
+    DatasetInfo,
     Features,
 )
-from datasets.arrow_dataset import Column
-from sqlalchemy import URL, Engine, select
+from datasets.arrow_dataset import (
+    Column,
+)
+from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
+from sqlalchemy.sql import func
 from typing_extensions import Self
 
 # import all datatypes and features
 from robo_orchard_lab.dataset.datatypes import *  # noqa: F403,F401
-from robo_orchard_lab.dataset.robot.columns import (
-    PreservedIndexColumnsKeys,
+from robo_orchard_lab.dataset.robot.columns import PreservedIndexColumnsKeys
+from robo_orchard_lab.dataset.robot.dataset_db_engine import (
+    create_engine,
+    get_local_db_md5,
+    get_local_db_url,
+    try_upgrade_database,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
@@ -50,14 +61,18 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Robot,
     Task,
 )
-from robo_orchard_lab.dataset.robot.engine import create_engine
 from robo_orchard_lab.dataset.robot.row_sampler import (
     CachedIndexDataset,
     MultiRowSampler,
     MultiRowSamplerConfig,
 )
 
-__all__ = ["RODataset", "ROMultiRowDataset", "ConcatRODataset"]
+__all__ = [
+    "RODataset",
+    "ROMultiRowDataset",
+    "ConcatRODataset",
+    "_complete_dataset_info",
+]
 
 MetaType = TypeVar("MetaType", Episode, Instruction, Robot, Task)
 """A type variable for metadata types in the RoboOrchard dataset."""
@@ -74,6 +89,13 @@ class RODataset(TorchDataset):
     separate database to store the episode-level information. The huggingface
     datasets (pyarrow_dataset) is used as table format, and SQLAlchemy with
     DuckDB are used to manage the database.
+
+
+    Note:
+        The dataset loading process will automatically check the version of the
+        meta database, and upgrade it to the latest version if necessary.
+        Please call the `RODataset.upgrade_meta(dataset_path)` method to
+        upgrade the database permanently!
 
     Args:
         dataset_path (str): The path to the dataset directory.
@@ -118,9 +140,24 @@ class RODataset(TorchDataset):
         meta_index2meta: bool = False,
     ):
         dataset_path = os.path.expanduser(dataset_path)
-        self.frame_dataset = HFDataset.load_from_disk(
-            dataset_path, storage_options=storage_options
-        )
+
+        try:
+            self.frame_dataset = HFDataset.load_from_disk(
+                dataset_path, storage_options=storage_options
+            )
+        except ValueError as e:  # noqa
+            from robo_orchard_lab.dataset.robot._hf_dataset import (
+                load_from_disk,
+            )
+
+            warnings.warn(
+                "Failed to load dataset using `datasets.load_from_disk`. "
+                "Falling back to use wrapped version. "
+            )
+            self.frame_dataset = load_from_disk(
+                dataset_path, storage_options=storage_options
+            )
+
         self.index_dataset = self.frame_dataset.select_columns(
             column_names=list(PreservedIndexColumnsKeys)
         )
@@ -139,6 +176,41 @@ class RODataset(TorchDataset):
         self.db_engine = self._load_db(dataset_path)
 
         self._transform: Callable[[dict], dict] | None = None
+
+    @staticmethod
+    def from_dataset(
+        frame_dataset: HFDataset,
+        meta_db_engine: Engine,
+        meta_index2meta: bool = False,
+    ) -> RODataset:
+        """Create a RODataset from a frame dataset and meta db engine.
+
+        This method does not perform any checks on the input frame_dataset
+        and meta_db_engine. It is the caller's responsibility to ensure
+        that the frame_dataset contains the necessary index columns and
+        that the meta_db_engine is connected to a valid meta database.
+        """
+
+        if frame_dataset._indices is not None:
+            raise ValueError(
+                "frame_dataset should not have any indices. "
+                "Please reset the indices before creating RODataset."
+            )
+
+        ret = RODataset.__new__(RODataset)
+
+        state_dict = {
+            "frame_dataset": frame_dataset,
+            "index_dataset": frame_dataset.select_columns(
+                column_names=list(PreservedIndexColumnsKeys)
+            ),
+            "meta_index2meta": meta_index2meta,
+            "_dataset_format_version": None,
+            "db_engine": meta_db_engine,
+            "_transform": None,
+        }
+        ret.__setstate__(state_dict)
+        return ret
 
     def __repr__(self) -> str:
         # ret = "RODataset(num_rows={})".format(len(self))
@@ -178,34 +250,51 @@ class RODataset(TorchDataset):
         """Set the state of the dataset from a pickled state."""
         # restore db_engine from url
         state = state.copy()
-        db_engine_url = state.pop("db_engine_url")
-        state["db_engine"] = create_engine(db_engine_url, readonly=True)
+        if (db_engine_url := state.pop("db_engine_url", None)) is not None:
+            state["db_engine"] = create_engine(db_engine_url, readonly=True)
+        else:
+            if "db_engine" not in state:
+                raise KeyError(
+                    "db_engine_url not found in state. "
+                    "Cannot restore db_engine."
+                )
         # restore other state
         self.__dict__.update(state)
 
     def _load_db(self, dataset_path: str) -> Engine:
-        fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
-        file_list = fs.ls(dataset_path, detail=False)
-        db_candidate = [
-            f for f in file_list if os.path.basename(f).startswith("meta_db.")
-        ]
-        if len(db_candidate) == 0:
-            raise ValueError(
-                f"No meta db file found in {dataset_path}. "
-                "Please ensure the dataset has been properly packaged."
-            )
-        if len(db_candidate) > 1:
-            raise ValueError(
-                f"Multiple meta db files found in {dataset_path}: {db_candidate}"  # noqa: E501
-            )
-        db_path = db_candidate[0]
-        # get drivername from file extension
-        _, ext = os.path.splitext(db_path)
-        drivername = ext[1:]
         return create_engine(
-            url=URL.create(drivername=drivername, database=db_path),
-            readonly=True,
+            url=_get_dataset_db_url(dataset_path), readonly=True
         )
+
+    @staticmethod
+    def upgrade_meta(
+        dataset_path: str,
+    ):
+        """Upgrade the meta database to the latest version.
+
+        Note:
+            This method is not thread-safe. It is the caller's responsibility
+            to ensure that no other process is accessing the database
+            during the upgrade process.
+
+        Args:
+            dataset_path (str): The path to the dataset directory.
+                It should contain a `dataset.arrow` file and a `meta_db.*`
+                file.
+        """
+        db_url = _get_dataset_db_url(dataset_path)
+        _, file_content_md5 = get_local_db_md5(db_url)
+        new_url = try_upgrade_database(db_url)
+        # overwrite the old db file with the new db file
+        new_db_path = new_url.database
+        assert new_db_path is not None
+        assert os.path.exists(new_db_path)
+        # move old db file to f"{old_path}.{md5}"
+        old_db_path = db_url.database
+        assert old_db_path is not None
+        backup_db_path = f"{old_db_path}.{file_content_md5}"
+        shutil.move(old_db_path, backup_db_path)
+        shutil.move(new_db_path, old_db_path)
 
     @property
     def features(self) -> Features:
@@ -218,6 +307,30 @@ class RODataset(TorchDataset):
     @property
     def transform(self) -> Callable[[dict], dict] | None:
         return self._transform
+
+    @property
+    def episode_num(self) -> int:
+        """Get the number of episodes in the dataset."""
+        with Session(self.db_engine) as session:
+            result = session.execute(select(func.count(Episode.index)))
+            episode_num = result.scalar_one()
+        return episode_num
+
+    @property
+    def task_num(self) -> int:
+        """Get the number of tasks in the dataset."""
+        with Session(self.db_engine) as session:
+            result = session.execute(select(func.count(Task.index)))
+            task_num = result.scalar_one()
+        return task_num
+
+    @property
+    def robot_num(self) -> int:
+        """Get the number of robots in the dataset."""
+        with Session(self.db_engine) as session:
+            result = session.execute(select(func.count(Robot.index)))
+            robot_num = result.scalar_one()
+        return robot_num
 
     def set_transform(self, transform: Callable[[dict], dict] | None):
         self._transform = transform
@@ -330,6 +443,7 @@ class RODataset(TorchDataset):
         num_shards: int | None = None,
         num_proc: int | None = None,
         storage_options: dict | None = None,
+        batch_size: int | None = None,
     ):
         """Saves a dataset to filesystem.
 
@@ -348,7 +462,16 @@ class RODataset(TorchDataset):
             storage_options (dict | None, optional): Additional Key/value pairs
                 to be passed on to the file-system backend, if any. Defaults
                 to None.
+            batch_size (int | None, optional): The batch size to use when
+                saving the dataset. If None, the default batch size from
+                Hugging Face Datasets will be used. Defaults to None.
         """
+        from datasets import config as hg_datasets_config
+
+        old_batch_size = hg_datasets_config.DEFAULT_MAX_BATCH_SIZE
+        if batch_size is not None:
+            hg_datasets_config.DEFAULT_MAX_BATCH_SIZE = batch_size
+
         self.frame_dataset.save_to_disk(
             dataset_path=dataset_path,
             max_shard_size=max_shard_size,
@@ -356,6 +479,21 @@ class RODataset(TorchDataset):
             num_proc=num_proc,
             storage_options=storage_options,
         )
+
+        # save dataset info if needed
+        need_dataset_info_save, info = _complete_dataset_info(
+            dataset_path, arrow_dataset=self.frame_dataset
+        )
+        if need_dataset_info_save:
+            info_path = os.path.join(
+                dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
+            )  # noqa: E501
+            info = asdict(info)
+            with open(info_path, "w") as f:
+                sorted_keys_dataset_info = {k: info[k] for k in sorted(info)}
+                json.dump(sorted_keys_dataset_info, f, indent=2)
+
+        hg_datasets_config.DEFAULT_MAX_BATCH_SIZE = old_batch_size
         src_meta_db_path = self.db_engine.url.database
         assert src_meta_db_path is not None
         fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
@@ -379,6 +517,12 @@ class RODataset(TorchDataset):
 
         This method is similar to the `select` method in Hugging Face
         Datasets.
+
+        Warning:
+            The returned new RODataset will only contain the selected frames,
+            and the episode-level metadata does not change. Therefore, the
+            episode-level metadata may not correspond to the selected frames!
+
 
         Args:
             indices (Iterable): The indices of the frames to select.
@@ -536,11 +680,15 @@ class RODataset(TorchDataset):
     ) -> dict | list:
         """Convert the metadata index in `data` to actual metadata objects.
 
+        The `data` can be either a row sample containing multiple columns
+        (dict), or a slice of a single column (list).
+
         Args:
             data (dict | list): The data to convert. If `data` is a dict
                 with index-based metadata, it will be converted to actual
-                metadata objects. If `data` is a list, it will be converted
-                to a list of metadata objects.
+                metadata objects. If `data` is a list, it is supposed to be
+                a slice of a single column with index-based metadata, and
+                it will be converted to actual metadata objects.
             column_name (MetaIndexKeyType | None, optional): The name of the
                 column to convert. If `data` is a list, this argument must be
                 provided to convert the index-based metadata to actual
@@ -627,6 +775,21 @@ class RODataset(TorchDataset):
                 if ret is not None:
                     make_transient(ret)
                 return ret
+
+    def iterate_meta_by_statement(self, stmt: Select) -> Iterable[Any]:
+        """Create an iterator over the meta information in the dataset.
+
+        Args:
+            stmt (Select): The SQLAlchemy Select statement to execute.
+
+        Yields:
+            Iterable[Any]: An iterator over the metadata objects returned
+                by the query.
+
+        """
+        with Session(self.db_engine) as session:
+            for row in session.execute(stmt):
+                yield row
 
     def iterate_meta(
         self,
@@ -718,15 +881,30 @@ class ROMultiRowDataset(RODataset):
         meta_index2meta: bool = True,
     ):
         super().__init__(dataset_path, storage_options, meta_index2meta)
+        self._column_datasets = {}
+        self._set_row_sampler(row_sampler())
+
+    @property
+    def row_sampler(self) -> MultiRowSampler:
+        return self._row_sampler
+
+    @row_sampler.setter
+    def row_sampler(self, row_sampler: MultiRowSampler) -> None:
         self._set_row_sampler(row_sampler)
 
-    def _set_row_sampler(self, row_sampler: MultiRowSamplerConfig) -> None:
+    def _set_row_sampler(self, row_sampler: MultiRowSampler) -> None:
         """Set the row sampler for the dataset."""
-        self._row_sampler: MultiRowSampler = row_sampler()
-        self._column_datasets = {
-            col_name: self.frame_dataset.select_columns(column_names=col_name)
-            for col_name in self._row_sampler.column_rows_keys
-        }
+        self._row_sampler: MultiRowSampler = row_sampler
+        for col_name in self._row_sampler.column_rows_keys:
+            if col_name not in self._column_datasets:
+                if col_name not in self.frame_dataset.column_names:
+                    raise KeyError(
+                        f"Column {col_name} not found in dataset. "
+                        f"Available columns: {self.frame_dataset.column_names}"
+                    )
+            self._column_datasets[col_name] = (
+                self.frame_dataset.select_columns(column_names=col_name)
+            )
 
     @staticmethod
     def from_dataset(
@@ -744,7 +922,8 @@ class ROMultiRowDataset(RODataset):
         parent_state_dict = dataset._get_state_()
         ret = ROMultiRowDataset.__new__(ROMultiRowDataset)
         ret.__dict__.update(parent_state_dict)
-        ret._set_row_sampler(row_sampler)
+        ret._column_datasets = {}
+        ret._set_row_sampler(row_sampler())
         return ret
 
     def __getitem_no_transform__(self, index: int | slice | list[int]) -> dict:
@@ -753,20 +932,17 @@ class ROMultiRowDataset(RODataset):
         def fast_column_get(col_name: str, idx_rows: list[int | None]):
             col_dataset = self._column_datasets[col_name]
             not_none_idx_rows = []
-            not_none_idx_row_pos = []
-            non_idx_row_pos = []
+            not_none_idx_row_offset = []
             for i, idx in enumerate(idx_rows):
                 if idx is not None:
                     not_none_idx_rows.append(idx)
-                    not_none_idx_row_pos.append(i)
-                else:
-                    non_idx_row_pos.append(i)
+                    not_none_idx_row_offset.append(i)
 
             not_none_row = col_dataset[not_none_idx_rows][col_name]
             tmp_dict = {
                 i: val
                 for i, val in zip(
-                    not_none_idx_row_pos, not_none_row, strict=True
+                    not_none_idx_row_offset, not_none_row, strict=True
                 )
             }
             return [tmp_dict.get(i, None) for i in range(len(idx_rows))]
@@ -789,29 +965,22 @@ class ROMultiRowDataset(RODataset):
             )
             cur_rows = super().__getitem_no_transform__(index)
             # update column that needs multi-row sampling
-            new_rows = {k: [] for k in self._row_sampler.column_rows_keys}
 
-            # for cur_idx in index:
-            #     for col_name, idx_rows in self._row_sampler.sample_row_idx(
-            #         cached_index_dataset, cur_idx
-            #     ).items():
-            #         new_rows[col_name].append(
-            #             fast_column_get(col_name, idx_rows)
-            #         )
-
-            for cur_idx in index:
-                for col_name, idx_rows in self._row_sampler.sample_row_idx(
-                    cached_index_dataset, cur_idx
-                ).items():
-                    new_rows[col_name].append(idx_rows)
-
+            # first collect all column rows
+            new_rows: dict[str, list[list[int | None]]] = (
+                self._row_sampler.sample_row_idx_batch(
+                    cached_index_dataset, index
+                )
+            )
             for k, v in new_rows.items():
+                # flatten and get all rows at once for each column
                 flattened_rows = []
                 [flattened_rows.extend(row) for row in v]
                 flattened_rows = fast_column_get(k, flattened_rows)
+                # reshape back to list of list
                 cnt = 0
                 for i in range(len(v)):
-                    v[i] = flattened_rows[cnt : cnt + len(v[i])]
+                    v[i] = flattened_rows[cnt : cnt + len(v[i])]  # noqa: E203
                     cnt += len(v[i])
                 new_rows[k] = v
 
@@ -1004,3 +1173,91 @@ class ConcatRODataset(TorchDataset):
             row[self.dataset_index_key] = dataset_idx
             ret.append(row)
         return ret
+
+
+def _get_dataset_db_url(dataset_path: str) -> URL:
+    fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
+    file_list = fs.ls(dataset_path, detail=False)
+    db_candidate = [
+        f for f in file_list if os.path.basename(f).startswith("meta_db.")
+    ]
+    if len(db_candidate) == 0:
+        raise ValueError(
+            f"No meta db file found in {dataset_path}. "
+            "Please ensure the dataset has been properly packaged."
+        )
+    if len(db_candidate) > 1:
+        raise ValueError(
+            f"Multiple meta db files found in {dataset_path}: {db_candidate}"  # noqa: E501
+        )
+    db_path = db_candidate[0]
+    # get drivername from file extension
+    _, ext = os.path.splitext(db_path)
+    drivername = ext[1:]
+    return get_local_db_url(drivername=drivername, db_path=db_path)
+
+
+def _complete_dataset_info(
+    dataset_path: str, arrow_dataset: HFDataset | None
+) -> tuple[bool, DatasetInfo]:
+    import datasets.config as hg_datasets_config
+    from datasets import SplitInfo
+
+    def _get_all_arrow_files_total_size(dataset_path: str) -> int:
+        dataset_state_path = os.path.join(
+            dataset_path, hg_datasets_config.DATASET_STATE_JSON_FILENAME
+        )
+        if not os.path.exists(dataset_state_path):
+            raise FileNotFoundError(
+                f"Dataset state file not found in {dataset_path}."
+            )
+        with open(dataset_state_path, "r", encoding="utf-8") as f:
+            dataset_state = json.load(f)
+
+        arrow_files: list[str] = [
+            t["filename"] for t in dataset_state["_data_files"]
+        ]
+        total_size = 0
+        for arrow_file in arrow_files:
+            if not os.path.exists(os.path.join(dataset_path, arrow_file)):
+                raise FileNotFoundError(
+                    f"Arrow file {arrow_file} not found in {dataset_path}."
+                )
+            total_size += os.path.getsize(
+                os.path.join(dataset_path, arrow_file)
+            )
+        return total_size
+
+    dataset_info_path = os.path.join(
+        dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
+    )
+    if not os.path.exists(dataset_info_path):
+        raise FileNotFoundError(
+            f"Dataset info file not found in {dataset_path}."
+        )
+    with open(dataset_info_path, "r", encoding="utf-8") as f:
+        dataset_info = DatasetInfo.from_dict(json.load(f))
+
+    need_update = (
+        dataset_info.dataset_size is None or dataset_info.splits is None
+    )
+    if not need_update:
+        return False, dataset_info
+
+    total_size = _get_all_arrow_files_total_size(dataset_path)
+    if arrow_dataset is not None:
+        total_rows = len(arrow_dataset)
+    else:
+        arrow_dataset = HFDataset.load_from_disk(dataset_path)
+        total_rows = len(arrow_dataset)
+    if dataset_info.dataset_size is None:
+        dataset_info.dataset_size = total_size
+    if dataset_info.splits is None:
+        dataset_info.splits = {
+            "train": SplitInfo(
+                name="train",
+                num_bytes=total_size,
+                num_examples=total_rows,
+            )
+        }
+    return True, dataset_info

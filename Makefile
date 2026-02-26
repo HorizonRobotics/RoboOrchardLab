@@ -41,8 +41,9 @@ install-editable: version
 	pip3 install --config-settings editable_mode=compat -e .${EXTRA_ARGS} ${BUILD_ARGS} ${PIP_ARGS}
 
 dev-env:
-	pip3 install -r scm/requirements.txt ${PIP_ARGS}; \
-	pre-commit install
+	@pip3 install -r scm/requirements.txt ${PIP_ARGS}
+	@pip3 install "lerobot>=0.4.0" --no-deps ${PIP_ARGS}
+	@pre-commit install
 
 auto-format:
 	python3 scm/lint/check_lint.py --auto_format

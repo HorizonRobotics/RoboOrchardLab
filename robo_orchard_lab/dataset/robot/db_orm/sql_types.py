@@ -17,12 +17,11 @@
 import base64
 import json
 import uuid
-from typing import Any, Optional
+from enum import Enum
+from typing import Any, Generic, Optional, Type, TypeVar
 
 from robo_orchard_core.datatypes.uuid import UUID64
-from sqlalchemy import (
-    Dialect,
-)
+from sqlalchemy import Dialect
 from sqlalchemy.sql.sqltypes import TypeEngine
 from sqlalchemy.types import (
     BIGINT,
@@ -33,7 +32,10 @@ from sqlalchemy.types import (
     TypeDecorator,
 )
 
+ENUM_T = TypeVar("ENUM_T", bound=Enum)
+
 __all__ = [
+    "SQLStringEnum",
     "BlobUuid64",
     "BigIntUuid64",
     "BlobUuid128",
@@ -41,6 +43,44 @@ __all__ = [
     "Base64EncodedBLOB",
     "Base64JSONEncodedDict",
 ]
+
+
+class SQLStringEnum(TypeDecorator, Generic[ENUM_T]):
+    """SQLAlchemy type for String Enum.
+
+    This class maps Enum to string in the database.
+
+    """
+
+    impl = String
+
+    cache_ok = True
+    """safe to be used as part of a cache key."""
+
+    def __init__(self, enum: Type[ENUM_T], length: int = 12, *args, **kwargs):
+        """Initialize the SQLStringEnum."""
+        super().__init__(*args, **kwargs)
+        self._enum_type = enum
+        self._length = length
+
+    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine:
+        return dialect.type_descriptor(String(length=self._length))
+
+    def process_bind_param(
+        self, value: Optional[ENUM_T], dialect: Dialect
+    ) -> Optional[str]:
+        """Encode the value to be stored in the database."""
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(
+        self, value: Optional[str], dialect: Dialect
+    ) -> Optional[ENUM_T]:
+        """Decode the value from the database."""
+        if value is None:
+            return None
+        return self._enum_type._value2member_map_[value]  # type: ignore
 
 
 class BlobUuid64(TypeDecorator[UUID64]):

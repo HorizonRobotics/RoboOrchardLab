@@ -15,8 +15,11 @@
 # permissions and limitations under the License.
 
 from .finegrasp import FineGrasp, FineGraspConfig
+from .processor import FineGraspProcessor, FineGraspProcessorCfg
 
 __all__ = [
     "FineGrasp",
     "FineGraspConfig",
+    "FineGraspProcessor",
+    "FineGraspProcessorCfg",
 ]

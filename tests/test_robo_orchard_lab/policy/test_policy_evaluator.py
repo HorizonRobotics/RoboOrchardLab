@@ -16,10 +16,12 @@
 import os
 
 import pytest
+import torch
 from robo_orchard_core.utils.ray import RayRemoteClassConfig
 from ut_help import (
     DummyEnvConfig,
     DummyPolicyConfig,
+    DummyPolicyDataMetric,
     DummySuccessRateMetricConfig,
 )
 
@@ -41,11 +43,7 @@ class TestPolicyEvaluator:
                 "success_rate": DummySuccessRateMetricConfig(),
             }
         )
-        eval_cfg = PolicyEvaluatorConfig(
-            env_cfg=env_cfg,
-            policy_cfg=policy_cfg,
-            metrics=metric_cfg,
-        )
+        eval_cfg = PolicyEvaluatorConfig()
         remote_class_config = RayRemoteClassConfig(
             num_cpus=0.3,
             num_gpus=0,
@@ -58,7 +56,13 @@ class TestPolicyEvaluator:
                 remote_class_config=remote_class_config
             )
             assert isinstance(eval_cfg, PolicyEvaluatorRemoteConfig)
+
         evaluator = eval_cfg.__call__()
+        evaluator.setup(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_cfg,
+            metrics=metric_cfg(),
+        )
         # print(evaluator.compute_metrics())
         metric_res = evaluator.compute_metrics()
         assert metric_res == {"success_rate": 0.0}
@@ -82,9 +86,9 @@ class TestPolicyEvaluator:
             }
         )
         eval_cfg = PolicyEvaluatorConfig(
-            env_cfg=env_cfg,
-            policy_cfg=policy_cfg,
-            metrics=metric_cfg,
+            # env_cfg=env_cfg,
+            # policy_cfg=policy_cfg,
+            # metrics=metric_cfg,
         )
         remote_class_config = RayRemoteClassConfig(
             num_cpus=0.3,
@@ -100,6 +104,11 @@ class TestPolicyEvaluator:
             assert isinstance(eval_cfg, PolicyEvaluatorRemoteConfig)
 
         evaluator = eval_cfg.__call__()
+        evaluator.setup(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_cfg,
+            metrics=metric_cfg(),
+        )
         total_step = 0
         for step in evaluator.make_episode_evaluation(
             max_steps=20,
@@ -114,3 +123,64 @@ class TestPolicyEvaluator:
 
         evaluator.reset_metrics()
         assert evaluator.compute_metrics() == {"success_rate": 0.0}
+
+    @pytest.mark.parametrize("use_remote", [False, True])
+    def test_evaluate_reconfig_policy(self, use_remote: bool) -> None:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        env_cfg = DummyEnvConfig()
+        policy_cfg = DummyPolicyConfig()
+        metric_cfg = MetricDictConfig(
+            {
+                "success_rate": DummySuccessRateMetricConfig(),
+                "policy_data": DummySuccessRateMetricConfig(
+                    class_type=DummyPolicyDataMetric
+                ),
+            }
+        )
+        eval_cfg = PolicyEvaluatorConfig()
+        remote_class_config = RayRemoteClassConfig(
+            num_cpus=0.3,
+            num_gpus=0.1,
+            runtime_env={
+                "env_vars": {"PYTHONPATH": current_dir},
+            },
+        )
+        if use_remote:
+            eval_cfg = eval_cfg.as_remote(
+                remote_class_config=remote_class_config
+            )
+            assert isinstance(eval_cfg, PolicyEvaluatorRemoteConfig)
+
+        evaluator = eval_cfg.__call__()
+        evaluator.setup(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_cfg,
+            metrics=metric_cfg(),
+        )
+        total_step = 0
+        for step in evaluator.make_episode_evaluation(
+            max_steps=20,
+            rollout_steps=3,
+        ):
+            total_step += step
+
+        assert total_step == 5
+        # print("metrics:", evaluator.compute_metrics())
+        metric_res = evaluator.compute_metrics()
+        assert metric_res["policy_data"]["action"]["data"] is None
+
+        new_policy = policy_cfg()
+        new_policy.data = torch.tensor([1.0, 2.0, 3.0], device="cuda")
+        evaluator.reconfigure_policy(new_policy)
+        total_step = 0
+        for step in evaluator.make_episode_evaluation(
+            max_steps=20,
+            rollout_steps=3,
+        ):
+            total_step += step
+
+        assert total_step == 5
+        metric_res = evaluator.compute_metrics()
+        assert torch.equal(
+            metric_res["policy_data"]["action"]["data"], new_policy.data
+        )

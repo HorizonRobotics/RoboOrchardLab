@@ -26,6 +26,7 @@ from robo_orchard_core.datatypes.geometry import (
 )
 
 from robo_orchard_lab.dataset.datatypes.hg_features import (
+    PickleFeature,
     RODictDataFeature,
     TypedDictFeatureDecode,
     check_fields_consistency,
@@ -47,9 +48,13 @@ __all__ = [
 
 @classmethod
 def _batch_transform_3d_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchTransform3DFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchTransform3DFeature | PickleFeature:
     """A class for 3D transforms with dataset feature support."""
+    if use_pickle:
+        return PickleFeature(class_type=BatchTransform3D)
     ret = BatchTransform3DFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -71,9 +76,9 @@ class BatchTransform3DFeature(RODictDataFeature, TypedDictFeatureDecode):
 
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
-    _decode_type: type = BatchTransform3D
 
     def __post_init__(self):
+        self._decode_type = BatchTransform3D
         typed_tensor_feature = TypedTensorFeature(
             dtype=self.dtype, as_torch_tensor=True
         )
@@ -92,8 +97,12 @@ class BatchTransform3DFeature(RODictDataFeature, TypedDictFeatureDecode):
 
 @classmethod
 def _batch_pose_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchPoseFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchPoseFeature | PickleFeature:
+    if use_pickle:
+        return PickleFeature(class_type=BatchPose)
     ret = BatchPoseFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -111,17 +120,20 @@ class BatchPoseFeature(BatchTransform3DFeature):
     with additional metadata about the poses.
     """
 
-    _decode_type: type = BatchPose
-
     def __post_init__(self):
         super().__post_init__()
+        self._decode_type = BatchPose
         self._dict["frame_id"] = hg_datasets.Value("string")
 
 
 @classmethod
 def _batch_frame_transform_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchFrameTransformFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchFrameTransformFeature | PickleFeature:
+    if use_pickle:
+        return PickleFeature(class_type=BatchFrameTransform)
     ret = BatchFrameTransformFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -141,9 +153,8 @@ class BatchFrameTransformFeature(BatchTransform3DFeature):
     with additional metadata about the frame transforms.
     """
 
-    _decode_type: type = BatchFrameTransform
-
     def __post_init__(self):
         super().__post_init__()
+        self._decode_type = BatchFrameTransform
         self._dict["parent_frame_id"] = hg_datasets.Value("string")
         self._dict["child_frame_id"] = hg_datasets.Value("string")

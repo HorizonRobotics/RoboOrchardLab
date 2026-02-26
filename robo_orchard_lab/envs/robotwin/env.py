@@ -27,28 +27,37 @@ import gymnasium as gym
 import numpy as np
 import yaml
 from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
+from robo_orchard_core.kinematics.chain import (
+    KinematicChain,
+)
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
+from robo_orchard_lab.dataset.datatypes import (
+    BatchFrameTransform,
+    BatchFrameTransformGraph,
+)
 from robo_orchard_lab.envs.robotwin.obs import (
     get_joints,
     get_observation_cams,
 )
+from robo_orchard_lab.envs.sapien import sapien_pose_to_orchard
 
 if TYPE_CHECKING:
     from envs._base_task import Base_Task
 
-
+EVAL_SEED_BASE = 100000
+EVAL_INSTRUCTION_NUM = 100
 logger = LoggerManager().get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
-
+RoboTwinObsType: TypeAlias = dict[str, Any] | None
 __all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
 
 
 @dataclass
-class RoboTwinEnvStepReturn(EnvStepReturn[dict[str, Any] | None, bool]):
-    observations: dict[str, Any] | None
+class RoboTwinEnvStepReturn(EnvStepReturn[RoboTwinObsType, bool]):
+    observations: RoboTwinObsType
     terminated: bool
     rewards: bool
     """The rewards is a boolean indicating whether the task was successful."""
@@ -56,7 +65,7 @@ class RoboTwinEnvStepReturn(EnvStepReturn[dict[str, Any] | None, bool]):
     """Whether the episode was truncated due to reaching the step limit."""
 
 
-class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
+class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     """RoboTwin environment.
 
     This class provides RoboTwin environment with robo_orchard_core interface.
@@ -70,6 +79,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
 
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
+        self._eval_chosen_instruction: str | None = None
 
     def _check_and_update_seed(self):
         instructions = None
@@ -85,14 +95,24 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
                 "You can set `check_expert=False` to skip this step."
             )
             task, success = self._check_expert_traj()
+            retry_num = 0
             while not success:
-                logger.warning(
-                    f"Task {self.cfg.task_name} with seed {self.cfg.seed} "
-                    "failed to complete using expert trajectory. "
-                    "Using a new seed."
-                )
+                retry_num += 1
+                if retry_num >= 50:
+                    raise RuntimeError(
+                        f"Failed to create task {self.cfg.task_name} "
+                        f"with expert trajectory after {retry_num} retries. "
+                        "Please check the task configuration!"
+                    )
+
                 self.cfg.seed += 1
                 task, success = self._check_expert_traj()
+                if success:
+                    logger.info(
+                        f"Successfully created task {self.cfg.task_name} "
+                        f"with seed {self.cfg.seed} using expert trajectory."
+                    )
+
             assert task is not None
             instructions = generate_episode_descriptions(
                 self.cfg.task_name,
@@ -143,10 +163,15 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
 
         """
         if self.cfg.eval_mode:
-            assert self._instructions is not None
-            # random pick one in unseen instructions
-            eval_instruction_type: InstructionType = "unseen"
-            return np.random.choice(self._instructions[eval_instruction_type])
+            if self._eval_chosen_instruction is None:
+                assert self._instructions is not None
+                # random pick one in unseen instructions
+                eval_instruction_type: InstructionType = "unseen"
+                self._eval_chosen_instruction = np.random.choice(
+                    self._instructions[eval_instruction_type]
+                )
+
+            return self._eval_chosen_instruction
 
         else:
             return self._instructions
@@ -210,10 +235,15 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         # the take_action method will do internal check if reach step limit
         # or task is successful. Either case, the task will not take further
         # actions.
-        self._task.take_action(action)
+        self._task.take_action(action, action_type=self.cfg.action_type)
 
         # when reach step limit, truncated is True
-        if self._task.take_action_cnt >= self._task.step_lim:  # type: ignore
+        # Note that step_lim is None for default unlimited steps.
+        # It will be set in evaluation mode.
+        if (
+            self._task.step_lim is not None
+            and self._task.take_action_cnt >= self._task.step_lim
+        ):
             truncated = True
         else:
             truncated = False
@@ -232,20 +262,23 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             rewards=self._task.eval_success,
             terminated=terminated,
             truncated=truncated,
-            info=self._task.info,
+            info=self._get_info(),
         )
 
     def reset(
         self,
         env_ids: Sequence[int] | None = None,
-        seed: int | None = None,
+        seed: int | str | None = None,
+        task_name: str | None = None,
         clear_cache: bool = False,
-    ) -> tuple[dict[str, Any] | None, dict]:
+        return_obs: bool = True,
+    ) -> tuple[RoboTwinObsType, dict]:
         """Reset the environment.
 
         If the environment has not been reset before, or the seed is
-        different from the previous one, the environment will be re-created
-        and check the seed.
+        different from the previous one, or the task_name is different
+        from the previous one, the environment will be re-created
+        and check the seed, and the seed will be updated in the config.
 
         Warning:
             RoboTwin does not use local RandomGenerator, when the environment
@@ -254,6 +287,24 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             parts of the code!
             This is a BUG in RoboTwin!
 
+        Args:
+            env_ids (Sequence[int] | None, optional): Not supported.
+                Defaults to None.
+            seed (int | str | None, optional): The seed to reset the
+                environment. If None, the seed in the config will be used.
+                If "next", the seed will be incremented by 1.
+                Defaults to None.
+            task_name (str | None, optional): The task name to reset the
+                environment. If None, the task name in the config will be used.
+                Defaults to None.
+            clear_cache (bool, optional): Whether to clear the cache
+                when closing the environment. Defaults to False.
+
+        Returns:
+            tuple[RoboTwinObsType, dict]:
+                A tuple containing the initial observation and
+                environment info after reset.
+
         """
         if env_ids is not None:
             raise NotImplementedError(
@@ -261,10 +312,27 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             )
 
         self.close(clear_cache=clear_cache)
-        if not hasattr(self, "_task") or (
-            seed is not None and seed != self.cfg.seed
-        ):
-            task, instructions = self._check_and_update_seed()
+        # calculate the actual seed
+        if seed is not None:
+            seed = self.cfg.calculate_seed(seed)
+
+        seed_changes = seed is not None and seed != self.cfg.seed
+        task_name_changes = (
+            task_name is not None and task_name != self.cfg.task_name
+        )
+        # check if task is not initialized or seed/task_name changes
+        if not hasattr(self, "_task") or seed_changes or task_name_changes:
+            # when need to create new env:
+            # * when no existing env
+            # * when seed changes
+            if seed_changes:
+                assert seed is not None
+                self.cfg.seed = seed
+            if task_name_changes:
+                assert task_name is not None
+                self.cfg.task_name = task_name
+            with in_robotwin_workspace():
+                task, instructions = self._check_and_update_seed()
             assert task is not None
             self._task = task
             self._instructions = instructions
@@ -273,7 +341,35 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             task_config = self.cfg.get_task_config()
             self._task.setup_demo(**task_config)  # type: ignore
 
-        return self._get_obs(), self._task.info
+        self._eval_chosen_instruction = None
+
+        obs = self._get_obs() if return_obs else None
+
+        self._robot_urdf_chains = {
+            k: KinematicChain.from_content(v, format="urdf")
+            for k, v in self.get_robot_urdf().items()
+        }
+
+        return obs, self._get_info()
+
+    def _joints2ee_pose(self, joints: np.ndarray) -> dict[str, np.ndarray]:
+        """Convert joint positions to end-effector poses.
+
+        Args:
+            joints (np.ndarray): The joint positions of the robot.
+
+        Returns:
+            dict[str, np.ndarray]: A dictionary mapping from robot side
+                ("left" or "right") to the end-effector pose as a
+                (4, 4) numpy array.
+
+        """
+        raise NotImplementedError("_joints2ee_pose not implemented yet.")
+
+    def _get_info(self) -> dict[str, Any]:
+        info = {"seed": self.cfg.seed, "task": self.cfg.task_name}
+        info.update(self._task.info)
+        return info
 
     def close(self, clear_cache: bool = True):
         """Close the environment."""
@@ -290,9 +386,17 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         ret_names.append(self._task.robot.right_gripper_name["base"])
         return ret_names
 
-    def _get_obs(self) -> dict[str, Any] | None:
-        ret = self._task.get_obs()
+    def _get_obs(self) -> dict[str, Any]:
+        """Get the current observation from the environment.
 
+        Note that in current RoboTwin implementation, the joints of the robot
+        are provided in the "joint_action" key of the observation, and it
+        actually represents the joint target positions! This is a design
+        flaw in RoboTwin, and we leave it as is to be consistent with RoboTwin!
+
+        """
+        ret = self._task.get_obs()
+        ret["instructions"] = self.instructions
         if self.cfg.format_datatypes:
             ret["joints"] = get_joints(
                 ret, joint_names=self._get_joint_state_names()
@@ -300,7 +404,7 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
             ret.pop("joint_action", None)
             ret["cameras"] = get_observation_cams(ret)
             ret.pop("observation")
-
+        ret["tf"] = self._get_tf()
         return ret
 
     @property
@@ -336,6 +440,82 @@ class RoboTwinEnv(EnvBase[dict[str, Any] | None, bool]):
         """Get the original RoboTwin environment."""
         return self._task
 
+    def _get_tf(self) -> BatchFrameTransformGraph:
+        """Get the frame transforms in the environment.
+
+        The transforms include the robot base transform(s).
+
+        Returns:
+            BatchFrameTransformGraph:
+                The robot base transform(s). If the robot is dual-arm and
+                use seperate urdf files, two base transforms corresponding to
+                left and right arms will be included. Otherwise, only one base
+                transform will be included.
+        """
+        left_base_tf = sapien_pose_to_orchard(
+            self._task.robot.left_entity_origion_pose
+        )
+        right_base_tf = sapien_pose_to_orchard(
+            self._task.robot.right_entity_origion_pose
+        )
+        tf_list = []
+        static_list = []
+        if left_base_tf == right_base_tf:
+            tf_list.append(
+                BatchFrameTransform(
+                    xyz=left_base_tf.xyz,
+                    quat=left_base_tf.quat,
+                    timestamps=left_base_tf.timestamps,
+                    parent_frame_id="world",
+                    child_frame_id="robot_base",
+                )
+            )
+            static_list.append(True)
+        else:
+            tf_list.append(
+                BatchFrameTransform(
+                    xyz=left_base_tf.xyz,
+                    quat=left_base_tf.quat,
+                    timestamps=left_base_tf.timestamps,
+                    parent_frame_id="world",
+                    child_frame_id="left_robot_base",
+                )
+            )
+            tf_list.append(
+                BatchFrameTransform(
+                    xyz=right_base_tf.xyz,
+                    quat=right_base_tf.quat,
+                    timestamps=right_base_tf.timestamps,
+                    parent_frame_id="world",
+                    child_frame_id="right_robot_base",
+                )
+            )
+            static_list.extend([True, True])
+        return BatchFrameTransformGraph(
+            tf_list=tf_list,
+            static_tf=static_list,
+        )
+
+    def get_robot_urdf(self) -> dict[str, str]:
+        """Get the URDF file content of the robot(s) in the environment.
+
+        Returns:
+            dict[str, str]: A dictionary mapping from robot side
+                ("left" or "right") to the URDF content.
+        """
+        urdf_contents = {}
+
+        assert self._task.robot.left_urdf_path is not None
+        with in_robotwin_workspace():
+            with open(self._task.robot.left_urdf_path, "rb") as f:
+                urdf_contents["left"] = f.read()
+            if self._task.robot.is_dual_arm is False:
+                assert self._task.robot.right_urdf_path is not None
+                with open(self._task.robot.right_urdf_path, "rb") as f:
+                    urdf_contents["right"] = f.read()
+
+        return urdf_contents
+
 
 class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """Configuration for the RoboTwin environment."""
@@ -354,6 +534,9 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     episode_id: int = 0
     """The episode ID for the environment, used for logging and tracking."""
+
+    action_type: Literal["qpos", "ee"] = "qpos"
+    """The type of action to use in the environment."""
 
     check_expert: bool = False
     """Whether to check the expert trajectory for the task.
@@ -402,9 +585,30 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             replace the original "observation" key.
         - other keys in the original observation will be kept.
 
+    The default is False for compatibility with original RoboTwin code.
+    We highly recommend to set this field to True for better usability!
     """
 
+    task_config_path: str | None = None
+    """Path to the task configuration file.
+
+    If not provided, the path will be set to
+    `<RoboTwin_PATH>/task_config/_config_template.yml` for RoboTwin2.0.
+
+    Note that we only support RoboTwin2.0 for now.
+    """
+
+    endpose: bool | None = None
+    """Whether to output endpose in observation. If None, use the value
+    in task configuration file."""
+
     def __post_init__(self):
+        if self.task_config_path is None:
+            robo_twin_root = config_robotwin_path()
+            self.task_config_path = os.path.join(
+                robo_twin_root, "task_config", "_config_template.yml"
+            )
+
         task_config_path = self.task_config_path
         if not os.path.exists(task_config_path):
             raise FileNotFoundError(
@@ -426,28 +630,46 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             self.check_expert = True
             self.check_task_init = False
 
-        if self.eval_mode and self.seed < 100000:
-            new_seed = 100000 * (1 + self.seed)
+        if self.eval_mode and self.max_instruction_num != EVAL_INSTRUCTION_NUM:
             logger.info(
-                f"Eval mode is on, changing seed from {self.seed} "
-                f"to {new_seed}"
+                f"Set max_instruction_num from "
+                f"{self.max_instruction_num} to "
+                f"{EVAL_INSTRUCTION_NUM} for eval_mode."
             )
-            self.seed = new_seed
+            self.max_instruction_num = EVAL_INSTRUCTION_NUM
 
-    @property
-    def task_config_path(self) -> str:
-        """Path to the task configuration file."""
-        robo_twin_root = config_robotwin_path()
-        ret = os.path.join(
-            robo_twin_root, "task_config", f"{self.task_name}.yml"
-        )
-        if os.path.exists(ret):
-            return ret
-        else:
-            # for RoboTwin 2.0.
-            return os.path.join(
-                robo_twin_root, "task_config", "_config_template.yml"
+        self.seed = self.calculate_seed(self.seed)
+
+    def calculate_seed(self, seed: int | str) -> int:
+        """Calculate the actual seed used in RoboTwin.
+
+        In eval_mode, the seed is calculated as `100000 * (1 + seed)`.
+
+        Args:
+            seed (int): The base seed.
+
+        Returns:
+            int: The actual seed used in RoboTwin.
+        """
+        if isinstance(seed, str):
+            if seed == "next":
+                seed = self.seed + 1
+            else:
+                raise ValueError(
+                    f"Invalid seed string: {seed}. Only 'next' is supported."
+                )
+
+        if self.eval_mode and seed < EVAL_SEED_BASE:
+            seed = EVAL_SEED_BASE * (1 + seed)
+
+        if seed >= EVAL_SEED_BASE and self.eval_mode is False:
+            raise ValueError(
+                f"Seed {seed} is >= {EVAL_SEED_BASE} but eval_mode is "
+                "False. This may lead to unexpected behavior. "
+                "The recomputed seed will set to 0."
             )
+
+        return seed
 
     @property
     def embodiment_config_path(self) -> str:
@@ -467,12 +689,15 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     def get_task_config(self) -> dict[str, Any]:
         """Get the configuration for the task."""
-
+        assert self.task_config_path is not None
         with (
             open(self.task_config_path, "r", encoding="utf-8") as f,
         ):
             task_config = yaml.load(f.read(), Loader=yaml.FullLoader)
-            return self._update_task_config(task_config)
+            ret = self._update_task_config(task_config)
+
+            ret["task_name"] = self.task_name
+            return ret
 
     def _update_task_config(self, task_args: dict[str, Any]) -> dict[str, Any]:
         """Update the task configuration.
@@ -500,6 +725,11 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
         with open(self.camera_config_path, "r", encoding="utf-8") as f:
             camera_config = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+        data_type = task_args["data_type"]
+        if self.endpose is not None and data_type["endpose"] != self.endpose:
+            logger.info(f"Overriding endpose in task config to {self.endpose}")
+            data_type["endpose"] = self.endpose
 
         head_camera_type = task_args["camera"]["head_camera_type"]
         task_args["head_camera_h"] = camera_config[head_camera_type]["h"]
@@ -544,6 +774,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         task_args["seed"] = self.seed
         task_args["now_ep_num"] = self.episode_id
         task_args["eval_mode"] = self.eval_mode
+        task_args["is_test"] = self.eval_mode
 
         return task_args
 

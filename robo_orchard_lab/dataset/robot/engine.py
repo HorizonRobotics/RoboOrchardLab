@@ -14,6 +14,13 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""The database engine utilities that wrap SQLAlchemy.
+
+For database engine which is used specifically for RoboOrchard dataset,
+see :py:mod:`robo_orchard_lab.dataset.robot.dataset_db_engine`.
+
+"""
+
 import json
 import os
 import tempfile
@@ -185,8 +192,6 @@ def create_engine(
 def create_temp_engine(
     dir: str = os.path.abspath("./"),
     prefix: str = "duckdb_temp",
-    create_table: bool = True,
-    base: Type[DeclarativeBase] | None = None,
     drivername: str = "duckdb",
     **kwargs,
 ) -> Generator[Engine, Any, None]:
@@ -194,13 +199,8 @@ def create_temp_engine(
     db_fd, db_path = tempfile.mkstemp(dir=dir, prefix=prefix, suffix=".tmp")
 
     db_file = db_path.replace(".tmp", f".{drivername}")
-
     tmp_db_url = URL.create(drivername=drivername, database=db_file)
     local_engine = create_engine(tmp_db_url, readonly=False, **kwargs)
-    if create_table:
-        if base is None:
-            raise ValueError("base must be provided to create tables.")
-        create_tables(engine=local_engine, base=base)
     try:
         yield local_engine
     finally:

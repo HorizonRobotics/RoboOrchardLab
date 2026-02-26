@@ -128,7 +128,7 @@ def deterministic_setup():
 @pytest.fixture(scope="function")
 def test_pipeline_cfg() -> MyTestPipelineCfg:
     """Provides an instance of MyTestPipelineCfg."""
-    return MyTestPipelineCfg(model=DummyModelCfg())
+    return MyTestPipelineCfg(model_cfg=DummyModelCfg())
 
 
 @pytest.fixture(scope="function")
@@ -153,7 +153,7 @@ def test_pipeline_initialization(test_pipeline: MyTestPipeline):
 def test_pipeline_call_with_collator(with_collator: bool):
     test_pipeline = MyTestPipeline(
         cfg=MyTestPipelineCfg(
-            model=DummyModelCfg(),
+            model_cfg=DummyModelCfg(),
             batch_size=1,
             collate_fn=collate_batch_dict if with_collator else None,
         )
@@ -191,7 +191,7 @@ def test_pipeline_call_with_collator(with_collator: bool):
 def test_pipeline_batched(batch_size):
     batch_size = batch_size
     test_pipeline = MyTestPipeline(
-        cfg=MyTestPipelineCfg(model=DummyModelCfg(), batch_size=batch_size)
+        cfg=MyTestPipelineCfg(model_cfg=DummyModelCfg(), batch_size=batch_size)
     )
     raw_input = [{"input_data": torch.randn(1, 10)} for _ in range(3)]
     batched_input = []
@@ -262,14 +262,14 @@ def test_pipeline_save_and_load(test_pipeline: MyTestPipeline, tmp_path):
     save_dir = tmp_path / "saved_pipeline"
 
     # 1. Save the pipeline
-    test_pipeline.save(str(save_dir))
+    test_pipeline.save_pipeline(str(save_dir))
 
     # 2. Check if files were created
     assert (save_dir / "inference.config.json").is_file()
     assert (save_dir / "model.safetensors").is_file()
     assert (save_dir / "model.config.json").is_file()
 
-    loaded_pipeline = InferencePipelineMixin.load(str(save_dir))
+    loaded_pipeline = InferencePipelineMixin.load_pipeline(str(save_dir))
 
     # 4. Verify the loaded pipeline
     assert isinstance(loaded_pipeline, MyTestPipeline)
@@ -300,10 +300,10 @@ def test_save_raises_error_if_dir_not_empty(
     (save_dir / "some_file.txt").touch()  # Make the directory non-empty
 
     with pytest.raises(DirectoryNotEmptyError):
-        test_pipeline.save(str(save_dir), required_empty=True)
+        test_pipeline.save_pipeline(str(save_dir), required_empty=True)
 
     # Should not raise error if required_empty is False
     try:
-        test_pipeline.save(str(save_dir), required_empty=False)
+        test_pipeline.save_pipeline(str(save_dir), required_empty=False)
     except DirectoryNotEmptyError:
         pytest.fail("save() raised DirectoryNotEmptyError unexpectedly.")

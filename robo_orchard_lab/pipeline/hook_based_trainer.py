@@ -181,7 +181,7 @@ class HookBasedTrainer:
 
     Note:
         The trainer will register the following default hooks in order
-        at beginning:
+        at beginning if applicable:
 
         - `GradientClippingHook`: This hook is responsible for clipping
             the gradients to prevent exploding gradients. It will be
@@ -189,6 +189,7 @@ class HookBasedTrainer:
 
         - `OptimizerHook`: This hook is responsible for performing the
             optimization step and updating the learning rate scheduler.
+            This hook will always be registered!
 
         - `ValidationHook`: This hook is responsible for performing
             validation during training. It will call the evaluation
@@ -365,6 +366,11 @@ class HookBasedTrainer:
             batch: Any,
             batch_processor: BatchProcessorMixin,
         ):
+            # batch processor handle forward and backward,
+            # while hooks handle optimizer and lr_scheduler.
+            # By default optimizer hook is enabled and will
+            # call optimizer.step() and lr_scheduler.step()
+            # when on_step hook ends.
             with self.hooks.begin(
                 "on_step", self._get_hook_args()
             ) as on_step_hook_args:
@@ -404,8 +410,11 @@ class HookBasedTrainer:
                     "on_epoch", self._get_hook_args()
                 ) as on_epoch_hook_args:
                     for _i, batch in enumerate(self.dataloader):
-                        # TODO: Support Accelerator.accumulate?
-                        step(batch=batch, batch_processor=self.batch_processor)
+                        with self.accelerator.accumulate(self.model):
+                            step(
+                                batch=batch,
+                                batch_processor=self.batch_processor,
+                            )
                         self.trainer_progress_state.update_step()
                         self.trainer_progress_state.sync_pipeline_hook_arg(
                             on_epoch_hook_args

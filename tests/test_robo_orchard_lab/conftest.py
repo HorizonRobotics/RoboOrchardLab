@@ -43,3 +43,9 @@ def ROBO_ORCHARD_TEST_WORKSPACE() -> str:
 def tmp_local_folder():
     with tempfile.TemporaryDirectory(dir=os.path.abspath("./")) as temp_dir:
         yield temp_dir
+
+
+@pytest.fixture(autouse=True)
+def env_vars(tmp_local_folder):
+    os.environ["ROBO_ORCHARD_HOME"] = os.path.abspath(tmp_local_folder)
+    yield

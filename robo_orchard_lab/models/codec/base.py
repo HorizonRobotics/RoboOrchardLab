@@ -24,6 +24,7 @@ from robo_orchard_core.utils.config import (
     ConfigInstanceOf,
     load_from,
 )
+from typing_extensions import Self
 
 __all__ = [
     "ClassType",
@@ -68,7 +69,7 @@ class Codec(metaclass=ABCMeta):
         return ret
 
     @classmethod
-    def from_config(cls, config_path: str) -> Codec:
+    def from_config(cls, config_path: str) -> Self:
         """Load a Codec from a configuration file."""
         cfg = load_from(config_path, ensure_type=CodecConfig)
         if not issubclass(cfg.class_type, cls):
@@ -81,6 +82,11 @@ class Codec(metaclass=ABCMeta):
 
 class CodecConfig(ClassConfig[CodecT_co]):
     class_type: ClassType[CodecT_co]
+
+    @classmethod
+    def load_from(cls, config_path: str) -> Self:
+        """Load a Codec from a configuration file."""
+        return load_from(config_path, ensure_type=cls)
 
 
 CodecConfigT_co = TypeVar(

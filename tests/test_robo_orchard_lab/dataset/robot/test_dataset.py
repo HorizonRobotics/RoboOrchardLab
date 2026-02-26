@@ -16,11 +16,14 @@
 import os
 import random
 import string
+import tempfile
 from typing import Generator
 
 import datasets as hg_datasets
 import pytest
 import torch
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransformGraph,
@@ -32,11 +35,17 @@ from robo_orchard_lab.dataset.robot.dataset import (
     RODataset,
     ROMultiRowDataset,
 )
+from robo_orchard_lab.dataset.robot.dataset_db_engine import need_upgrade
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
     Robot,
+    TableInfo,
     Task,
+)
+from robo_orchard_lab.dataset.robot.merge import (
+    create_merged_dataset,
+    merge_datasets,
 )
 from robo_orchard_lab.dataset.robot.packaging import (
     DataFrame,
@@ -46,6 +55,7 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodePackaging,
     InstructionData,
     RobotData,
+    RobotDescriptionFormat,
     TaskData,
 )
 from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
@@ -62,12 +72,14 @@ class DummyEpisodePackaging(EpisodePackaging):
         robots: list[RobotData] | None = None,
         tasks: list[TaskData] | None = None,
         instructions: list[InstructionData] | None = None,
+        use_pickle: bool = False,
     ):
         self._gen_frame_num = gen_frame_num
         self._candidate_robots = robots or []
         self._candidate_tasks = tasks or []
         self._candidate_instructions = instructions or []
         self._data_size = data_size
+        self._use_pickle = use_pickle
 
     def gen_robot(self) -> RobotData | None:
         if len(self._candidate_robots) == 0:
@@ -96,8 +108,12 @@ class DummyEpisodePackaging(EpisodePackaging):
         return hg_datasets.Features(
             {
                 "data": hg_datasets.Value("string"),
-                "joints": BatchJointsState.dataset_feature(),
-                "tf_graph": BatchFrameTransformGraph.dataset_feature(),
+                "joints": BatchJointsState.dataset_feature(
+                    use_pickle=self._use_pickle
+                ),
+                "tf_graph": BatchFrameTransformGraph.dataset_feature(
+                    use_pickle=self._use_pickle
+                ),
             }
         )
 
@@ -130,16 +146,31 @@ class DummyEpisodePackaging(EpisodePackaging):
 
 
 @pytest.fixture(scope="module")
-def example_dataset_path_no_shard(tmp_local_folder: str) -> str:
+def example_robots() -> list[RobotData]:
+    return [
+        RobotData(
+            name="robot_0",
+            content="robot_0_urdf",
+            content_format=RobotDescriptionFormat.URDF,
+        ),
+        RobotData(
+            name="robot_1",
+            content="robot_1_mjcf",
+            content_format=RobotDescriptionFormat.MJCF,
+        ),
+    ]
+
+
+@pytest.fixture(scope="module")
+def example_dataset_path_no_shard(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
     dataset_dir = os.path.join(
         tmp_local_folder,
         "example_dataset_path_"
         + "".join(random.choices(string.ascii_lowercase, k=8)),
     )
-    robots = [
-        RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-        RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-    ]
+    robots = example_robots
     tasks = [
         TaskData(name="task_0", description="task_0_description"),
         TaskData(name="task_1", description="task_1_description"),
@@ -180,16 +211,15 @@ def example_dataset_path_no_shard(tmp_local_folder: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def example_dataset_path_shard(tmp_local_folder: str) -> str:
+def example_dataset_path_shard(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
     dataset_dir = os.path.join(
         tmp_local_folder,
         "example_dataset_path_"
         + "".join(random.choices(string.ascii_lowercase, k=8)),
     )
-    robots = [
-        RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-        RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-    ]
+    robots = example_robots
     tasks = [
         TaskData(name="task_0", description="task_0_description"),
         TaskData(name="task_1", description="task_1_description"),
@@ -234,12 +264,65 @@ def example_dataset_path_shard(tmp_local_folder: str) -> str:
     return dataset_dir
 
 
+@pytest.fixture(scope="module")
+def example_dataset_pickle_path_no_shard(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
+    dataset_dir = os.path.join(
+        tmp_local_folder,
+        "example_dataset_path_"
+        + "".join(random.choices(string.ascii_lowercase, k=8)),
+    )
+    robots = example_robots
+    tasks = [
+        TaskData(name="task_0", description="task_0_description"),
+        TaskData(name="task_1", description="task_1_description"),
+    ]
+    instructions = [
+        InstructionData(
+            name="instruction_0",
+            json_content={
+                "instruction": "Do task 0 with robot 0",
+                "robot": "robot_0",
+                "task": "task_0",
+            },
+        ),
+        InstructionData(
+            name="instruction_1",
+            json_content={
+                "instruction": "Do task 1 with robot 1",
+                "robot": "robot_1",
+                "task": "task_1",
+            },
+        ),
+    ]
+    episodes = [
+        DummyEpisodePackaging(
+            gen_frame_num=5,
+            robots=robots[0:1],
+            tasks=tasks[0:1],
+            instructions=instructions[0:1],
+            use_pickle=True,
+        ),
+        DummyEpisodePackaging(
+            gen_frame_num=3, tasks=tasks[1:2], use_pickle=True
+        ),
+    ]
+    features = episodes[0].features
+    dataset_packaging = DatasetPackaging(
+        features=features, database_driver="duckdb"
+    )
+    dataset_packaging.packaging(episodes=episodes, dataset_path=dataset_dir)
+    return dataset_dir
+
+
 @pytest.fixture(
     params=[
         "example_dataset_path_no_shard",
         "example_dataset_path_shard",
+        "example_dataset_pickle_path_no_shard",
     ],
-    ids=["no_shard", "shard"],
+    ids=["no_shard", "shard", "pickle_no_shard"],
 )
 def example_dataset_path(request) -> str:
     """Provide a database engine from different backends."""
@@ -247,13 +330,6 @@ def example_dataset_path(request) -> str:
 
 
 class TestDatasetPackaging:
-    @pytest.fixture
-    def example_robots(self) -> list[RobotData]:
-        return [
-            RobotData(name="robot_0", urdf_content="robot_0_urdf"),
-            RobotData(name="robot_1", urdf_content="robot_1_urdf"),
-        ]
-
     @pytest.fixture
     def example_tasks(self) -> list[TaskData]:
         return [
@@ -317,14 +393,29 @@ class TestDatasetPackaging:
 
 
 class TestDataset:
+    def test_no_lockfiles(self, example_dataset_path: str):
+        database_p_dir = os.path.dirname(example_dataset_path)
+        import glob
+
+        lockfiles = glob.glob(
+            os.path.join(database_p_dir, "*.lock"), recursive=True
+        )
+        assert len(lockfiles) == 0
+
     def test_load_dataset(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)
+
         assert len(dataset.frame_dataset) == 8
         assert len(dataset.frame_dataset) == len(dataset)
         assert "data" in dataset.frame_dataset.column_names
         assert dataset.db_engine is not None
         assert dataset.dataset_format_version is not None
         print("dataset_format_version: ", dataset.dataset_format_version)
+
+        assert dataset.episode_num == 2
+        # only one robot is referenced in packing.
+        assert dataset.robot_num == 1
+        assert dataset.task_num == 2
 
     def test_check_db_engine(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)
@@ -335,6 +426,21 @@ class TestDataset:
             assert episode.frame_num is not None
             assert episode.dataset_begin_index == total_frame_num
             total_frame_num += episode.frame_num
+
+        url = dataset.db_engine.url
+        assert need_upgrade(url) is False
+
+    def test_check_db_engine_tableinfo(self, example_dataset_path: str):
+        dataset = RODataset(dataset_path=example_dataset_path)
+        assert dataset.db_engine is not None
+        engine = dataset.db_engine
+        with Session(engine) as session:
+            stmt = select(TableInfo)
+            results = session.execute(stmt).scalars().all()
+            assert len(results) > 0
+            print("TableInfo entries:")
+            for table_info in results:
+                print(table_info)
 
     def test_check_frame_db(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)
@@ -1077,3 +1183,245 @@ class TestConcatRODataset:
 
         assert multi_row["joints"][0] == multi_row["joints"][1]
         assert multi_row["joints"][0] == dataset[100]["joints"]
+
+
+@pytest.fixture(scope="module")
+def example_all_empty_meta_dataset_path(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
+    dataset_dir = os.path.join(
+        tmp_local_folder,
+        "example_dataset_path_"
+        + "".join(random.choices(string.ascii_lowercase, k=8)),
+    )
+    instructions = [
+        InstructionData(
+            name="instruction_0",
+            json_content={
+                "instruction": "Do task 0 with robot 0",
+                "robot": "robot_0",
+                "task": "task_0",
+            },
+        ),
+        InstructionData(
+            name="instruction_1",
+            json_content={
+                "instruction": "Do task 1 with robot 1",
+                "robot": "robot_1",
+                "task": "task_1",
+            },
+        ),
+    ]
+    episodes = [
+        DummyEpisodePackaging(
+            gen_frame_num=5,
+            robots=None,
+            tasks=None,
+            instructions=instructions[0:1],
+        ),
+        DummyEpisodePackaging(gen_frame_num=3, tasks=None),
+    ]
+    features = episodes[0].features
+    dataset_packaging = DatasetPackaging(
+        features=features, database_driver="duckdb"
+    )
+    dataset_packaging.packaging(episodes=episodes, dataset_path=dataset_dir)
+    return dataset_dir
+
+
+@pytest.fixture(scope="module")
+def example_some_empty_meta_dataset_path(
+    tmp_local_folder: str, example_robots: list[RobotData]
+) -> str:
+    dataset_dir = os.path.join(
+        tmp_local_folder,
+        "example_dataset_path_"
+        + "".join(random.choices(string.ascii_lowercase, k=8)),
+    )
+    robots = example_robots
+    tasks = [
+        TaskData(name="task_0", description="task_0_description"),
+        TaskData(name="task_1", description="task_1_description"),
+    ]
+    instructions = [
+        InstructionData(
+            name="instruction_0",
+            json_content={
+                "instruction": "Do task 0 with robot 0",
+                "robot": "robot_0",
+                "task": "task_0",
+            },
+        ),
+        InstructionData(
+            name="instruction_1",
+            json_content={
+                "instruction": "Do task 1 with robot 1",
+                "robot": "robot_1",
+                "task": "task_1",
+            },
+        ),
+    ]
+    episodes = [
+        DummyEpisodePackaging(
+            gen_frame_num=5,
+            robots=robots[0:1],
+            tasks=None,
+            instructions=instructions[0:1],
+        ),
+        DummyEpisodePackaging(gen_frame_num=3, tasks=tasks[0:2]),
+    ]
+    features = episodes[0].features
+    dataset_packaging = DatasetPackaging(
+        features=features, database_driver="duckdb"
+    )
+    dataset_packaging.packaging(episodes=episodes, dataset_path=dataset_dir)
+    return dataset_dir
+
+
+class TestMergeDataset:
+    @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
+    def test_merge_datasets(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+        tmp_local_folder: str,
+        cache_source_mappings_in_memory: bool,
+    ):
+        dataset_path_list = [
+            "robo_orchard_workspace/datasets/robotwin2.0/aloha_agilex_demo_clean_filtered_mini",  # noqa
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        ]
+        dataset_full_path_list = [
+            os.path.join(ROBO_ORCHARD_TEST_WORKSPACE, p)
+            for p in dataset_path_list
+        ]
+        datasets = [
+            RODataset(dataset_path=p, meta_index2meta=True)
+            for p in dataset_full_path_list
+        ]
+
+        target_dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_merge_datasets_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+
+        print("datasets to merge: ", datasets)
+        row_to_check = [0, 1, 2, 3, 1000, 1003, 2000, 2003]
+        with tempfile.TemporaryDirectory() as cur_tmp_local_folder:
+            merged_dataset = create_merged_dataset(
+                datasets=datasets,
+                cache_dir=cur_tmp_local_folder,
+                cache_meta_idx_mappings_in_memory=(
+                    cache_source_mappings_in_memory
+                ),
+            )
+
+            # check length
+            total_len = sum(len(d) for d in datasets)
+            assert len(merged_dataset) == total_len
+            merged_dataset.meta_index2meta = True
+            # check some data
+            print("checking merged dataset rows...")
+
+            for i in row_to_check:
+                merged_row = merged_dataset[i]
+                dataset_idx = 0 if i < len(datasets[0]) else 1
+                dataset_row_idx = (
+                    i if dataset_idx == 0 else i - len(datasets[0])
+                )
+                original_row = datasets[dataset_idx][dataset_row_idx]
+                assert merged_row["joints"] == original_row["joints"]
+                assert merged_row["task"].md5 == original_row["task"].md5
+                assert (
+                    merged_row["instruction"].md5
+                    == original_row["instruction"].md5
+                )
+
+        # save merge dataset to disk
+        merge_datasets(
+            datasets=datasets,
+            target_path=target_dataset_dir,
+            cache_meta_idx_mappings_in_memory=cache_source_mappings_in_memory,
+        )
+        merged_dataset = RODataset(
+            dataset_path=target_dataset_dir, meta_index2meta=True
+        )
+        # check dataset info
+        dataset_info = merged_dataset.frame_dataset.info
+        assert dataset_info.dataset_size is not None
+
+        assert dataset_info.splits is not None
+        rows = 0
+        for split in dataset_info.splits.values():
+            rows += split.num_examples
+        assert rows == len(merged_dataset)
+
+        # check that
+        for i in row_to_check:
+            merged_row = merged_dataset[i]
+            dataset_idx = 0 if i < len(datasets[0]) else 1
+            dataset_row_idx = i if dataset_idx == 0 else i - len(datasets[0])
+            original_row = datasets[dataset_idx][dataset_row_idx]
+            assert merged_row["joints"] == original_row["joints"]
+            assert merged_row["task"].md5 == original_row["task"].md5
+            assert (
+                merged_row["instruction"].md5
+                == original_row["instruction"].md5
+            )
+
+    def test_merge_datasets_with_empty_meta(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+        tmp_local_folder: str,
+        example_all_empty_meta_dataset_path: str,
+        example_some_empty_meta_dataset_path: str,
+    ):
+        datasets = [
+            RODataset(
+                example_all_empty_meta_dataset_path, meta_index2meta=True
+            ),
+            RODataset(
+                example_some_empty_meta_dataset_path, meta_index2meta=True
+            ),
+        ]
+
+        target_dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_merge_datasets_with_empty_meta_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+
+        print("datasets to merge: ", datasets)
+        # save merge dataset to disk
+        merge_datasets(
+            datasets=datasets,
+            target_path=target_dataset_dir,
+        )
+        merged_dataset = RODataset(
+            dataset_path=target_dataset_dir, meta_index2meta=True
+        )
+        # check dataset info
+        dataset_info = merged_dataset.frame_dataset.info
+        assert dataset_info.dataset_size is not None
+
+        assert dataset_info.splits is not None
+        rows = 0
+        for split in dataset_info.splits.values():
+            rows += split.num_examples
+        assert rows == len(merged_dataset)
+
+        # check that
+        row_to_check = range(len(merged_dataset))
+        for i in row_to_check:
+            merged_row = merged_dataset[i]
+            dataset_idx = 0 if i < len(datasets[0]) else 1
+            dataset_row_idx = i if dataset_idx == 0 else i - len(datasets[0])
+            original_row = datasets[dataset_idx][dataset_row_idx]
+            assert merged_row["joints"] == original_row["joints"]
+            if merged_row["task"] is not None:
+                assert merged_row["task"].md5 == original_row["task"].md5
+            if merged_row["instruction"] is not None:
+                assert (
+                    merged_row["instruction"].md5
+                    == original_row["instruction"].md5
+                )

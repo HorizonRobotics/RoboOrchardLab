@@ -28,5 +28,5 @@ action sampling and state management.
 """
 
 from .base import *
-from .evaluator import *
-from .remote import *
+from .evaluator.base import *
+from .evaluator.remote import *

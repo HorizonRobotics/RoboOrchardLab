@@ -14,7 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from typing import Generator, Iterable
+from typing import Generator, Generic, Iterable, TypeVar
 
 import datasets as hg_datasets
 
@@ -39,8 +39,13 @@ from robo_orchard_lab.dataset.robot.packaging import (
 __all__ = ["repack_dataset"]
 
 
-class RePackingEpisodeHelper(EpisodePackaging):
+class DefaultRePackingEpisodeHelper(EpisodePackaging):
     """Helper class to re-package an episode from an existing dataset.
+
+    User can inherit this class to customize the episode meta or frame
+    generation by optionally overriding:
+    - `generate_episode_meta` to customize the episode meta.
+    - `generate_frames` to customize the frame data.
 
     Args:
         dataset (RODataset): The dataset to re-package from.
@@ -69,10 +74,7 @@ class RePackingEpisodeHelper(EpisodePackaging):
         assert orm_robot is not None
         orm_task: Task = self.dataset.get_meta(Task, row["task_index"])
         assert orm_task is not None
-        robot: RobotData = RobotData(
-            name=orm_robot.name,
-            urdf_content=orm_robot.urdf_content,
-        )
+        robot: RobotData = RobotData.from_orm(orm_robot)
         task = TaskData(
             name=orm_task.name,
             description=orm_task.description,
@@ -96,29 +98,42 @@ class RePackingEpisodeHelper(EpisodePackaging):
             Instruction, index_rows["instruction_index"]
         )
 
-        for i, idx in enumerate(self.frame_index_list):
-            row = self.dataset.frame_dataset[idx]
-            instruction_index = row["instruction_index"]
-            orm_instruction = all_instruction[i]
-            if orm_instruction is None:
-                raise RuntimeError(
-                    f"Instruction not found for frame index {idx} "
-                    f"with instruction_index {instruction_index}"
-                )
-            features = {key: row[key] for key in keep_columns}
-            frame = DataFrame(
-                features=features,
-                instruction=InstructionData(
-                    name=orm_instruction.name,
-                    json_content=orm_instruction.json_content,
-                ),
-                timestamp_ns_min=row["timestamp_min"],
-                timestamp_ns_max=row["timestamp_max"],
+        # split self.frame_index_list into batches
+        batch_size = 128
+        for batch_start in range(0, len(self.frame_index_list), batch_size):
+            batch_end = min(
+                batch_start + batch_size, len(self.frame_index_list)
             )
-            yield frame
+            batch_indices = self.frame_index_list[batch_start:batch_end]
+            batch_row = self.dataset.frame_dataset.__getitems__(batch_indices)
+            for i, idx in enumerate(batch_indices):
+                row = batch_row[i]
+                instruction_index = row["instruction_index"]
+                orm_instruction = all_instruction[batch_start + i]
+                if orm_instruction is None:
+                    raise RuntimeError(
+                        f"Instruction not found for frame index {idx} "
+                        f"with instruction_index {instruction_index}"
+                    )
+                features = {key: row[key] for key in keep_columns}
+                frame = DataFrame(
+                    features=features,
+                    instruction=InstructionData(
+                        name=orm_instruction.name,
+                        json_content=orm_instruction.json_content,
+                    ),
+                    timestamp_ns_min=row["timestamp_min"],
+                    timestamp_ns_max=row["timestamp_max"],
+                )
+                yield frame
 
 
-class RePackingDatasetHelper:
+RePackingEpisodeType = TypeVar(
+    "RePackingEpisodeType", bound=DefaultRePackingEpisodeHelper
+)
+
+
+class RePackingDatasetHelper(Generic[RePackingEpisodeType]):
     """Iterator to generate episodes for re-packaging.
 
     Args:
@@ -128,37 +143,60 @@ class RePackingDatasetHelper:
             grouped together!
     """
 
-    def __init__(self, dataset: RODataset, frame_indices: Iterable[int]):
+    def __init__(
+        self,
+        dataset: RODataset,
+        frame_indices: Iterable[int],
+        packing_impl: type[
+            RePackingEpisodeType
+        ] = DefaultRePackingEpisodeHelper,
+    ):
         self.dataset = dataset
         self.frame_indices = frame_indices
+        self.packing_impl = packing_impl
 
     def __iter__(self):
         return self._next_helper()
 
-    def _next_helper(self) -> Generator[RePackingEpisodeHelper, None, None]:
+    def _next_helper(
+        self,
+    ) -> Generator[RePackingEpisodeType, None, None]:
         current_episode_index = None
         current_episode_frames = []
 
+        def process_batch(batch_frame_indices: list[int]):
+            nonlocal current_episode_index, current_episode_frames
+            batch_rows = self.dataset.index_dataset.__getitems__(
+                batch_frame_indices
+            )
+            for i, frame_index in enumerate(batch_frame_indices):
+                row = batch_rows[i]
+                episode_index = row["episode_index"]
+                # only for first frame, assign current_episode_index
+                if current_episode_index is None:
+                    current_episode_index = episode_index
+
+                if episode_index != current_episode_index:
+                    # yield the previous episode
+                    yield self.packing_impl(
+                        self.dataset, current_episode_frames
+                    )
+                    current_episode_index = episode_index
+                    current_episode_frames = [frame_index]
+                else:
+                    current_episode_frames.append(frame_index)
+
+        batch_size = 1024
+        batch_frame_indices = []
         for frame_index in self.frame_indices:
-            row = self.dataset.frame_dataset[frame_index]
-            episode_index = row["episode_index"]
-
-            # only for first frame, assign current_episode_index
-            if current_episode_index is None:
-                current_episode_index = episode_index
-
-            if episode_index != current_episode_index:
-                # yield the previous episode
-                yield RePackingEpisodeHelper(
-                    self.dataset, current_episode_frames
-                )
-                current_episode_index = episode_index
-                current_episode_frames = [frame_index]
-            else:
-                current_episode_frames.append(frame_index)
-
+            batch_frame_indices.append(frame_index)
+            if len(batch_frame_indices) >= batch_size:
+                yield from process_batch(batch_frame_indices)
+                batch_frame_indices.clear()
+        if batch_frame_indices:
+            yield from process_batch(batch_frame_indices)
         if current_episode_frames:
-            yield RePackingEpisodeHelper(self.dataset, current_episode_frames)
+            yield self.packing_impl(self.dataset, current_episode_frames)
 
 
 def repack_dataset(
@@ -169,6 +207,7 @@ def repack_dataset(
     writer_batch_size: int = 1024,
     max_shard_size: str | int = "8GB",
     force_overwrite: bool = False,
+    packing_impl: type[RePackingEpisodeType] = DefaultRePackingEpisodeHelper,
 ):
     """Re-package a RoboOrchard dataset with selected frames for each episode.
 
@@ -187,6 +226,9 @@ def repack_dataset(
             Default is '8GB'.
         force_overwrite (bool): Whether to overwrite the target path if it
             already exists. Default is False.
+        packing_impl (type[RePackingEpisodeType]): The implementation class
+            for packaging each episode. Default is
+            `DefaultRePackingEpisodeHelper`.
 
     """
     if columns is not None:
@@ -204,7 +246,9 @@ def repack_dataset(
 
     packing = DatasetPackaging(features=hg_datasets.Features(features))
     packing.packaging(
-        episodes=RePackingDatasetHelper(dataset, frame_indices),
+        episodes=RePackingDatasetHelper(
+            dataset, frame_indices, packing_impl=packing_impl
+        ),
         dataset_path=target_path,
         writer_batch_size=writer_batch_size,
         max_shard_size=max_shard_size,

@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import torch
+from google.protobuf.timestamp import from_nanoseconds
+from robo_orchard_core.utils.config import ClassType
 from robo_orchard_core.utils.torch_utils import dtype_str2torch
 from robo_orchard_schemas.sensor_msgs.JointState_pb2 import (
     JointState as PbJointState,
@@ -35,7 +37,16 @@ from robo_orchard_lab.utils.protobuf import is_list_of_protobuf_msg_type
 ___all__ = [
     "ToBatchJointsState",
     "ToBatchJointsStateConfig",
+    "FromBatchJointsState",
+    "FromBatchJointsStateConfig",
 ]
+
+
+def to_numpy(tensor: torch.Tensor | None):
+    if tensor is None:
+        return None
+    return tensor.numpy(force=True)
+
 
 ToBatchJointsState_SRC_TYPE = (
     PbJointStateStamped
@@ -189,8 +200,63 @@ class ToBatchJointsState(
         return data  # type: ignore
 
 
+class FromBatchJointsState(
+    MessageConverterStateless[BatchJointsState, list[PbMultiJointStateStamped]]
+):
+    """Convert from BatchJointsState to list of MultiJointStateStamped.
+
+    The output is a list of `MultiJointStateStamped` messages, each
+    representing the joint states at a specific timestamp.
+
+    """
+
+    def __init__(
+        self,
+        cfg: FromBatchJointsStateConfig,
+    ):
+        self._cfg = cfg
+
+    def convert(self, src: BatchJointsState) -> list[PbMultiJointStateStamped]:
+        joint_state = src
+        if joint_state.timestamps is None:
+            raise ValueError("timestamps is required")
+        ret: list[PbMultiJointStateStamped] = []
+        batch_size = joint_state.batch_size
+        joint_num = joint_state.joint_num
+        position = to_numpy(joint_state.position)
+        velocity = to_numpy(joint_state.velocity)
+        effort = to_numpy(joint_state.effort)
+        names = (
+            joint_state.names
+            if joint_state.names is not None
+            else [None] * joint_num
+        )
+        for i in range(batch_size):
+            state_list = [
+                PbJointState(
+                    frame_id=names[j],
+                    name=names[j],
+                    position=position[i, j] if position is not None else None,
+                    velocity=velocity[i, j] if velocity is not None else None,
+                    effort=effort[i, j] if effort is not None else None,
+                )
+                for j in range(joint_num)
+            ]
+            ret.append(
+                PbMultiJointStateStamped(
+                    timestamp=from_nanoseconds(joint_state.timestamps[i]),
+                    states=state_list,
+                ),
+            )
+        return ret
+
+
 class ToBatchJointsStateConfig(
     MessageConverterConfig[ToBatchJointsState],
     TensorTargetConfigMixin[ToBatchJointsState],
 ):
     class_type: type[ToBatchJointsState] = ToBatchJointsState
+
+
+class FromBatchJointsStateConfig(MessageConverterConfig[FromBatchJointsState]):
+    class_type: ClassType[FromBatchJointsState] = FromBatchJointsState

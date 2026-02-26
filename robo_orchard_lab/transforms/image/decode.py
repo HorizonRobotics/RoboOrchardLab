@@ -80,49 +80,80 @@ class ImageDecode(DictTransform):
                 )
         return ret
 
-    def _decode_impl_pil(self, data: bytes, format: str) -> BatchImageData:
+    def _decode_impl_pil(
+        self, list_data: list[bytes], format: str
+    ) -> BatchImageData:
         """Decode the image data from bytes to PIL images."""
         from PIL import Image as PILImage
 
-        img = PILImage.open(io.BytesIO(data))
-        # # convert img to numpy
-        img_tensor = torch.asarray(np.array(img))
-        ret_mode = ImageMode(img.mode)
-        if img_tensor.ndim == 2:
-            img_tensor = img_tensor.unsqueeze(-1)
-        assert img_tensor.ndim == 3, "Image tensor must be 3D (H, W, C)"
+        img_mode: ImageMode | None = None
+        sensor_data = []
+        for data in list_data:
+            img = PILImage.open(io.BytesIO(data))
+            # # convert img to numpy
+            img_tensor = torch.asarray(np.array(img))
+            if img_mode is None:
+                img_mode = ImageMode(img.mode)
+            else:
+                assert img_mode == ImageMode(img.mode), (
+                    "All images must have the same mode"
+                )
+
+            if img_tensor.ndim == 2:
+                img_tensor = img_tensor.unsqueeze(-1)
+            assert img_tensor.ndim == 3, "Image tensor must be 3D (H, W, C)"
+            sensor_data.append(img_tensor)
+
         return BatchImageData(
-            sensor_data=img_tensor.unsqueeze(0),  # Add batch dimension
-            pix_fmt=ret_mode,
+            sensor_data=torch.stack(sensor_data, dim=0),
+            pix_fmt=img_mode,
         )
 
-    def _decode_impl_cv2(self, data: bytes, format: str) -> BatchImageData:
+    def _decode_impl_cv2(
+        self, data_list: list[bytes], format: str
+    ) -> BatchImageData:
         """Decode the image data from bytes to OpenCV images."""
         import cv2
 
-        nparr = np.frombuffer(data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-        img_tensor = torch.from_numpy(img)
+        def get_image_mode(img_tensor: torch.Tensor) -> ImageMode:
+            if img_tensor.shape[-1] == 3 and img_tensor.dtype == torch.uint8:
+                ret_mode = ImageMode.BGR
+            elif img_tensor.shape[-1] == 1 and img_tensor.dtype == torch.uint8:
+                ret_mode = ImageMode.L
+            elif (
+                img_tensor.shape[-1] == 1 and img_tensor.dtype == torch.uint16
+            ):
+                ret_mode = ImageMode.I16
+            else:
+                raise ValueError(
+                    f"Unsupported image format: {img_tensor.shape} "
+                    f"with dtype {img_tensor.dtype}"
+                )
+            return ret_mode
 
-        if img_tensor.ndim == 2:
-            img_tensor = img_tensor.unsqueeze(-1)
+        img_mode: ImageMode | None = None
+        sensor_data = []
 
-        if img_tensor.shape[-1] == 3 and img_tensor.dtype == torch.uint8:
-            ret_mode = ImageMode.BGR
-        elif img_tensor.shape[-1] == 1 and img_tensor.dtype == torch.uint8:
-            ret_mode = ImageMode.L
-        elif img_tensor.shape[-1] == 1 and img_tensor.dtype == torch.uint16:
-            ret_mode = ImageMode.I16
-        else:
-            raise ValueError(
-                f"Unsupported image format: {img_tensor.shape} "
-                f"with dtype {img_tensor.dtype}"
-            )
+        for data in data_list:
+            nparr = np.frombuffer(data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+            img_tensor = torch.from_numpy(img)
 
-        assert img_tensor.ndim == 3, "Image tensor must be 3D (H, W, C)"
+            if img_tensor.ndim == 2:
+                img_tensor = img_tensor.unsqueeze(-1)
+
+            if img_mode is None:
+                img_mode = get_image_mode(img_tensor)
+            else:
+                assert img_mode == get_image_mode(img_tensor), (
+                    "All images must have the same mode"
+                )
+            assert img_tensor.ndim == 3, "Image tensor must be 3D (H, W, C)"
+            sensor_data.append(img_tensor)
+
         return BatchImageData(
-            sensor_data=img_tensor.unsqueeze(0),  # Add batch dimension
-            pix_fmt=ret_mode,
+            sensor_data=torch.stack(sensor_data, dim=0),
+            pix_fmt=img_mode,
         )
 
 

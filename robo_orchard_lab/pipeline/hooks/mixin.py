@@ -30,6 +30,7 @@ from typing import (
 
 import torch
 from accelerate import Accelerator
+from accelerate.optimizer import AcceleratedOptimizer
 from accelerate.scheduler import AcceleratedScheduler
 from robo_orchard_core.utils.config import (
     ClassConfig,
@@ -94,7 +95,7 @@ class PipelineHookArgs:
     start_step: int = 0
     dataloader: Optional[Iterable] = None
     model: Optional[torch.nn.Module] = None
-    optimizer: Optional[torch.optim.Optimizer] = None
+    optimizer: Optional[AcceleratedOptimizer] = None
     lr_scheduler: Optional[AcceleratedScheduler] = None
     batch: Optional[Any] = None
     model_outputs: Optional[ModelOutput] = None

@@ -24,6 +24,7 @@ from robo_orchard_core.datatypes.joint_state import (
 )
 
 from robo_orchard_lab.dataset.datatypes.hg_features import (
+    PickleFeature,
     RODictDataFeature,
     TypedDictFeatureDecode,
     check_fields_consistency,
@@ -41,9 +42,13 @@ __all__ = [
 
 @classmethod
 def _batch_joints_state_dataset_feature(
-    cls, dtype: Literal["float32", "float64"] = "float32"
-) -> BatchJointsStateFeature:
+    cls,
+    dtype: Literal["float32", "float64"] = "float32",
+    use_pickle: bool = False,
+) -> BatchJointsStateFeature | PickleFeature:
     """A class for joint states with dataset feature support."""
+    if use_pickle:
+        return PickleFeature(class_type=BatchJointsState)
     ret = BatchJointsStateFeature(dtype=dtype)
     check_fields_consistency(cls, ret.pa_type)
     return ret
@@ -60,9 +65,8 @@ class BatchJointsStateFeature(RODictDataFeature, TypedDictFeatureDecode):
     dtype: Literal["float32", "float64"] = "float32"
     decode: bool = True
 
-    _decode_type: type = BatchJointsState
-
     def __post_init__(self):
+        self._decode_type = BatchJointsState
         _typed_tensor_feature = TypedTensorFeature(
             dtype=self.dtype, as_torch_tensor=True
         )

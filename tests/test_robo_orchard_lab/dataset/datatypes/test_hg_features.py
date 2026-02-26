@@ -25,6 +25,7 @@ from datasets.features.features import (
     encode_nested_example,
 )
 
+from robo_orchard_lab.dataset.datatypes.hg_features import PickleFeature
 from robo_orchard_lab.dataset.datatypes.hg_features.tensor import (
     AnyTensorFeature,
     TypedTensorFeature,
@@ -178,6 +179,51 @@ class TestAnyTensorFeature:
                 recovered = recovered.numpy()
 
             assert np.array_equal(original, recovered)
+
+
+class TestPickleFeature:
+    def test_pickle_feature_encode_decode_torch_tensor(self):
+        feature = PickleFeature(class_type=torch.Tensor)
+        data = [
+            torch.tensor([1, 2, 3], dtype=torch.int8),
+            torch.tensor([4, 5, 6], dtype=torch.float32),
+            torch.tensor([[5.0, 6.0], [7.0, 8.0]]),
+        ]
+        typed_seq = TypedSequence(
+            data=[encode_nested_example(feature, item) for item in data],
+            type=feature,  # type: ignore
+        )
+        pa_arr = pa.array(typed_seq)
+        recovered_data = [
+            decode_nested_example(feature, item.as_py()) for item in pa_arr
+        ]
+        for original, recovered in zip(data, recovered_data, strict=True):
+            assert isinstance(recovered, torch.Tensor)
+
+            assert torch.equal(original, recovered)
+
+    def test_datasets(self):
+        feature = PickleFeature(class_type=torch.Tensor)
+        data = [
+            torch.tensor([1, 2, 3], dtype=torch.int8),
+            torch.tensor([4, 5, 6], dtype=torch.float32),
+            torch.tensor([[5.0, 6.0], [7.0, 8.0]]),
+        ]
+        features = Features({"data": feature})
+
+        def generate_data():
+            for item in data:
+                yield features.encode_example({"data": item})
+
+        d = Dataset.from_generator(
+            generate_data, features=features, streaming=True
+        )
+
+        for original, recovered in zip(data, d, strict=True):
+            recovered = recovered["data"]
+            assert isinstance(recovered, torch.Tensor)
+
+            assert torch.equal(original, recovered)
 
 
 if __name__ == "__main__":

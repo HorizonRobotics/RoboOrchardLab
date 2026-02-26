@@ -25,13 +25,23 @@ __all__ = [
 @dataclass
 class PreservedIndexColumns:
     index: int
+    """The global index of the frame in the dataset.
+
+    Usually corresponds to the row number in the dataset.
+    """
     episode_index: int
+    """The index of the episode the frame belongs to."""
     frame_index: int
+    """The index of the frame within the episode."""
+    task_index: int | None
+    """The index of the task associated with the frame, if any."""
+    robot_index: int | None
+    """The index of the robot associated with the frame, if any."""
+    instruction_index: int | None
+    """The index of the instruction associated with the frame, if any."""
+
     timestamp_min: int | None  # in nanoseconds
     timestamp_max: int | None  # in nanoseconds
-    task_index: int | None
-    robot_index: int | None
-    instruction_index: int | None
 
 
 PreservedIndexColumnsKeys = tuple(

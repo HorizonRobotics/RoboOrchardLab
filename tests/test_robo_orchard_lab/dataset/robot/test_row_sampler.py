@@ -20,6 +20,7 @@ import pytest
 
 from robo_orchard_lab.dataset.robot.dataset import ROMultiRowDataset
 from robo_orchard_lab.dataset.robot.row_sampler import (
+    ColumnIndexOffsetSamplerConfig,
     DeltaTimestampSamplerConfig,
     IndexFrameCache,
     time_range_match_frame,
@@ -195,3 +196,69 @@ class TestEpisodeSampler:
                     len(dataset[data_idx][col])
                     == dataset[data_idx]["episode"].frame_num
                 ) is should_be_true
+
+
+class TestColumnIndexOffsetSampler:
+    @pytest.mark.parametrize(
+        "cfg, expected_indices",
+        [
+            (
+                ColumnIndexOffsetSamplerConfig(
+                    column_offsets={
+                        "joints": [0, 1, 2],
+                        "left_camera": [0, -1],
+                    },
+                ),
+                {
+                    "joints": [0, 1, 2],
+                    "left_camera": [0, None],
+                },
+            ),
+            (
+                ColumnIndexOffsetSamplerConfig(
+                    column_offsets={
+                        "joints": [0, 5, 10],
+                        "left_camera": [0, -5],
+                    },
+                ),
+                {
+                    "joints": [0, 5, 10],
+                    "left_camera": [0, None],
+                },
+            ),
+            (
+                ColumnIndexOffsetSamplerConfig(
+                    column_offsets={
+                        "joints": [0, 5, 420, 421],
+                        "left_camera": [0, -5],
+                    },
+                ),
+                {
+                    "joints": [0, 5, 420, None],  # episode 0 has 421 frames
+                    "left_camera": [0, None],
+                },
+            ),
+        ],
+    )
+    def test_sample_column_index_offsets(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+        cfg: ColumnIndexOffsetSamplerConfig,
+        expected_indices: dict[str, list[int | None]],
+    ):
+        path = os.path.join(
+            ROBO_ORCHARD_TEST_WORKSPACE,
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        )
+
+        dataset = ROMultiRowDataset(
+            dataset_path=path,
+            row_sampler=cfg,
+        )
+
+        print(len(dataset))
+        sampled_indices = dataset.row_sampler.sample_row_idx(
+            dataset.index_dataset,
+            0,
+        )
+        assert sampled_indices == expected_indices

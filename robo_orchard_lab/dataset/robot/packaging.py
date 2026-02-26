@@ -27,23 +27,27 @@ from typing import Any, Generator, Iterable
 
 import datasets as hg_datasets
 import fsspec
-from sqlalchemy import URL
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
+from typing_extensions import deprecated
 
+from robo_orchard_lab.dataset.robot import (
+    create_engine,
+    create_tables,
+    get_local_db_url,
+)
 from robo_orchard_lab.dataset.robot.columns import (
     PreservedColumnsKeys,
     PreservedIndexColumns,
     PreservedIndexColumnsKeys,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
-    DatasetORMBase,
     Episode,
     Instruction,
     Robot,
+    RobotDescriptionFormat,
     Task,
 )
-from robo_orchard_lab.dataset.robot.engine import create_engine, create_tables
 
 __all__ = [
     "DatasetPackaging",
@@ -109,11 +113,15 @@ class DataFrame:
 
 class EpisodePackaging(metaclass=ABCMeta):
     @abstractmethod
-    def generate_episode_meta(self) -> EpisodeMeta:
-        """Generate metadata for the episode.
+    def generate_episode_meta(self) -> EpisodeMeta | None:
+        """Generate metadata for the episode if it should be included.
+
+        Should return None if the episode is to be skipped.
 
         Returns:
-            EpisodeMeta: Metadata containing the episode, robot, and task.
+            EpisodeMeta | None: Metadata containing the episode, robot,
+                and task. If None is returned, the episode will be skipped
+                during packaging.
         """
         raise NotImplementedError(
             "This method should be implemented by subclasses to "
@@ -235,12 +243,11 @@ class DatasetPackaging:
             raise FileExistsError(
                 f"The meta database path '{db_path}' already exists."
             )
-        url = URL.create(
-            drivername=self._database_driver,
-            database=db_path,
+        url = get_local_db_url(
+            drivername=self._database_driver, db_path=db_path
         )
         engine = create_engine(url=url, echo=False)
-        create_tables(engine=engine, base=DatasetORMBase)
+        create_tables(engine=engine)
 
         def frame_generator(episode: EpisodePackaging):
             try:
@@ -274,6 +281,8 @@ class DatasetPackaging:
         for episode in episodes:
             try:
                 episode_meta = episode.generate_episode_meta()
+                if episode_meta is None:
+                    continue
             except Exception as e:
                 warnings.warn(
                     f"Failed to generate episode metadata for {episode}. "
@@ -292,6 +301,8 @@ class DatasetPackaging:
             episode_meta_orm.episode.dataset_begin_index = (
                 self._index_state.last_frame_idx + 1
             )
+            # clear _instruction_cache for each episode
+            self._instruction_cache.clear()
             for frame in frame_generator(episode):
                 instruction_orm = (
                     self._add_instruction(frame.instruction, engine=engine)
@@ -367,39 +378,12 @@ class DatasetPackaging:
             maxdepth=1,
         )  # type: ignore
 
-        def rename_arrow_files(
-            files: list[str], fs: fsspec.AbstractFileSystem, source_prefix: str
-        ) -> list[str]:
-            if len(files) == 0:
-                return []
-            num_shards = len(files)
-            digits = max(5, len(str(num_shards)))
-            ret = []
-            for f in files:
-                dir_name = os.path.dirname(f)
-                base_name = os.path.basename(f)
-                if len(base_name) == len(source_prefix) + 6:
-                    assert base_name == f"{source_prefix}.arrow"
-                    shard_idx = 0
-                else:
-                    split_info = base_name[len(source_prefix) + 1 : -6]
-                    split_info = split_info.split("-of-")
-                    assert len(split_info) == 2
-                    shard_idx = int(split_info[0])
-                    num_shards_in_file = int(split_info[1])
-                    assert num_shards_in_file == num_shards
-                new_base_name = f"data-{shard_idx:0{digits}d}-of-{num_shards:0{digits}d}.arrow"  # noqa: E501
-                new_f = os.path.join(dir_name, new_base_name)
-                fs.move(f, new_f)
-                ret.append(new_f)
-            return ret
-
         # rename file names to match the expected format
         # e.g. data-00000-of-00001.arrow
         arrow_files = [
             os.path.relpath(f, dataset_path)
             for f in sorted(
-                rename_arrow_files(
+                _rename_arrow_files(
                     arrow_files, fs=fs, source_prefix=ori_arrow_prefix
                 )
             )
@@ -416,10 +400,6 @@ class DatasetPackaging:
                 "_output_all_columns",
             ]
         }
-        state["robo_orchard_state"] = {}
-        state["robo_orchard_state"]["dataset_format_version"] = (
-            dataset_format_version
-        )
 
         state["_split"] = (
             str(dataset.split) if dataset.split is not None else dataset.split
@@ -435,6 +415,11 @@ class DatasetPackaging:
                 ) from None
         from datasets import config as hg_datasets_config
 
+        # append robo_orchard_state
+        state["robo_orchard_state"] = {}
+        state["robo_orchard_state"]["dataset_format_version"] = (
+            dataset_format_version
+        )
         with fs.open(
             os.path.join(
                 dataset_path, hg_datasets_config.DATASET_STATE_JSON_FILENAME
@@ -443,6 +428,22 @@ class DatasetPackaging:
             encoding="utf-8",
         ) as state_file:
             json.dump(state, state_file, indent=2, sort_keys=True)
+
+        # remove lock files if exist.
+        # lock files is required during building the dataset,
+        # but not needed after the dataset is built.
+        lockfiles_postfix = [
+            ".incomplete_info.lock",
+            "_builder.lock",
+        ]
+        dataset_parent_dir = os.path.dirname(dataset_path)
+        dataset_name = os.path.basename(dataset_path)
+        for postfix in lockfiles_postfix:
+            lockfile_path = os.path.join(
+                dataset_parent_dir, f"{dataset_name}{postfix}"
+            )
+            if fs.exists(lockfile_path):
+                fs.rm(lockfile_path)
 
     def packaging(
         self,
@@ -573,6 +574,15 @@ class EpisodeData:
     automatically during packaging.
     """
 
+    truncated: bool | None = None
+    """Whether the episode was truncated."""
+
+    success: bool | None = None
+    """Whether the episode was successful."""
+
+    info: dict[str, Any] | None = None
+    """Additional information about the episode."""
+
 
 @dataclass
 class RobotData:
@@ -580,8 +590,18 @@ class RobotData:
 
     name: str
     """The name of the robot."""
-    urdf_content: str
-    """The URDF content of the robot."""
+
+    content: str | None
+    content_format: RobotDescriptionFormat | None
+
+    @classmethod
+    def from_orm(cls, orm_robot: Robot) -> RobotData:
+        """Create a RobotData instance from an ORM Robot instance."""
+        return cls(
+            name=orm_robot.name,
+            content=orm_robot.content,
+            content_format=orm_robot.content_format,
+        )
 
     def make_transient_orm(
         self, index_state: DatasetIndexState, session: Session | None
@@ -613,6 +633,22 @@ class RobotData:
                 return make_new()
         else:
             return make_new()
+
+    @property
+    @deprecated("Use 'content' and 'content_format' instead.")  # type: ignore
+    def urdf_content(self) -> str | None:
+        """The URDF content of the robot."""
+        if self.content_format == RobotDescriptionFormat.URDF:
+            return self.content
+        else:
+            return None
+
+    @urdf_content.setter
+    @deprecated("Use 'content' and 'content_format' instead.")  # type: ignore
+    def urdf_content(self, value: str | None):
+        """Set the URDF content of the robot."""
+        self.content = value
+        self.content_format = RobotDescriptionFormat.URDF
 
 
 @dataclass
@@ -716,9 +752,7 @@ class InstructionCache:
 
     def _get_key(self, instruction: InstructionData) -> bytes:
         """Generate a unique key for the instruction data."""
-        data = instruction.__dict__.copy()
-        data["json_content"] = json.dumps(data["json_content"], sort_keys=True)
-        return pickle.dumps(data)
+        return pickle.dumps(instruction)
 
     def get(self, instruction_data: InstructionData) -> Instruction | None:
         """Get an instruction from the cache using its packing data."""
@@ -755,3 +789,67 @@ class DatasetIndexState:
     """The index of the last frame in the dataset."""
     last_episode_frame_idx: int = -1
     """The index of the last frame in the last episode in the dataset."""
+
+
+def _patch_dataset_state_file(dataset_path: str):
+    """Patch the dataset state file to include the robo_orchard_state."""
+    from datasets import config as hg_datasets_config
+
+    fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
+
+    state_file_path = os.path.join(
+        dataset_path, hg_datasets_config.DATASET_STATE_JSON_FILENAME
+    )
+    if not fs.exists(state_file_path):
+        raise FileNotFoundError(
+            f"The dataset state file '{state_file_path}' does not exist."
+        )
+    # read existing state file
+    with fs.open(state_file_path, "r", encoding="utf-8") as state_file:
+        state = json.load(state_file)
+
+    # append robo_orchard_state
+    state["robo_orchard_state"] = {}
+    state["robo_orchard_state"]["dataset_format_version"] = (
+        dataset_format_version
+    )
+
+    with fs.open(state_file_path, "w", encoding="utf-8") as state_file:
+        json.dump(state, state_file, indent=2, sort_keys=True)
+
+
+def _rename_arrow_files(
+    files: list[str], fs: fsspec.AbstractFileSystem, source_prefix: str
+) -> list[str]:
+    """Rename arrow files to match the expected format.
+
+    In some cases, the arrow files generated by datasets may exceed the
+    100000 shards limit, which will cause the file names to be inconsistent
+    with the expected format. This function renames the arrow files to
+    match the expected format.
+    """
+    if len(files) == 0:
+        return []
+    num_shards = len(files)
+    digits = max(5, len(str(num_shards)))
+    ret = []
+    for f in files:
+        dir_name = os.path.dirname(f)
+        base_name = os.path.basename(f)
+        if len(base_name) == len(source_prefix) + 6:
+            assert base_name == f"{source_prefix}.arrow"
+            shard_idx = 0
+        else:
+            split_info = base_name[len(source_prefix) + 1 : -6]  # noqa: E203
+            split_info = split_info.split("-of-")
+            assert len(split_info) == 2
+            shard_idx = int(split_info[0])
+            num_shards_in_file = int(split_info[1])
+            assert num_shards_in_file == num_shards
+        new_base_name = (
+            f"data-{shard_idx:0{digits}d}-of-{num_shards:0{digits}d}.arrow"  # noqa: E501
+        )
+        new_f = os.path.join(dir_name, new_base_name)
+        fs.move(f, new_f)
+        ret.append(new_f)
+    return ret

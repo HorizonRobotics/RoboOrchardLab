@@ -125,7 +125,7 @@ class CompressedImage2Numpy(
             np.frombuffer(data.data, np.uint8), cv2.IMREAD_UNCHANGED
         )
         return NumpyImageMsg(
-            data=img,
+            data=img,  # type: ignore
             target_format=data.format,  # type: ignore
             frame_id=data.frame_id,
             timestamp=data.timestamp if data.HasField("timestamp") else None,

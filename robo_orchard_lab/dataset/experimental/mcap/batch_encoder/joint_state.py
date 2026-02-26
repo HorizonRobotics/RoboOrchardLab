@@ -16,11 +16,7 @@
 
 from __future__ import annotations
 
-import torch
-from google.protobuf.timestamp import from_nanoseconds
 from robo_orchard_schemas.sensor_msgs.JointState_pb2 import (
-    JointState as PbJointState,
-    # JointStateStamped as PbJointStateStamped,
     MultiJointStateStamped as PbMultiJointStateStamped,
 )
 
@@ -30,17 +26,14 @@ from robo_orchard_lab.dataset.experimental.mcap.batch_encoder.base import (
     McapBatchEncoderConfig,
     StampedMessage,
 )
+from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
+    FromBatchJointsStateConfig,
+)
 
 __all__ = [
     "McapBatchFromBatchJointState",
     "McapBatchFromBatchJointStateConfig",
 ]
-
-
-def to_numpy(tensor: torch.Tensor | None):
-    if tensor is None:
-        return None
-    return tensor.numpy(force=True)
 
 
 class McapBatchFromBatchJointState(McapBatchEncoder[BatchJointsState]):
@@ -57,58 +50,25 @@ class McapBatchFromBatchJointState(McapBatchEncoder[BatchJointsState]):
     def __init__(self, config: McapBatchFromBatchJointStateConfig):
         super().__init__()
         self._cfg = config
+        self._converter = FromBatchJointsStateConfig()()
 
     def format_batch(
         self, data: BatchJointsState
     ) -> dict[str, list[StampedMessage[PbMultiJointStateStamped]]]:
-        def to_pb_multi_joint_state_stamped(
-            joint_state: BatchJointsState,
-        ) -> list[StampedMessage[PbMultiJointStateStamped]]:
-            if joint_state.timestamps is None:
-                raise ValueError("timestamps is required")
-            ret: list[StampedMessage[PbMultiJointStateStamped]] = []
-            batch_size = joint_state.batch_size
-            joint_num = joint_state.joint_num
-            position = to_numpy(joint_state.position)
-            velocity = to_numpy(joint_state.velocity)
-            effort = to_numpy(joint_state.effort)
-            names = (
-                joint_state.names
-                if joint_state.names is not None
-                else [None] * joint_num
-            )
-            for i in range(batch_size):
-                state_list = [
-                    PbJointState(
-                        frame_id=names[j],
-                        name=names[j],
-                        position=position[i, j]
-                        if position is not None
-                        else None,
-                        velocity=velocity[i, j]
-                        if velocity is not None
-                        else None,
-                        effort=effort[i, j] if effort is not None else None,
-                    )
-                    for j in range(joint_num)
-                ]
-                ret.append(
-                    StampedMessage(
-                        data=PbMultiJointStateStamped(
-                            timestamp=from_nanoseconds(
-                                joint_state.timestamps[i]
-                            ),
-                            states=state_list,
-                        ),
-                        log_time=joint_state.timestamps[i],
-                        pub_time=joint_state.timestamps[i],
-                    )
+        if data.timestamps is None:
+            raise ValueError("timestamps is required")
+        converted_msgs = self._converter.convert(data)
+        stamped_msgs = []
+        for i, msg in enumerate(converted_msgs):
+            stamped_msgs.append(
+                StampedMessage(
+                    data=msg,
+                    log_time=data.timestamps[i],
+                    pub_time=data.timestamps[i],
                 )
-            return ret
+            )
 
-        return {
-            self._cfg.target_topic: to_pb_multi_joint_state_stamped(data),
-        }
+        return {self._cfg.target_topic: stamped_msgs}
 
 
 class McapBatchFromBatchJointStateConfig(

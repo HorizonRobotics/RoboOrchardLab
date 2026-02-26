@@ -120,6 +120,7 @@ from robo_orchard_lab.dataset.robot import (
     EpisodePackaging,
     InstructionData,
     RobotData,
+    RobotDescriptionFormat,
     RODataset,
     TaskData,
 )
@@ -167,7 +168,11 @@ pprint.pprint(DATASET_FEATURES)
 # object across many episodes.
 #
 
-MOCK_ROBOT = RobotData(name="my_robot_v1", urdf_content="<xml>...</xml>")
+MOCK_ROBOT = RobotData(
+    name="my_robot_v1",
+    content="<xml>...</xml>",
+    content_format=RobotDescriptionFormat.URDF,
+)
 MOCK_TASK = TaskData(name="stack_blocks", description="Stack red on blue")
 
 # We can also define instructions that might change frame-by-frame
@@ -285,13 +290,13 @@ print(f"--- Verifying directory tree at {OUTPUT_DATASET_PATH} ---")
 for root, _, files in os.walk(OUTPUT_DATASET_PATH):
     level = root.replace(OUTPUT_DATASET_PATH, "").count(os.sep)
     indent = " " * 4 * (level)
-    print(f"{indent}{OUTPUT_DATASET_PATH}/")
+    print(f"{indent}{OUTPUT_DATASET_PATH}")
     sub_indent = " " * 4 * (level + 1)
     for f in files:
         print(f"{sub_indent}{f}")
 
 # %%
-# Now, let's load it just like any other `RODataset`
+# Now, let's load it just like any other :py:class:`~robo_orchard_lab.dataset.robot.dataset.RODataset`
 print("--- Loading the new dataset with RODataset ---")
 
 new_dataset = RODataset(OUTPUT_DATASET_PATH, meta_index2meta=True)

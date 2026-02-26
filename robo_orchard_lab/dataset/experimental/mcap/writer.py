@@ -48,6 +48,7 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
     Robot,
+    RobotDescriptionFormat,
     Task,
 )
 
@@ -87,8 +88,13 @@ class Dataset2Mcap:
         Returns:
             StampedMessage[URDF]: The converted URDF protobuf message.
         """
+        if robot.content_format != RobotDescriptionFormat.URDF:
+            raise NotImplementedError(
+                f"Robot {robot.name} has unsupported description format: "
+                f"{robot.content_format}. Only URDF format is supported."
+            )
         return StampedMessage(
-            data=URDF(name=robot.name, xml_content=robot.urdf_content),
+            data=URDF(name=robot.name, xml_content=robot.content),
             log_time=log_time,
             pub_time=pub_time,
         )
@@ -205,17 +211,24 @@ class Dataset2Mcap:
 
         with fsspec.open(target_path, "wb") as f, McapWriter(f) as mcap_writer:  # type: ignore
             if robot_info is not None:
-                robot_msg = self._robot2proto(
-                    robot_info,
-                    log_time=start_ts,
-                    pub_time=start_ts,
-                )
-                mcap_writer.write_message(
-                    topic=episode_info_topics.robot_topic,
-                    message=robot_msg.data,
-                    log_time=robot_msg.log_time,
-                    publish_time=robot_msg.pub_time,
-                )
+                try:
+                    robot_msg = self._robot2proto(
+                        robot_info,
+                        log_time=start_ts,
+                        pub_time=start_ts,
+                    )
+                    mcap_writer.write_message(
+                        topic=episode_info_topics.robot_topic,
+                        message=robot_msg.data,
+                        log_time=robot_msg.log_time,
+                        publish_time=robot_msg.pub_time,
+                    )
+                except NotImplementedError as e:
+                    print(
+                        f"Skipping robot description for episode "
+                        f"{episode_index}: {e}"
+                    )
+
             if task_info is not None:
                 task_msg = self._task2proto(
                     task_info,

@@ -31,8 +31,9 @@ Models Module
 
 This module houses the neural network architectures for various tasks. These are broadly categorized into:
 
-* **Perception**: Specialized models for understanding the environment, such as :ref:`BIP3D <model_zoo_bip3d>` for advanced 3D object detection from visual input.
-* **Embodied AI Algorithms**: Higher-level policies and models for agent interaction, including :ref:`SEM <model_zoo_sem>`, **Grasping**, **Whole-body Control** (algorithms designed for complex robot motion planning and coordination, under development)
+* **Perception**: Specialized models for understanding the environment, such as `BIP3D <https://horizonrobotics.github.io/robot_lab/bip3d/index.html>`__ for advanced 3D object detection from visual input.
+
+* **Embodied AI Algorithms**: Higher-level policies and models for agent interaction, including `SEM <https://arxiv.org/abs/2505.16196>`__, `FineGrasp <https://horizonrobotics.github.io/robot_lab/finegrasp/index.html>`__, **Whole-body Control** (algorithms designed for complex robot motion planning and coordination, under development)
 
 Pipelines
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

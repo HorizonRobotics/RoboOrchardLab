@@ -31,6 +31,8 @@ from typing_extensions import deprecated
 
 from robo_orchard_lab.pipeline.batch_processor.mixin import BatchProcessorMixin
 from robo_orchard_lab.pipeline.hooks.mixin import (
+    ModelOutput,
+    ModelOutputHasLossKeys,
     PipelineHookArgs,
     PipelineHooks,
 )
@@ -142,7 +144,7 @@ class SimpleBatchProcessor(BatchProcessorMixin):
         self,
         model: Callable,
         batch: Any,
-    ) -> Tuple[Any, Optional[torch.Tensor]]:
+    ) -> Tuple[ModelOutput | ModelOutputHasLossKeys, Optional[torch.Tensor]]:
         """Defines the forward pass logic for the model.
 
         This method handles the execution of the forward pass, processing
@@ -157,10 +159,11 @@ class SimpleBatchProcessor(BatchProcessorMixin):
                 or other structure, depending on the data pipeline's format.
 
         Returns:
-            Tuple[Any, Optional[torch.Tensor]]:
+            Tuple[ModelOutput | ModelOutputHasLossKeys, Optional[torch.Tensor]]:
                 - The first element is the model's outputs. It can be any type
-                  that the model produces, such as a tensor, a list of tensors,
-                  or a dictionary.
+                  that the model produces, usually dict or a custom ModelOutput
+                  class that has `loss_keys` method if it contains multiple
+                  losses.
                 - The second element is an optional loss tensor. This
                   is used during training when backward computation is required.
                   If loss is not applicable (e.g., during inference), this value
