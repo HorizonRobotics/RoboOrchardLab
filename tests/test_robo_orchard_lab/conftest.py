@@ -18,6 +18,21 @@ import tempfile
 
 import pytest
 
+# import multiprocessing as mp
+# try:
+#     # Prefer 'fork' to avoid spawn/forkserver pickling/fd issues in tests
+#     mp.set_start_method("fork", force=True)
+# except Exception:
+#     pass
+
+try:
+    # Use filesystem-backed sharing to avoid resizing fds on some filesystems
+    import torch
+
+    torch.multiprocessing.set_sharing_strategy("file_system")
+except Exception:
+    pass
+
 
 @pytest.fixture()
 def PROJECT_ROOT() -> str:

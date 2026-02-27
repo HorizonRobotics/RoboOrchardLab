@@ -211,6 +211,22 @@ def add_hf_iterable_cls(cls, instance: object | None = None):
         for order in ((base_cls, new_base), (new_base, base_cls)):
             try:
                 combined_cls = type(name, order, {})
+                # Ensure the dynamic class is importable/picklable by
+                # placing it in the same module as the base class and
+                # setting its __module__ accordingly.
+                try:
+                    import sys
+
+                    combined_cls.__module__ = getattr(
+                        base_cls, "__module__", "builtins"
+                    )
+                    mod = sys.modules.get(combined_cls.__module__)
+                    if mod is not None:
+                        setattr(mod, combined_cls.__name__, combined_cls)
+                except Exception:
+                    # Best-effort only; if registration fails, fallback
+                    # to returning the class (may not be picklable).
+                    pass
                 return combined_cls
             except TypeError:
                 continue
