@@ -49,6 +49,7 @@ from . import db_orm
 from .columns import *
 from .dataset import *
 from .dataset_db_engine import *
+from .dataset_ex import *
 from .db_orm import RobotDescriptionFormat
 from .packaging import *
 from .re_packing import *

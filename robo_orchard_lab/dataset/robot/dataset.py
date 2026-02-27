@@ -20,7 +20,7 @@ import os
 import shutil
 import warnings
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import (
     Any,
     Callable,
@@ -38,9 +38,7 @@ from datasets import (
     DatasetInfo,
     Features,
 )
-from datasets.arrow_dataset import (
-    Column,
-)
+from datasets.arrow_dataset import Column
 from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
 from sqlalchemy.sql import func
@@ -69,9 +67,11 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
 
 __all__ = [
     "RODataset",
+    "RODatasetInfo",
     "ROMultiRowDataset",
     "ConcatRODataset",
     "_complete_dataset_info",
+    "get_row_num_from_dataset_info",
 ]
 
 MetaType = TypeVar("MetaType", Episode, Instruction, Robot, Task)
@@ -80,6 +80,15 @@ MetaIndexKeyType = Literal[
     "episode_index", "task_index", "robot_index", "instruction_index"
 ]
 TorchDataset: TypeAlias = torch.utils.data.Dataset
+
+DatasetType = TypeVar("DatasetType", bound=TorchDataset)
+
+
+@dataclass
+class RODatasetInfo:
+    num_rows: int
+    columns_without_transform: list[str]
+    dataset_transform: Callable[[dict], dict]
 
 
 class RODataset(TorchDataset):
@@ -212,11 +221,12 @@ class RODataset(TorchDataset):
         ret.__setstate__(state_dict)
         return ret
 
-    def __repr__(self) -> str:
-        # ret = "RODataset(num_rows={})".format(len(self))
+    def _get_info_dict(self) -> RODatasetInfo:
         dict_info = {}
         dict_info["num_rows"] = len(self)
-        dict_info["columns"] = list(self.frame_dataset.column_names)
+        dict_info["columns_without_transform"] = list(
+            self.frame_dataset.column_names
+        )
         if self.meta_index2meta:
             # change all columns with index to meta
             for col in (
@@ -226,8 +236,14 @@ class RODataset(TorchDataset):
                 "instruction",
             ):
                 col_index = f"{col}_index"
-                dict_info["columns"].remove(col_index)
-                dict_info["columns"].append(col)
+                dict_info["columns_without_transform"].remove(col_index)
+                dict_info["columns_without_transform"].append(col)
+        dict_info["dataset_transform"] = self._transform
+
+        return RODatasetInfo(**dict_info)
+
+    def __repr__(self) -> str:
+        dict_info = self._get_info_dict()
         return f"RODataset({dict_info})"
 
     def _get_state_(self) -> dict:
@@ -1261,3 +1277,50 @@ def _complete_dataset_info(
             )
         }
     return True, dataset_info
+
+
+def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
+    """Get the number of rows in the dataset from the dataset info file.
+
+    The row number is a total count of all rows in all splits. If the dataset
+    info file does not contain the split information, this function will
+    return None.
+
+    Note:
+        This method assumes that the dataset info file is stored in the
+        dataset directory, and the split information is available in the
+        dataset info file.
+
+    Args:
+        dataset_path (str): The path to the dataset directory.
+
+    Returns:
+        int | None: The number of rows in the dataset if available,
+            otherwise None.
+
+    Raises:
+        FileNotFoundError: If the dataset info file is not found in the
+            specified dataset path.
+
+    """
+    import datasets.config as hg_datasets_config
+    from datasets import SplitInfo
+
+    dataset_info_path = os.path.join(
+        dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
+    )
+    if not os.path.exists(dataset_info_path):
+        raise FileNotFoundError(
+            f"Dataset info file not found in {dataset_path}."
+        )
+    with open(dataset_info_path, "r", encoding="utf-8") as f:
+        dataset_info = DatasetInfo.from_dict(json.load(f))
+
+    if dataset_info.splits is None:
+        return None
+
+    cnt = 0
+    for split in dataset_info.splits.items():
+        assert isinstance(split, SplitInfo)
+        cnt += split.num_examples
+    return cnt

@@ -13,18 +13,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-
-from typing import Iterator, Protocol, runtime_checkable
+from __future__ import annotations
+import os
+from typing import Any, Iterator, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pyarrow as pa
 import torch
 from datasets.arrow_dataset import InMemoryTable, MemoryMappedTable, Table
+from datasets.formatting import query_table
+from datasets.table import concat_tables
 from torch.utils.data.sampler import Sampler
+from typing_extensions import TypeAlias
 
 __all__ = [
+    "IndiceTable",
     "IndiceTableSampler",
-    "ShardedIndiceSampler",
 ]
 
 
@@ -33,6 +37,240 @@ class Sized(Protocol):
     """A protocol for object that have a length."""
 
     def __len__(self) -> int: ...
+
+
+ShardStrategy: TypeAlias = Literal["drop_last", "pad_last"] | None
+
+
+@runtime_checkable
+class AccessibleByIndex(Protocol):
+    """A protocol for object that can be accessed by index."""
+
+    def __getitem__(self, index: int) -> int: ...
+
+
+class IndiceTable:
+    """Class that use pyarrow Table to store indices.
+
+    Args:
+        indices (Table | list[int] | str | torch.Tensor | np.ndarray): The
+            indices to sample from. It can be a pyarrow Table with one column
+            of type uint64, a list of integers, a numpy array of integers,
+            a torch tensor of integers, or a string representing the path to
+            a pyarrow Table file.
+
+    """
+
+    def __init__(
+        self,
+        indices: Table
+        | list[int]
+        | str
+        | torch.Tensor
+        | np.ndarray
+        | int
+        | pa.Table,
+    ):
+        if isinstance(indices, Table):
+            self.table = indices
+        elif isinstance(indices, pa.Table):
+            self.table = Table(indices)
+        elif isinstance(indices, int):
+            self.table = self._list2memtable(
+                np.arange(indices, dtype=np.uint64)
+            )
+        elif isinstance(indices, (list, np.ndarray, torch.Tensor)):
+            self.table = self._list2memtable(indices)
+        elif isinstance(indices, str):
+            self.table = self._table_from_file(indices)
+        else:
+            raise TypeError(
+                f"indices must be of type Table, list[int], or str, "
+                f"but got {type(indices)}"
+            )
+        if self.table.num_columns != 1:
+            raise ValueError(
+                f"indices table must have exactly one column, "
+                f"but got {self.table.num_columns}"
+            )
+        if self.table.column(0).type not in [pa.uint64(), pa.int64()]:
+            raise ValueError(
+                f"indices table column must be of type uint64 or int64, "
+                f"but got {self.table.column(0).type}"
+            )
+
+    def _list2memtable(
+        self, indices: list[int] | np.ndarray | torch.Tensor
+    ) -> InMemoryTable:
+        if isinstance(indices, torch.Tensor):
+            indices = indices.numpy()
+        if isinstance(indices, np.ndarray):
+            indice_arr = pa.array(indices)
+        else:
+            indice_arr = pa.array(indices, type=pa.uint64())
+        return InMemoryTable.from_arrays([indice_arr], names=["indices"])
+
+    def _table_from_file(self, filepath: str) -> MemoryMappedTable:
+        return MemoryMappedTable.from_file(filepath)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self.table.column(0)[index].as_py()
+
+    def __len__(self) -> int:
+        return self.table.num_rows
+
+    def __iter__(self) -> Iterator[int]:
+        for i in range(len(self)):
+            yield self[i]
+
+    def take(self, key: int | slice | range | Iterator[int]) -> IndiceTable:
+        """Return a new IndiceTable with the rows specified by key."""
+        return IndiceTable(query_table(self.table, key))
+
+    def save_to_file(self, filepath: str, reload: bool = False) -> None:
+        """Save the indices to a file in pyarrow format.
+
+        After saving, the indices can be reloaded from the file by setting
+        `reload` to True. If `reload` is False, the indices will remain in
+        memory and can still be accessed without reading from the file.
+
+        """
+        with pa.RecordBatchStreamWriter(filepath, self.table.schema) as writer:
+            for batch in self.table.to_batches():
+                writer.write_batch(batch)
+        if reload:
+            self.table = self._table_from_file(filepath)
+
+    def shuffle(
+        self, generator: torch.Generator | np.random.Generator | None = None
+    ) -> IndiceTable:
+        """Shuffle the indices in place.
+
+        After shuffling, the order of the indices will be changed, but the
+        set of indices will remain the same.
+
+        Args:
+            generator (torch.Generator | np.random.Generator | None, optional):
+                Generator used in shuffling. If None, a new generator will be
+                created with a random seed. Default: None.
+        """
+        if generator is None:
+            seed = int(torch.empty((), dtype=torch.int64).random_().item())
+            generator = torch.Generator()
+            generator.manual_seed(seed)
+            indices = torch.randperm(len(self), generator=generator).numpy()
+        elif isinstance(generator, torch.Generator):
+            indices = torch.randperm(len(self), generator=generator).numpy()
+        elif isinstance(generator, np.random.Generator):
+            # get genrerator seed:
+            assert isinstance(generator, np.random.Generator)
+            indices = generator.permutation(len(self))
+        old_indices = self.to_numpy()
+        return IndiceTable(self._list2memtable(old_indices[indices]))
+
+    def to_pylist(self) -> list[int]:
+        return self.table.column(0).to_pylist()
+
+    def to_numpy(self) -> np.ndarray:
+        return self.table.column(0).to_numpy()
+
+    @property
+    def indice_source(self) -> str:
+        """Return the source of the indices, either "memory" or "file"."""
+        if isinstance(self.table, InMemoryTable):
+            return "memory"
+        elif isinstance(self.table, MemoryMappedTable):
+            return "file://" + os.path.abspath(self.table.path)
+        else:
+            raise TypeError(
+                f"Unsupported table type: {type(self.table)}. "
+                f"Expected InMemoryTable or MemoryMappedTable."
+            )
+
+    def shard(
+        self,
+        num_shards: int,
+        shard_id: int,
+        contiguous: bool = True,
+        shard_strategy: ShardStrategy = None,
+    ) -> IndiceTable:
+        """Shard the indices into num_shards shards.
+
+        Args:
+            num_shards (int): Number of shards to divide the dataset into.
+            shard_id (int): Index of the current shard.
+            contiguous (bool, optional): If True, then the dataset will
+                be split into contiguous chunks. If False, then the dataset
+                will be split into non-contiguous chunks. Default: True.
+            shard_strategy (ShardStrategy, optional): Strategy to handle
+                the last few indices if the dataset size is not
+                divisible by num_shards. Options are "drop_last" to drop the last
+                few indices or "pad_last" to pad the last few indices with the
+                beginning indices. If None, then no special handling will be done and
+                the last shard may have fewer indices than the others. Default: None.
+        """  # noqa: E501
+        if not 0 <= shard_id < num_shards:
+            raise ValueError("shard_id should be in [0, num_shards-1]")
+
+        if shard_strategy == "drop_last":
+            table_for_shard = self._prepare_table_shard_even_drop_last(
+                num_shards
+            )
+        elif shard_strategy == "pad_last":
+            table_for_shard = self._prepare_table_shard_even_pad_last(
+                num_shards
+            )
+        else:
+            table_for_shard = self.table
+
+        return IndiceTable(
+            InMemoryTable(
+                _shard_table(
+                    table_for_shard,
+                    num_shards=num_shards,
+                    shard_id=shard_id,
+                    contiguous=contiguous,
+                )
+            )
+        )
+
+    def _prepare_table_shard_even_drop_last(self, num_shards: int) -> Table:
+        dataset_len = len(self)
+        drop_num = dataset_len % num_shards
+        if drop_num >= dataset_len:
+            raise ValueError(
+                "IndiceTable has fewer rows than num_shards, cannot "
+                "shard by dropping last few indices."
+            )
+        table_for_shard = (
+            Table(query_table(self.table, slice(0, dataset_len - drop_num)))
+            if drop_num > 0
+            else self.table
+        )
+        return table_for_shard
+
+    def _prepare_table_shard_even_pad_last(self, num_shards: int) -> Table:
+        dataset_len = len(self)
+        if dataset_len == 0:
+            raise ValueError(
+                "Cannot shard an empty indice table when using "
+                "pad_last strategy."
+            )
+        pad_num = (num_shards - dataset_len % num_shards) % num_shards
+        if pad_num > 0:
+            to_pad = [self[i % dataset_len] for i in range(pad_num)]
+            to_pad_table = InMemoryTable.from_arrays(
+                [pa.array(to_pad, type=self.table.column(0).type)],
+                names=["indices"],
+            )
+            return concat_tables([self.table, to_pad_table])
+        else:
+            return self.table
+
+    def __repr__(self) -> str:
+        return (
+            f"IndiceTable(num_rows={len(self)}, source={self.indice_source})"
+        )
 
 
 class IndiceTableSampler(Sampler[int]):
@@ -53,146 +291,112 @@ class IndiceTableSampler(Sampler[int]):
 
     def __init__(
         self,
-        indices: Table | list[int] | str | torch.Tensor | np.ndarray,
+        indices: (
+            Table
+            | list[int]
+            | str
+            | torch.Tensor
+            | np.ndarray
+            | int
+            | IndiceTable
+        ),
         shuffle: bool = False,
-        generator: torch.Generator | None = None,
+        generator: torch.Generator | np.random.Generator | None = None,
     ) -> None:
         self.generator = generator
         self.shuffle = shuffle
-        if isinstance(indices, Table):
+        if isinstance(indices, IndiceTable):
             self.table = indices
-        elif isinstance(indices, (list, np.ndarray, torch.Tensor)):
-            self.table = self._list2memtable(indices)
-        elif isinstance(indices, str):
-            self.table = self._table_from_file(indices)
         else:
-            raise TypeError(
-                f"indices must be of type Table, list[int], or str, "
-                f"but got {type(indices)}"
-            )
-        if self.table.num_columns != 1:
-            raise ValueError(
-                f"indices table must have exactly one column, "
-                f"but got {self.table.num_columns}"
-            )
-        if self.table.column(0).type != pa.uint64():
-            raise ValueError(
-                f"indices table column must be of type uint64, "
-                f"but got {self.table.column(0).type}"
-            )
+            self.table = IndiceTable(indices)
+
+    def shuffle_indices(self) -> None:
+        """Shuffle the indices in place."""
+        self.table = self.table.shuffle(generator=self.generator)
 
     def __iter__(self) -> Iterator[int]:
         if self.shuffle:
-            if self.generator is None:
-                seed = int(torch.empty((), dtype=torch.int64).random_().item())
-                generator = torch.Generator()
-                generator.manual_seed(seed)
-            else:
-                generator = self.generator
-
-            indices = torch.randperm(len(self), generator=generator)
-            for i in indices:
-                yield self.table.column(0)[i.item()].as_py()
+            new_table = self.table.shuffle(generator=self.generator)
+            for i in range(len(new_table)):
+                yield new_table[i]
         else:
             for i in range(len(self)):
-                yield self.table.column(0)[i].as_py()
-
-    def _list2memtable(
-        self, indices: list[int] | np.ndarray | torch.Tensor
-    ) -> InMemoryTable:
-        if isinstance(indices, torch.Tensor):
-            indices = indices.numpy()
-        if isinstance(indices, np.ndarray):
-            indice_arr = pa.array(indices)
-        else:
-            indice_arr = pa.array(indices, type=pa.uint64())
-        return InMemoryTable.from_arrays([indice_arr], names=["indices"])
-
-    def _table_from_file(self, filepath: str) -> MemoryMappedTable:
-        return MemoryMappedTable.from_file(filepath)
+                yield self.table[i]
 
     def __len__(self) -> int:
         return len(self.table)
 
+    def take(
+        self, key: int | slice | range | Iterator[int]
+    ) -> IndiceTableSampler:
+        """Return a new IndiceTableSampler with the rows specified by key."""
+        return IndiceTableSampler(
+            indices=self.table.take(key),
+            shuffle=self.shuffle,
+            generator=self.generator,
+        )
 
-class ShardedIndiceSampler(IndiceTableSampler):
-    """Sampler that restricts data loading to a subset of the dataset.
-
-    It is especially useful in conjunction with
-    :class:`torch.nn.parallel.DistributedDataParallel`. In such case, each
-    process can pass a :class:`DistributedSampler` instance as a
-    :class:`~torch.utils.data.DataLoader` sampler, and load a subset of the
-    original dataset that is exclusive to it.
-
-    Note:
-        * Dataset is assumed to be of constant size.
-        * If you are using `accelerate` for distributed training, you
-          should not use this sampler, as `accelerate` will automatically
-          handle the data sharding!
-
-
-    Args:
-        indices (Table | list[int] | str | torch.Tensor | np.ndarray | int):
-            The indices to sample from. It can be a pyarrow Table with one
-            column of type uint64, a list of integers, a numpy array of
-            integers, a torch tensor of integers, or a string representing
-            the path to a pyarrow Table file. If an integer is provided,
-            it is treated as the length of the dataset, and the indices
-            will be generated as a range from 0 to length-1.
-        num_shards (int): Number of shards to divide the dataset into.
-        shard_id (int): Index of the current shard.
-        contiguous (bool, optional): If True, then the dataset will be split
-            into contiguous chunks. If False, then the dataset will be split
-            into non-contiguous chunks. Default: True.
-        shuffle (bool, optional): If True, then the indices will be shuffled
-            before being returned. Default: False.
-        generator (torch.Generator, optional): Generator used in sampling.
-            Default: None.
-
-    """
-
-    def __init__(
+    def shard(
         self,
-        indices: Table | list[int] | str | torch.Tensor | np.ndarray | int,
         num_shards: int,
         shard_id: int,
         contiguous: bool = True,
-        shuffle: bool = False,
-        generator: torch.Generator | None = None,
-    ) -> None:
-        if isinstance(indices, str):
-            indices = MemoryMappedTable.from_file(indices)
-        if isinstance(indices, (Table, list, torch.Tensor, np.ndarray)):
-            dataset_len = len(indices)
-        else:
-            dataset_len = indices
-        if not 0 <= shard_id < num_shards:
-            raise ValueError("shard_id should be in [0, num_shards-1]")
-        if contiguous:
-            div = dataset_len // num_shards
-            mod = dataset_len % num_shards
-            start = div * shard_id + min(shard_id, mod)
-            end = start + div + (1 if shard_id < mod else 0)
-            sliced_indices = (
-                indices[start:end]
-                if not isinstance(indices, int)
-                else np.arange(start, end, dtype=np.uint64)
-            )
-        else:
-            sliced_indices = (
-                [
-                    indices[i]
-                    for i in np.arange(
-                        shard_id, len(indices), num_shards, dtype=np.uint64
-                    )
-                ]
-                if not isinstance(indices, int)
-                else np.arange(
-                    shard_id, dataset_len, num_shards, dtype=np.uint64
-                )
-            )
-        super().__init__(
-            sliced_indices,  # type: ignore
-            shuffle=shuffle,
-            generator=generator,
+        shard_strategy: ShardStrategy = None,
+    ) -> IndiceTableSampler:
+        """Shard the indices into num_shards shards.
+
+        Args:
+            num_shards (int): Number of shards to divide the dataset into.
+            shard_id (int): Index of the current shard.
+            contiguous (bool, optional): If True, then the dataset will
+                be split into contiguous chunks. If False, then the dataset
+                will be split into non-contiguous chunks. Default: True.
+            shard_strategy (ShardStrategy, optional): Strategy to handle
+                the last few indices if the dataset size is not divisible by
+                num_shards. Options are "drop_last" to drop the last
+                few indices or "pad_last" to pad the last few indices with the
+                beginning indices. If None, then no special handling will be
+                done and the last shard may have fewer indices than the others.
+                Default: None.
+
+        """
+        new_table = self.table.shard(
+            num_shards=num_shards,
+            shard_id=shard_id,
+            contiguous=contiguous,
+            shard_strategy=shard_strategy,
         )
+        return IndiceTableSampler(
+            indices=new_table,
+            shuffle=self.shuffle,
+            generator=self.generator,
+        )
+
+
+def _shard_table(
+    table: Table, num_shards: int, shard_id: int, contiguous: bool = True
+) -> Table:
+    """Shard the indices into num_shards shards.
+
+    Args:
+        num_shards (int): Number of shards to divide the dataset into.
+        shard_id (int): Index of the current shard.
+        contiguous (bool, optional): If True, then the dataset will
+            be split into contiguous chunks. If False, then the dataset
+            will be split into non-contiguous chunks. Default: True.
+    """
+    if not 0 <= shard_id < num_shards:
+        raise ValueError("shard_id should be in [0, num_shards-1]")
+    dataset_len = len(table)
+    if contiguous:
+        div = dataset_len // num_shards
+        mod = dataset_len % num_shards
+        start = div * shard_id + min(shard_id, mod)
+        end = start + div + (1 if shard_id < mod else 0)
+        new_table = query_table(table, slice(start, end))
+    else:
+        new_table = query_table(
+            table,
+            np.arange(shard_id, dataset_len, num_shards, dtype=np.uint64),
+        )
+    return new_table

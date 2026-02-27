@@ -13,7 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+from typing import Type
+
 import fsspec
+from datasets import IterableDataset as HFIterableDataset
 from datasets.arrow_dataset import (
     Dataset,
     DatasetInfo,
@@ -33,7 +36,7 @@ from datasets.arrow_dataset import (
 )
 from fsspec import url_to_fs
 
-__all__ = ["load_from_disk"]
+__all__ = ["load_from_disk", "add_hf_iterable_cls"]
 
 
 def load_from_disk(
@@ -164,3 +167,78 @@ def load_from_disk(
     dataset = dataset.with_format(**format)
 
     return dataset
+
+
+def _safe_add_base(cls: Type, new_base: Type) -> bool:
+    if new_base in cls.__mro__:
+        return True
+    if issubclass(new_base, cls):
+        raise TypeError("new_base is a subclass of cls; would create cycle")
+
+    bases = list(cls.__bases__)
+    bases = [b for b in bases if b is not new_base]
+
+    # try to insert new_base into the bases in all possible positions
+    # to find a valid MRO
+    for i in range(len(bases) + 1):
+        trial = tuple(bases[:i] + [new_base] + bases[i:])
+        try:
+            cls.__bases__ = trial
+            return True
+        except TypeError:
+            continue
+
+    try:
+        cls.__bases__ = tuple(bases + [new_base])
+        return True
+    except TypeError:
+        return False
+
+
+def add_hf_iterable_cls(cls, instance: object | None = None):
+    """Add HFIterableDataset to the base classes of the given class.
+
+    This is a workaround to make the class compatible with Hugging Face's
+    Accelerate library, which checks for the presence of HFIterableDataset
+    in the `prepare` method to determine if the dataset is an iterable dataset.
+    """
+
+    def _create_combined_class(
+        base_cls: Type, new_base: Type
+    ) -> Optional[Type]:
+        name = f"{base_cls.__name__}With{getattr(new_base, '__name__', 'HF')}"
+        # Try (base_cls, new_base) then (new_base, base_cls)
+        for order in ((base_cls, new_base), (new_base, base_cls)):
+            try:
+                combined_cls = type(name, order, {})
+                return combined_cls
+            except TypeError:
+                continue
+        return None
+
+    if HFIterableDataset in cls.__mro__:
+        return
+
+    # First try to modify class bases in-place (may fail due to MRO)
+    if _safe_add_base(cls, HFIterableDataset):
+        return
+
+    # If we have an instance available, try to create a per-instance combined
+    # subclass that includes both the original class and HFIterableDataset.
+    if instance is not None:
+        combined_cls = _create_combined_class(cls, HFIterableDataset)
+        if combined_cls is not None:
+            try:
+                instance.__class__ = combined_cls
+                return
+            except TypeError:
+                # Fall through to try the other order if not already tried
+                pass
+
+    # If we reach here, adding HFIterableDataset failed. Raise an informative
+    # error so callers may fallback to an adapter.
+    raise TypeError(
+        f"Failed to make {cls} compatible with {HFIterableDataset}: "
+        "MRO conflict. Callers should fallback to using an adapter "
+        "wrapper instance."
+    )
