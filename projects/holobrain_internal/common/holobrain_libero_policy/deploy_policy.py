@@ -137,7 +137,7 @@ def apply_transform(robot_state, transform):
     return res.reshape(original_shape)
 
 
-class SEMPolicy:
+class HoloBrainPolicy:
     def __init__(
         self,
         config,
@@ -223,7 +223,7 @@ class SEMPolicy:
 
 
 def get_model(usr_args):  # from your deploy_policy.yml
-    policy = SEMPolicy(
+    policy = HoloBrainPolicy(
         usr_args["model_config"],
         usr_args["model_processor"],
         usr_args["vlm_ckpt_dir"],

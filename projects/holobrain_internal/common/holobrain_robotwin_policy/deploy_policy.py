@@ -25,8 +25,8 @@ import torch
 from filelock import FileLock, Timeout
 
 from robo_orchard_lab.models.holobrain.processor import (
+    HoloBrainProcessor,
     MultiArmManipulationInput,
-    SEMProcessor,
 )
 from robo_orchard_lab.models.mixin import ModelMixin
 
@@ -112,7 +112,7 @@ def download_job_ckpt_processor(
         download_file(url, file_name)
 
 
-class SEMPolicy:
+class HoloBrainPolicy:
     def __init__(
         self,
         config,
@@ -142,7 +142,7 @@ class SEMPolicy:
         if urdf_dir is not None and not os.path.exists(target_urdf_dir):
             os.symlink(urdf_dir, target_urdf_dir)
 
-        self.processor = SEMProcessor.load(config, f"{processor}.json")
+        self.processor = HoloBrainProcessor.load(config, f"{processor}.json")
         self.model = ModelMixin.load_model(config, load_impl="native")
         self.model.eval()
         self.model.requires_grad_()
@@ -201,7 +201,7 @@ class SEMPolicy:
 
 
 def get_model(usr_args):  # from your deploy_policy.yml
-    policy = SEMPolicy(
+    policy = HoloBrainPolicy(
         usr_args["model_config"],
         usr_args["model_processor"],
         usr_args["vlm_ckpt_dir"],

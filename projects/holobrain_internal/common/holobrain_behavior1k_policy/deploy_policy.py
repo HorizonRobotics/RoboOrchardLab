@@ -47,7 +47,7 @@ def load_config(config_file):
     return config
 
 
-class SEMPolicy:
+class HoloBrainPolicy:
     def __init__(
         self,
         model_path,
@@ -228,7 +228,7 @@ class SEMPolicy:
 
 
 def get_model(usr_args):  # from your deploy_policy.yml
-    policy = SEMPolicy(
+    policy = HoloBrainPolicy(
         usr_args["model_config"],
         usr_args["model_processor"],
         usr_args["vlm_ckpt_dir"],
@@ -255,7 +255,7 @@ if __name__ == "__main__":
         deploy_config = yaml.safe_load(f)
     print(deploy_config)
 
-    policy = SEMPolicy(
+    policy = HoloBrainPolicy(
         deploy_config["model_path"],
         deploy_config["model_processor"],
         deploy_config["vlm_ckpt_dir"],
