@@ -149,7 +149,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             ]
             depth = decode_depth(depth_buffer, self.depth_scale)
             depths.append(depth)
-        depths = np.stack(depths)
         return {"depths": depths}
 
     def get_images(self, lmdb_index, data):
@@ -162,7 +161,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             if self.bgr2rgb:
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             images.append(img)
-        images = np.stack(images)
         return {"imgs": images}
 
     def get_intrinsic(self, lmdb_index, data):
@@ -586,7 +584,6 @@ class RH20TManipulationDataset(HorizonManipulationLmdbDataset):
                 / depth_scale
             )
             depths.append(depth)
-        depths = np.stack(depths)
         return {"depths": depths}
 
     def get_extrinsic(self, lmdb_index, data):
