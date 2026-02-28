@@ -28,6 +28,10 @@ from robo_orchard_lab.dataset.robot import (
 from robo_orchard_lab.dataset.robot.dataset_ex import DictIterableDataset
 
 
+def collate_first(batch):
+    return batch[0]
+
+
 class ArrayDataset(Dataset):
     def __init__(self, data: list):
         self.data = data
@@ -149,7 +153,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,
@@ -167,16 +171,13 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             ),
         )
 
-        def collate_fn_unbatch(data):
-            return data[0]
-
         dataloader = DataLoader(
             dataset,
             batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
-            collate_fn=collate_fn_unbatch,
+            collate_fn=collate_first,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,
@@ -195,7 +196,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -212,16 +213,13 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             ),
         )
 
-        def collate_fn_unbatch(data):
-            return data[0]
-
         dataloader = DataLoader(
             dataset,
             batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
-            collate_fn=collate_fn_unbatch,
+            collate_fn=collate_first,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -252,7 +250,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -269,16 +267,13 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             ),
         )
 
-        def collate_fn_unbatch(data):
-            return data[0]
-
         dataloader = DataLoader(
             dataset,
             batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
-            collate_fn=collate_fn_unbatch,
+            collate_fn=collate_first,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -316,7 +311,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,
@@ -334,16 +329,13 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             ),
         )
 
-        def collate_fn_unbatch(data):
-            return data[0]
-
         dataloader = DataLoader(
             dataset,
             batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
             drop_last=drop_last,
-            persistent_workers=num_workers > 0,
-            collate_fn=collate_fn_unbatch,
+            collate_fn=collate_first,
+            multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,

@@ -507,6 +507,7 @@ class PiperMcapChecker:
             ee_poses=ee_poses,
             extrinsic=extrinsic,
             intrinsic=intrinsic,
+            meta=meta,
         )
 
     def draw_ee_pose(self, img, intrinsic, extrinsic, ee_poses):
@@ -592,6 +593,23 @@ class PiperMcapChecker:
 
                 imgs.append(img)
                 depths.append(depth)
+
+            shapes = [im.shape[:2] for im in imgs + depths]
+            if not all(s == shapes[0] for s in shapes):
+                max_h = max(s[0] for s in shapes)
+                max_w = max(s[1] for s in shapes)
+                if i == 0:
+                    logger.warning(
+                        f"{uuid} | inconsistent image shapes detected, "
+                        f"resizing all images to ({max_h},{max_w})"
+                    )
+
+                def _resize(im, size):
+                    return cv2.resize(im, size, interpolation=cv2.INTER_AREA)
+
+                imgs = [_resize(im, (max_w, max_h)) for im in imgs]
+                depths = [_resize(im, (max_w, max_h)) for im in depths]
+
             if self.vis_depth:
                 vis_img = np.concatenate(
                     [
@@ -617,7 +635,17 @@ class PiperMcapChecker:
                 uuid,
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                1,
+                max(1 / self.vis_resize_scale, 0.8),
+                (0, 0, 255),
+                2,
+            )
+
+            cv2.putText(
+                vis_img,
+                data["meta"]["instruction"],
+                (10, vis_img.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                max(1 / self.vis_resize_scale, 0.8),
                 (0, 0, 255),
                 2,
             )
@@ -635,14 +663,22 @@ class PiperMcapChecker:
 
     def handler(self, ep_id):
         logger.info(f"start process [{ep_id + 1}/{len(self.episodes)}]")
-        episode_data = self.parse(ep_id)
-        uuid = episode_data["uuid"]
-        num_steps = len(episode_data["joint_positions"])
-        video_file = self.decode_and_visualize(episode_data)
-        logger.info(
-            f"finish process [{ep_id + 1}/{len(self.episodes)}] {uuid}, "
-            f"num_steps:{num_steps} \n"
-        )
+        try:
+            episode_data = self.parse(ep_id)
+            uuid = episode_data["uuid"]
+            num_steps = len(episode_data["joint_positions"])
+            video_file = self.decode_and_visualize(episode_data)
+        except Exception as e:
+            uuid = self.episodes[ep_id][0]
+            logger.exception(
+                f"failed to process episode {ep_id} with error: {e}"
+            )
+            return None
+        else:
+            logger.info(
+                f"finish process [{ep_id + 1}/{len(self.episodes)}] {uuid}, "
+                f"num_steps:{num_steps} \n"
+            )
         return dict(
             uuid=uuid,
             num_steps=num_steps,
@@ -679,6 +715,7 @@ class PiperMcapChecker:
             for i in range(len(self.episodes)):
                 results.append(self.handler(i))
 
+        results = [x for x in results if x is not None]
         results.sort(key=lambda x: x["uuid"])
         total_steps = sum([x["num_steps"] for x in results])
 

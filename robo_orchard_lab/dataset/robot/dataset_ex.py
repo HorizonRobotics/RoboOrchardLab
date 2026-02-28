@@ -16,10 +16,15 @@
 
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
-from typing import Callable, Generic, Iterable, Iterator
+from typing import TYPE_CHECKING, Callable, Generic, Iterable, Iterator
 
 import numpy as np
 import torch
+
+# from robo_orchard_lab.dataset.robot._hf_dataset import (
+#     add_hf_iterable_cls as _add_hf_iterable_cls,
+# )
+from datasets import IterableDataset as HFIterableDataset
 from pydantic import Field
 from robo_orchard_core.utils.config import ClassType, Config
 from torch.utils.data import (
@@ -27,9 +32,6 @@ from torch.utils.data import (
     IterableDataset as TorchIterableDataset,
 )
 
-from robo_orchard_lab.dataset.robot._hf_dataset import (
-    add_hf_iterable_cls as _add_hf_iterable_cls,
-)
 from robo_orchard_lab.dataset.robot.dataset import (
     DatasetType,
     Features,
@@ -326,7 +328,7 @@ class IterableWithLenDataset(
 
         # add to base classes but not inherit to avoid unnecessary methods.
         # prefer modifying class bases, but allow instance-level fallback
-        _add_hf_iterable_cls(self.__class__, instance=self)
+        # _add_hf_iterable_cls(self.__class__, instance=self)
 
         self.shard_kwargs = (
             shard_kwargs if shard_kwargs is not None else ShardConfig()
@@ -686,7 +688,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     ):
         # try to make this instance compatible with HF Iterable at class-level
         # or instance-level if class-level MRO change fails
-        _add_hf_iterable_cls(self.__class__, instance=self)
+        # _add_hf_iterable_cls(self.__class__, instance=self)
         self.dataset_items = list(datasets)
 
         if generator is None:
@@ -930,3 +932,20 @@ def _get_total_batch_num(
             drop_last=drop_last,
         )
     return total_batches
+
+
+if not TYPE_CHECKING:
+    _IterableWithLenDataset = IterableWithLenDataset
+    _DictIterableDataset = DictIterableDataset
+
+    class IterableWithLenDataset(
+        _IterableWithLenDataset[DatasetType], HFIterableDataset
+    ):
+        def __init__(self, *args, **kwargs):
+            _IterableWithLenDataset.__init__(self, *args, **kwargs)
+            self._epoch = 0
+
+    class DictIterableDataset(_DictIterableDataset, HFIterableDataset):
+        def __init__(self, *args, **kwargs):
+            _DictIterableDataset.__init__(self, *args, **kwargs)
+            self._epoch = 0
