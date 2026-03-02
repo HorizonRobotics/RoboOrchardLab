@@ -23,6 +23,10 @@ import shutil
 from utils import load_checkpoint, load_config
 
 from robo_orchard_lab.models.holobrain import HoloBrainProcessor
+from robo_orchard_lab.models.holobrain.pipeline import (
+    HoloBrainInferencePipeline,
+    HoloBrainInferencePipelineCfg,
+)
 from robo_orchard_lab.models.mixin import ModelMixin
 from robo_orchard_lab.utils import log_basic_config
 
@@ -67,6 +71,18 @@ def main(args):
     logger.info("Export model successfully.")
     _model = ModelMixin.load_model(model_path, load_impl="native")
     logger.info("Reload model successfully.")
+
+    # export inference.config.json for pipeline
+    first_dataset = next(iter(processors))
+    inference_cfg = HoloBrainInferencePipelineCfg(
+        class_type=HoloBrainInferencePipeline,
+        model_cfg=None,
+        processor=processors[first_dataset].cfg,
+    )
+    inference_config_path = os.path.join(model_path, "inference.config.json")
+    with open(inference_config_path, "w") as fh:
+        fh.write(inference_cfg.model_dump_json(indent=4))
+    logger.info("Export inference.config.json successfully.")
 
 
 if __name__ == "__main__":

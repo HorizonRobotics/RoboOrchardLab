@@ -263,6 +263,8 @@ if __name__ == "__main__":
             "h5py",
             "terminaltables",
             "flash-attn",
+            "flask",
+            "gevent",
         ],
         "mcap_datasets": [
             "mcap-protobuf-support>=0.5.3",

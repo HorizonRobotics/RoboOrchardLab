@@ -85,7 +85,18 @@ accelerate launch  \
 #### Close loop evaluation on RoboTwin2.0 Env
 Refer to [robotwin_eval](projects/holobrain/holobrain_robotwin_eval/README.md).
 
-### 5. Export Model and Processors
+#### Launch realbot inference server
+We provide a model server for realbot inference. You can use it together with [ROS2 deploy node](https://github.com/HorizonRobotics/RoboOrchard/tree/master/ros2_package/robo_orchard_deploy_ros2) on the real robot, or call it as a remote model service.
+```bash
+python3 inference_server.py \
+    --model_dir "/your/model_dir" \
+    --port 2000 \
+    --server_name holobrain \
+    --num_joints 7 \
+    --valid_action_step 64
+```
+
+### 5. Export Model and Processors and Pipeline
 ```bash
 cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
@@ -94,22 +105,26 @@ python3 export.py --config ${CONFIG} --workspace ./model_export_path
 ```
 
 ### 6. Model Inference
-The exported model and processor can be used very conveniently. You can insert the code below into any location to perform model inference.
+The exported model and pipeline can be used very conveniently. You can insert the code below into any location to perform model inference.
 ```python
-from robo_orchard_lab.models.holobrain.processor import (
-  HoloBrainProcessor,
-  MultiArmManipulationInput,
-  MultiArmManipulationOutput,
+from robo_orchard_lab.models.holobrain.pipeline import (
+  HoloBrainInferencePipeline
 )
-from robo_orchard_lab.models.mixin import ModelMixin
+from robo_orchard_lab.models.holobrain.processor import (
+    MultiArmManipulationInput,
+    MultiArmManipulationOutput,
+)
 
-processor = HoloBrainProcessor.load("./model_export_path", "robotwin2_0_processor.json")
-model = ModelMixin.load_model("./model_export_path/model", load_impl="native")
+pipeline = HoloBrainInferencePipeline.load_pipeline(
+    directory="/your/model_dir",
+    device="cuda",
+    load_weights=True,
+    load_impl="native",
+)
+pipeline.model.eval()
 
 input_data: MultiArmManipulationInput
-input_data = processor.pre_process(input_data)
-model_outs = model(input_data)
-output_data: MultiArmManipulationOutput = processor.post_process(input_data, model_outs)  
+output_data: MultiArmManipulationOutput = pipeline(input_data)
 ```
 
 ## :page_facing_up: Citation

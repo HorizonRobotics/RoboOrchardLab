@@ -15,7 +15,6 @@ python3 projects/holobrain/holobrain_robotwin_eval/eval.py \
   --task_config demo_clean \
   --task_names place_empty_cup,adjust_bottle,stack_blocks_three \
   --model_config ${MODEL_TO_EVAL} \
-  --model_processor robotwin2_0_processor \
   --robotwin_dir ${ROBOTWIN_DIR} \
   --num_workers 8  # use 8 gpus
 ```

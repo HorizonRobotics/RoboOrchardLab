@@ -183,7 +183,7 @@ class HoloBrainProcessor(ProcessorMixin):
             data = ts_i(data)
         return data
 
-    def post_process(self, batch, model_outputs) -> MultiArmManipulationOutput:
+    def post_process(self, model_outputs, batch) -> MultiArmManipulationOutput:
         # only output one trajectory in joint angle format
         # action shape: num_pred_steps x num_joint
         action = model_outputs[0]["pred_actions"][0][..., 0]
