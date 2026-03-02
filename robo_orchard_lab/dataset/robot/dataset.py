@@ -38,7 +38,7 @@ from datasets import (
     DatasetInfo,
     Features,
 )
-from datasets.arrow_dataset import Column
+from datasets.arrow_dataset import Column, SplitDict
 from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
 from sqlalchemy.sql import func
@@ -1269,13 +1269,12 @@ def _complete_dataset_info(
     if dataset_info.dataset_size is None:
         dataset_info.dataset_size = total_size
     if dataset_info.splits is None:
-        dataset_info.splits = {
-            "train": SplitInfo(
-                name="train",
-                num_bytes=total_size,
-                num_examples=total_rows,
-            )
-        }
+        dataset_info.splits = SplitDict()
+        dataset_info.splits["train"] = SplitInfo(
+            name="train",
+            num_bytes=total_size,
+            num_examples=total_rows,
+        )
     return True, dataset_info
 
 
@@ -1304,7 +1303,6 @@ def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
 
     """
     import datasets.config as hg_datasets_config
-    from datasets import SplitInfo
 
     dataset_info_path = os.path.join(
         dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
@@ -1319,8 +1317,4 @@ def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
     if dataset_info.splits is None:
         return None
 
-    cnt = 0
-    for split in dataset_info.splits.items():
-        assert isinstance(split, SplitInfo)
-        cnt += split.num_examples
-    return cnt
+    return dataset_info.splits.total_num_examples

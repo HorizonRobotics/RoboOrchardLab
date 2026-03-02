@@ -22,6 +22,7 @@ import pytest
 import torch
 
 from robo_orchard_lab.dataset.sampler import (
+    ChunkedIndiceTable,
     IndiceTable,
     IndiceTableSampler,
 )
@@ -81,19 +82,68 @@ class TestIndiceTable:
         # print(table.table.to_pylist())
 
 
+class TestChunkedIndiceTable:
+    @pytest.mark.parametrize(
+        "data",
+        [
+            list(range(10)),
+            np.arange(10),
+            torch.arange(10),
+            10,  # This will create a table with indices from 0 to 9
+        ],
+    )
+    def test_table_init(
+        self, data: list[int] | np.ndarray | torch.Tensor | int
+    ):
+        table = ChunkedIndiceTable(IndiceTable(data), chunk_size=3)
+        assert len(table) == 10
+        assert table[0] == 0
+        assert table[5] == 5
+        assert table[9] == 9
+
+    def test_table_iterable(self):
+        table = ChunkedIndiceTable(IndiceTable(list(range(10))), chunk_size=3)
+        indices = list(table)
+        assert indices == list(range(10))
+
+    def test_shuffle(self):
+        table = ChunkedIndiceTable(IndiceTable(list(range(20))), chunk_size=3)
+        old_list = table.to_pylist()
+        new_table = table.shuffle()
+        new_list = new_table.to_pylist()
+        assert sorted(new_list) == old_list
+        assert new_list != old_list
+
+
 class TestIndiceTableSampler:
-    def test_len(self):
-        sampler = IndiceTableSampler(list(range(10)), shuffle=False)
+    @pytest.mark.parametrize(
+        "chunk_size",
+        [None, 3, 4],
+    )
+    def test_len(self, chunk_size: int | None):
+        sampler = IndiceTableSampler(
+            list(range(10)), shuffle=False, shuffle_chunk_size=chunk_size
+        )
         assert len(sampler) == 10
 
-        sampler = IndiceTableSampler(list(range(5)), shuffle=False)
+        sampler = IndiceTableSampler(
+            list(range(5)), shuffle=False, shuffle_chunk_size=chunk_size
+        )
         assert len(sampler) == 5
 
-        sampler = IndiceTableSampler([], shuffle=False)
+        sampler = IndiceTableSampler(
+            [], shuffle=False, shuffle_chunk_size=chunk_size
+        )
         assert len(sampler) == 0
 
-    def test_iter_no_shuffle(self):
-        sampler = IndiceTableSampler(list(range(10)), shuffle=False)
+    @pytest.mark.parametrize(
+        "chunk_size",
+        [None, 3, 4],
+    )
+    def test_iter_no_shuffle(self, chunk_size: int | None):
+        sampler = IndiceTableSampler(
+            list(range(10)), shuffle=False, shuffle_chunk_size=chunk_size
+        )
         indices = list(sampler)
         assert indices == list(range(10))
 
@@ -101,23 +151,39 @@ class TestIndiceTableSampler:
         indices = list(sampler)
         assert indices != list(range(10))
 
-        sampler = IndiceTableSampler(list(range(5)), shuffle=False)
+        sampler = IndiceTableSampler(
+            list(range(5)), shuffle=False, shuffle_chunk_size=chunk_size
+        )
         indices = list(sampler)
         assert indices == list(range(5))
 
-        sampler = IndiceTableSampler([], shuffle=False)
+        sampler = IndiceTableSampler(
+            [], shuffle=False, shuffle_chunk_size=chunk_size
+        )
         indices = list(sampler)
         assert indices == []
 
-    def test_iter_with_shuffle(self):
+    @pytest.mark.parametrize(
+        "chunk_size",
+        [None, 3, 4],
+    )
+    def test_iter_with_shuffle(self, chunk_size: int | None):
         sampler = IndiceTableSampler(
             list(range(10)),
             shuffle=True,
+            shuffle_chunk_size=chunk_size,
             generator=torch.Generator().manual_seed(42),
         )
         indices = list(sampler)
         assert sorted(indices) == list(range(10))
         assert indices != list(range(10))
+
+    def test_chunk_size_effect(self):
+        data = list(range(10))
+        sampler = IndiceTableSampler(data, shuffle=True, shuffle_chunk_size=3)
+        assert isinstance(sampler.table, ChunkedIndiceTable)
+        assert len(sampler.table.chunks) == 4
+        assert sampler.table._chunk_size == 3
 
 
 class TestShardedIndiceSampler:

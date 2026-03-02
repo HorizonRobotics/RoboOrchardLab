@@ -148,6 +148,11 @@ class StatsMonitor(PipelineHooks):
                 self.total_batch_size = (
                     self.batch_size * accelerator.num_processes
                 )
+            else:
+                raise ValueError(
+                    "Cannot infer batch size from dataloader. Please provide "
+                    "the batch size when initializing StatsMonitor."
+                )
 
         if self.batch_size is None:
             raise ValueError(
@@ -155,9 +160,9 @@ class StatsMonitor(PipelineHooks):
             )
 
         if self.steps_per_epoch is None:
-            if hasattr(dataloader, "__len__"):
+            try:
                 self.steps_per_epoch = len(dataloader)  # type: ignore
-            else:
+            except TypeError:
                 if accelerator.is_main_process:
                     logger.warning(
                         "Cannot estimate 'steps_per_epoch' before the first "

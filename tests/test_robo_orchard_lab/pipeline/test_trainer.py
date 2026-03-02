@@ -23,6 +23,7 @@ import torch
 from accelerate import Accelerator
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.data import DataLoader
 from torchmetrics import Metric
 
 from robo_orchard_lab.pipeline import SimpleTrainer
@@ -187,15 +188,30 @@ class DummyBatchProcessor(SimpleBatchProcessor):
         return outputs, loss
 
 
+class TensorDataset(torch.utils.data.Dataset):
+    """A simple dataset that returns tensors."""
+
+    def __init__(self, data: torch.Tensor):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
 # the fixture scope should be function, not session!
 @pytest.fixture(scope="function")
 def dummy_trainer():
     """Fixture to create a dummy trainer with a real model and optimizer."""
     model = SimpleModel()
-    dataloader = [
-        torch.tensor([[0.5, 0.5]], dtype=torch.float32),
-        torch.tensor([[0.1, 0.2]], dtype=torch.float32),
-    ]
+    dataloader = DataLoader(
+        TensorDataset(
+            torch.tensor([[0.5, 0.5], [0.1, 0.2]], dtype=torch.float32)
+        ),
+    )
+
     optimizer = SGD(params=model.parameters(), lr=0.01)
     lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
     accelerator = Accelerator(device_placement=True)
