@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+import copy
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -138,6 +139,9 @@ class BatchCameraInfoFeature(RODictDataFeature, TypedDictFeatureDecode):
             "intrinsic_matrices": TypedTensorFeature(
                 dtype=self.dtype, as_torch_tensor=True
             ),
+            # transform_matrices field is added in later versions,
+            # so we need to implement adaptation logic to handle loading
+            # old datasets without this field.
             "transform_matrices": TypedTensorFeature(
                 dtype=self.dtype, as_torch_tensor=True
             ),
@@ -145,11 +149,48 @@ class BatchCameraInfoFeature(RODictDataFeature, TypedDictFeatureDecode):
             "pose": BatchFrameTransformFeature(dtype=self.dtype),
         }
 
-    def cast_storage(self, storage: pa.StructArray) -> pa.StructArray:
+    def reset(self):
+        self.__post_init__()
+
+    def adapt_for_pa_type(self, pa_struct: pa.StructType) -> bool:
+        """Adapt the feature to match the given pyarrow struct type.
+
+        Currently only handles the simplest case: if a field in ``_dict``
+        is not present in *pa_struct*, it is removed from ``_dict``.
+
+        Args:
+            pa_struct: The pyarrow struct type to adapt to.
+
+        Returns:
+            True if successfully adapted, False if the given struct type is not
+            compatible.
+        """
+        pa_field_names = pa_struct.names
+        copied_feature = copy.deepcopy(self)
+
+        keys_to_remove = [
+            key for key in copied_feature._dict if key not in pa_field_names
+        ]
+        for key in keys_to_remove:
+            del copied_feature._dict[key]
+
+        # test if pa_struct can be cast to the feature's pa_type
+        if copied_feature.pa_type == pa_struct:
+            self._dict = copied_feature._dict
+            return True
+        return False
+
+    def _cast_storage(self, storage: pa.StructArray) -> pa.StructArray:
         """Cast the storage array to the expected schema.
 
         When loading arrow table with old schema, we need to update
         the schema to current version.
+
+        We name this method to be start with underscore to indicate that
+        it is an internal method and should not be called directly.
+        Huggingface datasets will call `cast_storage` to perform schema
+        adaptation when loading the dataset, but we do not want this
+        behavior as it is time-consuming!
 
         Note:
             This method only handles missing fields. If the field

@@ -18,6 +18,7 @@ from typing import Generator, Generic, Iterable, TypeVar
 
 import datasets as hg_datasets
 
+from robo_orchard_lab.dataset.datatypes.hg_features import RODictDataFeature
 from robo_orchard_lab.dataset.robot.columns import PreservedColumnsKeys
 from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.db_orm import (
@@ -202,7 +203,7 @@ class RePackingDatasetHelper(Generic[RePackingEpisodeType]):
 def repack_dataset(
     source_dataset: RODataset,
     target_path: str,
-    frame_indices: Iterable[int],
+    frame_indices: Iterable[int] | None = None,
     columns: str | list[str] | None = None,
     writer_batch_size: int = 1024,
     max_shard_size: str | int = "8GB",
@@ -214,9 +215,14 @@ def repack_dataset(
     Args:
         source_dataset (RODataset): The source dataset to re-package from.
         target_path (str): The path to save the re-packaged dataset.
-        frame_indices (Iterable[int]): An iterable of frame indices to include
-            in the re-packaged dataset. Frames from the same episode should be
-            grouped together!
+        frame_indices (Iterable[int] | None): An iterable of frame indices
+            to include in the re-packaged dataset. Frames from the same
+            episode should be grouped together! If None, all frames will be
+            included. Default is None.
+        columns (str | list[str] | None): The columns to include in the
+            re-packaged dataset. If None, all columns will be included. If
+            a string is provided, it will be treated as a single column name.
+            Default is None.
         writer_batch_size (int): The batch size for writing the arrow file.
             This may affect the performance of packaging or reading the
             dataset later. Default is 1024.
@@ -243,8 +249,17 @@ def repack_dataset(
     features = {
         key: features[key] for key in features if key not in preserved_columns
     }
+    features = hg_datasets.Features(features)
+    # check if any feature is adapted for loading. If so, we need to
+    # reset them to default for packaging to match current code version.
+    for _, feature in features.items():
+        if isinstance(feature, RODictDataFeature):
+            try:
+                feature.reset()
+            except NotImplementedError:
+                pass
 
-    packing = DatasetPackaging(features=hg_datasets.Features(features))
+    packing = DatasetPackaging(features=features)
     packing.packaging(
         episodes=RePackingDatasetHelper(
             dataset, frame_indices, packing_impl=packing_impl

@@ -149,6 +149,45 @@ class RODictDataFeature(RODataFeature):
             schema=self._dict, obj=value
         )
 
+    def adapt_for_pa_type(self, pa_struct: pa.StructType) -> bool:
+        """Adapt the feature to match the given pyarrow struct type.
+
+        This method is useful for ensuring that the feature schema matches
+        the expected schema when loading data from a dataset. It checks that
+        the fields in the `_dict` match the fields in the `pa_struct`, and
+        raises a TypeError if there are any mismatches.
+
+        Args:
+            pa_struct (pa.StructType): The pyarrow struct type to adapt to.
+
+        Returns:
+            bool: True if the feature is successfully adapted, False otherwise.
+
+        Raises:
+            NotImplementedError: If the method is not implemented in the
+            subclass.
+
+        """
+        raise NotImplementedError(
+            "Subclasses must implement adapt_for_pa_type method."
+        )
+
+    def reset(self):
+        """Reset the feature to its initial state.
+
+        This is useful for features that have internal state that needs
+        to be reset.
+
+        Raise:
+            NotImplementedError: If the method is not implemented in the
+            subclass.
+
+        """
+        raise NotImplementedError(
+            "Subclasses must implement reset method if they have "
+            "internal state."
+        )
+
     def items(self):
         """Return the items of the dictionary."""
         return self._dict.items()

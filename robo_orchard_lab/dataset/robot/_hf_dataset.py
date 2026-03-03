@@ -13,10 +13,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import warnings
 from typing import Type
 
 import fsspec
-from datasets import IterableDataset as HFIterableDataset
+import pyarrow as pa
+from datasets import (
+    Features as HFFeatures,
+    IterableDataset as HFIterableDataset,
+)
 from datasets.arrow_dataset import (
     Dataset,
     DatasetInfo,
@@ -36,6 +41,8 @@ from datasets.arrow_dataset import (
 )
 from fsspec import url_to_fs
 
+from robo_orchard_lab.dataset.datatypes.hg_features import RODictDataFeature
+
 __all__ = ["load_from_disk", "add_hf_iterable_cls"]
 
 
@@ -46,9 +53,10 @@ def load_from_disk(
 ) -> Dataset:
     """A wrapper around `datasets.load_from_disk`.
 
-    This method fix the issue when loading `Dataset` object when info.feature
-    does not match the arrow table schema exactly. It is a bug in `Dataset`
-    implementation, and we provide this wrapper to fix the issue.
+    Unlike the original `datasets.load_from_disk` which cast the arrow table
+    to match the features defined in the dataset info, this wrapper will adapt
+    the features to match the arrow table schema. This provides faster loading
+    speed.
     """
     import posixpath
 
@@ -147,9 +155,13 @@ def load_from_disk(
 
     split = state["_split"]
     split = Split(split) if split is not None else split
+    assert dataset_info.features is not None, "Dataset info must have features"
 
-    if arrow_table.schema != dataset_info.features.arrow_schema:  # type: ignore # noqa: E501
-        arrow_table = arrow_table.cast(dataset_info.features.arrow_schema)  # type: ignore # noqa: E501
+    if arrow_table.schema != dataset_info.features.arrow_schema:
+        adapted_features = _adapt_features_to_table_schema(
+            arrow_table.schema, dataset_info.features
+        )
+        dataset_info.features = adapted_features
 
     dataset = Dataset(
         arrow_table=arrow_table,
@@ -167,6 +179,53 @@ def load_from_disk(
     dataset = dataset.with_format(**format)
 
     return dataset
+
+
+def _adapt_features_to_table_schema(
+    schema: pa.Schema, features: HFFeatures
+) -> HFFeatures:
+    """Adapt the features to match the table schema.
+
+    This is a workaround to fix the issue when loading `Dataset` object when
+    info.feature does not match the arrow table schema exactly. It is a bug in
+    `Dataset` implementation, and we provide this wrapper to fix the issue.
+
+    Note:
+        This method only handles missing fields. If the field type is changed,
+        it will not be handled here!
+
+    """
+    # find all field
+    existing_fields = set(schema.names)
+
+    # reconstruct features with missing fields filled with null values
+    adapted_features = {}
+    for field, feature in features.items():
+        if field in existing_fields:
+            adapted_features[field] = features[field]
+            # check if the field type is compatible with the schema
+            if features[field].pa_type != schema.field(field).type:
+                err_msg = (
+                    f"Failed to adapt feature '{field}' to match the "
+                    "table schema. Please check the feature definition and "
+                    "the table schema to make sure they are compatible, "
+                    "or consider repackaging the dataset with the current "
+                    "version of the code. "
+                )
+                if isinstance(feature, RODictDataFeature):
+                    if not feature.adapt_for_pa_type(schema.field(field).type):
+                        raise TypeError(err_msg)
+
+        else:
+            warnings.warn(
+                f"Field '{field}' is missing in the table schema. Filling "
+                "it with None values. This should be an error instead of "
+                "warning, but we use warning here to be more robust to "
+                "schema changes. "
+            )
+            adapted_features[field] = None
+
+    return HFFeatures(adapted_features)
 
 
 def _safe_add_base(cls: Type, new_base: Type) -> bool:

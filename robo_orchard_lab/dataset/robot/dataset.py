@@ -154,7 +154,7 @@ class RODataset(TorchDataset):
             self.frame_dataset = HFDataset.load_from_disk(
                 dataset_path, storage_options=storage_options
             )
-        except ValueError as e:  # noqa
+        except (TypeError, ValueError) as e:  # noqa
             from robo_orchard_lab.dataset.robot._hf_dataset import (
                 load_from_disk,
             )
