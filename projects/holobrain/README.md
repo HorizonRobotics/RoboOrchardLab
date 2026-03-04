@@ -43,7 +43,7 @@ Follow the instructions in the RoboTwin code repository to download the required
 Then, use the following command to package the data into LMDB format for training.
 ```bash
 # require data format from the robotwin2.0 master branch before commit e71140e9734e69686daa420a9be8b75a20ff4587
-python3 -m robo_orchard_lab.dataset.robotwin.robotwin_packer.py \
+python3 -m robo_orchard_lab.dataset.robotwin.robotwin_packer \
     --input_path path/to/robotwin_data \
     --output_path "projects/holobrain/data/lmdb" \
     --task_names ${task_names} \
