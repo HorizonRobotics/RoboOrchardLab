@@ -179,6 +179,14 @@ def build_transforms(config):
         MoveEgoToCam,
     )
 
+    from robo_orchard_lab.transforms import ValueSampling
+
+    value_sampling = dict(
+        type=ValueSampling,
+        norm_mode=config["value_norm_mode"],
+        task_max_step=None,
+    ) if config.get("value_model_training", False) else None
+
     state_sampling = SimpleStateSampling(
         hist_steps=config["hist_steps"] // 3 + 1,
         pred_steps=config["pred_steps"] // 3 + 1,
@@ -262,6 +270,7 @@ def build_transforms(config):
             "T_world2cam",
             "intrinsic",
             "joint_mask",
+            "value",
         ]
     )
 
@@ -306,6 +315,7 @@ def build_transforms(config):
 
     return [
         add_data_relative_items,
+        value_sampling,
         state_sampling,
         resize,
         to_tensor,

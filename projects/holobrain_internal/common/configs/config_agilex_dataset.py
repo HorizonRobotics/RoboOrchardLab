@@ -389,6 +389,7 @@ def build_transforms(
         ToTensor,
         UnsqueezeBatch,
     )
+    from robo_orchard_lab.transforms import ValueSampling
 
     if depth_restore:
         depth_restoration = dict(type=DepthRestoration)
@@ -469,6 +470,16 @@ def build_transforms(
         ),
     )
 
+    value_sampling = (
+        dict(
+            type=ValueSampling,
+            norm_mode=config["value_norm_mode"],
+            task_max_step=None,
+        )
+        if config.get("value_model_training", False)
+        else None
+    )
+
     kinematics_config = dict(
         urdf=urdf,
         arm_joint_id=[list(range(6)), list(range(8, 14))],
@@ -543,6 +554,7 @@ def build_transforms(
                 "subtask",
                 "pred_mask",
                 "joint_mask",
+                "value",
             ],
         )
         joint_state_noise = dict(
@@ -578,6 +590,7 @@ def build_transforms(
         transforms = [
             depth_restoration,
             add_data_relative_items,
+            value_sampling,
             state_sampling,
             random_crop_padding,
             resize,
@@ -609,11 +622,13 @@ def build_transforms(
                 "uuid",
                 "subtask",
                 "joint_mask",
+                "value",
             ],
         )
         transforms = [
             depth_restoration,
             add_data_relative_items,
+            value_sampling,
             state_sampling,
             resize,
             to_tensor,

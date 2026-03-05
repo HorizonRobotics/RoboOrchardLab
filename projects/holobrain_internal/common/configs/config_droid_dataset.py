@@ -49,6 +49,17 @@ def build_transforms(config, mode):
         ToTensor,
         UpSampleJointState,
     )
+    from robo_orchard_lab.transforms import ValueSampling
+
+    value_sampling = (
+        dict(
+            type=ValueSampling,
+            norm_mode=config["value_norm_mode"],
+            task_max_step=None,
+        )
+        if config.get("value_model_training", False)
+        else None
+    )
 
     t_base2ego = np.eye(4)
     t_base2world = np.eye(4)
@@ -156,10 +167,12 @@ def build_transforms(config, mode):
                 "uuid",
                 "subtask",
                 "joint_mask",
+                "value",
             ]
         )
         transforms = [
             add_data_relative_items,
+            value_sampling,
             state_sampling,
             resize,
             to_tensor,
@@ -187,10 +200,12 @@ def build_transforms(config, mode):
                 "uuid",
                 "subtask",
                 "joint_mask",
+                "value",
             ]
         )
         transforms = [
             add_data_relative_items,
+            value_sampling,
             state_sampling,
             resize,
             to_tensor,

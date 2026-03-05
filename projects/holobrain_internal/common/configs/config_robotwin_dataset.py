@@ -337,6 +337,17 @@ def build_transforms(
         ToTensor,
         UnsqueezeBatch,
     )
+    from robo_orchard_lab.transforms import ValueSampling
+
+    value_sampling = (
+        dict(
+            type=ValueSampling,
+            norm_mode=config["value_norm_mode"],
+            task_max_step=None,
+        )
+        if config.get("value_model_training", False)
+        else None
+    )
 
     num_joint_per_arm = num_joint // 2 - 1
     joint_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
@@ -412,6 +423,7 @@ def build_transforms(
                 "text",
                 "uuid",
                 "joint_mask",
+                "value",
             ],
         )
         joint_state_noise = dict(
@@ -421,6 +433,7 @@ def build_transforms(
         )
         transforms = [
             add_data_relative_items,
+            value_sampling,
             state_sampling,
             resize,
             img_channel_flip,
@@ -449,10 +462,12 @@ def build_transforms(
                 "text",
                 "uuid",
                 "joint_mask",
+                "value",
             ],
         )
         transforms = [
             add_data_relative_items,
+            value_sampling,
             state_sampling,
             resize,
             img_channel_flip,
