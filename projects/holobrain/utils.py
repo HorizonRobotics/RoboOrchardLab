@@ -64,7 +64,7 @@ class GetFile:
         elif os.path.exists(self.url):
             return self.url
         else:
-            raise ValueError("Invalid checkpoint url: {self.url}.")
+            raise ValueError(f"Invalid checkpoint url: {self.url}.")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
