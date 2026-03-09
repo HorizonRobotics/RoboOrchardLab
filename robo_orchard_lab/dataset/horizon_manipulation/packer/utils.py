@@ -22,6 +22,7 @@ import numpy as np
 import torch
 from PIL import Image
 from pydantic import BaseModel, Field
+from robo_orchard_core.datatypes.tf_graph import BatchFrameTransformGraph
 from robo_orchard_core.utils.logging import LoggerManager
 from robo_orchard_core.utils.math.transform import Transform2D_M
 
@@ -134,13 +135,20 @@ class PackConfig(BaseModel):
         default=McapParseConfig(),
         description="Configuration for parsing MCAP files",
     )
+    EXTRINSIC_OVERRIDES: Dict[str, BatchFrameTransform] | None = Field(
+        default=None,
+        description=(
+            "Mapping from camera topic to replacement extrinsic transform "
+            "in BatchFrameTransform format"
+        ),
+    )
 
 
-def scale_images_and_update_intrinsics(
+def _scale_camera_streams(
     image_data: List[Dict[str, BatchCameraDataEncoded]],
     image_scale_ratio: float,
 ):
-    if image_scale_ratio == 1.0:
+    if image_scale_ratio == 1.0 or len(image_data) == 0:
         return
 
     def color_decoder(image_bytes: bytes, format: str) -> BatchImageData:
@@ -216,6 +224,105 @@ def scale_images_and_update_intrinsics(
             msg_data.intrinsic_matrices = scaled_decoded_msg.intrinsic_matrices
 
 
+def override_extrinsics(
+    batch_tf_list: List[BatchFrameTransform],
+    camera_topics: Dict[str, BatchCameraDataEncoded],
+    extrinsic_overrides: Dict[str, BatchFrameTransform] | None,
+) -> List[BatchFrameTransform]:
+    if not extrinsic_overrides:
+        return batch_tf_list
+
+    extrinsic_map = {}
+    for topic, extrinsic in extrinsic_overrides.items():
+        if topic not in camera_topics:
+            raise KeyError(
+                f"Unknown camera topic for extrinsic override: {topic}"
+            )
+
+        original_camera = camera_topics[topic]
+        # Reuse the parsed camera frame_id so topic-based overrides still
+        # flow through the existing TF lookup and export logic.
+        extrinsic_map[
+            (extrinsic.parent_frame_id, original_camera.frame_id)
+        ] = BatchFrameTransform(
+            parent_frame_id=extrinsic.parent_frame_id,
+            child_frame_id=original_camera.frame_id,
+            xyz=extrinsic.xyz,
+            quat=extrinsic.quat,
+            timestamps=extrinsic.timestamps,
+        )
+
+    updated_batch_tf_list = [
+        tf
+        for tf in batch_tf_list
+        if (tf.parent_frame_id, tf.child_frame_id) not in extrinsic_map
+    ]
+    updated_batch_tf_list.extend(extrinsic_map.values())
+    return updated_batch_tf_list
+
+
+def apply_camera_calibration_overrides(
+    *,
+    batch_tf_list: List[BatchFrameTransform],
+    image_data: List[Dict[str, BatchCameraDataEncoded]] | None = None,
+    image_scale_ratio: float = 1.0,
+    extrinsic_overrides: Dict[str, BatchFrameTransform] | None = None,
+) -> List[BatchFrameTransform]:
+    if image_data is not None:
+        _scale_camera_streams(
+            image_data=image_data, image_scale_ratio=image_scale_ratio
+        )
+
+    camera_topics = {}
+    if image_data is not None:
+        # Flatten the per-stream dictionaries into one topic index for
+        # override lookup.
+        for msg_dict in image_data:
+            camera_topics.update(msg_dict)
+
+    return override_extrinsics(
+        batch_tf_list=batch_tf_list,
+        camera_topics=camera_topics,
+        extrinsic_overrides=extrinsic_overrides,
+    )
+
+
+def scale_images_and_update_intrinsics(
+    image_data: List[Dict[str, BatchCameraDataEncoded]],
+    image_scale_ratio: float,
+):
+    _scale_camera_streams(
+        image_data=image_data,
+        image_scale_ratio=image_scale_ratio,
+    )
+
+
+def update_camera_poses_from_tf_graph(
+    *,
+    tf_graph: BatchFrameTransformGraph,
+    camera_dict: Dict[str, BatchCameraDataEncoded],
+    num_steps: int,
+    base_frame_id: str = "world",
+):
+    for topic, camera_data in camera_dict.items():
+        try:
+            # Poses are derived from the final TF graph after all overrides
+            # and auxiliary transforms have been added.
+            pose = tf_graph.get_tf(base_frame_id, camera_data.frame_id)
+        except Exception as exc:
+            logger.warning(
+                "Skip pose update for %s (%s -> %s): %s",
+                topic,
+                base_frame_id,
+                camera_data.frame_id,
+                exc,
+            )
+            continue
+        if pose.batch_size == 1 and num_steps > 1:
+            pose = pose.repeat(num_steps)
+        camera_data.pose = pose
+
+
 def filter_static_frames(
     data: List[Dict[str, BatchCameraDataEncoded | BatchJointsState]],
     joint_positions: torch.Tensor,
@@ -271,6 +378,15 @@ def filter_static_frames(
                 msg_data.sensor_data = np.array(msg_data.sensor_data)[
                     retained_index
                 ].tolist()
+
+                if msg_data.pose is not None:
+                    msg_data.pose = BatchFrameTransform(
+                        parent_frame_id=msg_data.pose.parent_frame_id,
+                        child_frame_id=msg_data.pose.child_frame_id,
+                        xyz=msg_data.pose.xyz[retained_index],
+                        quat=msg_data.pose.quat[retained_index],
+                    )
+
                 msg_data.timestamps = filtered_msg_time.tolist()
 
 
@@ -444,6 +560,12 @@ def parse_mcap(parse_config: McapParseConfig, mcap_path: str):
         joint_ts_ns = format_time(joint_ts_ns)
         joint_names = [f"{topic}/{name}" for name in joints[topic][0].name]
 
+        # agilex piper hardcode: if only has 6 dimensions, pad it with zeros
+        if vel.shape[1] == 6:
+            new_vel = np.zeros_like(pos)
+            new_vel[:, :6] = vel
+            vel = new_vel
+
         batch_joint_msg = BatchJointsState(
             position=torch.from_numpy(pos).to(dtype=torch.float32),
             velocity=torch.from_numpy(vel).to(dtype=torch.float32),
@@ -538,3 +660,39 @@ def parse_mcap(parse_config: McapParseConfig, mcap_path: str):
         batch_depth_dict[topic] = batch_depth_msg
 
     return batch_tf_list, batch_joint_dict, batch_image_dict, batch_depth_dict
+
+
+def get_index_tf(data: BatchFrameTransform, index):
+    pose = BatchFrameTransform(
+        parent_frame_id=data.parent_frame_id,
+        child_frame_id=data.child_frame_id,
+        xyz=data.xyz[index : index + 1],
+        quat=data.quat[index : index + 1],
+        timestamps=data.timestamps[index : index + 1]
+        if data.timestamps is not None
+        else None,
+    )
+    return pose
+
+
+def get_index_camera(data: BatchCameraDataEncoded, index):
+    ret_dict = {}
+    for key in [
+        "topic",
+        "frame_id",
+        "image_shape",
+        "distortion",
+        "format",
+    ]:
+        ret_dict[key] = getattr(data, key)
+
+    ret_dict["sensor_data"] = [data.sensor_data[index]]
+    ret_dict["timestamps"] = [data.timestamps[index]]
+    ret_dict["intrinsic_matrices"] = data.intrinsic_matrices[index : index + 1]
+
+    if data.pose is not None:
+        pose = get_index_tf(data.pose, index)
+        ret_dict["pose"] = pose
+
+    ret = BatchCameraDataEncoded(**ret_dict)
+    return ret
