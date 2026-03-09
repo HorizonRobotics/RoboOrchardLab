@@ -137,8 +137,8 @@ def wrap_github_dependency(
         return dependencies
 
     replace_pair = (
-        "github.com/HorizonRobotics/",
-        "robot-lab-gitlab-internal.hobot.cc/robot-lab-internal/open-source/",
+        "git+https://github.com/HorizonRobotics/",
+        "git+ssh://git@robot-lab-gitlab-internal.hobot.cc/robot-lab-internal/open-source/",
     )
 
     if isinstance(dependencies, list):
