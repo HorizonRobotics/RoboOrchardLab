@@ -362,7 +362,7 @@ def build_datasets(
             cam_names=None,
             dataset_name="agibot",
             instruction_reader=instruction_reader,
-            reset_step=1000,
+            reset_step=500,
         )
         train_datasets = dict(agibot=agibot_dataset)
     else:

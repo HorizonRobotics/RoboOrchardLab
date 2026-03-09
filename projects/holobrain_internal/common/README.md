@@ -12,7 +12,7 @@ accelerate launch --multi-gpu --num-processes 4 --gpu-ids 0,1,2,3 train.py --con
 
 ## Cluster run
 ```bash
-RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/submit_cfg.json
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg.json
 ```
 
 
@@ -42,7 +42,7 @@ python3 robotwin_eval.py \
 
 ## Cluster run
 ```bash
-RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/submit_cfg_robotwin_eval.json
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_robotwin_eval.json
 ```
 
 
@@ -105,7 +105,7 @@ DISPLAY=:$id python3 isaac_eval.py \
 
 ## Cluster run
 ```bash
-RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/submit_cfg_isaac_eval.json
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_isaac_eval.json
 ```
 
 # Do evaluation in LIBERO Envs
@@ -155,7 +155,7 @@ python3 libero_eval.py \
 ```
 ## Cluster run
 ```bash
-RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/submit_cfg_libero_eval.json # Adjust relevant config parameters accordingly
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_libero_eval.json # Adjust relevant config parameters accordingly
 ```
 
 ## Data visualization

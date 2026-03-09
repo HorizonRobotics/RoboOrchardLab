@@ -723,6 +723,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             ),
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
+            reset_steps=500,
         )
         datasets[dataset_name] = dataset
 

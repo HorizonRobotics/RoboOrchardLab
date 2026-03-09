@@ -18,7 +18,7 @@
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
         "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
         "  --model_processor robotwin2_0_processor \\",
-        "  --model_prefix model_0 \\",
+        "  --model_prefix model \\",
         "  --test_num 50"
     ],
     "to_upload": [
