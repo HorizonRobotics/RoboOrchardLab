@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 import pytorch_kinematics as pk
 import torch
-from pytorch3d.transforms import matrix_to_quaternion
+from pytorch3d.transforms import euler_angles_to_matrix, matrix_to_quaternion
 from scipy.spatial.transform import Rotation
 
 __all__ = [
@@ -34,6 +34,9 @@ __all__ = [
     "MultiArmKinematics",
     "GetProjectionMat",
     "UnsqueezeBatch",
+    "JointStateNoise",
+    "ExtrinsicNoise",
+    "RandomCropPaddingResize",
 ]
 
 
@@ -67,6 +70,28 @@ class AddItems:
     def __call__(self, data):
         for k, v in self.items.items():
             data[k] = copy.deepcopy(v)
+        return data
+
+
+class JointStateNoise:
+    def __init__(self, noise_range, add_to_pred=False):
+        self.range = np.array(noise_range)
+        self.add_to_pred = add_to_pred
+
+    def __call__(self, data):
+        assert "hist_robot_state" not in data
+        num_steps, num_joints = data["hist_joint_state"].shape
+        if self.add_to_pred:
+            num_steps = 1
+        noise = np.random.uniform(
+            self.range[..., 0],
+            self.range[..., 1],
+            size=[num_steps, num_joints],
+        )
+        noise = torch.from_numpy(noise).to(data["hist_joint_state"])
+        data["hist_joint_state"] = data["hist_joint_state"] + noise
+        if self.add_to_pred:
+            data["pred_joint_state"] = data["pred_joint_state"] + noise
         return data
 
 
@@ -109,6 +134,8 @@ class SimpleStateSampling:
 
         if "step_index_in_shard" in data:
             step_index = data["step_index_in_shard"]
+        elif "step_index_in_chunk" in data:
+            step_index = data["step_index_in_chunk"]
         else:
             step_index = data["step_index"]
         hist_steps = self.hist_steps
@@ -383,9 +410,9 @@ class MultiArmKinematics:
         if finger_keys is None:
             finger_keys = [[]] * len(arm_link_keys)
         else:
-            assert len(finger_keys) == self.num_arms, (
-                "Number of gripper should equal to number of arms"
-            )
+            assert (
+                len(finger_keys) == self.num_arms
+            ), "Number of gripper should equal to number of arms"
         self.finger_keys = finger_keys
         if ee_to_gripper is not None:
             assert len(ee_to_gripper) == self.num_arms
@@ -686,4 +713,119 @@ class UnsqueezeBatch:
                 data[k] = v[None]
             else:
                 data[k] = [v]
+        return data
+
+
+class RandomCropPaddingResize:
+    def __init__(
+        self,
+        range_w=(-10, 10),
+        range_h=(-10, 10),
+        range_scale=None,
+    ):
+        self.range_w = range_w
+        self.range_h = range_h
+        self.range_scale = range_scale
+
+    def __call__(self, data):
+        if "imgs" in data:
+            imgs = data["imgs"]
+            aug_imgs = []
+        else:
+            imgs = None
+        if "depths" in data:
+            depths = data["depths"]
+            aug_depths = []
+        else:
+            depths = None
+
+        for i in range(data["intrinsic"].shape[0]):
+            crop_w = int(np.random.uniform(self.range_w[0], self.range_w[1]))
+            crop_h = int(np.random.uniform(self.range_h[0], self.range_h[1]))
+
+            pad_w = int(np.random.uniform(self.range_w[0], self.range_w[1]))
+            pad_h = int(np.random.uniform(self.range_h[0], self.range_h[1]))
+
+            pad = (
+                (
+                    abs(pad_h) if pad_h > 0 else 0,
+                    abs(pad_h) if pad_h < 0 else 0,
+                ),
+                (
+                    abs(pad_w) if pad_w > 0 else 0,
+                    abs(pad_w) if pad_w < 0 else 0,
+                ),
+                (0, 0),
+            )
+
+            trans_mat_crop_pad = np.eye(4)
+            trans_mat_crop_pad[0, 2] = -max(crop_w, 0) + pad[1][0]
+            trans_mat_crop_pad[1, 2] = -max(crop_h, 0) + pad[0][0]
+            data["intrinsic"][i] = trans_mat_crop_pad @ data["intrinsic"][i]
+
+            if self.range_scale is not None:
+                scale = np.random.uniform(*self.range_scale)
+                trans_mat_resize = np.eye(4)
+                trans_mat_resize[0, 0] = scale
+                trans_mat_resize[1, 1] = scale
+                data["intrinsic"][i] = trans_mat_resize @ data["intrinsic"][i]
+
+            if imgs is not None:
+                aug_img = imgs[i][
+                    max(crop_h, 0) : crop_h + imgs[i].shape[0],
+                    max(crop_w, 0) : crop_w + imgs[i].shape[1],
+                ]
+                aug_img = np.pad(aug_img, pad)
+                if self.range_scale is not None:
+                    aug_img = cv2.resize(
+                        aug_img,
+                        (
+                            int(aug_img.shape[1] * scale),
+                            int(aug_img.shape[0] * scale),
+                        ),
+                    )
+                aug_imgs.append(aug_img)
+
+            if depths is not None:
+                aug_depth = depths[i][
+                    max(crop_h, 0) : crop_h + depths[i].shape[0],
+                    max(crop_w, 0) : crop_w + depths[i].shape[1],
+                ]
+                aug_depth = np.pad(aug_depth, pad[: aug_depth.ndim])
+                if self.range_scale is not None:
+                    aug_depth = cv2.resize(
+                        aug_depth,
+                        (
+                            int(aug_depth.shape[1] * scale),
+                            int(aug_depth.shape[0] * scale),
+                        ),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                aug_depths.append(aug_depth)
+
+        if imgs is not None:
+            data["imgs"] = aug_imgs
+        if depths is not None:
+            data["depths"] = aug_depths
+        return data
+
+
+class ExtrinsicNoise:
+    def __init__(self, noise_range: tuple):
+        assert len(noise_range) == 6
+        self.noise_range = np.array(noise_range)
+
+    def __call__(self, data):
+        num_cams = len(data["T_world2cam"])
+        noise = np.random.uniform(
+            -self.noise_range,
+            self.noise_range,
+            size=(num_cams, 6),
+        )
+        noise = torch.from_numpy(noise)
+        noise_matrix = torch.eye(4)[None].repeat(num_cams, 1, 1)
+        noise_matrix[:, :3, :3] = euler_angles_to_matrix(noise[:, :3], "XYZ")
+        noise_matrix[:, :3, 3] = noise[:, 3:]
+        noise_matrix = noise_matrix.to(data["T_world2cam"])
+        data["T_world2cam"] = noise_matrix @ data["T_world2cam"]
         return data
