@@ -19,11 +19,8 @@ import json
 import logging
 import os
 
-from utils import load_config
+from utils import HolobrainVideoVisualizer, load_config
 
-from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
-    BaseLmdbManipulationDataset,
-)
 from robo_orchard_lab.utils import log_basic_config
 
 logger = logging.getLogger(__file__)
@@ -44,42 +41,34 @@ def main(args):
 
     concat_dataset = build_dataset(_config)
     for dataset in concat_dataset.datasets:
-        if isinstance(dataset, BaseLmdbManipulationDataset):
-            if not hasattr(dataset, "visualize"):
-                logger.warning(f"{dataset} do not has visualize function")
-                continue
-            if not args.manual:
-                num_vis = 0
-                for episode_idx in range(
-                    0, dataset.num_episode, args.episode_interval
-                ):
-                    dataset.visualize(
-                        episode_idx, output_path=args.workspace, **args.kwargs
-                    )
-                    num_vis += 1
-                    if (
-                        args.max_episode is not None
-                        and num_vis > args.max_episode
-                    ):
-                        break
-            else:
-                while True:
-                    user_input = input(
-                        "input episode_idx ('q'->quit, 'c'->next dataset): "
-                    )
-                    if user_input.lower() == "q":
-                        return
-                    elif user_input.lower() == "c":
-                        break
-                    dataset.visualize(
-                        int(user_input),
-                        output_path=args.workspace,
-                        **args.kwargs,
-                    )
+        vis = HolobrainVideoVisualizer(dataset)
+        if not args.manual:
+            num_vis = 0
+            for episode_idx in range(
+                0, dataset.num_episode, args.episode_interval
+            ):
+                vis.visualize(episode_idx, args.workspace, **args.kwargs)
+                num_vis += 1
+                if args.max_episode is not None and num_vis > args.max_episode:
+                    break
         else:
-            logger.warning(
-                f"Visualization of {type(dataset)} is not supported."
-            )
+            while True:
+                user_input = input(
+                    "input episode_idx ('q'->quit, 'c'->next dataset): "
+                )
+                if user_input.lower() == "q":
+                    return
+                elif user_input.lower() == "c":
+                    break
+                try:
+                    episode_idx = int(user_input)
+                    vis.visualize(episode_idx, args.workspace, **args.kwargs)
+                except ValueError:
+                    logger.warning(f"Invalid episode index: {user_input}")
+                except Exception as e:
+                    logger.error(
+                        f"Error visualizing episode {episode_idx}: {e}"
+                    )
 
 
 if __name__ == "__main__":

@@ -265,6 +265,7 @@ if __name__ == "__main__":
             "flash-attn",
             "flask",
             "gevent",
+            "imageio[ffmpeg]",
         ],
         "mcap_datasets": [
             "mcap-protobuf-support>=0.5.3",

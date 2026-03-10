@@ -18,12 +18,16 @@ import importlib
 import logging
 import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import requests
 import torch
 from safetensors.torch import load_model
 from terminaltables import AsciiTable
+from tqdm import tqdm
 
 from robo_orchard_lab.utils import as_sequence
 from robo_orchard_lab.utils.huggingface import (
@@ -32,6 +36,36 @@ from robo_orchard_lab.utils.huggingface import (
 )
 
 logger = logging.getLogger(__file__)
+
+
+@dataclass
+class HolobrainDataFeature:
+    uuid: str
+    imgs: np.ndarray  # (N_cams, H, W, 3) uint8
+    depths: np.ndarray  # (N_cams, H, W) float
+    projection_mat: Optional[np.ndarray] = None  # (N_cams, 4, 4)
+    hist_robot_state: Optional[list] = None  # list of (N_joints, 8)
+
+    def __post_init__(self):
+        for attr in ("imgs", "depths", "projection_mat"):
+            val = getattr(self, attr)
+            if isinstance(val, torch.Tensor):
+                setattr(self, attr, val.cpu().numpy())
+        if self.hist_robot_state is not None:
+            self.hist_robot_state = [
+                s.cpu().numpy() if isinstance(s, torch.Tensor) else s
+                for s in self.hist_robot_state
+            ]
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "HolobrainDataFeature":
+        return cls(
+            uuid=raw["uuid"],
+            imgs=raw["imgs"],
+            depths=raw["depths"],
+            projection_mat=raw.get("projection_mat"),
+            hist_robot_state=raw.get("hist_robot_state"),
+        )
 
 
 def load_config(config_file):
@@ -256,3 +290,211 @@ class ActionMetric:
                         v[:, :num_mode, i].min(dim=1)[0].mean()
                     )
         return metrics
+
+
+class HolobrainVideoVisualizer:
+    """Visualizer for robot episodes in Holobrain Data Feature format.
+
+    Supports any dataset with ``episode_num``, ``__getitem__`` returning
+    a :class:`HolobrainDataFeature`-compatible dict, and
+    ``get_episode_range(ep_idx)`` returning ``(start, end)`` frame indices.
+    """
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def visualize(
+        self,
+        episode_index,
+        output_dir,
+        ee_indices=(6, 13),
+        fps=25,
+        interval=1,
+    ):
+        """Visualizes a complete episode and saves it as an MP4 video file.
+
+        Args:
+            episode_index: Global index of the episode within the dataset.
+            output_dir: Directory where the rendered video will be stored.
+            ee_indices: Indices of joints to be highlighted as end-effectors.
+            fps: Frames per second for the output video.
+            interval: Step size for frame sampling (stride).
+        """
+        import imageio
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        start, end = self.dataset.get_episode_range(episode_index)
+        logger.info(f"episode start_idx: {start}, end_idx: {end}")
+
+        first_frame = HolobrainDataFeature.from_dict(self.dataset[start])
+        uuid = first_frame.uuid
+        out_name = uuid.replace("/", "-").replace(" ", "-")
+        save_path = output_dir / f"{out_name}.mp4"
+        logger.info(f"video save path: {save_path.absolute()}")
+
+        frames = []
+        for idx in tqdm(range(start, end, interval)):
+            frame_data = HolobrainDataFeature.from_dict(self.dataset[idx])
+            frame = self._render_frame(frame_data, ee_indices)
+            frames.append(frame)
+
+        imageio.mimwrite(str(save_path), frames, fps=fps)
+
+    def _render_frame(
+        self, data: HolobrainDataFeature, ee_indices
+    ) -> np.ndarray:
+        """Renders a single frame combining multi-view RGB and depth.
+
+        Args:
+            data: A :class:`HolobrainDataFeature` from ``dataset[idx]``.
+            ee_indices: Joint indices to highlight with larger axes.
+
+        Returns:
+            np.ndarray: Combined image array (uint8) with RGB and Depth rows.
+        """
+        robot_state = (
+            data.hist_robot_state[-1]
+            if data.hist_robot_state is not None
+            else None
+        )
+
+        vis_imgs = self.get_vis_imgs(
+            data.imgs, data.projection_mat, robot_state, ee_indices=ee_indices
+        )
+        vis_depths = self.depth_visualize(data.depths)
+        vis_depths = np.reshape(
+            vis_depths.transpose(1, 0, 2, 3), vis_imgs.shape
+        )
+
+        return np.concatenate([vis_imgs, vis_depths], axis=0)
+
+    @staticmethod
+    def get_vis_imgs(imgs, projection_mat, robot_state, ee_indices):
+        """Projects 3D robot joint frames onto 2D camera images.
+
+        Args:
+            imgs: Input images array of shape (Num_Cameras, H, W, 3).
+            projection_mat: Camera projection matrices [P = K * [R|t]].
+            robot_state: Joint value with joint states (pos + quat). (N, 8).
+            ee_indices: Indices of joints to render with enhanced axis length.
+
+        Returns:
+            np.ndarray: Horizontally concatenated images from all camera views.
+        """
+        if imgs.ndim == 3:
+            imgs = imgs[None]
+
+        vis_list = []
+        for cam_idx in range(imgs.shape[0]):
+            img = imgs[cam_idx].copy()
+
+            if projection_mat is not None and robot_state is not None:
+                joints = HolobrainVideoVisualizer._project_joints_to_2d(
+                    robot_state, projection_mat[cam_idx], ee_indices
+                )
+                for pts2d, j in joints:
+                    HolobrainVideoVisualizer._draw_joint_overlay(
+                        img, pts2d, j, robot_state, ee_indices
+                    )
+                img = img[:, :, ::-1]  # BGR to RGB
+
+            vis_list.append(img)
+
+        return np.uint8(np.concatenate(vis_list, axis=1))
+
+    @staticmethod
+    def depth_visualize(depth, min_depth=0.01, max_depth=1.2, mode="bwr"):
+        """Colorizes a depth map using a matplotlib colormap.
+
+        Args:
+            depth: Raw depth map array.
+            min_depth: Minimum depth value for colormap scaling.
+            max_depth: Maximum depth value for colormap scaling.
+            mode: Colormap name (e.g., 'plasma', 'bwr').
+
+        Returns:
+            np.ndarray: Colorized uint8 image.
+        """
+        import matplotlib.pyplot as plt
+
+        mask = depth > 0
+        cmap = plt.cm.get_cmap(mode, 256)
+        cmap = np.array([cmap(i) for i in range(256)])[:, :3] * 255
+        cmap = cmap[::-1]
+
+        depth_shape = depth.shape
+        if max_depth is None:
+            max_depth = depth.max()
+        if min_depth is None:
+            min_depth = depth.min()
+
+        depth = (depth - min_depth) / (max_depth - min_depth)
+        index = np.int32(depth * 255)
+        index = np.clip(index, a_min=0, a_max=255)
+        depth_color = cmap[index].reshape(*depth_shape, 3)
+        depth_color = np.where(mask[..., None], depth_color, 0)
+        depth_color = np.uint8(depth_color)
+
+        return depth_color
+
+    @staticmethod
+    def _project_joints_to_2d(robot_state, proj_matrix, ee_indices):
+        """Projects 3D robot joint frames to 2D points for a single camera.
+
+        Returns:
+            list of (pts2d, joint_idx) tuples for joints with valid depth.
+        """
+        from scipy.spatial.transform import Rotation
+
+        results = []
+        for j in range(robot_state.shape[0]):
+            rot = Rotation.from_quat(
+                robot_state[j, 4:], scalar_first=True
+            ).as_matrix()
+            trans = robot_state[j, 1:4]
+            axis_len = 0.1 if j in ee_indices else 0.03
+            points = np.float32(
+                [
+                    [axis_len, 0, 0],
+                    [0, axis_len, 0],
+                    [0, 0, axis_len],
+                    [0, 0, 0],
+                ]
+            )
+            points = points @ rot.T + trans
+            pts3 = points @ proj_matrix[:3, :3].T + proj_matrix[:3, 3]
+            depth = pts3[:, 2]
+            if depth[3] < 0.02:
+                continue
+            pts2d = (pts3[:, :2] / depth[:, None]).astype(np.int32)
+            results.append((pts2d, j))
+        return results
+
+    @staticmethod
+    def _draw_joint_overlay(img, pts2d, joint_idx, robot_state, ee_indices):
+        """Draws axis lines, tips, and gripper value for one joint."""
+        import cv2
+
+        for ax in range(3):
+            color = [0, 0, 0]
+            color[ax] = 255
+            cv2.line(img, tuple(pts2d[3]), tuple(pts2d[ax]), tuple(color), 3)
+
+        for ax in range(3):
+            cv2.circle(img, tuple(pts2d[ax]), 5, (0, 0, 255), -1)
+
+        if joint_idx in ee_indices:
+            gripper_value = robot_state[joint_idx, 0]
+            x, y = int(pts2d[3][0]) + 5, int(pts2d[3][1]) - 5
+            if 0 <= x < img.shape[1] and 0 <= y < img.shape[0]:
+                cv2.putText(
+                    img,
+                    f"G<{joint_idx}>: {gripper_value:.2f}",
+                    (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 255),
+                    2,
+                )

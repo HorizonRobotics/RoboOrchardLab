@@ -254,6 +254,11 @@ class BaseLmdbManipulationDataset(Dataset):
         """
         raise NotImplementedError
 
+    def get_episode_range(self, ep_idx: int) -> tuple[int, int]:
+        end = int(self.cumsum_steps[ep_idx])
+        start = int(self.cumsum_steps[ep_idx - 1]) if ep_idx > 0 else 0
+        return start, end
+
     def visualize(self, episode_index, output_path="./vis_data"):
         raise NotImplementedError
 
