@@ -22,7 +22,7 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
-all_calibrations = dict(
+default_calibrations = dict(
     challenge=dict(
         front={
             "position": [
@@ -206,6 +206,19 @@ def get_data_paths(dataset_name):
             "./data/horizon_beijing/*-place_objects_to_basket-*",
             "./data/horizon_beijing/*-fold_paper_box-*",
         ]
+    elif dataset_name == "horizon_shanghai":
+        patterns = [
+            "./data/horizon_shanghai/*-empty_cup_place-*",
+            "./data/horizon_shanghai/*-place_shoe-*",
+            "./data/horizon_shanghai/*-place_to_slot-*",
+            "./data/horizon_shanghai/*-put_bottles_dustbin-*",
+            "./data/horizon_shanghai/*-stack_block_two-*",
+            "./data/horizon_shanghai/*-stack_bowls_three-*",
+            "./data/horizon_shanghai/*-two_fold_towel-*",
+            "./data/horizon_shanghai/*-fold_clothes-*",
+            "./data/horizon_shanghai/*-flatten_clothes-*",
+            "./data/horizon_shanghai/*-place_object_to_location-*",
+        ]
     elif dataset_name == "agilex":
         patterns = ["./data/agilex_collect/lmdb_dataset*"]
     else:
@@ -220,7 +233,7 @@ def get_data_paths(dataset_name):
 dataset_config = dict(
     challenge=dict(
         data_paths=lambda: get_data_paths("challenge"),
-        calibration=all_calibrations["challenge"],
+        default_calibration=default_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_old.urdf",
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
@@ -229,8 +242,8 @@ dataset_config = dict(
     ),
     challenge_finetune=dict(
         data_paths=["./data/challenge/finetune"],
-        calibration=all_calibrations["challenge"],
-        urdf="./urdf/piper_description_dualarm_new.urdf",
+        default_calibration=default_calibrations["challenge"],
+        urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
     ),
@@ -239,103 +252,28 @@ dataset_config = dict(
             "./data/challenge/agilex_data_0527_plates_stack",
             "./data/challenge/agilex_data_0525",
         ],
-        calibration=all_calibrations["challenge"],
-        urdf="./urdf/piper_description_dualarm_new.urdf",
+        default_calibration=default_calibrations["challenge"],
+        urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_beijing=dict(
         data_paths=lambda: get_data_paths("horizon_beijing"),
-        calibration=all_calibrations["horizon_beijing"],
-        urdf="./urdf/piper_description_dualarm_new.urdf",
+        default_calibration=default_calibrations["horizon_beijing"],
+        urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
-    # Before re-calibration, Firmware version 1.6.5
-    horizon_shanghai_0804=dict(
-        data_paths=[
-            "./data/horizon_shanghai/agilex_empty_cup_place_2025_08_13",
-            "./data/horizon_shanghai/agilex_empty_cup_place_2025_08_19",
-            "./data/horizon_shanghai/agilex_place_shoe_2025_08_21",
-            "./data/horizon_shanghai/agilex_place_shoe_2025_08_27",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_05",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_07",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_08",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_12",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_27",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_08_28",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_09_01",
-            "./data/horizon_shanghai/agilex_place_to_slot_2025_09_02",
-            "./data/horizon_shanghai/agilex_put_bottles_dustbin_2025_08_20",
-            "./data/horizon_shanghai/agilex_put_bottles_dustbin_2025_08_21",
-            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_14",
-            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_15",
-            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_18",
-            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_26",
-            "./data/horizon_shanghai/agilex_stack_blocks_three_2025_08_27",
-            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_15",
-            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_18",
-            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_19",
-            "./data/horizon_shanghai/agilex_stack_bowls_three_2025_08_20",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_04",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_06",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_07",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_08",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_11",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_13",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_14",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_22",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_25",
-            "./data/horizon_shanghai/agilex_two_fold_towel_2025_08_26",
-        ],
-        urdf="./urdf/piper_description_dualarm_new.urdf",
+    horizon_shanghai=dict(
+        data_paths=lambda: get_data_paths("horizon_shanghai"),
+        urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
-        task_names=[
-            "empty_cup_place",
-            "place_shoe",
-            "place_to_slot",
-            "put_bottles_dustbin",
-            "stack_blocks_three",
-            "stack_bowls_three",
-            "two_fold_towel",
-        ],
-        load_extrinsic=True,
-    ),
-    # After re-calibration, Firmware version 1.8.0
-    horizon_shanghai_0909=dict(
-        data_paths=[
-            "./data/horizon_shanghai/lmdb_dataset_empty_cup_place_2025_09_09",
-            "./data/horizon_shanghai/lmdb_dataset_place_shoe_2025_09_11",
-            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_15",
-            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_16",
-            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_17",
-            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_18",
-            "./data/horizon_shanghai/lmdb_dataset_place_to_slot_2025_09_22",
-            "./data/horizon_shanghai/lmdb_dataset_put_bottles_dustbin_2025_09_11",
-            "./data/horizon_shanghai/lmdb_dataset_stack_block_two_2025_09_17",
-            "./data/horizon_shanghai/lmdb_dataset_stack_blocks_three_2025_09_10",
-            "./data/horizon_shanghai/lmdb_dataset_stack_bowls_three_2025_09_09",
-            "./data/horizon_shanghai/lmdb_dataset_stack_bowls_three_2025_09_10",
-            "./data/horizon_shanghai/lmdb_dataset_two_fold_towel_2025_09_12",
-            "./data/horizon_shanghai/lmdb_dataset_two_fold_towel_2025_09_23",
-        ],
-        urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=["left", "right", "middle"],
-        task_names=[
-            "empty_cup_place",
-            "place_shoe",
-            "place_to_slot",
-            "put_bottles_dustbin",
-            "stack_blocks_three",
-            "stack_bowls_three",
-            "two_fold_towel",
-        ],
         load_extrinsic=True,
     ),
     # Agilex External Dataset
     agilex=dict(
         data_paths=lambda: get_data_paths("agilex"),
-        urdf="./urdf/piper_description_dualarm_new.urdf",
+        urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "mid"],
         task_names=[
             "fold_towel",
@@ -354,7 +292,7 @@ dataset_config = dict(
             "wipe_wine",
             "move_chair",
         ],
-        calibration=all_calibrations["horizon_beijing"],
+        default_calibration=default_calibrations["horizon_beijing"],
         load_extrinsic=True,
     ),
 )
@@ -364,7 +302,7 @@ def build_transforms(
     config,
     mode,
     urdf,
-    calibration=None,
+    default_calibration=None,
     depth_restore=False,
     do_calib_to_ext=False,
 ):
@@ -508,7 +446,7 @@ def build_transforms(
     if do_calib_to_ext:
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
-            calibration=calibration,
+            calibration=default_calibration,
             cam_ee_joint_indices=dict(left=5, right=12),
             **kinematics_config,
         )
@@ -694,7 +632,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             config,
             mode,
             urdf=data_config["urdf"],
-            calibration=data_config.get("calibration"),
+            default_calibration=data_config.get("default_calibration"),
             depth_restore=config.get("depth_restore", False),
             do_calib_to_ext=not data_config.get("load_extrinsic", False),
         )
@@ -723,7 +661,7 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
             ),
             hist_steps=config["hist_steps"],
             pred_steps=config["pred_steps"],
-            reset_steps=500,
+            reset_step=500,
         )
         datasets[dataset_name] = dataset
 
@@ -746,7 +684,7 @@ def build_processors(config, dataset_names):
             config,
             mode="deploy",
             urdf=data_config["urdf"],
-            calibration=data_config.get("calibration"),
+            default_calibration=data_config.get("default_calibration"),
             depth_restore=config.get("depth_restore", False),
             do_calib_to_ext=True,
         )

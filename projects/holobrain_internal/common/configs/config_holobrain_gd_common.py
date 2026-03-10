@@ -42,8 +42,7 @@ config = dict(
         "challenge_finetune",
         "challenge_self_collect",
         "horizon_beijing",
-        "horizon_shanghai_0804",
-        "horizon_shanghai_0909",
+        "horizon_shanghai",
         "agilex",
         # "rh20t",
         "agibot",
@@ -59,7 +58,7 @@ config = dict(
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
         "horizon_beijing",
-        "horizon_shanghai_0909",
+        "horizon_shanghai",
         "robotwin2_0",
         "robotwin2_0_ur5_wsg",
         "robotwin2_0_arx_x5a",
