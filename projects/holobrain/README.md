@@ -114,11 +114,11 @@ from robo_orchard_lab.models.holobrain.processor import (
     MultiArmManipulationInput,
     MultiArmManipulationOutput,
 )
-
+# use graspanything as example
 pipeline = HoloBrainInferencePipeline.load_pipeline(
-    directory="/your/model_dir",
+    directory="hf://model/HorizonRobotics/HoloBrain_v0.0_Qwen/post_training_graspanything", # or your model dir
+    inference_prefix="grasp_anything_ro",
     device="cuda",
-    load_weights=True,
     load_impl="native",
 )
 pipeline.model.eval()

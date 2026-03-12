@@ -72,17 +72,18 @@ def main(args):
     _model = ModelMixin.load_model(model_path, load_impl="native")
     logger.info("Reload model successfully.")
 
-    # export inference.config.json for pipeline
-    first_dataset = next(iter(processors))
-    inference_cfg = HoloBrainInferencePipelineCfg(
-        class_type=HoloBrainInferencePipeline,
-        model_cfg=None,
-        processor=processors[first_dataset].cfg,
-    )
-    inference_config_path = os.path.join(model_path, "inference.config.json")
-    with open(inference_config_path, "w") as fh:
-        fh.write(inference_cfg.model_dump_json(indent=4))
-    logger.info("Export inference.config.json successfully.")
+    # export inference.config.json for each dataset's pipeline
+    for dataset_name, processor in processors.items():
+        inference_cfg = HoloBrainInferencePipelineCfg(
+            class_type=HoloBrainInferencePipeline,
+            model_cfg=None,
+            processor=processor.cfg,
+        )
+        inference_config_name = f"{dataset_name}.config.json"
+        inference_config_path = os.path.join(model_path, inference_config_name)
+        with open(inference_config_path, "w") as fh:
+            fh.write(inference_cfg.model_dump_json(indent=4))
+        logger.info(f"Export {inference_config_name} successfully.")
 
 
 if __name__ == "__main__":
