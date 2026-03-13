@@ -72,6 +72,15 @@ def main(args):
     _model = ModelMixin.load_model(model_path, load_impl="native")
     logger.info("Reload model successfully.")
 
+    # copy urdf
+    urdf_src = os.path.join(args.workspace, "urdf")
+    if os.path.isdir(urdf_src):
+        shutil.copytree(
+            urdf_src,
+            os.path.join(model_path, "urdf"),
+            dirs_exist_ok=True,
+        )
+
     # export inference.config.json for each dataset's pipeline
     for dataset_name, processor in processors.items():
         inference_cfg = HoloBrainInferencePipelineCfg(
@@ -84,6 +93,14 @@ def main(args):
         with open(inference_config_path, "w") as fh:
             fh.write(inference_cfg.model_dump_json(indent=4))
         logger.info(f"Export {inference_config_name} successfully.")
+        _pipeline = HoloBrainInferencePipeline.load_pipeline(
+            directory=model_path,
+            inference_prefix=dataset_name,
+            device="cuda",
+            load_weights=True,
+            load_impl="native",
+        )
+        logger.info(f"Reload pipeline for {dataset_name} successfully.")
 
 
 if __name__ == "__main__":
