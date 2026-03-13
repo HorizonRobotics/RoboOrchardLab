@@ -30,6 +30,15 @@ Xuewu Lin, Yun Du, Hongyu Xie, Yiwei Jin, Jiawei Li, Shijie Wu, Qingze Wang, Men
 </div>
 
 ## :file_folder: Quick Start
+
+Get up and running with HoloBrain using RoboTwin2.0 simulation data. This walkthrough covers data preparation, training, evaluation, and model export — everything you need to understand the basic pipeline.
+
+> [!NOTE]
+> **Working with a real robot?**
+> This Quick Start uses simulation data. If you're working with physical hardware, check out these guides instead:
+> * **[Real Robot Pipeline Guide](REALBOT_PIPELINE_GUIDE.md)** — from data recording and packaging all the way through to model training.
+> * **[Real Robot Deployment Guide](REALBOT_DEPLOY_GUIDE.md)** — hardware setup, camera calibration, and running inference on the real robot.
+
 ###  1. Installation
 ```bash
 cd /path/to/robo_orchard_lab
@@ -85,18 +94,10 @@ accelerate launch  \
 #### Close loop evaluation on RoboTwin2.0 Env
 Refer to [robotwin_eval](projects/holobrain/holobrain_robotwin_eval/README.md).
 
-#### Launch realbot inference server
-We provide a model server for realbot inference. You can use it together with [ROS2 deploy node](https://github.com/HorizonRobotics/RoboOrchard/tree/master/ros2_package/robo_orchard_deploy_ros2) on the real robot, or call it as a remote model service.
-```bash
-python3 inference_server.py \
-    --model_dir "/your/model_dir" \
-    --port 2000 \
-    --server_name holobrain \
-    --num_joints 7 \
-    --valid_action_step 64
-```
-
 ### 5. Export Model and Processors and Pipeline
+
+Export bundles the trained checkpoint, processor configs, and pipeline definition into a single self-contained artifact that is ready for deployment.
+
 ```bash
 cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
@@ -105,7 +106,9 @@ python3 export.py --config ${CONFIG} --workspace ./model_export_path
 ```
 
 ### 6. Model Inference
-The exported model and pipeline can be used very conveniently. You can insert the code below into any location to perform model inference.
+
+The exported artifact can be used very conveniently. You can insert the code below into any location to perform model inference.
+
 ```python
 from robo_orchard_lab.models.holobrain.pipeline import (
   HoloBrainInferencePipeline
@@ -114,10 +117,10 @@ from robo_orchard_lab.models.holobrain.processor import (
     MultiArmManipulationInput,
     MultiArmManipulationOutput,
 )
-# use graspanything as example
+# use robotwin2_0 as example
 pipeline = HoloBrainInferencePipeline.load_pipeline(
-    directory="hf://model/HorizonRobotics/HoloBrain_v0.0_Qwen/post_training_graspanything", # or your model dir
-    inference_prefix="grasp_anything_ro",
+    directory="hf://model/HorizonRobotics/HoloBrain_v0.0_Qwen/post_training_robotwin", # or your model dir
+    inference_prefix="robotwin2_0",
     device="cuda",
     load_impl="native",
 )
