@@ -90,6 +90,9 @@ def copy_file(src, target, retry_num=3) -> dict:
 
 
 def search_valid_data(date_prefix, user_names, task_names, data_root):
+    if isinstance(date_prefix, str):
+        date_prefix = [x.strip() for x in date_prefix.split(",") if x.strip()]
+
     valid_data_episodes = []
     for data_time in os.listdir(data_root):
         if not any([data_time.startswith(x) for x in date_prefix]):
@@ -134,6 +137,8 @@ if __name__ == "__main__":
     date_prefix = args.date_prefix
     if date_prefix is None:
         date_prefix = [datetime.now().strftime("%Y_%m_%d")]
+    else:
+        date_prefix = [x.strip() for x in date_prefix.split(",") if x.strip()]
 
     user_names = args.user_names.split(",")
     task_names = args.task_names.split(",")
