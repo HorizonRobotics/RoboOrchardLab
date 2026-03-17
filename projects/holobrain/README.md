@@ -45,6 +45,7 @@ cd /path/to/robo_orchard_lab
 make version
 pip install ".[holobrain_0]"
 ```
+note: pytorch3d==0.7.8 is recommended to be installed from [source](https://github.com/facebookresearch/pytorch3d), flash-attn is recommended to be installed from [whl package](https://github.com/Dao-AILab/flash-attention/releases/tag/v2.8.1).
 
 ###  2. Prepare Data
 #### Preparing [RoboTwin2.0](https://github.com/RoboTwin-Platform/RoboTwin) Training Data.
