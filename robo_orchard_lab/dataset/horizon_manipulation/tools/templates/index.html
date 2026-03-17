@@ -1,0 +1,1285 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data Monitoring Dashboard</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --card: #ffffff;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --primary: #2563eb;
+        --primary-soft: #dbeafe;
+        --green: #059669;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Arial, Helvetica, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .hero, .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+      }
+      .hero {
+        padding: 24px;
+        margin-bottom: 20px;
+      }
+      .title {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
+      .sub {
+        color: var(--muted);
+        margin-bottom: 18px;
+        word-break: break-all;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }
+      .stat {
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .stat .label { color: var(--muted); font-size: 13px; }
+      .stat .value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin: 18px 0 22px;
+      }
+      .search-form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .field label {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .field input {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: white;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+      .button-secondary {
+        background: #e5e7eb;
+        color: #111827;
+        text-decoration: none;
+        padding: 10px 16px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+      }
+      .filter-tags {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+      button {
+        border: 0;
+        background: var(--primary);
+        color: white;
+        padding: 10px 16px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+      .action-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .section-title {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .card {
+        padding: 18px;
+        margin-bottom: 18px;
+      }
+      .chart-controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .toggle-button {
+        background: #e5e7eb;
+        color: #111827;
+      }
+      .toggle-button.active {
+        background: var(--primary);
+        color: white;
+      }
+      .chart-card {
+        padding-bottom: 22px;
+      }
+      .chart-meta {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 14px;
+      }
+      .bar-chart {
+        display: flex;
+        gap: 14px;
+        align-items: end;
+        min-height: 280px;
+        overflow-x: auto;
+        padding: 12px 2px 4px;
+      }
+      .bar-chart-empty {
+        color: var(--muted);
+        text-align: center;
+        padding: 28px 0 6px;
+      }
+      .bar-item {
+        width: 88px;
+        min-width: 88px;
+        max-width: 88px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+      .bar-value {
+        width: 100%;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+        word-break: break-word;
+      }
+      .bar-track {
+        height: 220px;
+        width: 100%;
+        display: flex;
+        align-items: end;
+        justify-content: center;
+        border-radius: 12px;
+        background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+        border: 1px solid var(--line);
+        padding: 8px;
+      }
+      .bar-fill {
+        width: 100%;
+        border-radius: 10px 10px 6px 6px;
+        background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+        min-height: 6px;
+      }
+      .bar-label {
+        width: 100%;
+        font-size: 12px;
+        text-align: center;
+        word-break: break-word;
+        height: 32px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        overflow: hidden;
+        line-height: 1.3;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      th, td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: #f8fafc;
+        position: sticky;
+        top: 0;
+      }
+      .task-block {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin-bottom: 12px;
+        overflow: hidden;
+      }
+      .task-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 14px;
+        background: #fbfdff;
+      }
+      .task-name { font-weight: 700; }
+      .total-badge {
+        color: var(--green);
+        background: #ecfdf5;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 13px;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 20px;
+        text-align: center;
+      }
+      .user-title {
+        margin: 0 0 14px;
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.45);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+      }
+      .overlay.show {
+        display: flex;
+      }
+      .overlay-card {
+        width: min(520px, calc(100vw - 32px));
+        background: var(--card);
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.22);
+        padding: 24px;
+      }
+      .overlay-title {
+        margin: 0 0 10px;
+        font-size: 20px;
+      }
+      .overlay-text {
+        color: var(--muted);
+        margin: 0 0 14px;
+        line-height: 1.5;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        border: 3px solid #dbeafe;
+        border-top-color: var(--primary);
+        animation: spin 0.8s linear infinite;
+        margin-bottom: 12px;
+      }
+      .overlay-meta {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .overlay-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+      .overlay-actions.space-between {
+        justify-content: space-between;
+      }
+      .progress-bar {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: #e5e7eb;
+        overflow: hidden;
+        margin: 16px 0 10px;
+      }
+      .progress-bar-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #2563eb, #60a5fa);
+        transition: width 0.25s ease;
+      }
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        background: #111827;
+        color: white;
+        padding: 12px 16px;
+        border-radius: 12px;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(10px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 1000;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .json-editor {
+        width: 100%;
+        min-height: 320px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        resize: vertical;
+      }
+      .submit-overlay-card {
+        width: min(900px, calc(100vw - 32px));
+        max-height: calc(100vh - 32px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .submit-overlay-body {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
+      .submit-result {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+        background: #f8fafc;
+        max-height: 40vh;
+        overflow: auto;
+      }
+      .submit-result pre {
+        margin: 8px 0 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        overflow: auto;
+      }
+      .submit-overlay-card .json-editor {
+        min-height: 220px;
+        max-height: 32vh;
+      }
+      .submit-toolbar {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+      .pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .pagination-info {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .pagination-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .pagination-jump {
+        width: 88px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 14px;
+      }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="download-overlay" class="overlay" aria-hidden="true">
+      <div class="overlay-card">
+        <div class="spinner"></div>
+        <h3 class="overlay-title">Preparing Download</h3>
+        <p id="download-message" class="overlay-text">Packaging the episode. Please wait and avoid clicking the download button repeatedly.</p>
+        <div class="overlay-meta">
+          <span id="download-status-tag" class="tag">Preparing</span>
+          <span id="download-file-count" class="tag">File count unknown</span>
+        </div>
+      </div>
+    </div>
+    <div id="scan-overlay" class="overlay" aria-hidden="true">
+      <div class="overlay-card">
+        <div class="spinner"></div>
+  <h3 class="overlay-title">Scanning Data</h3>
+  <p id="scan-message" class="overlay-text">Scanning directories. Please wait...</p>
+        <div class="progress-bar">
+          <div id="scan-progress-fill" class="progress-bar-fill"></div>
+        </div>
+        <div class="overlay-meta">
+          <span id="scan-progress-tag" class="tag">0%</span>
+          <span id="scan-count-tag" class="tag">0 / 0</span>
+        </div>
+        <div class="overlay-actions">
+          <button id="scan-cancel-button" type="button" class="button-secondary" onclick="cancelScanTask()">Cancel Scan</button>
+        </div>
+      </div>
+    </div>
+    <div id="submit-overlay" class="overlay" aria-hidden="true">
+      <div class="overlay-card submit-overlay-card">
+  <h3 class="overlay-title">Submit Checking / Packaging Job</h3>
+        <div class="submit-overlay-body">
+          <p id="submit-message" class="overlay-text">An initial `submit_config.json` has been generated. Edit it as needed, then click "Confirm Submit".</p>
+          <div class="overlay-meta" style="margin-bottom:12px;">
+            <span id="submit-source-tag" class="tag">Type: -</span>
+            <span id="submit-selected-tag" class="tag">Selected: 0</span>
+            <span id="submit-status-tag" class="tag">Not Submitted</span>
+          </div>
+          <textarea id="submit-config-editor" class="json-editor" spellcheck="false"></textarea>
+          <div id="submit-result" class="submit-result" style="display:none;">
+            <strong>Submission Result</strong>
+            <pre id="submit-result-text"></pre>
+          </div>
+        </div>
+        <div class="overlay-actions space-between">
+          <button type="button" class="button-secondary" onclick="closeSubmitOverlay()">Cancel</button>
+          <div class="action-group">
+            <button type="button" class="button-secondary" onclick="prepareSubmitJob('check')">Regenerate Checking Config</button>
+            <button type="button" class="button-secondary" onclick="prepareSubmitJob('pack')">Regenerate Packaging Config</button>
+            <button id="confirm-submit-button" type="button" onclick="confirmSubmitJob()">Confirm Submit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div
+      id="page-loading-state"
+      data-loading='{{ summary.loading | tojson if summary.loading is defined else "null" }}'
+      hidden
+    ></div>
+    <div class="wrap">
+      <section class="hero">
+  <h1 class="title">Data Monitoring Dashboard</h1>
+        <div class="stats">
+          <div class="stat">
+            <div class="label">Total Episodes</div>
+            <div class="value">{{ summary.total_episodes }}</div>
+          </div>
+          <div class="stat">
+            <div class="label">Users</div>
+            <div class="value">{{ summary.users | length }}</div>
+          </div>
+          <div class="stat">
+            <div class="label">Tasks</div>
+            <div class="value">{{ summary.totals.by_task | length }}</div>
+          </div>
+          <div class="stat">
+            <div class="label">Distinct Dates</div>
+            <div class="value">{{ summary.days | length }}</div>
+          </div>
+          <div class="stat">
+            <div class="label">Total Duration</div>
+            <div class="value">{{ summary.total_duration_text }}</div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button type="button" onclick="refreshSummary()">Refresh Statistics</button>
+          <button type="button" class="button-secondary" onclick="refreshSelectedDates()">Refresh Selected Date Cache</button>
+          <span class="tag">Generated At: {{ summary.generated_at }}</span>
+          <span class="tag">Cache Time: {{ summary.cache.cache_created_at or 'First Load' }}</span>
+          <span class="tag">Cache Status: {{ 'Cache Hit' if summary.cache.cache_hit else 'Just Refreshed' }}</span>
+        </div>
+        <form id="search-form" class="search-form" method="get" action="/">
+          <input id="page" name="page" type="hidden" value="{{ summary.filters.page }}" />
+          <input id="page_size" name="page_size" type="hidden" value="{{ summary.filters.page_size }}" />
+          <div class="field" style="grid-column: 1 / -1;">
+            <label for="data_root">Monitored Path</label>
+            <input id="data_root" name="data_root" type="text" placeholder="Enter the root path to monitor" value="{{ summary.filters.data_root }}" />
+          </div>
+          <div class="field">
+            <label for="user_name">user_name</label>
+            <input id="user_name" name="user_name" type="text" placeholder="Exact match, separate with commas" value="{{ summary.filters.user_name }}" />
+          </div>
+          <div class="field">
+            <label for="task_name">task_name</label>
+            <input id="task_name" name="task_name" type="text" placeholder="Exact match, separate with commas" value="{{ summary.filters.task_name }}" />
+          </div>
+          <div class="field">
+            <label for="date_prefix">date_prefix</label>
+            <input id="date_prefix" name="date_prefix" type="text" placeholder="Date prefixes in episode_id, separate with commas" value="{{ summary.filters.date_prefix }}" />
+          </div>
+          <div class="actions">
+            <button type="button" onclick="submitSearch()">Search</button>
+            <a class="button-secondary" href="/">Clear Filters</a>
+          </div>
+        </form>
+        {% if summary.filters.data_root or summary.filters.user_name or summary.filters.task_name or summary.filters.date_prefix %}
+        <div class="filter-tags">
+          {% if summary.filters.data_root %}
+          <span class="tag">data_root: {{ summary.filters.data_root }}</span>
+          {% endif %}
+          {% if summary.filters.user_name %}
+          <span class="tag">user_name: {{ summary.filters.user_name }}</span>
+          {% endif %}
+          {% if summary.filters.task_name %}
+          <span class="tag">task_name: {{ summary.filters.task_name }}</span>
+          {% endif %}
+          {% if summary.filters.date_prefix %}
+          <span class="tag">date_prefix: {{ summary.filters.date_prefix }}</span>
+          {% endif %}
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2 class="section-title" style="margin-bottom: 0;">Overview Chart</h2>
+          <div class="chart-controls">
+            <button type="button" id="chart-group-task" class="toggle-button active" onclick="setChartGroupMode('task')">By Task</button>
+            <button type="button" id="chart-group-user" class="toggle-button" onclick="setChartGroupMode('user')">By User</button>
+            <button type="button" id="chart-metric-duration" class="toggle-button active" onclick="setChartMetricMode('duration')">Duration</button>
+            <button type="button" id="chart-metric-episodes" class="toggle-button" onclick="setChartMetricMode('episodes')">Episodes</button>
+          </div>
+        </div>
+        <div id="overview-chart-meta" class="chart-meta"></div>
+        <div id="overview-chart" class="bar-chart" aria-label="Overview chart"></div>
+      </section>
+
+      <section class="card">
+  <h2 class="section-title">Episode List</h2>
+        {% if summary.episodes %}
+        <div class="submit-toolbar">
+          <button type="button" onclick="prepareSubmitJob('check')">Submit Checking Job</button>
+          <button type="button" onclick="prepareSubmitJob('pack')">Submit Packaging Job</button>
+          <span class="tag" id="selected-episodes-tag">Will submit the current search result: {{ summary.total_episodes }} episodes</span>
+        </div>
+        {% if summary.pagination.total_pages > 1 %}
+        <div class="pagination">
+          <div class="pagination-info">
+            Page {{ summary.pagination.page }} / {{ summary.pagination.total_pages }}, showing {{ summary.pagination.start_index }} - {{ summary.pagination.end_index }} of {{ summary.pagination.total_items }} items
+          </div>
+          <div class="pagination-controls">
+            {% if summary.pagination.has_prev %}
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
+            {% endif %}
+            {% if summary.pagination.has_next %}
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
+            {% endif %}
+            <input
+              class="pagination-jump"
+              type="number"
+              min="1"
+              max="{{ summary.pagination.total_pages }}"
+              value="{{ summary.pagination.page }}"
+              onkeydown="handleJumpToPage(event)"
+              aria-label="Enter a page number and press Enter to jump"
+            />
+          </div>
+        </div>
+        {% endif %}
+        <table>
+          <thead>
+            <tr>
+              <th>episode_id</th>
+              <th>user_name</th>
+              <th>task_name</th>
+              <th>duration</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for episode in summary.episodes %}
+            <tr>
+              <td>{{ episode.episode_id }}</td>
+              <td>{{ episode.user_name }}</td>
+              <td>{{ episode.task_name }}</td>
+              <td>{{ episode.duration_text }}</td>
+              <td>
+                <div class="action-group">
+                  <a
+                    class="button-secondary"
+                    href="{{ episode.download_url }}"
+                    onclick="startEpisodeDownload(event, '{{ episode.path }}', '{{ episode.download_url }}', '{{ episode.episode_id }}')"
+                  >Download</a>
+                  <button type="button" class="button-secondary" onclick="copyEpisodePath('{{ episode.path }}')">Copy Path</button>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if summary.pagination.total_pages > 1 %}
+        <div class="pagination">
+          <div class="pagination-info">
+            Page {{ summary.pagination.page }} / {{ summary.pagination.total_pages }}, showing {{ summary.pagination.start_index }} - {{ summary.pagination.end_index }} of {{ summary.pagination.total_items }} items
+          </div>
+          <div class="pagination-controls">
+            {% if summary.pagination.has_prev %}
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
+            {% endif %}
+            {% if summary.pagination.has_next %}
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
+            {% endif %}
+            <input
+              class="pagination-jump"
+              type="number"
+              min="1"
+              max="{{ summary.pagination.total_pages }}"
+              value="{{ summary.pagination.page }}"
+              onkeydown="handleJumpToPage(event)"
+              aria-label="Enter a page number and press Enter to jump"
+            />
+          </div>
+        </div>
+        {% endif %}
+        {% else %}
+  <div class="empty">No episode directories were found, or no records matched the current filters.</div>
+        {% endif %}
+      </section>
+      {% if not summary.episodes %}
+      <section class="card">
+  <div class="empty">No data matched the current `data_root`, `user_name`, `task_name`, and `date_prefix` filters.</div>
+      </section>
+      {% endif %}
+    </div>
+  <script id="summary-totals-data" type="application/json">{{ summary.totals | tojson }}</script>
+    <script>
+      let downloadOverlayTimer = null;
+      let toastTimer = null;
+      let scanPollTimer = null;
+      let currentScanTaskId = null;
+      let currentSubmitConfigId = null;
+      let currentSubmitSource = null;
+  let currentSubmitTaskId = null;
+  let submitPollTimer = null;
+      let currentChartGroupMode = "task";
+      let currentChartMetricMode = "duration";
+      let summaryTotals = {};
+      try {
+        summaryTotals = JSON.parse(
+          document.getElementById("summary-totals-data")?.textContent || "{}"
+        );
+      } catch (error) {
+        summaryTotals = {};
+      }
+
+      function formatChartMetricValue(metricMode, value) {
+        if (metricMode === "duration") {
+          const rounded = Number(value || 0);
+          return `${rounded.toFixed(2)} h`;
+        }
+        return `${Math.trunc(Number(value || 0))} eps`;
+      }
+
+      function getChartEntries(groupMode, metricMode) {
+        const totals = summaryTotals || {};
+        const names = groupMode === "user"
+          ? Object.keys(totals.by_user || {})
+          : Object.keys(totals.by_task || {});
+        const valueMap = metricMode === "duration"
+          ? (groupMode === "user" ? (totals.hours_by_user || {}) : (totals.hours_by_task || {}))
+          : (groupMode === "user" ? (totals.by_user || {}) : (totals.by_task || {}));
+
+        return names
+          .map((name) => ({ label: name, value: Number(valueMap[name] || 0) }))
+          .sort((left, right) => {
+            if (right.value !== left.value) {
+              return right.value - left.value;
+            }
+            return left.label.localeCompare(right.label);
+          });
+      }
+
+      function renderOverviewChart() {
+        const chart = document.getElementById("overview-chart");
+        const meta = document.getElementById("overview-chart-meta");
+        if (!chart || !meta) {
+          return;
+        }
+
+        const entries = getChartEntries(currentChartGroupMode, currentChartMetricMode);
+        const groupLabel = currentChartGroupMode === "user" ? "users" : "tasks";
+        const metricLabel = currentChartMetricMode === "duration" ? "duration" : "episode count";
+        meta.textContent = `Sorted from highest to lowest ${metricLabel}, grouped by ${groupLabel}.`;
+
+        document.getElementById("chart-group-task").classList.toggle("active", currentChartGroupMode === "task");
+        document.getElementById("chart-group-user").classList.toggle("active", currentChartGroupMode === "user");
+        document.getElementById("chart-metric-duration").classList.toggle("active", currentChartMetricMode === "duration");
+        document.getElementById("chart-metric-episodes").classList.toggle("active", currentChartMetricMode === "episodes");
+
+        if (!entries.length) {
+          chart.innerHTML = '<div class="bar-chart-empty">No data available for the current filters.</div>';
+          return;
+        }
+
+        const maxValue = Math.max(...entries.map((item) => item.value), 0);
+        chart.innerHTML = entries.map((item) => {
+          const barHeight = maxValue > 0 ? Math.max((item.value / maxValue) * 100, 3) : 0;
+          const safeLabel = item.label
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#39;");
+          const tooltip = `${item.label}: ${formatChartMetricValue(currentChartMetricMode, item.value)}`;
+          return `
+            <div class="bar-item" title="${tooltip}">
+              <div class="bar-value">${formatChartMetricValue(currentChartMetricMode, item.value)}</div>
+              <div class="bar-track">
+                <div class="bar-fill" style="height: ${barHeight}%;"></div>
+              </div>
+              <div class="bar-label">${safeLabel}</div>
+            </div>
+          `;
+        }).join("");
+      }
+
+      function setChartGroupMode(groupMode) {
+        currentChartGroupMode = groupMode;
+        renderOverviewChart();
+      }
+
+      function setChartMetricMode(metricMode) {
+        currentChartMetricMode = metricMode;
+        renderOverviewChart();
+      }
+
+      function refreshSummary() {
+        launchScanTask(true);
+      }
+
+      function refreshSelectedDates() {
+        const datePrefix = document.getElementById("date_prefix").value.trim();
+        if (!datePrefix) {
+          showToast("Please enter date_prefix before using partial refresh");
+          return;
+        }
+        launchScanTask(true, "partial");
+      }
+
+      function submitSearch() {
+        const pageInput = document.getElementById("page");
+        if (pageInput) {
+          pageInput.value = "1";
+        }
+        document.getElementById("search-form").submit();
+      }
+
+      function jumpToPage(page) {
+        const pageInput = document.getElementById("page");
+        if (!pageInput) {
+          return;
+        }
+        pageInput.value = String(page);
+        document.getElementById("search-form").submit();
+      }
+
+      function handleJumpToPage(event) {
+        if (event.key !== "Enter") {
+          return;
+        }
+        event.preventDefault();
+        const totalPages = Number(event.target.max || 1);
+        const value = Number(event.target.value);
+        if (!Number.isFinite(value)) {
+          return;
+        }
+        const page = Math.min(Math.max(Math.trunc(value), 1), totalPages);
+        jumpToPage(page);
+      }
+
+      function getCurrentFilteredEpisodeCount() {
+        const tag = document.getElementById("selected-episodes-tag");
+        if (!tag) {
+          return 0;
+        }
+        const match = tag.textContent.match(/(\d+)/);
+        return match ? Number(match[1]) : 0;
+      }
+
+      function updateSelectedEpisodesCount() {
+        const selectedCount = getCurrentFilteredEpisodeCount();
+        const tag = document.getElementById("selected-episodes-tag");
+        if (tag) {
+          tag.textContent = `Will submit the current search result: ${selectedCount} episodes`;
+        }
+      }
+
+      function openSubmitOverlay(configId, source, selectedCount, configText) {
+        stopSubmitPolling();
+        currentSubmitConfigId = configId;
+        currentSubmitSource = source;
+        currentSubmitTaskId = null;
+  document.getElementById("submit-source-tag").textContent = `Type: ${source === 'check' ? 'Checking' : 'Packaging'}`;
+  document.getElementById("submit-selected-tag").textContent = `Current search result: ${selectedCount} episodes`;
+  document.getElementById("submit-status-tag").textContent = "Not Submitted";
+  document.getElementById("submit-message").textContent = "An initial submit_config.json has been generated. Edit it as needed, then click \"Confirm Submit\".";
+        document.getElementById("submit-config-editor").value = configText;
+        document.getElementById("submit-result-text").textContent = "";
+        document.getElementById("submit-result").style.display = "none";
+        document.getElementById("confirm-submit-button").disabled = false;
+  document.getElementById("confirm-submit-button").textContent = "Confirm Submit";
+        document.getElementById("submit-overlay").classList.add("show");
+      }
+
+      function closeSubmitOverlay() {
+        stopSubmitPolling();
+        document.getElementById("submit-overlay").classList.remove("show");
+        currentSubmitConfigId = null;
+      }
+
+      function renderSubmitResult(title, lines) {
+        const resultPanel = document.getElementById("submit-result");
+        const resultText = document.getElementById("submit-result-text");
+        resultText.textContent = [title, ...lines.filter(Boolean)].join("\n\n");
+        resultPanel.style.display = "block";
+        resultPanel.scrollTop = resultPanel.scrollHeight;
+      }
+
+      function stopSubmitPolling() {
+        if (submitPollTimer) {
+          clearTimeout(submitPollTimer);
+          submitPollTimer = null;
+        }
+        currentSubmitTaskId = null;
+      }
+
+      async function pollSubmitTask(taskId) {
+        if (!taskId || currentSubmitTaskId !== taskId) {
+          return;
+        }
+
+        try {
+          const response = await fetch(`/api/submit-jobs/tasks/${taskId}`);
+          const data = await response.json();
+          if (!response.ok) {
+            document.getElementById("submit-status-tag").textContent = "Submission Failed";
+            renderSubmitResult("Submission Failed", buildSubmitLogLines(data));
+            document.getElementById("confirm-submit-button").disabled = false;
+            document.getElementById("confirm-submit-button").textContent = "Confirm Submit";
+            stopSubmitPolling();
+            return;
+          }
+
+          const isRunning = data.status === "running" || data.status === "pending";
+          if (isRunning) {
+            document.getElementById("submit-status-tag").textContent = "Submitting";
+            document.getElementById("submit-message").textContent = "The job is being submitted. Logs will refresh below in real time.";
+          }
+
+          renderSubmitResult(
+            data.status === "submitted"
+              ? `${currentSubmitSource === 'check' ? 'Checking' : 'Packaging'} job submitted successfully`
+              : data.status === "failed"
+                ? "Submission Failed"
+                : "Submitting...",
+            buildSubmitLogLines(data),
+          );
+
+          if (isRunning) {
+            submitPollTimer = setTimeout(() => pollSubmitTask(taskId), 800);
+            return;
+          }
+
+          document.getElementById("submit-status-tag").textContent = data.status === "submitted" ? "Submitted" : "Submission Failed";
+          document.getElementById("submit-message").textContent = data.status === "submitted"
+            ? "Submission completed. The result is shown below."
+            : "Submission failed. The logs are shown below.";
+          document.getElementById("confirm-submit-button").disabled = false;
+          document.getElementById("confirm-submit-button").textContent = "Submit Again";
+          if (data.status === "submitted") {
+            showToast(`${currentSubmitSource === 'check' ? 'Checking' : 'Packaging'} job submitted successfully`);
+          } else {
+            showToast(data.error_message || data.stderr || "Job submission failed");
+          }
+          stopSubmitPolling();
+        } catch (error) {
+          document.getElementById("submit-status-tag").textContent = "Submission Failed";
+          renderSubmitResult("Submission Failed", [error?.message || "Failed to poll submission logs. Please try again later."]); 
+          document.getElementById("confirm-submit-button").disabled = false;
+          document.getElementById("confirm-submit-button").textContent = "Confirm Submit";
+          stopSubmitPolling();
+        }
+      }
+
+      function buildSubmitLogLines(data) {
+        if (!data || typeof data !== "object") {
+          return ["Detailed log information is unavailable"]; 
+        }
+
+        return [
+          data.command_text ? `command: ${data.command_text}` : "",
+          data.returncode !== undefined && data.returncode !== null ? `returncode: ${data.returncode}` : "",
+          data.error_message ? `error:
+${data.error_message}` : "",
+          data.stdout ? `stdout:
+${data.stdout}` : "",
+          data.stderr ? `stderr:
+${data.stderr}` : "",
+          data.description ? `description:
+${data.description}` : "",
+          data.message ? `message:
+${data.message}` : "",
+        ].filter(Boolean);
+      }
+
+      async function prepareSubmitJob(source) {
+        const currentCount = getCurrentFilteredEpisodeCount();
+        if (!currentCount) {
+          showToast("Please search for at least one episode before submitting a job");
+          return;
+        }
+
+        const userName = document.getElementById("user_name").value.trim();
+        const taskName = document.getElementById("task_name").value.trim();
+        const datePrefix = document.getElementById("date_prefix").value.trim();
+        if (!(userName || taskName || datePrefix)) {
+          showToast("You must search first before submitting a job");
+          return;
+        }
+
+        const dataRoot = document.getElementById("data_root").value.trim() || "{{ summary.base_path }}";
+        try {
+          const response = await fetch("/api/submit-jobs/prepare", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source,
+              data_root: dataRoot,
+              filters: {
+                user_name: userName,
+                task_name: taskName,
+                date_prefix: datePrefix,
+              },
+            })
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            showToast(data.description || data.message || "Failed to initialize submit_config");
+            return;
+          }
+          openSubmitOverlay(data.config_id, source, currentCount, JSON.stringify(data.config, null, 4));
+        } catch (error) {
+          showToast("Failed to initialize submit_config. Please try again later");
+        }
+      }
+
+      async function confirmSubmitJob() {
+        if (!currentSubmitConfigId) {
+          showToast("There is no configuration available to submit");
+          return;
+        }
+
+        const confirmButton = document.getElementById("confirm-submit-button");
+
+        let config;
+        try {
+          config = JSON.parse(document.getElementById("submit-config-editor").value);
+        } catch (error) {
+          showToast("submit_config.json is not valid JSON. Please fix it first");
+          return;
+        }
+
+        confirmButton.disabled = true;
+  confirmButton.textContent = "Submitting...";
+  document.getElementById("submit-status-tag").textContent = "Submitting";
+  document.getElementById("submit-message").textContent = "Please wait while submission starts. Job logs will appear below in real time.";
+  renderSubmitResult("Starting submission...", []);
+
+        try {
+          const response = await fetch(`/api/submit-jobs/${currentSubmitConfigId}/submit`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config })
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            document.getElementById("submit-status-tag").textContent = "Submission Failed";
+            renderSubmitResult("Submission Failed", buildSubmitLogLines(data));
+            confirmButton.disabled = false;
+            confirmButton.textContent = "Confirm Submit";
+            showToast(data.description || data.stderr || "Job submission failed");
+            return;
+          }
+          currentSubmitTaskId = data.task_id;
+          renderSubmitResult("Submitting...", buildSubmitLogLines(data));
+          pollSubmitTask(currentSubmitTaskId);
+        } catch (error) {
+          document.getElementById("submit-status-tag").textContent = "Submission Failed";
+          renderSubmitResult("Submission Failed", [error?.message || "Request failed. Please try again later."]); 
+          confirmButton.disabled = false;
+          confirmButton.textContent = "Confirm Submit";
+          showToast("Job submission failed. Please try again later");
+        }
+      }
+
+      function showDownloadOverlay(message, fileCountText, statusText) {
+        document.getElementById("download-message").textContent = message;
+        document.getElementById("download-file-count").textContent = fileCountText;
+        document.getElementById("download-status-tag").textContent = statusText;
+        document.getElementById("download-overlay").classList.add("show");
+      }
+
+      function hideDownloadOverlay() {
+        document.getElementById("download-overlay").classList.remove("show");
+        if (downloadOverlayTimer) {
+          clearTimeout(downloadOverlayTimer);
+          downloadOverlayTimer = null;
+        }
+      }
+
+      function showToast(message) {
+        const toast = document.getElementById("toast");
+        toast.textContent = message;
+        toast.classList.add("show");
+        if (toastTimer) {
+          clearTimeout(toastTimer);
+        }
+        toastTimer = setTimeout(() => {
+          toast.classList.remove("show");
+        }, 2200);
+      }
+
+      async function copyEpisodePath(path) {
+        try {
+          await navigator.clipboard.writeText(path);
+          showToast("Episode path copied to clipboard");
+        } catch (error) {
+          showToast("Copy failed. Please check browser clipboard permissions");
+        }
+      }
+
+      async function startEpisodeDownload(event, episodePath, downloadUrl, episodeId) {
+        event.preventDefault();
+        showDownloadOverlay(`Packaging ${episodeId}. Please wait...`, "Counting files...", "Preparing");
+
+        try {
+          const statusResponse = await fetch(`/api/download-status?episode_path=${encodeURIComponent(episodePath)}`);
+          if (statusResponse.ok) {
+            const data = await statusResponse.json();
+            showDownloadOverlay(data.message, `${data.file_count} files detected`, "Packaging");
+          } else {
+            showDownloadOverlay(`Packaging ${episodeId}. Please wait...`, "Failed to get file count", "Packaging");
+          }
+        } catch (error) {
+          showDownloadOverlay(`Packaging ${episodeId}. Please wait...`, "Failed to get file count", "Packaging");
+        }
+
+        downloadOverlayTimer = setTimeout(() => {
+          showDownloadOverlay(`Large files may take longer to package. ${episodeId} is still being prepared...`, "Please keep waiting for the download to begin", "Processing");
+        }, 6000);
+
+        try {
+          const response = await fetch(downloadUrl);
+          if (!response.ok) {
+            throw new Error(`Download failed (${response.status})`);
+          }
+
+          const blob = await response.blob();
+          const blobUrl = window.URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          const disposition = response.headers.get("Content-Disposition") || "";
+          const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+          const fallbackName = `${episodeId}.zip`;
+          const downloadName = decodeURIComponent(filenameMatch?.[1] || filenameMatch?.[2] || fallbackName);
+
+          link.href = blobUrl;
+          link.download = downloadName;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          window.URL.revokeObjectURL(blobUrl);
+
+          showToast(`${episodeId} download has started`);
+          hideDownloadOverlay();
+        } catch (error) {
+          showDownloadOverlay(`Failed to download ${episodeId}`, "Please check your network or try again later", "Failed");
+          showToast(error?.message || "Download failed. Please try again later");
+        }
+      }
+
+      function showScanOverlay(message, progress, processed, total) {
+        document.getElementById("scan-message").textContent = message;
+        document.getElementById("scan-progress-fill").style.width = `${progress}%`;
+        document.getElementById("scan-progress-tag").textContent = `${progress}%`;
+        document.getElementById("scan-count-tag").textContent = `${processed} / ${total}`;
+        document.getElementById("scan-overlay").classList.add("show");
+      }
+
+      function hideScanOverlay() {
+        document.getElementById("scan-overlay").classList.remove("show");
+        if (scanPollTimer) {
+          clearTimeout(scanPollTimer);
+          scanPollTimer = null;
+        }
+        currentScanTaskId = null;
+      }
+
+      async function cancelScanTask() {
+        if (!currentScanTaskId) {
+          return;
+        }
+        try {
+          await fetch(`/api/scan-tasks/${currentScanTaskId}/cancel`, { method: "POST" });
+          showScanOverlay("Cancelling scan task...", 0, 0, 0);
+        } catch (error) {
+          showToast("Failed to cancel the scan. Please try again later");
+        }
+      }
+
+      async function pollScanTask(taskId, params) {
+        try {
+          const response = await fetch(`/api/scan-tasks/${taskId}`);
+          const data = await response.json();
+          showScanOverlay(data.message || "Scanning data...", data.progress || 0, data.processed || 0, data.total || 0);
+
+          if (data.status === "completed") {
+            const query = new URLSearchParams(params);
+            window.location.href = `/?${query.toString()}`;
+            return;
+          }
+
+          if (data.status === "cancelled") {
+            showToast(data.message || "Scan task cancelled");
+            hideScanOverlay();
+            return;
+          }
+
+          if (data.status === "failed") {
+            showToast(data.message || "Scan task failed");
+            hideScanOverlay();
+            return;
+          }
+
+          scanPollTimer = setTimeout(() => pollScanTask(taskId, params), 500);
+        } catch (error) {
+          showToast("Failed to fetch scan progress. Please try again later");
+          hideScanOverlay();
+        }
+      }
+
+      async function launchScanTask(forceRefresh, refreshMode = "full") {
+        const form = document.getElementById("search-form");
+        const params = new URLSearchParams(new FormData(form));
+        if (forceRefresh && refreshMode !== "partial") {
+          params.set("refresh", "1");
+        } else {
+          params.delete("refresh");
+        }
+
+        const dataRoot = params.get("data_root") || "{{ summary.base_path }}";
+  showScanOverlay(
+          refreshMode === "partial"
+            ? "Creating partial refresh task..."
+            : "Creating scan task...",
+          0,
+          0,
+          0
+        );
+
+        try {
+          const response = await fetch("/api/scan-tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              data_root: dataRoot,
+              refresh_mode: refreshMode,
+              date_prefix: params.get("date_prefix") || "",
+            })
+          });
+          const task = await response.json();
+          if (!response.ok) {
+            hideScanOverlay();
+            showToast(task.description || task.message || "Failed to start the scan task. Please try again later");
+            return;
+          }
+          currentScanTaskId = task.task_id;
+          pollScanTask(task.task_id, params);
+        } catch (error) {
+          hideScanOverlay();
+          showToast("Failed to start the scan task. Please try again later");
+        }
+      }
+
+      function startInitialLoadingScan() {
+        const loadingNode = document.getElementById("page-loading-state");
+        if (!loadingNode) {
+          return;
+        }
+
+        let loadingState = null;
+        try {
+          loadingState = JSON.parse(loadingNode.dataset.loading || "null");
+        } catch (error) {
+          loadingState = null;
+        }
+        if (!loadingState || !loadingState.is_loading || !loadingState.scan_task_id) {
+          return;
+        }
+
+        currentScanTaskId = loadingState.scan_task_id;
+        const params = new URLSearchParams(new FormData(document.getElementById("search-form")));
+        params.delete("refresh");
+        showScanOverlay(loadingState.message || "Starting initial scan...", 0, 0, 0);
+        pollScanTask(loadingState.scan_task_id, params);
+      }
+
+      updateSelectedEpisodesCount();
+      renderOverviewChart();
+      startInitialLoadingScan();
+    </script>
+  </body>
+</html>

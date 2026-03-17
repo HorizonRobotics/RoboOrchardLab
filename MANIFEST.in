@@ -1,2 +1,3 @@
 recursive-include robo_orchard_lab *.cpp
 recursive-include robo_orchard_lab *.cu
+recursive-include robo_orchard_lab/dataset/horizon_manipulation/tools/templates *.html

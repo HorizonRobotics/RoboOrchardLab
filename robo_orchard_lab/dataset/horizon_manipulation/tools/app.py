@@ -1,0 +1,1675 @@
+# Project RoboOrchard
+#
+# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+
+from __future__ import annotations
+import io
+import json
+import os
+import queue
+import subprocess
+import time
+import uuid
+import zipfile
+from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
+from threading import Lock, Thread
+from typing import Any, cast
+from urllib.parse import quote_plus
+
+import yaml
+from flask import Flask, abort, jsonify, render_template, request, send_file
+from pydantic import BaseModel, ConfigDict
+
+
+def load_dotenv_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if (
+            value
+            and len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {'"', "'"}
+        ):
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+PROJECT_ROOT = Path(__file__).parent
+
+
+load_dotenv_file(PROJECT_ROOT / ".env")
+
+
+def get_env_value(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def get_env_path(name: str, default: Path) -> Path:
+    raw_value = get_env_value(name, str(default)).strip()
+    path = Path(raw_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def get_env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+BASE_DATA_PATH = Path(get_env_value("DATA_ROOT", "./data"))
+
+app = Flask(__name__)
+
+CACHE_LOCK = Lock()
+EPISODE_CACHE: dict[str, dict[str, Any]] = {}
+CACHE_DIR = get_env_path("CACHE_DIR", PROJECT_ROOT / ".cache")
+SUBMIT_CONFIG_DIR = get_env_path(
+    "SUBMIT_CONFIG_DIR", PROJECT_ROOT / ".submit_configs"
+)
+AUTO_REFRESH_STARTED = False
+SCAN_TASK_LOCK = Lock()
+SCAN_TASKS: dict[str, dict[str, Any]] = {}
+SUBMIT_TASK_LOCK = Lock()
+SUBMIT_TASKS: dict[str, dict[str, Any]] = {}
+SCAN_MAX_WORKERS = max(2, min(os.cpu_count() or 4, 8))
+
+
+class EpisodeRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    user_name: str
+    task_name: str
+    episode_id: str
+    day: str
+    path: str
+    duration_hours: float
+
+
+class ScanCancelledError(RuntimeError):
+    pass
+
+
+class FilterOptions(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    user_name: str = ""
+    task_name: str = ""
+    date_prefix: str = ""
+    data_root: str = ""
+    refresh: bool = False
+    page: int = 1
+    page_size: int = 20
+
+
+def normalize_date_prefixes(value: str) -> list[str]:
+    return parse_filter_items(normalize_filter(value))
+
+
+def record_matches_any_date_prefix(
+    record: EpisodeRecord, date_prefixes: list[str]
+) -> bool:
+    if not date_prefixes:
+        return False
+    episode_time_prefix = extract_episode_time_prefix(record.episode_id)
+    return any(
+        episode_time_prefix.startswith(prefix) for prefix in date_prefixes
+    )
+
+
+def derive_submit_selection(
+    records: list[EpisodeRecord], filters: FilterOptions
+) -> dict[str, list[str] | str]:
+    if not records:
+        raise ValueError("No records selected for submit")
+
+    user_names = sorted({record.user_name for record in records})
+    task_names = sorted({record.task_name for record in records})
+    requested_date_prefixes = parse_filter_items(filters.date_prefix)
+    if requested_date_prefixes:
+        date_prefixes = requested_date_prefixes
+    else:
+        date_prefixes = sorted(
+            {
+                extract_episode_time_prefix(record.episode_id).split("-")[0]
+                for record in records
+            }
+        )
+
+    return {
+        "user_names": user_names,
+        "task_names": task_names,
+        "date_prefixes": date_prefixes,
+        "user_name": user_names[0],
+        "task_name": task_names[0],
+        "date_prefix": date_prefixes[0],
+    }
+
+
+def get_robo_orchard_lab_dir() -> str:
+    value = get_env_value("ROBO_ORCHARD_LAB_DIR", "").strip()
+    if not value:
+        raise RuntimeError("ROBO_ORCHARD_LAB_DIR is not set")
+    path = Path(value)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path.resolve())
+
+
+def get_submit_template_path(source: str) -> Path:
+    if source not in {"check", "pack"}:
+        raise ValueError("source must be check or pack")
+    base_dir = Path(get_robo_orchard_lab_dir())
+    template_path = (
+        base_dir
+        / "dataset"
+        / "horizon_manipulation"
+        / "tools"
+        / f"submit_{source}.json"
+    )
+    if not template_path.exists():
+        raise FileNotFoundError(f"Submit template not found: {template_path}")
+    return template_path
+
+
+def get_submit_config_path(config_id: str) -> Path:
+    SUBMIT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    return SUBMIT_CONFIG_DIR / f"{config_id}.json"
+
+
+def get_submit_config_patch_path() -> Path:
+    return get_env_path(
+        "SUBMIT_CONFIG_PATCH_PATH", PROJECT_ROOT / "submit_config_patch.json"
+    )
+
+
+def build_submit_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    if not get_env_bool("SUBMIT_JOB_CLEAR_PROXY", True):
+        return env
+
+    proxy_keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ]
+    for key in proxy_keys:
+        env.pop(key, None)
+    return env
+
+
+def deep_merge_dict(
+    base: dict[str, Any], patch: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_submit_config_patch() -> dict[str, Any]:
+    patch_path = get_submit_config_patch_path()
+    if not patch_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Failed to load submit config patch: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "submit_config_patch.json must contain a JSON object"
+        )
+    return payload
+
+
+def build_initial_submit_config(
+    source: str, selection: dict[str, list[str] | str], base_path: Path
+) -> dict[str, Any]:
+    template = json.loads(
+        get_submit_template_path(source).read_text(encoding="utf-8")
+    )
+    cmd = template.get("cmd", [])
+    output_path = (
+        "/horizon-bucket/robot_lab/users/xuewu.lin/self-collected-data"
+    )
+    input_path = str(base_path)
+    joined_user_names = ",".join(selection["user_names"])
+    joined_task_names = ",".join(selection["task_names"])
+    joined_date_prefixes = ",".join(selection["date_prefixes"])
+
+    for index, item in enumerate(cmd):
+        if not isinstance(item, str):
+            continue
+        if item.startswith("date_prefix="):
+            cmd[index] = f"date_prefix={joined_date_prefixes}"
+        elif item.startswith("user_name="):
+            cmd[index] = f"user_name={joined_user_names}"
+        elif item.startswith("task_name="):
+            cmd[index] = f"task_name={joined_task_names}"
+        elif item.startswith("input_path="):
+            cmd[index] = f"input_path={input_path}"
+        elif item.startswith("    --input_path "):
+            cmd[index] = f"    --input_path {input_path} \\"
+        elif item.startswith("    --output_path ") and source == "pack":
+            cmd[index] = (
+                f"    --output_path {output_path}"
+                + "/${user_name}-${task_name}-${date_prefix} \\"
+            )
+
+    template["cmd"] = cmd
+    template["job_name"] = "-".join(
+        [
+            f"data-{source}",
+            *selection["user_names"],
+            *selection["task_names"],
+            *selection["date_prefixes"],
+        ]
+    )
+    template["to_upload"] = [get_robo_orchard_lab_dir()]
+    submit_config_patch = load_submit_config_patch()
+    return deep_merge_dict(template, submit_config_patch)
+
+
+def collect_submit_records(
+    base_path: Path, filters: FilterOptions
+) -> list[EpisodeRecord]:
+    records, _ = get_cached_episode_records(base_path, refresh=False)
+    filtered_records = filter_records(records, filters)
+    if not filtered_records:
+        raise ValueError(
+            "Please search first and ensure current filters return at least one episode"  # noqa: E501
+        )
+    return filtered_records
+
+
+def create_submit_config(
+    source: str, base_path: Path, filters: FilterOptions
+) -> dict[str, Any]:
+    selected_records = collect_submit_records(base_path, filters)
+    selection = derive_submit_selection(selected_records, filters)
+    config = build_initial_submit_config(source, selection, base_path)
+    config_id = uuid.uuid4().hex
+    config_path = get_submit_config_path(config_id)
+    config_path.write_text(
+        json.dumps(config, indent=4, ensure_ascii=False), encoding="utf-8"
+    )
+    return {
+        "config_id": config_id,
+        "config_path": str(config_path),
+        "source": source,
+        "selection": selection,
+        "episode_paths": [record.path for record in selected_records],
+        "config": config,
+    }
+
+
+def create_submit_task(
+    config_id: str, config_path: Path, command: list[str]
+) -> dict[str, Any]:
+    task = {
+        "task_id": uuid.uuid4().hex,
+        "config_id": config_id,
+        "config_path": str(config_path),
+        "command": command,
+        "command_text": " ".join(command),
+        "status": "pending",
+        "stdout": "",
+        "stderr": "",
+        "error_message": "",
+        "returncode": None,
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "finished_at": None,
+    }
+    with SUBMIT_TASK_LOCK:
+        SUBMIT_TASKS[task["task_id"]] = task
+    return dict(task)
+
+
+def update_submit_task(task_id: str, **kwargs: Any) -> None:
+    with SUBMIT_TASK_LOCK:
+        if task_id in SUBMIT_TASKS:
+            SUBMIT_TASKS[task_id].update(kwargs)
+
+
+def append_submit_task_log(task_id: str, field: str, text: str) -> None:
+    if not text:
+        return
+    with SUBMIT_TASK_LOCK:
+        if task_id in SUBMIT_TASKS:
+            SUBMIT_TASKS[task_id][field] = (
+                str(SUBMIT_TASKS[task_id].get(field, "")) + text
+            )
+
+
+def get_submit_task(task_id: str) -> dict[str, Any] | None:
+    with SUBMIT_TASK_LOCK:
+        task = SUBMIT_TASKS.get(task_id)
+        return dict(task) if task is not None else None
+
+
+def _drain_submit_queue(
+    task_id: str, log_queue: queue.Queue[tuple[str, str]]
+) -> None:
+    while True:
+        try:
+            stream_name, chunk = log_queue.get_nowait()
+        except queue.Empty:
+            break
+        append_submit_task_log(task_id, stream_name, chunk)
+
+
+def run_submit_task(task_id: str, command: list[str]) -> None:
+    update_submit_task(task_id, status="running")
+    log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=build_submit_subprocess_env(),
+        )
+    except OSError as exc:
+        update_submit_task(
+            task_id,
+            status="failed",
+            error_message=str(exc),
+            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return
+
+    def pump_stream(stream: Any, field: str) -> None:
+        try:
+            if stream is None:
+                return
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+                log_queue.put((field, line))
+        finally:
+            if stream is not None:
+                stream.close()
+
+    stdout_thread = Thread(
+        target=pump_stream,
+        args=(process.stdout, "stdout"),
+        daemon=True,
+        name=f"submit-stdout-{task_id[:8]}",
+    )
+    stderr_thread = Thread(
+        target=pump_stream,
+        args=(process.stderr, "stderr"),
+        daemon=True,
+        name=f"submit-stderr-{task_id[:8]}",
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    while process.poll() is None:
+        _drain_submit_queue(task_id, log_queue)
+        time.sleep(0.1)
+
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    _drain_submit_queue(task_id, log_queue)
+
+    returncode = process.returncode
+    update_submit_task(
+        task_id,
+        returncode=returncode,
+        status="submitted" if returncode == 0 else "failed",
+        finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
+def start_submit_task(
+    config_id: str, config_data: dict[str, Any]
+) -> dict[str, Any]:
+    config_path = get_submit_config_path(config_id)
+    if not config_path.exists():
+        raise FileNotFoundError("submit config not found")
+
+    config_path.write_text(
+        json.dumps(config_data, indent=4, ensure_ascii=False), encoding="utf-8"
+    )
+    command = [
+        "RoboOrchardJob-AIDISubmit",
+        "submit_from_config",
+        "--config",
+        str(config_path),
+    ]
+    task = create_submit_task(config_id, config_path, command)
+    thread = Thread(
+        target=run_submit_task,
+        args=(task["task_id"], command),
+        daemon=True,
+        name=f"submit-task-{task['task_id'][:8]}",
+    )
+    thread.start()
+    return get_submit_task(task["task_id"]) or task
+
+
+def infer_day_from_episode_dir(episode_dir: Path) -> str:
+    """Infer a YYYY-MM-DD date from directory metadata.
+
+    Prefer a date parsed from `episode_id` when the directory name follows
+    `episode_YYYY_MM_DD...`; otherwise fall back to directory mtime because the
+    required layout only guarantees `user_name/task_name/episode_id`.
+    """
+    episode_name = episode_dir.name
+    if episode_name.startswith("episode_"):
+        raw_prefix = episode_name[len("episode_") :].split("-", 1)[0]
+        try:
+            return datetime.strptime(raw_prefix, "%Y_%m_%d").strftime(
+                "%Y-%m-%d"
+            )
+        except ValueError:
+            pass
+
+    ts = episode_dir.stat().st_mtime
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def round_hours(value: float) -> float:
+    return round(value, 4)
+
+
+def format_duration_hours(value: float) -> str:
+    total_seconds = max(int(round(value * 3600)), 0)
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    parts: list[str] = []
+    if hours > 0:
+        parts.append(f"{hours} hours")
+    if minutes > 0 or hours > 0:
+        parts.append(f"{minutes} mins")
+    if seconds > 0 or not parts:
+        parts.append(f"{seconds} secs")
+    return " ".join(parts)
+
+
+def read_duration_hours(episode_dir: Path) -> float:
+    metadata_path = episode_dir / "metadata.yaml"
+    if not metadata_path.exists():
+        return 0.0
+
+    try:
+        with metadata_path.open("r", encoding="utf-8") as file:
+            metadata = yaml.safe_load(file) or {}
+    except (OSError, yaml.YAMLError):
+        return 0.0
+
+    bag_info = metadata.get("rosbag2_bagfile_information")
+    if isinstance(bag_info, dict):
+        duration = bag_info.get("duration")
+    else:
+        duration = metadata.get("duration")
+
+    if not isinstance(duration, dict):
+        return 0.0
+
+    nanoseconds = duration.get("nanoseconds", 0)
+    try:
+        nanoseconds_value = float(nanoseconds)
+    except (TypeError, ValueError):
+        return 0.0
+
+    return round_hours(nanoseconds_value / 1_000_000_000 / 3600)
+
+
+def build_episode_record(
+    user_name: str, task_name: str, episode_dir: Path
+) -> EpisodeRecord:
+    return EpisodeRecord(
+        user_name=user_name,
+        task_name=task_name,
+        episode_id=episode_dir.name,
+        day=infer_day_from_episode_dir(episode_dir),
+        path=str(episode_dir),
+        duration_hours=read_duration_hours(episode_dir),
+    )
+
+
+def is_valid_episode_dir(episode_dir: Path) -> bool:
+    required_files = [
+        episode_dir / "episode_meta.json",
+        episode_dir / "metadata.yaml",
+    ]
+    if any(not file_path.is_file() for file_path in required_files):
+        return False
+
+    return any(path.is_file() for path in episode_dir.glob("*.mcap"))
+
+
+def iter_episode_dirs(
+    base_path: Path,
+    task_id: str | None = None,
+    date_prefixes: list[str] | None = None,
+) -> list[tuple[str, str, Path]]:
+    if not base_path.exists():
+        return []
+
+    normalized_date_prefixes = [
+        prefix for prefix in date_prefixes or [] if prefix
+    ]
+    user_dirs = sorted([p for p in base_path.iterdir() if p.is_dir()])
+    total_task_dirs = sum(
+        len([p for p in user_dir.iterdir() if p.is_dir()])
+        for user_dir in user_dirs
+    )
+    scanned_task_dirs = 0
+    episode_dirs: list[tuple[str, str, Path]] = []
+    for user_dir in user_dirs:
+        if task_id is not None and is_scan_cancel_requested(task_id):
+            raise ScanCancelledError()
+        for task_dir in sorted([p for p in user_dir.iterdir() if p.is_dir()]):
+            if task_id is not None and is_scan_cancel_requested(task_id):
+                raise ScanCancelledError()
+            if task_id is not None:
+                update_scan_task(
+                    task_id,
+                    status="running",
+                    progress=max(
+                        int(scanned_task_dirs * 100 / total_task_dirs), 1
+                    )
+                    if total_task_dirs
+                    else 1,
+                    processed=len(episode_dirs),
+                    total=max(len(episode_dirs), 1),
+                    message=(
+                        "Listing episode directories: "
+                        f"{task_dir.relative_to(base_path)}"
+                    ),
+                )
+
+            task_episode_dirs = sorted(
+                [p for p in task_dir.iterdir() if p.is_dir()]
+            )
+            task_episode_total = len(task_episode_dirs)
+
+            for episode_index, episode_dir in enumerate(
+                task_episode_dirs, start=1
+            ):
+                if task_id is not None and is_scan_cancel_requested(task_id):
+                    raise ScanCancelledError()
+                episode_time_prefix = extract_episode_time_prefix(
+                    episode_dir.name
+                )
+                if task_id is not None:
+                    update_scan_task(
+                        task_id,
+                        status="running",
+                        progress=max(
+                            int(scanned_task_dirs * 100 / total_task_dirs), 1
+                        )
+                        if total_task_dirs
+                        else 1,
+                        processed=episode_index,
+                        total=max(task_episode_total, 1),
+                        message=(
+                            "Validating episodes in "
+                            f"{task_dir.relative_to(base_path)}"
+                        ),
+                    )
+                if normalized_date_prefixes and not any(
+                    episode_time_prefix.startswith(prefix)
+                    for prefix in normalized_date_prefixes
+                ):
+                    continue
+                if not is_valid_episode_dir(episode_dir):
+                    continue
+                episode_dirs.append(
+                    (user_dir.name, task_dir.name, episode_dir)
+                )
+            scanned_task_dirs += 1
+            if task_id is not None:
+                progress = (
+                    int(scanned_task_dirs * 100 / total_task_dirs)
+                    if total_task_dirs
+                    else 100
+                )
+                update_scan_task(
+                    task_id,
+                    status="running",
+                    progress=max(progress, 1),
+                    processed=len(episode_dirs),
+                    total=max(len(episode_dirs), 1),
+                    message=(
+                        "Scanning directory structure: "
+                        f"{scanned_task_dirs}/{total_task_dirs} task directories checked, "  # noqa: E501
+                        f"{len(episode_dirs)} valid episodes found..."
+                    ),
+                )
+    return episode_dirs
+
+
+def build_records_from_episode_dirs_with_progress(
+    episode_dirs: list[tuple[str, str, Path]], task_id: str
+) -> list[EpisodeRecord]:
+    total = len(episode_dirs)
+    if total == 0:
+        update_scan_task(
+            task_id,
+            status="completed",
+            progress=100,
+            message="No matching episode dir were found during scanning",
+            processed=0,
+            total=0,
+        )
+        return []
+
+    records: list[EpisodeRecord] = []
+
+    def build_record(item: tuple[str, str, Path]) -> EpisodeRecord:
+        if is_scan_cancel_requested(task_id):
+            raise ScanCancelledError()
+        user_name, task_name, episode_dir = item
+        record = build_episode_record(user_name, task_name, episode_dir)
+        if is_scan_cancel_requested(task_id):
+            raise ScanCancelledError()
+        return record
+
+    processed = 0
+    executor = ThreadPoolExecutor(max_workers=SCAN_MAX_WORKERS)
+    try:
+        pending = {
+            executor.submit(build_record, item) for item in episode_dirs
+        }
+
+        while pending:
+            if is_scan_cancel_requested(task_id):
+                for future in pending:
+                    future.cancel()
+                update_scan_task(
+                    task_id,
+                    status="cancelled",
+                    message="Scan cancelled",
+                    progress=int(processed * 100 / total) if total else 0,
+                    processed=processed,
+                    total=total,
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                return []
+
+            done, pending = wait(
+                pending, timeout=0.05, return_when=FIRST_COMPLETED
+            )
+            for future in done:
+                try:
+                    record = future.result()
+                except ScanCancelledError:
+                    if is_scan_cancel_requested(task_id):
+                        for pending_future in pending:
+                            pending_future.cancel()
+                        update_scan_task(
+                            task_id,
+                            status="cancelled",
+                            message="Scan cancelled",
+                            progress=(
+                                int(processed * 100 / total) if total else 0
+                            ),
+                            processed=processed,
+                            total=total,
+                        )
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return []
+                    continue
+                records.append(record)
+                processed += 1
+                update_scan_task(
+                    task_id,
+                    status="running",
+                    progress=int(processed * 100 / total),
+                    processed=processed,
+                    total=total,
+                    message=f"Scanning episodes: {processed}/{total}...",
+                )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=False)
+
+    update_scan_task(
+        task_id,
+        status="completed",
+        progress=100,
+        processed=total,
+        total=total,
+        message="Scan completed",
+    )
+    return records
+
+
+def merge_records_for_date_prefixes(
+    existing_records: list[EpisodeRecord],
+    refreshed_records: list[EpisodeRecord],
+    date_prefixes: list[str],
+) -> list[EpisodeRecord]:
+    if not date_prefixes:
+        return refreshed_records
+
+    preserved_records = [
+        record
+        for record in existing_records
+        if not record_matches_any_date_prefix(record, date_prefixes)
+    ]
+    return preserved_records + refreshed_records
+
+
+def refresh_cached_episode_records_for_date_prefixes(
+    base_path: Path,
+    date_prefixes: list[str],
+    task_id: str,
+) -> list[EpisodeRecord]:
+    if not date_prefixes:
+        raise ValueError("date_prefix is required for partial refresh")
+
+    cache_key = get_cache_key(base_path)
+    existing_records, _ = get_cached_episode_records(base_path, refresh=False)
+
+    try:
+        filtered_episode_dirs = iter_episode_dirs(
+            base_path,
+            task_id=task_id,
+            date_prefixes=date_prefixes,
+        )
+    except ScanCancelledError:
+        update_scan_task(
+            task_id,
+            status="cancelled",
+            message="Scan cancelled",
+        )
+        return []
+
+    update_scan_task(
+        task_id,
+        status="running",
+        progress=0,
+        processed=0,
+        total=len(filtered_episode_dirs),
+        message=(
+            "Refreshing cached records for date prefixes: "
+            + ", ".join(date_prefixes)
+        ),
+    )
+
+    refreshed_records = build_records_from_episode_dirs_with_progress(
+        filtered_episode_dirs, task_id
+    )
+    task_state = get_scan_task(task_id)
+    if task_state is not None and task_state.get("status") == "cancelled":
+        return []
+
+    merged_records = merge_records_for_date_prefixes(
+        existing_records, refreshed_records, date_prefixes
+    )
+    cache_created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    update_cache_entry(cache_key, merged_records, cache_created_at)
+    update_scan_task(
+        task_id,
+        status="completed",
+        progress=100,
+        processed=len(refreshed_records),
+        total=len(filtered_episode_dirs),
+        message="Partial refresh completed, the page will refresh shortly",
+    )
+    return merged_records
+
+
+def scan_episode_records_with_progress(
+    base_path: Path, task_id: str
+) -> list[EpisodeRecord]:
+    try:
+        episode_dirs = iter_episode_dirs(base_path, task_id=task_id)
+    except ScanCancelledError:
+        update_scan_task(
+            task_id,
+            status="cancelled",
+            message="Scan cancelled",
+        )
+        return []
+    return build_records_from_episode_dirs_with_progress(episode_dirs, task_id)
+
+
+def scan_episode_records_parallel(base_path: Path) -> list[EpisodeRecord]:
+    episode_dirs = iter_episode_dirs(base_path)
+    if not episode_dirs:
+        return []
+
+    def build_record(item: tuple[str, str, Path]) -> EpisodeRecord:
+        user_name, task_name, episode_dir = item
+        return build_episode_record(user_name, task_name, episode_dir)
+
+    records: list[EpisodeRecord] = []
+    with ThreadPoolExecutor(max_workers=SCAN_MAX_WORKERS) as executor:
+        pending = {
+            executor.submit(build_record, item) for item in episode_dirs
+        }
+        while pending:
+            done, pending = wait(
+                pending, timeout=0.05, return_when=FIRST_COMPLETED
+            )
+            for future in done:
+                records.append(future.result())
+    return records
+
+
+def normalize_filter(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def parse_filter_items(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def extract_episode_time_prefix(episode_id: str) -> str:
+    if episode_id.startswith("episode_"):
+        return episode_id[len("episode_") :]
+    return episode_id
+
+
+def parse_filters(args: Any) -> FilterOptions:
+    page_raw = normalize_filter(args.get("page"))
+    page_size_raw = normalize_filter(args.get("page_size"))
+    try:
+        page = max(int(page_raw), 1) if page_raw else 1
+    except ValueError:
+        page = 1
+    try:
+        page_size = max(int(page_size_raw), 1) if page_size_raw else 20
+    except ValueError:
+        page_size = 20
+
+    return FilterOptions(
+        user_name=normalize_filter(args.get("user_name")),
+        task_name=normalize_filter(args.get("task_name")),
+        date_prefix=normalize_filter(args.get("date_prefix")),
+        data_root=normalize_filter(args.get("data_root")),
+        refresh=normalize_filter(args.get("refresh")).lower()
+        in {"1", "true", "yes", "y"},
+        page=page,
+        page_size=page_size,
+    )
+
+
+def resolve_base_path(filters: FilterOptions) -> Path:
+    return Path(filters.data_root) if filters.data_root else BASE_DATA_PATH
+
+
+def get_cache_key(base_path: Path) -> str:
+    try:
+        normalized = str(base_path.resolve())
+    except OSError:
+        normalized = str(base_path)
+    return normalized
+
+
+def get_cache_file_path(cache_key: str) -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = sha256(cache_key.encode("utf-8")).hexdigest()
+    return CACHE_DIR / f"{digest}.json"
+
+
+def has_cached_episode_records(base_path: Path) -> bool:
+    cache_key = get_cache_key(base_path)
+    with CACHE_LOCK:
+        if cache_key in EPISODE_CACHE:
+            return True
+    return get_cache_file_path(cache_key).exists()
+
+
+def save_cache_to_disk(
+    cache_key: str, records: list[EpisodeRecord], cache_created_at: str
+) -> None:
+    cache_file = get_cache_file_path(cache_key)
+    payload = {
+        "cache_key": cache_key,
+        "cache_created_at": cache_created_at,
+        "records": [record.model_dump(mode="json") for record in records],
+    }
+    cache_file.write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_cache_from_disk(cache_key: str) -> dict[str, Any] | None:
+    cache_file = get_cache_file_path(cache_key)
+    if not cache_file.exists():
+        return None
+
+    try:
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    records_data = payload.get("records", [])
+    if not isinstance(records_data, list):
+        return None
+
+    try:
+        records = [EpisodeRecord.model_validate(item) for item in records_data]
+    except Exception:
+        return None
+
+    return {
+        "records": records,
+        "cache_created_at": str(payload.get("cache_created_at", "")),
+    }
+
+
+def update_cache_entry(
+    cache_key: str, records: list[EpisodeRecord], cache_created_at: str
+) -> None:
+    with CACHE_LOCK:
+        EPISODE_CACHE[cache_key] = {
+            "records": records,
+            "cache_created_at": cache_created_at,
+        }
+    save_cache_to_disk(cache_key, records, cache_created_at)
+
+
+def create_scan_task(base_path: Path) -> str:
+    task_id = uuid.uuid4().hex
+    with SCAN_TASK_LOCK:
+        SCAN_TASKS[task_id] = {
+            "task_id": task_id,
+            "base_path": str(base_path),
+            "status": "pending",
+            "progress": 0,
+            "processed": 0,
+            "total": 0,
+            "cancel_requested": False,
+            "message": "Task created, waiting to start...",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    return task_id
+
+
+def update_scan_task(task_id: str, **kwargs: Any) -> None:
+    with SCAN_TASK_LOCK:
+        if task_id in SCAN_TASKS:
+            SCAN_TASKS[task_id].update(kwargs)
+
+
+def get_scan_task(task_id: str) -> dict[str, Any] | None:
+    with SCAN_TASK_LOCK:
+        task = SCAN_TASKS.get(task_id)
+        return dict(task) if task is not None else None
+
+
+def is_scan_cancel_requested(task_id: str) -> bool:
+    task_state = get_scan_task(task_id)
+    return bool(task_state is not None and task_state.get("cancel_requested"))
+
+
+def run_scan_task(task_id: str, base_path: Path) -> None:
+    try:
+        task_state = get_scan_task(task_id) or {}
+        refresh_mode = str(task_state.get("refresh_mode", "full"))
+        target_date_prefixes = [
+            str(item)
+            for item in task_state.get("target_date_prefixes", [])
+            if str(item).strip()
+        ]
+        update_scan_task(
+            task_id,
+            status="running",
+            progress=1,
+            message=(
+                "Preparing to incrementally refresh selected dates..."
+                if refresh_mode == "partial"
+                else "Preparing to scan directories..."
+            ),
+        )
+        if refresh_mode == "partial":
+            records = refresh_cached_episode_records_for_date_prefixes(
+                base_path, target_date_prefixes, task_id
+            )
+        else:
+            records = scan_episode_records_with_progress(base_path, task_id)
+        task_state = get_scan_task(task_id)
+        if task_state is not None and task_state.get("status") == "cancelled":
+            return
+        if refresh_mode != "partial":
+            cache_key = get_cache_key(base_path)
+            cache_created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            update_cache_entry(cache_key, records, cache_created_at)
+            update_scan_task(
+                task_id,
+                status="completed",
+                progress=100,
+                message="Scan completed, the page will refresh shortly",
+            )
+    except Exception as exc:  # noqa: BLE001
+        update_scan_task(
+            task_id, status="failed", message=f"Scan failed: {exc}"
+        )
+
+
+def start_scan_task(
+    base_path: Path,
+    refresh_mode: str = "full",
+    target_date_prefixes: list[str] | None = None,
+) -> str:
+    task_id = create_scan_task(base_path)
+    if refresh_mode == "partial":
+        update_scan_task(
+            task_id,
+            refresh_mode="partial",
+            target_date_prefixes=target_date_prefixes or [],
+        )
+    thread = Thread(
+        target=run_scan_task,
+        args=(task_id, base_path),
+        daemon=True,
+        name=f"scan-task-{task_id[:8]}",
+    )
+    thread.start()
+    return task_id
+
+
+def get_cached_episode_records(
+    base_path: Path, refresh: bool = False
+) -> tuple[list[EpisodeRecord], dict[str, Any]]:
+    cache_key = get_cache_key(base_path)
+
+    with CACHE_LOCK:
+        if not refresh and cache_key in EPISODE_CACHE:
+            cached = EPISODE_CACHE[cache_key]
+            return cached["records"], {
+                "cache_hit": True,
+                "cache_source": "memory",
+                "cache_created_at": cached["cache_created_at"],
+                "cache_entry_count": len(cached["records"]),
+            }
+
+    if not refresh:
+        disk_cached = load_cache_from_disk(cache_key)
+        if disk_cached is not None:
+            with CACHE_LOCK:
+                EPISODE_CACHE[cache_key] = disk_cached
+            return disk_cached["records"], {
+                "cache_hit": True,
+                "cache_source": "disk",
+                "cache_created_at": disk_cached["cache_created_at"],
+                "cache_entry_count": len(disk_cached["records"]),
+            }
+
+    records = scan_episode_records_parallel(base_path)
+    cache_created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    update_cache_entry(cache_key, records, cache_created_at)
+
+    return records, {
+        "cache_hit": False,
+        "cache_source": "refresh",
+        "cache_created_at": cache_created_at,
+        "cache_entry_count": len(records),
+    }
+
+
+def create_episode_zip_bytes(episode_path: Path) -> io.BytesIO:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(
+        buffer, mode="w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        for file_path in sorted(episode_path.rglob("*")):
+            if file_path.is_file():
+                archive.write(
+                    file_path, arcname=file_path.relative_to(episode_path)
+                )
+    buffer.seek(0)
+    return buffer
+
+
+def build_download_url(episode_path: str) -> str:
+    return f"/api/download?episode_path={quote_plus(episode_path)}"
+
+
+def count_episode_files(episode_path: Path) -> int:
+    return sum(1 for path in episode_path.rglob("*") if path.is_file())
+
+
+def refresh_all_cached_paths() -> None:
+    with CACHE_LOCK:
+        cache_keys = list(EPISODE_CACHE.keys())
+
+    for cache_key in cache_keys:
+        get_cached_episode_records(Path(cache_key), refresh=True)
+
+
+def seconds_until_next_refresh(now: datetime | None = None) -> float:
+    current = now or datetime.now()
+    next_refresh = current.replace(hour=2, minute=0, second=0, microsecond=0)
+    if current >= next_refresh:
+        next_refresh += timedelta(days=1)
+    return max((next_refresh - current).total_seconds(), 0.0)
+
+
+def auto_refresh_worker() -> None:
+    while True:
+        time.sleep(seconds_until_next_refresh())
+        refresh_all_cached_paths()
+
+
+def ensure_auto_refresh_started() -> None:
+    global AUTO_REFRESH_STARTED
+    with CACHE_LOCK:
+        if AUTO_REFRESH_STARTED:
+            return
+        thread = Thread(
+            target=auto_refresh_worker, daemon=True, name="cache-auto-refresh"
+        )
+        thread.start()
+        AUTO_REFRESH_STARTED = True
+
+
+def filter_records(
+    records: list[EpisodeRecord], filters: FilterOptions
+) -> list[EpisodeRecord]:
+    user_names = set(parse_filter_items(filters.user_name))
+    task_names = set(parse_filter_items(filters.task_name))
+    date_prefixes = parse_filter_items(filters.date_prefix)
+
+    def matched(record: EpisodeRecord) -> bool:
+        if user_names and record.user_name not in user_names:
+            return False
+        if task_names and record.task_name not in task_names:
+            return False
+        episode_time_prefix = extract_episode_time_prefix(record.episode_id)
+        if date_prefixes and not any(
+            episode_time_prefix.startswith(prefix) for prefix in date_prefixes
+        ):
+            return False
+        return True
+
+    return [record for record in records if matched(record)]
+
+
+def build_summary(
+    records: list[EpisodeRecord], base_path: Path
+) -> dict[str, Any]:
+    by_user_task_day: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(int))
+    )
+    by_user_task_day_hours: dict[str, dict[str, dict[str, float]]] = (
+        defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    )
+    by_day_total: dict[str, int] = defaultdict(int)
+    by_day_hours: dict[str, float] = defaultdict(float)
+    by_user_total: dict[str, int] = defaultdict(int)
+    by_user_hours: dict[str, float] = defaultdict(float)
+    by_task_total: dict[str, int] = defaultdict(int)
+    by_task_hours: dict[str, float] = defaultdict(float)
+
+    for record in records:
+        by_user_task_day[record.user_name][record.task_name][record.day] += 1
+        by_user_task_day_hours[record.user_name][record.task_name][
+            record.day
+        ] += record.duration_hours
+        by_day_total[record.day] += 1
+        by_day_hours[record.day] += record.duration_hours
+        by_user_total[record.user_name] += 1
+        by_user_hours[record.user_name] += record.duration_hours
+        by_task_total[record.task_name] += 1
+        by_task_hours[record.task_name] += record.duration_hours
+
+    all_days = sorted(by_day_total.keys())
+    users: list[dict[str, Any]] = []
+    for user_name in sorted(by_user_task_day.keys()):
+        tasks = []
+        for task_name in sorted(by_user_task_day[user_name].keys()):
+            day_counts = dict(
+                sorted(by_user_task_day[user_name][task_name].items())
+            )
+            day_hours = {
+                day: round_hours(hours)
+                for day, hours in sorted(
+                    by_user_task_day_hours[user_name][task_name].items()
+                )
+            }
+            tasks.append(
+                {
+                    "task_name": task_name,
+                    "total": sum(day_counts.values()),
+                    "day_counts": day_counts,
+                    "total_hours": round_hours(sum(day_hours.values())),
+                    "total_duration_text": format_duration_hours(
+                        sum(day_hours.values())
+                    ),
+                    "day_hours": day_hours,
+                    "day_duration_text": {
+                        day: format_duration_hours(hours)
+                        for day, hours in day_hours.items()
+                    },
+                }
+            )
+        users.append(
+            {
+                "user_name": user_name,
+                "total": by_user_total[user_name],
+                "total_hours": round_hours(by_user_hours[user_name]),
+                "total_duration_text": format_duration_hours(
+                    by_user_hours[user_name]
+                ),
+                "tasks": tasks,
+            }
+        )
+
+    hours_by_day = {
+        day: round_hours(hours) for day, hours in sorted(by_day_hours.items())
+    }
+    hours_by_user = {
+        user_name: round_hours(hours)
+        for user_name, hours in sorted(by_user_hours.items())
+    }
+    hours_by_task = {
+        task_name: round_hours(hours)
+        for task_name, hours in sorted(by_task_hours.items())
+    }
+    episodes = [
+        {
+            "episode_id": record.episode_id,
+            "user_name": record.user_name,
+            "task_name": record.task_name,
+            "day": record.day,
+            "path": record.path,
+            "duration_hours": record.duration_hours,
+            "duration_text": format_duration_hours(record.duration_hours),
+            "download_url": build_download_url(record.path),
+        }
+        for record in sorted(
+            records,
+            key=lambda item: (
+                item.day,
+                item.user_name,
+                item.task_name,
+                item.episode_id,
+            ),
+            reverse=True,
+        )
+    ]
+
+    return {
+        "base_path": str(base_path),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total_episodes": len(records),
+        "total_hours": round_hours(
+            sum(record.duration_hours for record in records)
+        ),
+        "total_duration_text": format_duration_hours(
+            sum(record.duration_hours for record in records)
+        ),
+        "filters": {
+            "user_name": "",
+            "task_name": "",
+            "date_prefix": "",
+            "data_root": str(base_path),
+            "refresh": False,
+        },
+        "cache": {
+            "cache_hit": False,
+            "cache_source": "refresh",
+            "cache_created_at": "",
+            "cache_entry_count": len(records),
+        },
+        "days": all_days,
+        "totals": {
+            "by_day": dict(sorted(by_day_total.items())),
+            "hours_by_day": hours_by_day,
+            "duration_text_by_day": {
+                day: format_duration_hours(hours)
+                for day, hours in hours_by_day.items()
+            },
+            "by_user": dict(sorted(by_user_total.items())),
+            "hours_by_user": hours_by_user,
+            "duration_text_by_user": {
+                user_name: format_duration_hours(hours)
+                for user_name, hours in hours_by_user.items()
+            },
+            "by_task": dict(sorted(by_task_total.items())),
+            "hours_by_task": hours_by_task,
+            "duration_text_by_task": {
+                task_name: format_duration_hours(hours)
+                for task_name, hours in hours_by_task.items()
+            },
+        },
+        "users": users,
+        "episodes": episodes,
+    }
+
+
+def build_summary_with_filters(
+    records: list[EpisodeRecord],
+    base_path: Path,
+    filters: FilterOptions,
+    cache_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    filtered_records = filter_records(records, filters)
+    summary = build_summary(filtered_records, base_path)
+    total_pages = max(
+        (len(summary["episodes"]) + filters.page_size - 1)
+        // filters.page_size,
+        1,
+    )
+    current_page = min(max(filters.page, 1), total_pages)
+    start_index = (current_page - 1) * filters.page_size
+    end_index = start_index + filters.page_size
+    summary["episodes"] = summary["episodes"][start_index:end_index]
+    summary["filters"] = {
+        "user_name": filters.user_name,
+        "task_name": filters.task_name,
+        "date_prefix": filters.date_prefix,
+        "data_root": str(base_path),
+        "refresh": filters.refresh,
+        "page": current_page,
+        "page_size": filters.page_size,
+    }
+    summary["pagination"] = {
+        "page": current_page,
+        "page_size": filters.page_size,
+        "total_items": len(filtered_records),
+        "total_pages": total_pages,
+        "has_prev": current_page > 1,
+        "has_next": current_page < total_pages,
+        "start_index": start_index + 1 if filtered_records else 0,
+        "end_index": min(end_index, len(filtered_records)),
+    }
+    if cache_info is not None:
+        summary["cache"] = cache_info
+    return summary
+
+
+def load_summary_from_request_args(args: Any) -> dict[str, Any]:
+    ensure_auto_refresh_started()
+    filters = parse_filters(args)
+    base_path = resolve_base_path(filters)
+    records, cache_info = get_cached_episode_records(
+        base_path, refresh=filters.refresh
+    )
+    return build_summary_with_filters(records, base_path, filters, cache_info)
+
+
+def build_loading_summary(
+    base_path: Path, filters: FilterOptions, task_id: str
+) -> dict[str, Any]:
+    return {
+        "base_path": str(base_path),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total_episodes": 0,
+        "total_hours": 0.0,
+        "total_duration_text": format_duration_hours(0.0),
+        "filters": {
+            "user_name": filters.user_name,
+            "task_name": filters.task_name,
+            "date_prefix": filters.date_prefix,
+            "data_root": str(base_path),
+            "refresh": filters.refresh,
+            "page": max(filters.page, 1),
+            "page_size": filters.page_size,
+        },
+        "cache": {
+            "cache_hit": False,
+            "cache_source": "loading",
+            "cache_created_at": "",
+            "cache_entry_count": 0,
+        },
+        "days": [],
+        "totals": {
+            "by_day": {},
+            "hours_by_day": {},
+            "duration_text_by_day": {},
+            "by_user": {},
+            "hours_by_user": {},
+            "duration_text_by_user": {},
+            "by_task": {},
+            "hours_by_task": {},
+            "duration_text_by_task": {},
+        },
+        "users": [],
+        "episodes": [],
+        "pagination": {
+            "page": max(filters.page, 1),
+            "page_size": filters.page_size,
+            "total_items": 0,
+            "total_pages": 1,
+            "has_prev": False,
+            "has_next": False,
+            "start_index": 0,
+            "end_index": 0,
+        },
+        "loading": {
+            "is_loading": True,
+            "scan_task_id": task_id,
+            "message": "No cache found yet. Starting initial scan...",
+        },
+    }
+
+
+def maybe_build_initial_loading_summary(args: Any) -> dict[str, Any] | None:
+    ensure_auto_refresh_started()
+    filters = parse_filters(args)
+    base_path = resolve_base_path(filters)
+    if filters.refresh or has_cached_episode_records(base_path):
+        return None
+
+    task_id = start_scan_task(base_path)
+    return build_loading_summary(base_path, filters, task_id)
+
+
+@app.get("/")
+def index():
+    loading_summary = maybe_build_initial_loading_summary(request.args)
+    if loading_summary is not None:
+        return render_template("index.html", summary=loading_summary)
+    summary = load_summary_from_request_args(request.args)
+    return render_template("index.html", summary=summary)
+
+
+@app.get("/api/summary")
+def api_summary():
+    summary = load_summary_from_request_args(request.args)
+    return jsonify(summary)
+
+
+@app.post("/api/scan-tasks")
+def create_scan_task_api():
+    data = request.get_json(silent=True) or {}
+    data_root = str(data.get("data_root", "")).strip()
+    refresh_mode = str(data.get("refresh_mode", "full")).strip() or "full"
+    date_prefixes = normalize_date_prefixes(str(data.get("date_prefix", "")))
+    if not data_root:
+        data_root = str(BASE_DATA_PATH)
+
+    base_path = Path(data_root)
+    if refresh_mode not in {"full", "partial"}:
+        abort(400, description="refresh_mode must be full or partial")
+    if refresh_mode == "partial" and not date_prefixes:
+        abort(400, description="date_prefix is required for partial refresh")
+
+    task_id = start_scan_task(
+        base_path,
+        refresh_mode=refresh_mode,
+        target_date_prefixes=date_prefixes,
+    )
+    task = get_scan_task(task_id)
+    return jsonify(task), 202
+
+
+@app.get("/api/scan-tasks/<task_id>")
+def get_scan_task_api(task_id: str):
+    task = get_scan_task(task_id)
+    if task is None:
+        abort(404, description="Scan task not found")
+    return jsonify(task)
+
+
+@app.post("/api/scan-tasks/<task_id>/cancel")
+def cancel_scan_task_api(task_id: str):
+    task = get_scan_task(task_id)
+    if task is None:
+        abort(404, description="Scan task not found")
+
+    update_scan_task(
+        task_id,
+        cancel_requested=True,
+        message="Cancelling scan task...",
+    )
+    return jsonify(get_scan_task(task_id))
+
+
+@app.post("/api/submit-jobs/prepare")
+def prepare_submit_job_api():
+    data = request.get_json(silent=True) or {}
+    source = str(data.get("source", "")).strip()
+    data_root = str(data.get("data_root", "")).strip()
+    filters_payload = (
+        data.get("filters", {})
+        if isinstance(data.get("filters"), dict)
+        else {}
+    )
+
+    if source not in {"check", "pack"}:
+        abort(400, description="source must be check or pack")
+
+    base_path = Path(data_root) if data_root else BASE_DATA_PATH
+    filters = FilterOptions(
+        user_name=str(filters_payload.get("user_name", "")).strip(),
+        task_name=str(filters_payload.get("task_name", "")).strip(),
+        date_prefix=str(filters_payload.get("date_prefix", "")).strip(),
+        data_root=str(base_path),
+    )
+    if not (filters.user_name or filters.task_name or filters.date_prefix):
+        abort(400, description="Please search first before submitting jobs")
+
+    try:
+        payload = create_submit_config(source, base_path, filters)
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        abort(400, description=str(exc))
+
+    return jsonify(payload), 201
+
+
+@app.post("/api/submit-jobs/<config_id>/submit")
+def submit_job_api(config_id: str):
+    data = request.get_json(silent=True) or {}
+    config = data.get("config")
+    if not isinstance(config, dict):
+        abort(400, description="config must be a JSON object")
+    config_data = cast(dict[str, Any], config)
+
+    try:
+        result = start_submit_task(config_id, config_data)
+    except FileNotFoundError as exc:
+        abort(404, description=str(exc))
+    except RuntimeError as exc:
+        abort(400, description=str(exc))
+
+    return jsonify(result), 202
+
+
+@app.get("/api/submit-jobs/tasks/<task_id>")
+def get_submit_task_api(task_id: str):
+    task = get_submit_task(task_id)
+    if task is None:
+        abort(404, description="Submit task not found")
+    return jsonify(task)
+
+
+@app.get("/api/download")
+def download_episode_zip():
+    episode_path_raw = request.args.get("episode_path", "").strip()
+    if not episode_path_raw:
+        abort(400, description="Missing episode_path")
+
+    episode_path = Path(episode_path_raw)
+    if not episode_path.exists() or not episode_path.is_dir():
+        abort(404, description="Episode path not found")
+
+    zip_bytes = create_episode_zip_bytes(episode_path)
+    download_name = f"{episode_path.name}.zip"
+    return send_file(
+        zip_bytes,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=download_name,
+    )
+
+
+@app.get("/api/download-status")
+def download_episode_status():
+    episode_path_raw = request.args.get("episode_path", "").strip()
+    if not episode_path_raw:
+        abort(400, description="Missing episode_path")
+
+    episode_path = Path(episode_path_raw)
+    if not episode_path.exists() or not episode_path.is_dir():
+        abort(404, description="Episode path not found")
+
+    return jsonify(
+        {
+            "episode_path": str(episode_path),
+            "file_count": count_episode_files(episode_path),
+            "status": "preparing",
+            "message": (
+                "Packaging in progress. "
+                f"Detected {count_episode_files(episode_path)} files. "
+                "Please wait..."
+            ),
+        }
+    )
+
+
+if __name__ == "__main__":
+    app.run(
+        host=get_env_value("HOST", "0.0.0.0"),
+        port=int(get_env_value("PORT", "8000")),
+        debug=get_env_bool("FLASK_DEBUG", False),
+    )
