@@ -28,6 +28,6 @@
         "robo_orchard_lab"
     ],
     "job_password": "1227",
-    "queue_name": "share-cpu-bcloud",
-    "project_id": "Robot-lab"
+    "queue_name": "project-cpu-horizon-labs-bcloud",
+    "project_id": "horizon-labs"
 }

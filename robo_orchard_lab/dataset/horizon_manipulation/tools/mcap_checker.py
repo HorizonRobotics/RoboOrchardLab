@@ -44,6 +44,68 @@ from robo_orchard_lab.dataset.horizon_manipulation.utils import (
 logger = logging.getLogger(__name__)
 
 
+def get_h264_encoder() -> str:
+    """Return an available ffmpeg H.264 encoder."""
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    encoders = result.stdout
+    for encoder in ("libx264", "libopenh264", "h264_v4l2m2m"):
+        if encoder in encoders:
+            return encoder
+    raise RuntimeError("No supported H.264 encoder found in ffmpeg")
+
+
+class FfmpegVideoWriter:
+    """Stream raw BGR frames to ffmpeg and encode them as mp4."""
+
+    def __init__(self, video_file: str, frame_size, fps: int):
+        width, height = frame_size
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "-",
+            "-an",
+            "-c:v",
+            get_h264_encoder(),
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            video_file,
+        ]
+        self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        self.stdin = self.process.stdin
+
+    def write(self, frame: np.ndarray) -> None:
+        if self.stdin is None:
+            raise RuntimeError("ffmpeg stdin is not available")
+        self.stdin.write(frame.tobytes())
+
+    def release(self) -> None:
+        if self.stdin is not None and not self.stdin.closed:
+            self.stdin.close()
+        returncode = self.process.wait()
+        if returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg exited with non-zero status: {returncode}"
+            )
+
+
 class PiperMcapChecker:
     """Abstact class of Packing data into target packtype.
 
@@ -566,7 +628,6 @@ class PiperMcapChecker:
         file = os.path.join(
             self.output_path, f"{uuid.replace(os.sep, '-')}.mp4"
         )
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         num_steps = len(data["joint_positions"])
         for i in range(0, num_steps, self.vis_interval):
             imgs = []
@@ -651,14 +712,14 @@ class PiperMcapChecker:
             )
 
             if video_writer is None:
-                video_writer = cv2.VideoWriter(
+                video_writer = FfmpegVideoWriter(
                     file,
-                    fourcc,
-                    self.vis_fps // self.vis_interval,
                     vis_img.shape[:2][::-1],
+                    self.vis_fps // self.vis_interval,
                 )
             video_writer.write(vis_img)
-        video_writer.release()
+        if video_writer is not None:
+            video_writer.release()
         return file
 
     def handler(self, ep_id):
