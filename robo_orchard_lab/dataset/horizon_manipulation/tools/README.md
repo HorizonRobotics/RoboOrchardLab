@@ -60,6 +60,7 @@ python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.upload_data \
     --date_prefix ${date_prefix} \
     --num_workers 10 \
     --token ${aidi_token} \
+    [--skip_existing_same_size] \
     $@
 ```
 

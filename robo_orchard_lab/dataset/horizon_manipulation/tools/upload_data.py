@@ -111,6 +111,28 @@ def search_valid_data(date_prefix, user_names, task_names, data_root):
     return valid_data_episodes
 
 
+def should_skip_existing_file(
+    src_file: str,
+    target_file: str,
+    skip_existing_same_size: bool = False,
+) -> bool:
+    if not skip_existing_same_size:
+        return False
+
+    src_fs = get_fsspec_filesystem(src_file)
+    target_fs = get_fsspec_filesystem(target_file)
+    if not target_fs.exists(target_file):
+        return False
+
+    target_size = target_fs.info(target_file)["size"]
+    src_size = src_fs.info(src_file)["size"]
+    if src_size != target_size:
+        return False
+
+    logger.info(f"Skip existing file with same size: {target_file}")
+    return True
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -132,6 +154,14 @@ if __name__ == "__main__":
     parser.add_argument("--date_prefix", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--token", type=str, default=None)
+    parser.add_argument(
+        "--skip_existing_same_size",
+        action="store_true",
+        help=(
+            "Skip upload when the target file already exists "
+            "with the same size."
+        ),
+    )
     args = parser.parse_args()
 
     date_prefix = args.date_prefix
@@ -145,6 +175,7 @@ if __name__ == "__main__":
     valid_data_episodes = search_valid_data(
         date_prefix, user_names, task_names, args.input_path
     )
+    valid_data_episodes.sort()
     num_total_episode = len(valid_data_episodes)
     logger.info(f"Number of valid episodes: {num_total_episode}")
     for user_name in user_names:
@@ -174,6 +205,7 @@ if __name__ == "__main__":
         num_workers=num_workers,
         max_queue_size=num_workers * 4,
     )
+
     for i, episode in enumerate(valid_data_episodes):
         logger.info(f"Start copy [{i + 1} / {num_total_episode}]: {episode}")
         for file in os.listdir(episode):
@@ -181,6 +213,12 @@ if __name__ == "__main__":
             target_file = os.path.join(
                 output_path, *src_file.split(os.sep)[-4:]
             )
+            if should_skip_existing_file(
+                src_file=src_file,
+                target_file=target_file,
+                skip_existing_same_size=args.skip_existing_same_size,
+            ):
+                continue
             try:
                 executor.put(
                     src=src_file,
