@@ -22,7 +22,6 @@ class ValueSampling:
         self.task_max_step = task_max_step
 
     def __call__(self, data):
-
         is_rollout = data.get("metas", {}).get("rollout", [False])[0]
         is_success = data.get("metas", {}).get("success", [True])[0]
 

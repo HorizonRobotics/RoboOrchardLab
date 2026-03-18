@@ -64,7 +64,6 @@ class HoloBrain_Value_Qwen2_5_VL(HoloBrain_Qwen2_5_VL):  # noqa: N801
         return pred_value
 
     def load_state_dict(self, state_dict, strict=False, **kwargs):
-
         # filter out state keys with tensor shape mismatch manually
         filtered_state_dict = {
             k: v

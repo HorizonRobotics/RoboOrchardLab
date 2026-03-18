@@ -33,65 +33,65 @@ bash_command_template = (
     "python3 eval_policy.py --config holobrain_libero_policy/deploy_policy.yml"
     "  --task_id {task_id} "
     "  --output_dir {output_dir} "
+    "  --task_suite {task_suite} "
+    "  --num_trials_per_task {num_trials_per_task} "
+    "  --num_steps_wait {num_steps_wait} "
+    "  --save_video {save_video} "
     "  --overrides "
     "  --model_config {model_config} "
     "  --model_prefix {model_prefix} "
     "  --vlm_ckpt_dir {vlm_ckpt_dir} "
     "  --urdf_dir {urdf_dir} "
     "  --model_processor {model_processor} "
-    "  --task_suite {task_suite} "
-    "  --num_trials_per_task {num_trials_per_task} "
-    "  --num_steps_wait {num_steps_wait} "
-    "  --save_video {save_video} "
 )
 
 
-def eval_tasks(gpu_id, grouped_batches, args, results=None):
+def eval_tasks(gpu_id, tasks, args, results=None):
     if_cluster = os.environ.get("CLUSTER") is not None
     if results is None:
         results = {}
-    for suite_name, task_id in grouped_batches:
+    for suite_name, task_id in tasks:
         if not if_cluster:
-            log_dir = f"eval_result/gpu_{gpu_id}/{suite_name}"
+            log_dir = f"eval_result/{suite_name}/task_{task_id}"
         else:
-            log_dir = f"/job_data/gpu_{gpu_id}/{suite_name}"
+            log_dir = f"/job_data/{suite_name}/task_{task_id}"
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, "log.txt")
-        logger.info(f"Start to eval task[{task_id}], log file: {log_file}")
-        task_id_str = json.dumps(task_id)
+        logger.info(
+            f"Start to eval {suite_name} task_{task_id}, log file: {log_file}"
+        )
         command = bash_command_template.format(
             gpu_id=gpu_id,
-            task_id=f"'{task_id_str}'",
+            task_id=task_id,
+            output_dir=log_dir,
+            task_suite=suite_name,
+            num_trials_per_task=args.num_trials_per_task,
+            num_steps_wait=args.num_steps_wait,
+            save_video=args.save_video,
             model_config=args.model_config,
             model_prefix=args.model_prefix,
             vlm_ckpt_dir=args.vlm_ckpt_dir,
             urdf_dir=args.urdf_dir,
             model_processor=args.model_processor,
-            task_suite=suite_name,
-            num_trials_per_task=args.num_trials_per_task,
-            num_steps_wait=args.num_steps_wait,
-            save_video=args.save_video,
-            output_dir=log_dir,
         )
         with open(log_file, "w", encoding="utf-8") as f:
             ret = subprocess.run(
                 command, shell=True, stdout=f, stderr=subprocess.STDOUT
             )
-        json_result_file = os.path.join(log_dir, "results.json")
         if ret.returncode == 0:
-            if os.path.exists(json_result_file):
-                try:
-                    with open(json_result_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if suite_name in data:
-                            for t_key, rate in data[suite_name].items():
-                                results[(suite_name, t_key)] = rate
-                except Exception as e:
-                    logger.error(
-                        f"Failed to load JSON {json_result_file}: {e}"
-                    )
+            json_result_file = os.path.join(log_dir, "results.json")
+            with open(json_result_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            results[(suite_name, f"task_{task_id}")] = data["success_rate"]
+            logger.info(
+                f"Finished eval {suite_name} task_{task_id}."
+                f" success rate: {data['success_rate']}"
+            )
         else:
-            logger.info(f"Batch failed with return code {ret.returncode}")
+            logger.info(
+                f"Fail to eval {suite_name} task_{task_id}"
+                f"with returncode {ret.returncode}"
+            )
     return results
 
 
@@ -104,22 +104,17 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_config", type=str)
-    parser.add_argument("--model_prefix", type=str, default="model_0")
-
-    parser.add_argument(
-        "--vlm_ckpt_dir",
-        type=str,
-        default="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt",
-    )
-    parser.add_argument(
-        "--urdf_dir",
-        type=str,
-        default="/horizon-bucket/robot_lab/users/xuewu.lin/urdf",
-    )
+    parser.add_argument("--model_prefix", type=str, default=None)
+    parser.add_argument("--vlm_ckpt_dir", type=str, default=None)
+    parser.add_argument("--urdf_dir", type=str, default=None)
     parser.add_argument(
         "--model_processor", type=str, default="libero_processor"
     )
-    parser.add_argument("--task_suite", type=str, default="-1")
+    parser.add_argument(
+        "--task_suite",
+        type=str,
+        default="libero_10,libero_goal,libero_object,libero_spatial",
+    )
     parser.add_argument(
         "--task_id", type=int, default=-1, help="Specific task id to run"
     )
@@ -131,30 +126,16 @@ if __name__ == "__main__":
 
     logger.info("\n" + json.dumps(vars(args), indent=4))
     benchmark_dict = benchmark.get_benchmark_dict()
-    if args.task_suite == "-1":
-        target_suites = [
-            "libero_10",
-            "libero_goal",
-            "libero_object",
-            "libero_spatial",
-        ]
-        logger.info(
-            f"Task Suite set to -1. Will run ALL suites: {target_suites}"
-        )
-    else:
-        if args.task_suite not in benchmark_dict:
-            logger.error(
-                f"Task suite '{args.task_suite}' not found in benchmark dict."
-            )
-            sys.exit(1)
-        target_suites = [args.task_suite]
+    target_suites = [
+        x for x in args.task_suite.lower().split(",") if x in benchmark_dict
+    ]
 
-    all_jobs = []
+    all_tasks = []
     for s_name in target_suites:
         task_suite_instance = benchmark_dict[s_name]()
         num_tasks = task_suite_instance.n_tasks
         for i in range(num_tasks):
-            all_jobs.append((s_name, i))
+            all_tasks.append((s_name, i))
 
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
@@ -163,38 +144,21 @@ if __name__ == "__main__":
 
     logger.info(f"Found {num_gpus} GPUs. Distributing {num_tasks} tasks...")
 
-    tasks_allocated = [[] for _ in range(num_gpus)]
-    total_jobs = len(all_jobs)
-    chunk_size = total_jobs // num_gpus
-    remainder = total_jobs % num_gpus
-    start_idx = 0
-    for i in range(num_gpus):
-        current_count = chunk_size + (1 if i < remainder else 0)
-        end_idx = start_idx + current_count
-        tasks_allocated[i] = all_jobs[start_idx:end_idx]
-        start_idx = end_idx
+    tasks_allocated = [[] for _ in range(min(num_gpus, len(all_tasks)))]
+    for index, task in enumerate(all_tasks):
+        tasks_allocated[index % num_gpus].append(task)
 
-    def merge_tasks_by_suite(gpu_job_list):
-        from collections import defaultdict
-
-        merged_dict = defaultdict(list)
-        for s_name, t_id in gpu_job_list:
-            merged_dict[s_name].append(t_id)
-        return list(merged_dict.items())
-
-    if len(all_jobs) > 1:
+    if len(all_tasks) > 1:
         manager = multiprocessing.Manager()
         results = manager.dict()
         processes = []
         start_time = datetime.now()
-        for gpu_id in range(num_gpus):
-            gpu_tasks = tasks_allocated[gpu_id]
-            grouped_batches = merge_tasks_by_suite(gpu_tasks)
-            if not grouped_batches:
-                continue
+
+        for gpu_id, gpu_tasks in enumerate(tasks_allocated):
+            logger.info(f"{gpu_id}: {gpu_tasks}")
             p = multiprocessing.Process(
                 target=eval_tasks,
-                args=(gpu_id, grouped_batches, args, results),
+                args=(gpu_id, gpu_tasks, args, results),
             )
             p.start()
             processes.append(p)
@@ -202,7 +166,7 @@ if __name__ == "__main__":
             p.join()
         results = dict(results)
     else:
-        results = eval_tasks(0, all_jobs, args)
+        results = eval_tasks(0, all_tasks, args)
 
     nested_results = {}
     for (s_name, t_key), rate in results.items():
@@ -214,15 +178,23 @@ if __name__ == "__main__":
 
     logger.info("=" * 50)
     logger.info(f"Evaluation Finished in {datetime.now() - start_time}")
+
+    mean_average_rate = []
     for s_name in target_suites:
         if s_name in nested_results:
             rates = list(nested_results[s_name].values())
             mean_rate = sum(rates) / len(rates)
 
             final_output["overall_summary"][s_name] = {
-                "mean_success_rate": mean_rate,
+                "average_success_rate": mean_rate,
                 "num_tasks": len(rates),
             }
+            mean_average_rate.append(mean_rate)
+    final_output["overall_summary"]["average_success_rate_across_suites"] = (
+        sum(mean_average_rate) / len(mean_average_rate)
+        if mean_average_rate
+        else 0.0
+    )
 
     logger.info("Detailed JSON Results:")
     logger.info(json.dumps(final_output, indent=4))

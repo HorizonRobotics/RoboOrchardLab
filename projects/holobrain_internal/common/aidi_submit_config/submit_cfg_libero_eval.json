@@ -9,11 +9,12 @@
     "wall_time": 14400,
     "cmd": [
         "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+        "pip install pyzstd",
         "export HYDRA_FULL_ERROR=1",
         "ln -s /horizon-bucket/robot_lab/users/shijie.wu/LIBERO-datasets/assets libero/libero/assets",
         "yes | python3 libero_eval.py \\",
-        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2026-01-31/17-13/sem_v6_libero_rgb_cos-20260131-171331.924306/output/checkpoints/checkpoint_20/' \\",
-        "  --model_prefix model_0 \\",
+        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin/plat_gpu/2026-03-10/09-16/holobrain_alldata_resume2nd_b1f95c70_1c1e_11f1_9af4_472d84a70d73/output/checkpoints/checkpoint_10/' \\",
+        "  --model_prefix model \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
         "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
         "  --model_processor libero_processor \\",
@@ -30,5 +31,5 @@
     ],
     "job_password": "1227",
     "queue_name": "project-5090-robot-lab-debug-bcloud-bj",
-    "project_id": "Robot-lab"
+    "project_id": "horizon-labs"
 }
