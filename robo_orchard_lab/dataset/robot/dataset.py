@@ -39,6 +39,7 @@ from datasets import (
     Features,
 )
 from datasets.arrow_dataset import Column, SplitDict
+from robo_orchard_core.utils.config import ClassType
 from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
 from sqlalchemy.sql import func
@@ -52,6 +53,9 @@ from robo_orchard_lab.dataset.robot.dataset_db_engine import (
     get_local_db_md5,
     get_local_db_url,
     try_upgrade_database,
+)
+from robo_orchard_lab.dataset.robot.dataset_ex import (
+    DatasetItem,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
@@ -70,6 +74,7 @@ __all__ = [
     "RODatasetInfo",
     "ROMultiRowDataset",
     "ConcatRODataset",
+    "RODatasetItem",
     "_complete_dataset_info",
     "get_row_num_from_dataset_info",
 ]
@@ -886,7 +891,7 @@ class ROMultiRowDataset(RODataset):
             Defaults to None.
         meta_index2meta (bool, optional): Whether to convert the index-based
             metadata to actual metadata objects when accessing the dataset.
-            Defaults to True.
+            Defaults to False.
     """
 
     def __init__(
@@ -894,7 +899,7 @@ class ROMultiRowDataset(RODataset):
         dataset_path: str,
         row_sampler: MultiRowSamplerConfig,
         storage_options: dict | None = None,
-        meta_index2meta: bool = True,
+        meta_index2meta: bool = False,
     ):
         super().__init__(dataset_path, storage_options, meta_index2meta)
         self._column_datasets = {}
@@ -1189,6 +1194,42 @@ class ConcatRODataset(TorchDataset):
             row[self.dataset_index_key] = dataset_idx
             ret.append(row)
         return ret
+
+
+class RODatasetItem(DatasetItem[RODataset]):
+    """A DatasetItem for RODataset."""
+
+    class_type: ClassType[RODataset] = RODataset
+    dataset_path: str
+    storage_options: dict | None = None
+    meta_index2meta: bool = False
+
+    transform: Callable | None = None
+
+    def get_dataset_row_num(self) -> int:
+        """Get the number of rows in the dataset."""
+        rows = get_row_num_from_dataset_info(
+            dataset_path=self.dataset_path,
+        )
+        if rows is not None:
+            return rows
+
+        dataset = RODataset(
+            dataset_path=self.dataset_path,
+            storage_options=self.storage_options,
+            meta_index2meta=self.meta_index2meta,
+        )
+        return len(dataset)
+
+    def _create_dataset(self) -> RODataset:
+        """Create a dataset from the dataset item configuration."""
+        dataset = RODataset(
+            dataset_path=self.dataset_path,
+            storage_options=self.storage_options,
+            meta_index2meta=self.meta_index2meta,
+        )
+        dataset.set_transform(self.transform)
+        return dataset
 
 
 def _get_dataset_db_url(dataset_path: str) -> URL:

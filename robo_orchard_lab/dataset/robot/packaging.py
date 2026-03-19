@@ -507,6 +507,13 @@ class DatasetPackaging:
         db_folder = os.path.dirname(dataset_path)
         os.makedirs(db_folder, exist_ok=True)
         db_path = dataset_path + f"_meta.{self._database_driver}"
+        if os.path.exists(db_path):
+            warnings.warn(
+                f"The temporary meta database path '{db_path}' already "
+                "exists. It will be overwritten."
+            )
+            os.remove(db_path)
+
         db_new_path = os.path.join(
             dataset_path, f"meta_db.{self._database_driver}"
         )

@@ -28,6 +28,7 @@ from robo_orchard_core.datatypes.camera_data import (
     BatchCameraInfo,
     BatchImageData,
     Distortion,
+    ImageChannelLayout,
     ImageMode,
 )
 
@@ -47,6 +48,7 @@ from robo_orchard_lab.dataset.datatypes.hg_features.tensor import (
 )
 
 __all__ = [
+    "ImageChannelLayout",
     "ImageMode",
     "DistortionFeature",
     "Distortion",

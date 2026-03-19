@@ -148,7 +148,9 @@ def test_dataset_consistency(
     )
     joint_sampler = EpisodeSamplerConfig(target_columns=["joints", "actions"])
     arrow_dataset = ROMultiRowDataset(
-        dataset_path=arrow_dataset_path, row_sampler=joint_sampler
+        dataset_path=arrow_dataset_path,
+        row_sampler=joint_sampler,
+        meta_index2meta=True,
     )
     arrow_dataset.set_transform(data_parser)
 
@@ -219,7 +221,9 @@ def test_dataset_extrinsic_override(prepared_datasets):
     )
     joint_sampler = EpisodeSamplerConfig(target_columns=["joints", "actions"])
     arrow_dataset = ROMultiRowDataset(
-        dataset_path=arrow_dataset_path, row_sampler=joint_sampler
+        dataset_path=arrow_dataset_path,
+        row_sampler=joint_sampler,
+        meta_index2meta=True,
     )
     arrow_dataset.set_transform(data_parser)
 

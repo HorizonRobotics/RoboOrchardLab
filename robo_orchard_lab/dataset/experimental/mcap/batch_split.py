@@ -242,7 +242,7 @@ class SplitBatchByTopics(BatchSplitMixin):
             bool: True if a new batch should be started, False otherwise.
         """
 
-        cur_topic = msg.channel.topic
+        cur_topic = msg.topic
         if cur_topic not in self._splits:
             return False
 
@@ -325,7 +325,7 @@ def iter_messages_batch(
         if prev_ts != msg.message.log_time:
             prev_ts = msg.message.log_time
             prev_last_msgs = last_msgs.copy()
-        last_msgs[msg.channel.topic] = msg
+        last_msgs[msg.topic] = msg
         if batch_split.need_split(msg):
             # set the last_batch flat to false and
             # return the previous batch

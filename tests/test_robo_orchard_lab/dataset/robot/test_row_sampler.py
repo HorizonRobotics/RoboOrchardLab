@@ -176,6 +176,7 @@ class TestEpisodeSampler:
         dataset = ROMultiRowDataset(
             dataset_path=path,
             row_sampler=cfg,
+            meta_index2meta=True,
         )
 
         print(len(dataset))

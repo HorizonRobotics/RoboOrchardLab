@@ -28,11 +28,16 @@ from foxglove_schemas_protobuf.CompressedImage_pb2 import (
 from foxglove_schemas_protobuf.FrameTransform_pb2 import (
     FrameTransform as FgFrameTransform,
 )
+from foxglove_schemas_protobuf.RawImage_pb2 import RawImage as FgRawImage
+from google.protobuf.timestamp import from_nanoseconds
 
 from robo_orchard_lab.dataset.datatypes.camera import (
     BatchCameraData,
     BatchCameraDataEncoded,
+    BatchImageData,
     Distortion,
+    ImageChannelLayout,
+    ImageMode,
 )
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
     MessageConverterConfig,
@@ -42,6 +47,9 @@ from robo_orchard_lab.dataset.experimental.mcap.msg_converter.frame_transform im
     ToBatchFrameTransformConfig,
 )
 from robo_orchard_lab.transforms.image import ImageDecodeConfig
+from robo_orchard_lab.transforms.image.formatter import (
+    ImageLayoutFormatterConfig,
+)
 
 __all__ = [
     "FgCameraCompressedImages",
@@ -49,6 +57,8 @@ __all__ = [
     "ToBatchCameraDataEncoded",
     "ToBatchCameraDataConfig",
     "ToBatchCameraDataEncodedConfig",
+    "FromBatchImageData",
+    "FromBatchImageDataConfig",
 ]
 
 
@@ -257,3 +267,77 @@ class ToBatchCameraDataConfig(
     class_type: type[ToBatchCameraData] = ToBatchCameraData
 
     backend: Literal["pil", "cv2"] = "cv2"
+
+
+class FromBatchImageData(
+    MessageConverterStateless[BatchImageData, list[FgRawImage]]
+):
+    _cfg: FromBatchImageDataConfig
+
+    def __init__(self, cfg: FromBatchImageDataConfig):
+        self._cfg = cfg
+
+        self._layout_formatter = ImageLayoutFormatterConfig(
+            output_layout=ImageChannelLayout.HWC,
+            input_columns=["image"],
+        )()
+
+    def convert(self, data: BatchImageData) -> list[FgRawImage]:
+        cur_data = data
+        if cur_data.pix_fmt is None:
+            raise ValueError("BatchImageData must have a pixel format.")
+        # check channel layout
+        if cur_data.channel_layout != ImageChannelLayout.HWC:
+            cur_data: BatchImageData = self._layout_formatter.__call__(
+                {"image": cur_data}
+            )["image"]
+        if cur_data.pix_fmt is None:
+            raise ValueError("BatchImageData must have a pixel format.")
+        batch_size = cur_data.sensor_data.shape[0]
+        height, width = cur_data.sensor_data.shape[1:3]
+
+        ret = []
+        if cur_data.timestamps is None:
+            raise ValueError("BatchCameraDataEncoded must have timestamps.")
+        for i in range(batch_size):
+            # convert the i-th image to bytes
+            img_data = cur_data.sensor_data[i].contiguous().view(-1)
+            encoding, data_width, data_bytes = self._pix_fmt2raw_encoding(
+                cur_data.pix_fmt, img_data
+            )
+            img = FgRawImage(
+                timestamp=from_nanoseconds(cur_data.timestamps[i]),
+                frame_id="",
+                width=width,
+                height=height,
+                encoding=encoding,
+                step=width * data_width,
+                data=data_bytes,
+            )
+            ret.append(img)
+
+        return ret
+
+    def _pix_fmt2raw_encoding(
+        self, pix_fmt: ImageMode, data: torch.Tensor
+    ) -> tuple[str, int, bytes]:
+        """Convert ImageMode to raw image encoding string and data width in bytes.
+
+        If the pixel format is not supported, raise a ValueError.
+        """  # noqa: E501
+        if pix_fmt == ImageMode.RGB:
+            return "rgb8", 3, data.to(dtype=torch.uint8).numpy().tobytes()
+        elif pix_fmt == ImageMode.BGR:
+            return "bgr8", 3, data.to(dtype=torch.uint8).numpy().tobytes()
+        elif pix_fmt == ImageMode.F:
+            return "32FC1", 4, data.to(dtype=torch.float32).numpy().tobytes()
+        elif pix_fmt == ImageMode.L:
+            return "mono8", 1, data.to(dtype=torch.uint8).numpy().tobytes()
+        elif pix_fmt == ImageMode.I16:
+            return "mono16", 2, data.to(dtype=torch.uint16).numpy().tobytes()
+        else:
+            raise ValueError(f"Unsupported pixel format: {pix_fmt}.")
+
+
+class FromBatchImageDataConfig(MessageConverterConfig[FromBatchImageData]):
+    class_type: type[FromBatchImageData] = FromBatchImageData

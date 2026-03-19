@@ -124,15 +124,22 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                     )
                 mapped_input[dst_name] = mapped_input.pop(src_name)
 
-        # take columns that required by the transform
         ts_input = {}
+        sig = inspect.signature(self.transform)
         for col in self.input_columns:
-            if (
-                col not in mapped_input
-                and not self.cfg.missing_input_columns_as_none
-            ):
-                raise KeyError(f"Input column `{col}` not found in row dict.")
-            ts_input[col] = mapped_input.get(col, None)
+            if col not in mapped_input:
+                param = sig.parameters.get(col)
+                if param and param.default != inspect.Parameter.empty:
+                    # Use the default value from the function signature
+                    ts_input[col] = param.default
+                elif not self.cfg.missing_input_columns_as_none:
+                    raise KeyError(
+                        f"Input column `{col}` not found in row dict."
+                    )
+                else:
+                    ts_input[col] = None
+            else:
+                ts_input[col] = mapped_input[col]
 
         columns_after = _to_dict(self.transform(**ts_input))
         if not isinstance(columns_after, dict):
@@ -204,10 +211,11 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
             # if input_columns is a list or tuple, we use it directly
             self._input_columns += list(self.cfg.input_columns)
         else:
-            raise TypeError(
-                f"Expected input_columns to be a dict, list, tuple or None, "
-                f"but got {type(self.cfg.input_columns)}."
-            )
+            if self.cfg.input_columns is not None:
+                raise TypeError(
+                    f"Expected input_columns to be a dict, list, "
+                    f"tuple or None, but got {type(self.cfg.input_columns)}."
+                )
         # handle duplicate columns and retain order
         self._input_columns = list(dict.fromkeys(self._input_columns).keys())
         return self._input_columns
@@ -366,8 +374,9 @@ DictTransformType = TypeVar(
 class DictTransformConfig(ClassConfig[DictTransformType]):
     class_type: ClassType[DictTransformType]
 
-    input_columns: dict[str, str] | Sequence[str] = Field(
+    input_columns: dict[str, str] | Sequence[str] | None = Field(
         validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+        default=None,
     )
     """The input columns that need to be mapped to fit
     the transform's input_columns, or a list of input columns

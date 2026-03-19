@@ -259,6 +259,9 @@ def repack_dataset(
             except NotImplementedError:
                 pass
 
+    if frame_indices is None:
+        frame_indices = range(len(dataset.index_dataset))
+
     packing = DatasetPackaging(features=features)
     packing.packaging(
         episodes=RePackingDatasetHelper(

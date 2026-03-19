@@ -49,6 +49,9 @@ class McapBatchEncoder(
     def format_batch(self, data: T) -> dict[str, list[StampedMessage[Any]]]:
         """Format the batch of decoded messages to target format.
 
+        TODO: Add log_time as parameter to this function to allow customized
+        log_time for each message.
+
         Args:
             data (T): The source batch of messages to format.
 
@@ -63,6 +66,9 @@ class McapBatchEncoder(
         self, src: T, msg_encoder_ctx: McapEncoderContext
     ) -> dict[str, McapMessagesTuple]:
         """Encode the source data to a batch of encoded mcap messages.
+
+        TODO: Add log_time as parameter to this function to allow customized
+        log_time for each message.
 
         Args:
             src (T): The source data to encode.
@@ -89,7 +95,7 @@ class McapBatchEncoder(
             ret[topic] = McapMessagesTuple(
                 schema=encoded_msg.schema,
                 channel=encoded_msg.channel,
-                messages=[encoded_msg.message],
+                messages=[encoded_msg.message],  # type: ignore
             )
             for msg in msgs[1:]:
                 encoded_msg = msg_encoder_ctx.encode_message(
@@ -98,7 +104,7 @@ class McapBatchEncoder(
                     log_time=msg.log_time,
                     pub_time=msg.pub_time,
                 )
-                ret[topic].messages.append(encoded_msg.message)
+                ret[topic].messages.append(encoded_msg.message)  # type: ignore
         return ret
 
 

@@ -192,6 +192,12 @@ class FromBatchFrameTransformGraph(
         BatchFrameTransformGraph, list[FgFrameTransforms]
     ]
 ):
+    """Convert from BatchFrameTransformGraph to list of FgFrameTransforms.
+
+    The output is a list of `FgFrameTransforms` messages, each representing the
+    transforms at a specific timestamp.
+    """
+
     def __init__(self, cfg: FromBatchFrameTransformGraphConfig) -> None:
         self._cfg = cfg
         self._tf_converter = FromBatchFrameTransform(

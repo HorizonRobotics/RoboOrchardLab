@@ -177,7 +177,7 @@ class McapMessageBatch:
 
     def append(self, msg: McapMessagesTuple | McapMessageTuple) -> None:
         """Append a new messages tuple to the batch."""
-        c_id = msg.channel.topic
+        c_id = msg.topic
 
         if isinstance(msg, McapMessagesTuple):
             if c_id not in self.message_dict:

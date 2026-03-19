@@ -28,6 +28,7 @@ from google.protobuf.timestamp import from_nanoseconds
 from robo_orchard_core.utils.config import Config
 
 from robo_orchard_lab.dataset.datatypes import (
+    BatchCameraData,
     BatchCameraDataEncoded,
     BatchCameraInfo,
     BatchFrameTransform,
@@ -40,10 +41,15 @@ from robo_orchard_lab.dataset.experimental.mcap.batch_encoder.base import (
 from robo_orchard_lab.dataset.experimental.mcap.batch_encoder.tf import (
     McapBatchFromBatchFrameTransformConfig,
 )
+from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
+    FromBatchImageDataConfig,
+)
 
 __all__ = [
     "McapBatchFromBatchCameraDataEncoded",
     "McapBatchFromBatchCameraDataEncodedConfig",
+    "McapBatchFromBatchCameraData",
+    "McapBatchFromBatchCameraDataConfig",
 ]
 
 
@@ -65,7 +71,8 @@ def format_batch_camera_info(
             "BatchCameraInfo must have image_shape for conversion."
         )
 
-    if data.intrinsic_matrices is not None:
+    if data.intrinsic_matrices is not None and calib_topic is not None:
+        # convert to CameraCalibration message
         distortion_model = (
             data.distortion_model
             if data.distortion_model is not None
@@ -80,53 +87,49 @@ def format_batch_camera_info(
             "The batch size of intrinsic matrices must match the "
             "batch size of timestamps. "
         )
-        # k_batch = (
-        #     data.intrinsic_matrices.reshape(-1, 9).numpy(force=True)
-        #     if data.intrinsic_matrices is not None
-        #     else np.eye(3).reshape(-1, 9).repeat(len(timestamps), axis=0)
-        # )
-
-        if calib_topic is not None:
+        # we use the intrinsic matrix and transform2d to construct the
+        # K matrix for visualization.
+        vis_intrinsic_mat = data.get_intrinsic_with_transform()
+        k_batch = (
+            vis_intrinsic_mat.reshape(-1, 9).numpy(force=True)
+            if vis_intrinsic_mat is not None
+            else None
+        )
+        if k_batch is None:
             k_batch = (
-                data.intrinsic_matrices.reshape(-1, 9).numpy(force=True)
-                if data.intrinsic_matrices is not None
-                else None
+                np.array(
+                    [
+                        [default_focal, 0, data.image_shape[1] / 2],
+                        [0, default_focal, data.image_shape[0] / 2],
+                        [0, 0, 1],
+                    ]
+                )
+                .reshape(-1, 9)
+                .repeat(len(timestamps), axis=0)
             )
-            if k_batch is None:
-                k_batch = (
-                    np.array(
-                        [
-                            [default_focal, 0, data.image_shape[1] / 2],
-                            [0, default_focal, data.image_shape[0] / 2],
-                            [0, 0, 1],
-                        ]
-                    )
-                    .reshape(-1, 9)
-                    .repeat(len(timestamps), axis=0)
-                )
-            p_batch = np.zeros(shape=(len(timestamps), 3, 4))
-            p_batch[:, :3, :3] = k_batch[:, :9].reshape(-1, 3, 3)
-            p_batch = p_batch.reshape(-1, 12)
+        p_batch = np.zeros(shape=(len(timestamps), 3, 4))
+        p_batch[:, :3, :3] = k_batch[:, :9].reshape(-1, 3, 3)
+        p_batch = p_batch.reshape(-1, 12)
 
-            ret[calib_topic] = []
-            for i in range(len(timestamps)):
-                calibration = FgCameraCalibration(
-                    timestamp=from_nanoseconds(timestamps[i]),
-                    frame_id=data.frame_id,
-                    width=data.image_shape[1],
-                    height=data.image_shape[0],
-                    K=k_batch[i],
-                    P=p_batch[i],
-                    distortion_model=distortion_model,
-                    D=distortion_coef,
-                )
+        ret[calib_topic] = []
+        for i in range(len(timestamps)):
+            calibration = FgCameraCalibration(
+                timestamp=from_nanoseconds(timestamps[i]),
+                frame_id=data.frame_id,
+                width=data.image_shape[1],
+                height=data.image_shape[0],
+                K=k_batch[i],
+                P=p_batch[i],
+                distortion_model=distortion_model,
+                D=distortion_coef,
+            )
 
-                stamped_msg = StampedMessage(
-                    data=calibration,
-                    log_time=timestamps[i],
-                    pub_time=timestamps[i],
-                )
-                ret[calib_topic].append(stamped_msg)
+            stamped_msg = StampedMessage(
+                data=calibration,
+                log_time=timestamps[i],
+                pub_time=timestamps[i],
+            )
+            ret[calib_topic].append(stamped_msg)
 
     if data.pose is not None and tf_topic is not None:
         encoder = McapBatchFromBatchFrameTransformConfig(
@@ -181,6 +184,45 @@ class McapBatchFromBatchCameraDataEncoded(
         return ret
 
 
+class McapBatchFromBatchCameraData(McapBatchEncoder[BatchCameraData]):
+    _cfg: McapBatchFromBatchCameraDataConfig
+
+    def __init__(self, config: McapBatchFromBatchCameraDataConfig):
+        self._cfg = config
+        self._img_data_converter = FromBatchImageDataConfig()()
+
+    def format_batch(
+        self,
+        data: BatchCameraData,
+    ) -> dict[str, list[StampedMessage[Any]]]:
+        ret: dict[str, list[StampedMessage[Any]]] = {}
+        if data.timestamps is None:
+            raise ValueError("BatchCameraDataEncoded must have timestamps.")
+        if data.frame_id is None:
+            raise ValueError("BatchCameraDataEncoded must have a frame_id.")
+        ret.update(
+            format_batch_camera_info(
+                data=data,
+                timestamps=data.timestamps,
+                calib_topic=self._cfg.calib_topic,
+                tf_topic=self._cfg.tf_topic,
+            )
+        )
+        img_list = self._img_data_converter.convert(data)
+        # assign frame_id as ImageData does not have frame_id field.
+        for img_msg in img_list:
+            img_msg.frame_id = data.frame_id
+        ret[self._cfg.image_topic] = [
+            StampedMessage(
+                data=img_msg,
+                log_time=img_msg.timestamp.ToNanoseconds(),
+                pub_time=img_msg.timestamp.ToNanoseconds(),
+            )
+            for img_msg in img_list
+        ]
+        return ret
+
+
 class McapBatchFromCameraInfoMixin(Config):
     calib_topic: str | None = None
     """Topic for camera calibration messages."""
@@ -196,6 +238,19 @@ class McapBatchFromBatchCameraDataEncodedConfig(
 
     class_type: type[McapBatchFromBatchCameraDataEncoded] = (
         McapBatchFromBatchCameraDataEncoded
+    )
+    image_topic: str
+    """Topic for camera image messages."""
+
+
+class McapBatchFromBatchCameraDataConfig(
+    McapBatchEncoderConfig[McapBatchFromBatchCameraData],
+    McapBatchFromCameraInfoMixin,
+):
+    """Configuration for McapBatchFromBatchCameraData."""
+
+    class_type: type[McapBatchFromBatchCameraData] = (
+        McapBatchFromBatchCameraData
     )
     image_topic: str
     """Topic for camera image messages."""

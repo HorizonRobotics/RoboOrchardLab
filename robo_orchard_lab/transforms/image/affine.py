@@ -188,7 +188,7 @@ class ImageResizeConfig(
     """The augmentation to apply to the image after resizing."""
 
     def generate_affine_transform(
-        self, input_hw: tuple[int, int]
+        self, input_hw: tuple[int, int] | list[int]
     ) -> Transform2D_M:
         ret = resize(
             src_hw=input_hw,

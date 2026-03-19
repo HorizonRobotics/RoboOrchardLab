@@ -232,7 +232,7 @@ if __name__ == "__main__":
         # Do not delete the line below, just comment it out and add the
         # new line.
         # "robo_orchard_core==0.4.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@ae83c81b8b37ab9a99f4d0c4d994eac4f492e1ee",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@82c9a4015e7547ad198fc44e358935764fb4bc06",
     ]
     # optional dependencies
     extras_require = {
@@ -273,7 +273,8 @@ if __name__ == "__main__":
             "mcap>=1.2.2",
             "foxglove-schemas-protobuf>=0.3.0",
             "opencv-python",
-            "robo_orchard_schemas==0.2.0",
+            "robo_orchard_schemas==0.3.0.dev20260213135045",
+            "foxglove-sdk",
         ],
         "aux_think": [
             "transformers",

@@ -17,7 +17,13 @@
 from __future__ import annotations
 import copy
 from abc import ABCMeta, abstractmethod
-from typing import TYPE_CHECKING, Callable, Generic, Iterable, Iterator
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Generic,
+    Iterable,
+    Iterator,
+)
 
 import numpy as np
 import torch
@@ -28,13 +34,8 @@ from torch.utils.data import (
     Dataset as TorchDataset,
     IterableDataset as TorchIterableDataset,
 )
+from typing_extensions import TypeVar
 
-from robo_orchard_lab.dataset.robot.dataset import (
-    DatasetType,
-    Features,
-    RODataset,
-    get_row_num_from_dataset_info,
-)
 from robo_orchard_lab.dataset.sampler import (
     ChunkedIndiceTable,
     IndiceTable,
@@ -51,9 +52,11 @@ __all__ = [
     "DatasetWithIndices",
     "IterableWithLenDataset",
     "DatasetItem",
-    "RODatasetItem",
     "DictIterableDataset",
 ]
+
+
+DatasetType = TypeVar("DatasetType", bound=TorchDataset)
 
 
 class ShardConfig(Config):
@@ -284,15 +287,7 @@ class DatasetWithIndices(TorchDataset, Generic[DatasetType]):
         )
 
 
-class RODatasetWithIndices(DatasetWithIndices[RODataset]):
-    @property
-    def features(self) -> Features:
-        return self.dataset.features
-
-    def _get_info_dict(self):
-        data_info = self.dataset._get_info_dict()
-        data_info.num_rows = len(self)
-        return data_info
+#
 
 
 class IterableWithLenDataset(
@@ -710,42 +705,6 @@ class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
             num_shards=self.num_shards * num_shards,
             shard_id=self.shard_id * num_shards + shard_id,
         )
-
-
-class RODatasetItem(DatasetItem[RODataset]):
-    """A DatasetItem for RODataset."""
-
-    class_type: ClassType[RODataset] = RODataset
-    dataset_path: str
-    storage_options: dict | None = None
-    meta_index2meta: bool = False
-
-    transform: Callable | None = None
-
-    def get_dataset_row_num(self) -> int:
-        """Get the number of rows in the dataset."""
-        rows = get_row_num_from_dataset_info(
-            dataset_path=self.dataset_path,
-        )
-        if rows is not None:
-            return rows
-
-        dataset = RODataset(
-            dataset_path=self.dataset_path,
-            storage_options=self.storage_options,
-            meta_index2meta=self.meta_index2meta,
-        )
-        return len(dataset)
-
-    def _create_dataset(self) -> RODataset:
-        """Create a dataset from the dataset item configuration."""
-        dataset = RODataset(
-            dataset_path=self.dataset_path,
-            storage_options=self.storage_options,
-            meta_index2meta=self.meta_index2meta,
-        )
-        dataset.set_transform(self.transform)
-        return dataset
 
 
 class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):

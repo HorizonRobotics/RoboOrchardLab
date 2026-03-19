@@ -164,7 +164,7 @@ class ImageTransform2DConfig(
 ):
     class_type: ClassType[ImageTransform2D] = ImageTransform2D
 
-    target_hw: tuple[int, int]
+    target_hw: tuple[int, int] | list[int]
     """The target height and width of the image after transformation."""
 
     inter_mode: Literal["bilinear", "nearest", "bicubic"] = "bilinear"
@@ -185,7 +185,7 @@ class ImageTransform2DConfig(
 
     @abstractmethod
     def generate_affine_transform(
-        self, input_hw: tuple[int, int]
+        self, input_hw: tuple[int, int] | list[int]
     ) -> Transform2D_M:
         """Generate the affine transformation matrix."""
         raise NotImplementedError(
