@@ -410,9 +410,9 @@ class MultiArmKinematics:
         if finger_keys is None:
             finger_keys = [[]] * len(arm_link_keys)
         else:
-            assert (
-                len(finger_keys) == self.num_arms
-            ), "Number of gripper should equal to number of arms"
+            assert len(finger_keys) == self.num_arms, (
+                "Number of gripper should equal to number of arms"
+            )
         self.finger_keys = finger_keys
         if ee_to_gripper is not None:
             assert len(ee_to_gripper) == self.num_arms

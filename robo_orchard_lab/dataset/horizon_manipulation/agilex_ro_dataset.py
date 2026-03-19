@@ -90,9 +90,9 @@ class ArrowDataParse:
             else:
                 # fill missing depth
                 decoded_depth = np.zeros(default_shape)
-            assert (
-                decoded_depth is not None
-            ), f"Failed to decode depth for {cam_name}"
+            assert decoded_depth is not None, (
+                f"Failed to decode depth for {cam_name}"
+            )
             depth = decoded_depth / self.depth_scale
             depths.append(depth)
         return {"depths": depths}

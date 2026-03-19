@@ -159,3 +159,77 @@ State-of-the-Art (SOTA) navigation models provided by the
 #   batch_results = list(pipeline(batch_data))
 #   for r in batch_results:
 #       print(r.text)
+
+# %%
+# Progress-Think: Semantic Progress Reasoning for Vision-Language Navigation
+# --------------------------------------------------------------------------------------------
+#
+# `Click here to visit the homepage. <https://horizonrobotics.github.io/robot_lab/progress-think/index.html>`__
+#
+# Loading Pretrained Model
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# .. code-block:: python
+#
+#   import torch
+#   from robo_orchard_lab.models import TorchModelMixin
+#
+#   action_model: torch.nn.Module = TorchModelMixin.load_model("hf://HorizonRobotics/Progress-Think/action_model")
+#   progress_model: torch.nn.Module = TorchModelMixin.load_model("hf://HorizonRobotics/Progress-Think/progress_model")
+#
+# Inference Pipeline
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# .. code-block:: python
+#
+#   import torch
+#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.models.progress_think.action_processor import ActionModelInput
+#   from robo_orchard_lab.models.progress_think.progress_processor import ProgressModelInput
+#
+#   # -----------------------------
+#   # Step 1. Load a saved pipeline
+#   # -----------------------------
+#   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#   action_model_directory = "hf://HorizonRobotics/Progress-Think/action_model"
+#   progress_model_directory = "hf://HorizonRobotics/Progress-Think/progress_model"
+#   action_model_pipeline = InferencePipelineMixin.load_pipeline(action_model_directory)
+#   progress_model_pipeline = InferencePipelineMixin.load_pipeline(progress_model_directory)
+#   action_model_pipeline.model.init_components(action_model_directory)
+#   progress_model_pipeline.model.init_components(progress_model_directory)
+#   action_model_pipeline.model.to(device)
+#   progress_model_pipeline.model.to(device)
+#   action_model_pipeline.model.eval()
+#   progress_model_pipeline.model.eval()
+#
+#   # -----------------------------
+#   # Step 2. Prepare raw input
+#   # -----------------------------
+#   image_paths=[
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_0.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_1.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_2.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_3.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_4.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_5.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_6.png",
+#           "hf://HorizonRobotics/Progress-Think/data_example/rgb_7.png",
+#       ]
+#   progress_data = ProgressModelInput(
+#       image_paths=image_paths
+#   )
+#
+#   # -----------------------------
+#   # Step 3. Run inference
+#   # -----------------------------
+#   partial_response = progress_model_pipeline(progress_data)
+#   action_data = ActionModelInput(
+#       image_paths=image_paths,
+#       instruction="Walk down the hallway to the right of the billiards table. Stop at the top of the staircase.",
+#       partial_instruction = partial_response.text
+#   )
+#   result = action_model_pipeline(action_data)
+#   print(result.text)
+#
+#   # Example Output:
+#   # "The next action is turn right 15 degrees, move forward 25 cm, turn right 45 degrees."

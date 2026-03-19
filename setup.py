@@ -307,6 +307,22 @@ if __name__ == "__main__":
             "hydra-core",
             "deepspeed",
         ],
+        "progress_think": [
+            "transformers",
+            "tokenizers",
+            "peft",
+            "markdown2[all]",
+            "scikit-learn>=1.2.2",
+            "opencv-python",
+            "uvicorn",
+            "fastapi",
+            "timm",
+            "ninja",
+            "tyro",
+            "loguru",
+            "hydra-core",
+            "deepspeed",
+        ],
         "finegrasp": [
             "scipy",
             "einops",
@@ -314,7 +330,7 @@ if __name__ == "__main__":
             "open3d",
         ],
         "all": [
-            "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp]"
+            "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp,progress_think]"
         ],
     }
     install_requires = wrap_github_dependency(install_requires)
