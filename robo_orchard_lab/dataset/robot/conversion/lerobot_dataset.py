@@ -239,9 +239,13 @@ class LerobotDatasetEpisodePackaging(EpisodePackaging):
                 continue
 
             # 2. Create InstructionData from the task string
+            # lerobot v3 uses "task", v2 used "task.instructions"
+            task_str = frame_data.get(
+                "task", frame_data.get("task.instructions", "")
+            )
             instruction = InstructionData(
-                name=frame_data["task.instructions"],
-                json_content={"instruction": frame_data["task.instructions"]},
+                name=task_str,
+                json_content={"instruction": task_str},
             )
 
             # 3. Convert timestamp (float seconds) to nanoseconds (int)
