@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,24 +14,22 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import time
 from abc import ABCMeta, abstractmethod
 from typing import Any, Optional
 
+from foxglove import Channel, Context
 from google.protobuf.message import Message as ProtobufMessage
-from mcap_protobuf.schema import build_file_descriptor_set
 from typing_extensions import Self
 
-from mcap.records import (
-    Channel,
-    Message as McapMessage,
-    Schema,
+from robo_orchard_lab.dataset.experimental.mcap.foxglove import (
+    create_channel,
 )
 from robo_orchard_lab.dataset.experimental.mcap.messages import (
     McapMessageTuple,
+    StampedMessage,
 )
 
-__all__ = ["McapEncoderContext", "McapProtobufEncoder"]
+__all__ = ["McapEncoderContext", "FoxgloveEncoder"]
 
 
 class McapEncoderContext(metaclass=ABCMeta):
@@ -60,9 +58,8 @@ class McapEncoderContext(metaclass=ABCMeta):
         self,
         topic: str,
         msg: Any,
-        log_time: Optional[int] = None,
-        pub_time: Optional[int] = None,
-        sequence: int = 0,
+        log_time: int,
+        pub_time: int | None = None,
     ) -> McapMessageTuple:
         """Encode a message to MCAP format.
 
@@ -78,7 +75,7 @@ class McapEncoderContext(metaclass=ABCMeta):
         )
 
 
-class McapProtobufEncoder(McapEncoderContext):
+class FoxgloveEncoder(McapEncoderContext):
     """Encoder for Protobuf messages in MCAP format.
 
     This encoder uses the Protobuf schema to encode messages into
@@ -86,73 +83,46 @@ class McapProtobufEncoder(McapEncoderContext):
     initialization.
     """
 
-    def __init__(self):
-        self._schemas: list[Schema] = []
-        self._channels: list[Channel] = []
-        self._topic2channel_id: dict[str, int] = {}
-        self._topic2schema: dict[str, tuple[int, str]] = {}
+    def __init__(self, ctx: Context | None):
+        self.reset(ctx=ctx)
 
-    def reset(self) -> None:
-        self._schemas.clear()
-        self._channels.clear()
-        self._topic2channel_id.clear()
-        self._topic2schema.clear()
-
-    def _register_schema(self, msg: ProtobufMessage):
-        fd_set = build_file_descriptor_set(type(msg))
-        schema = Schema(
-            id=len(self._schemas),
-            data=fd_set.SerializeToString(),
-            name=type(msg).DESCRIPTOR.full_name,
-            encoding="protobuf",
-        )
-        self._schemas.append(schema)
-        return schema.id
+    def reset(self, ctx: Context | None = None) -> None:
+        if ctx is None:
+            ctx = Context()
+        self._ctx = ctx
+        self._channel_dict: dict[str, Channel] = {}
 
     def encode_message(
         self,
         topic: str,
-        msg: ProtobufMessage,
-        log_time: Optional[int] = None,
-        pub_time: Optional[int] = None,
-        sequence: int = 0,
+        msg: Any,
+        log_time: int,
+        pub_time: int | None = None,
     ) -> McapMessageTuple:
-        msg_typename: str = type(msg).DESCRIPTOR.full_name
-        if topic in self._topic2channel_id:
-            channel_id = self._topic2channel_id[topic]
-            schema_id, schema_name = self._topic2schema[topic]
-            if msg_typename != schema_name:
-                raise ValueError(
-                    f"Topic '{topic}' has type {schema_name}, "
-                    f"cannot encode a {msg_typename}"
-                )
-        else:
-            schema_id = self._register_schema(msg)
-            self._topic2schema[topic] = (schema_id, msg_typename)
-            channel = Channel(
-                id=len(self._channels),
-                topic=topic,
-                message_encoding="protobuf",
-                schema_id=schema_id,
-                metadata={},
-            )
-            self._channels.append(channel)
-            self._topic2channel_id[topic] = channel.id
-            channel_id = channel.id
+        # create channel if not exists
 
-        if log_time is None:
-            log_time = time.time_ns()
-        if pub_time is None:
-            pub_time = time.time_ns()
+        if topic not in self._channel_dict:
+            channel = create_channel(topic, type(msg), context=self._ctx)
+            self._channel_dict[topic] = channel
+        else:
+            channel = self._channel_dict[topic]
+
+        if channel.message_encoding == "protobuf":
+            if not isinstance(msg, ProtobufMessage):
+                raise ValueError(
+                    f"Expected ProtobufMessage for topic '{topic}', "
+                    f"but got {type(msg)}"
+                )
+            data = StampedMessage(
+                data=msg.SerializeToString(),
+                log_time=log_time,
+                pub_time=pub_time,
+            )
+        else:
+            data = StampedMessage(
+                data=msg, log_time=log_time, pub_time=pub_time
+            )
 
         return McapMessageTuple(
-            schema=self._schemas[schema_id],
-            channel=self._channels[channel_id],
-            message=McapMessage(
-                channel_id=channel_id,
-                log_time=log_time,
-                data=msg.SerializeToString(),
-                publish_time=pub_time,
-                sequence=sequence,
-            ),
+            schema=channel.schema(), channel=channel, message=data
         )

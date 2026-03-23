@@ -34,10 +34,11 @@ from robo_orchard_lab.dataset.datatypes import (
 from robo_orchard_lab.dataset.horizon_manipulation.packer.utils import (
     McapParseConfig,
     PackConfig,
+    apply_camera_calibration_overrides,
     filter_static_frames,
     parse_mcap,
-    scale_images_and_update_intrinsics,
     time_sync,
+    update_camera_poses_from_tf_graph,
 )
 from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
     BaseLmdbManipulationDataPacker,
@@ -107,6 +108,7 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
 
         for path_pattern in input_path_list:
             input_files = glob.glob(path_pattern)
+            input_files.sort()
             for input_file in input_files:
                 episode_path = os.path.dirname(input_file)
                 date = os.path.basename(episode_path)
@@ -214,15 +216,24 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
                 tail_time_to_filter=pack_config.TAIL_TIME_TO_FILTER,
             )
 
-            # Scale images and update intrinsics
-            scale_images_and_update_intrinsics(
+            # Keep the LMDB packer on the same calibration update path as
+            # the Arrow packer.
+            batch_tf_list = apply_camera_calibration_overrides(
+                batch_tf_list=batch_tf_list,
                 image_data=[batch_image_dict, batch_depth_dict],
                 image_scale_ratio=pack_config.IMAGE_SCALE,
+                extrinsic_overrides=pack_config.EXTRINSIC_OVERRIDES,
             )
 
-            tf_graph = BatchFrameTransformGraph(batch_tf_list)
-            base_time = batch_image_dict[pack_config.SYNC_CAMERA].timestamps
-            num_steps = len(base_time)
+            self.tf_graph = BatchFrameTransformGraph(batch_tf_list)
+            self.batch_joint_dict = batch_joint_dict
+            self.batch_image_dict = batch_image_dict
+            self.batch_depth_dict = batch_depth_dict
+
+            self.base_time = batch_image_dict[
+                pack_config.SYNC_CAMERA
+            ].timestamps
+            num_steps = len(self.base_time)
 
             # Load episode metadata
             meta = json.load(
@@ -253,8 +264,10 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
             )
 
             # --- Actions (Master Arm) ---
-            master_left = batch_joint_dict[parse_config.MASTER_LEFT_JOINT]
-            master_right = batch_joint_dict[parse_config.MASTER_RIGHT_JOINT]
+            master_left = self.batch_joint_dict[parse_config.MASTER_LEFT_JOINT]
+            master_right = self.batch_joint_dict[
+                parse_config.MASTER_RIGHT_JOINT
+            ]
             master_right.timestamps = master_left.timestamps
             action_states = BatchJointsState.concat(
                 [master_left, master_right], dim=1
@@ -264,14 +277,20 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
             batch_left_ee_pose, batch_right_ee_pose = self.forward_kinematics(
                 joint_states
             )
-            tf_graph.add_tf(batch_left_ee_pose)
-            tf_graph.add_tf(batch_right_ee_pose)
-            for topic in parse_config.COLOR_IMAGE_TOPICS:
-                color_frame = batch_image_dict[topic].frame_id
-                pose = tf_graph.get_tf("world", color_frame)
-                if pose.batch_size == 1 and num_steps > 1:
-                    pose = pose.repeat(num_steps)
-                batch_image_dict[topic].pose = pose
+            self.tf_graph.add_tf(batch_left_ee_pose)
+            self.tf_graph.add_tf(batch_right_ee_pose)
+            # Exported LMDB metadata should read poses from the same final
+            # TF graph as the Arrow dataset.
+            update_camera_poses_from_tf_graph(
+                tf_graph=self.tf_graph,
+                camera_dict=self.batch_image_dict,
+                num_steps=num_steps,
+            )
+            update_camera_poses_from_tf_graph(
+                tf_graph=self.tf_graph,
+                camera_dict=self.batch_depth_dict,
+                num_steps=num_steps,
+            )
 
             joint_positions = joint_states.position.numpy()
             joint_velocity = joint_states.velocity.numpy()
@@ -290,7 +309,7 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
                 axis=1,
             ).reshape(-1, 2, 7)
 
-            self.meta_pack_file.write(f"{uuid}/timestamp", base_time)
+            self.meta_pack_file.write(f"{uuid}/timestamp", self.base_time)
 
             self.meta_pack_file.write(
                 f"{uuid}/observation/robot_state/joint_positions",
@@ -341,11 +360,11 @@ class McapLmdbDataPacker(BaseLmdbManipulationDataPacker):
                 color_topic = parse_config.COLOR_IMAGE_TOPICS[cam_idx]
                 depth_topic = parse_config.DEPTH_IMAGE_TOPICS[cam_idx]
                 for i in range(num_steps):
-                    img = batch_image_dict[color_topic].sensor_data[i]
+                    img = self.batch_image_dict[color_topic].sensor_data[i]
                     self.image_pack_file.write(f"{uuid}/{cam_name}/{i}", img)
 
                 for i in range(num_steps):
-                    depth = batch_depth_dict[depth_topic].sensor_data[i]
+                    depth = self.batch_depth_dict[depth_topic].sensor_data[i]
                     self.depth_pack_file.write(f"{uuid}/{cam_name}/{i}", depth)
 
             num_valid_ep += 1
@@ -398,6 +417,7 @@ if __name__ == "__main__":
             "/observation/cameras/right/depth_image/camera_info",
         ],
     )
+
     pack_config = PackConfig(
         SYNC_CAMERA="/observation/cameras/middle/color_image/image_raw",
         IMAGE_SCALE=args.image_scale_factor,
@@ -405,6 +425,7 @@ if __name__ == "__main__":
         HEAD_TIME_TO_FILTER=None,
         TAIL_TIME_TO_FILTER=None,
         PARSE_CONFIG=parse_config,
+        EXTRINSIC_OVERRIDES=None,
     )
 
     packer = McapLmdbDataPacker(

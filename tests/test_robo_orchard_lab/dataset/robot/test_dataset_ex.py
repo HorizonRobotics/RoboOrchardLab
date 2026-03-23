@@ -17,19 +17,17 @@
 import pytest
 import torch
 from robo_orchard_core.utils.config import ClassType
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 from robo_orchard_lab.dataset.robot import (
     BatchLoaderConfig,
+    DataLoader,
     DatasetItem,
     IterableDatasetMixin,
     IterableWithLenDataset,
+    ShuffleConfig,
 )
 from robo_orchard_lab.dataset.robot.dataset_ex import DictIterableDataset
-
-
-def collate_first(batch):
-    return batch[0]
 
 
 class ArrayDataset(Dataset):
@@ -173,10 +171,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
 
         dataloader = DataLoader(
             dataset,
-            batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
-            drop_last=drop_last,
-            collate_fn=collate_first,
             multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_total_batch_consistency(
@@ -215,10 +210,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
 
         dataloader = DataLoader(
             dataset,
-            batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
-            drop_last=drop_last,
-            collate_fn=collate_first,
             multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_item_consistency(
@@ -226,6 +218,64 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             dataset=dataset,
             need_sort=False,
         )
+
+    def test_iterable_with_len_self_batched_overrides_dataset_config(
+        self, dummy_array_dataset: Dataset
+    ):
+        dataset = IterableWithLenDataset(
+            dummy_array_dataset,
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=4,
+                drop_last=False,
+            ),
+        )
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            drop_last=True,
+            num_workers=0,
+        )
+
+        assert dataloader.dataset is not dataset
+        assert dataset.batch_loader_kwargs is not None
+        assert isinstance(dataloader.dataset, IterableWithLenDataset)
+        assert dataloader.dataset.batch_loader_kwargs is not None
+        assert dataset.batch_loader_kwargs.batch_size == 4
+        assert dataset.batch_loader_kwargs.drop_last is False
+        assert dataloader.dataset.batch_loader_kwargs.batch_size == 3
+        assert dataloader.dataset.batch_loader_kwargs.drop_last is True
+        assert len(list(dataloader)) == len(dataloader)
+
+    def test_iterable_with_len_self_batched_aligns_shuffle_config(
+        self, dummy_array_dataset: Dataset
+    ):
+        dataset = IterableWithLenDataset(
+            dummy_array_dataset,
+            shuffle=ShuffleConfig(
+                shuffle=False,
+                chunk_size=4,
+                prefetch_factor=3,
+            ),
+            batch_loader_kwargs=BatchLoaderConfig(batch_size=2),
+        )
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            shuffle=True,
+            num_workers=0,
+        )
+
+        assert isinstance(dataloader.dataset, IterableWithLenDataset)
+        assert dataloader.dataset is not dataset
+        assert dataset._shuffle_config.shuffle is False
+        assert dataset._shuffle_config.chunk_size == 4
+        assert dataset._shuffle_config.prefetch_factor == 3
+        assert dataloader.dataset._shuffle_config.shuffle is True
+        assert dataloader.dataset._shuffle_config.chunk_size == 4
+        assert dataloader.dataset._shuffle_config.prefetch_factor == 3
+        assert len(list(dataloader)) == len(dataloader)
 
 
 class TestDictIterableDataset(TestIterableDatasetMixin):
@@ -269,10 +319,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
 
         dataloader = DataLoader(
             dataset,
-            batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
-            drop_last=drop_last,
-            collate_fn=collate_first,
             multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_item_consistency(
@@ -280,6 +327,119 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             dataset=dataset,
             need_sort=False,
         )
+
+    def test_same_dataset_in_batch_option(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(dummy_dataset_items)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            num_workers=0,
+            drop_last=False,
+            same_dataset_in_batch=True,
+        )
+
+        assert isinstance(dataloader.dataset, DictIterableDataset)
+        assert dataloader.dataset is not dataset
+        assert dataloader.dataset.batch_loader_kwargs is not None
+        assert dataloader.dataset.batch_loader_kwargs.batch_size == 3
+        assert dataloader.dataset.batch_loader_kwargs.drop_last is False
+
+        batches = []
+        for batch in dataloader:
+            if isinstance(batch, torch.Tensor):
+                batches.append(batch.tolist())
+            else:
+                batches.append(list(batch))
+
+        assert [9, 100, 101] not in batches
+        for batch in batches:
+            assert batch, "Batch should not be empty."
+            assert all(item < 100 for item in batch) or all(
+                item >= 100 for item in batch
+            )
+
+    def test_same_dataset_in_batch_aligns_batch_loader_kwargs(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(dummy_dataset_items)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=4,
+            num_workers=0,
+            drop_last=True,
+            same_dataset_in_batch=True,
+        )
+
+        assert dataset.batch_loader_kwargs is None
+        assert isinstance(dataloader.dataset, DictIterableDataset)
+        assert dataloader.dataset is not dataset
+        assert dataloader.dataset.batch_loader_kwargs is not None
+        assert dataloader.dataset.batch_loader_kwargs.batch_size == 4
+        assert dataloader.dataset.batch_loader_kwargs.drop_last is True
+
+        batches = []
+        for batch in dataloader:
+            if isinstance(batch, torch.Tensor):
+                batches.append(batch.tolist())
+            else:
+                batches.append(list(batch))
+
+        assert len(batches) == len(dataloader)
+        assert all(len(batch) == 4 for batch in batches)
+        for batch in batches:
+            assert all(item < 100 for item in batch) or all(
+                item >= 100 for item in batch
+            )
+
+    def test_same_dataset_in_batch_accepts_shuffle_config(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            shuffle=ShuffleConfig(
+                shuffle=False,
+                chunk_size=5,
+                prefetch_factor=2,
+            ),
+        )
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            num_workers=0,
+            same_dataset_in_batch=True,
+            shuffle=ShuffleConfig(
+                shuffle=True,
+                chunk_size=3,
+                prefetch_factor=4,
+            ),
+        )
+
+        assert isinstance(dataloader.dataset, DictIterableDataset)
+        assert dataloader.dataset is not dataset
+        assert dataset._shuffle.shuffle is False
+        assert dataset._shuffle.chunk_size == 5
+        assert dataset._shuffle.prefetch_factor == 2
+        assert dataloader.dataset._shuffle.shuffle is True
+        assert dataloader.dataset._shuffle.chunk_size == 3
+        assert dataloader.dataset._shuffle.prefetch_factor == 4
+
+        batches = []
+        for batch in dataloader:
+            if isinstance(batch, torch.Tensor):
+                batches.append(batch.tolist())
+            else:
+                batches.append(list(batch))
+
+        assert batches
+        for batch in batches:
+            assert all(item < 100 for item in batch) or all(
+                item >= 100 for item in batch
+            )
 
     @pytest.mark.parametrize(
         "batch_size, num_workers, drop_last",
@@ -331,10 +491,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
 
         dataloader = DataLoader(
             dataset,
-            batch_size=1,  # batch size is 1 since the dataset already returns
             num_workers=num_workers,
-            drop_last=drop_last,
-            collate_fn=collate_first,
             multiprocessing_context="forkserver" if num_workers > 0 else None,
         )
         self._check_dataloader_total_batch_consistency(
@@ -343,3 +500,31 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             drop_last=drop_last,
         )
+
+    def test_dict_iterable_self_batched_overrides_dataset_config(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=4,
+                drop_last=False,
+            ),
+        )
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            drop_last=True,
+            num_workers=0,
+        )
+
+        assert dataloader.dataset is not dataset
+        assert dataset.batch_loader_kwargs is not None
+        assert isinstance(dataloader.dataset, DictIterableDataset)
+        assert dataloader.dataset.batch_loader_kwargs is not None
+        assert dataset.batch_loader_kwargs.batch_size == 4
+        assert dataset.batch_loader_kwargs.drop_last is False
+        assert dataloader.dataset.batch_loader_kwargs.batch_size == 3
+        assert dataloader.dataset.batch_loader_kwargs.drop_last is True
+        assert len(list(dataloader)) == len(dataloader)

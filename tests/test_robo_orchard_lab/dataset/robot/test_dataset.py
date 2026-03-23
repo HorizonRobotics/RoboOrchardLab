@@ -34,6 +34,7 @@ from robo_orchard_lab.dataset.robot.dataset import (
     ConcatRODataset,
     RODataset,
     ROMultiRowDataset,
+    get_row_num_from_dataset_info,
 )
 from robo_orchard_lab.dataset.robot.dataset_db_engine import need_upgrade
 from robo_orchard_lab.dataset.robot.db_orm import (
@@ -416,6 +417,11 @@ class TestDataset:
         # only one robot is referenced in packing.
         assert dataset.robot_num == 1
         assert dataset.task_num == 2
+
+    def test_get_row_num_from_dataset_info(self, example_dataset_path: str):
+        dataset = RODataset(dataset_path=example_dataset_path)
+        row_num = get_row_num_from_dataset_info(example_dataset_path)
+        assert row_num == len(dataset.frame_dataset) == len(dataset)
 
     def test_check_db_engine(self, example_dataset_path: str):
         dataset = RODataset(dataset_path=example_dataset_path)

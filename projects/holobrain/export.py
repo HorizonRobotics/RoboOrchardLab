@@ -23,6 +23,10 @@ import shutil
 from utils import load_checkpoint, load_config
 
 from robo_orchard_lab.models.holobrain import HoloBrainProcessor
+from robo_orchard_lab.models.holobrain.pipeline import (
+    HoloBrainInferencePipeline,
+    HoloBrainInferencePipelineCfg,
+)
 from robo_orchard_lab.models.mixin import ModelMixin
 from robo_orchard_lab.utils import log_basic_config
 
@@ -67,6 +71,36 @@ def main(args):
     logger.info("Export model successfully.")
     _model = ModelMixin.load_model(model_path, load_impl="native")
     logger.info("Reload model successfully.")
+
+    # copy urdf
+    urdf_src = os.path.join(args.workspace, "urdf")
+    if os.path.isdir(urdf_src):
+        shutil.copytree(
+            urdf_src,
+            os.path.join(model_path, "urdf"),
+            dirs_exist_ok=True,
+        )
+
+    # export inference.config.json for each dataset's pipeline
+    for dataset_name, processor in processors.items():
+        inference_cfg = HoloBrainInferencePipelineCfg(
+            class_type=HoloBrainInferencePipeline,
+            model_cfg=None,
+            processor=processor.cfg,
+        )
+        inference_config_name = f"{dataset_name}.config.json"
+        inference_config_path = os.path.join(model_path, inference_config_name)
+        with open(inference_config_path, "w") as fh:
+            fh.write(inference_cfg.model_dump_json(indent=4))
+        logger.info(f"Export {inference_config_name} successfully.")
+        _pipeline = HoloBrainInferencePipeline.load_pipeline(
+            directory=model_path,
+            inference_prefix=dataset_name,
+            device="cuda",
+            load_weights=True,
+            load_impl="native",
+        )
+        logger.info(f"Reload pipeline for {dataset_name} successfully.")
 
 
 if __name__ == "__main__":

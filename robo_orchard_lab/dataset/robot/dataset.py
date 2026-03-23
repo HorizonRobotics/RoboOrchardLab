@@ -38,7 +38,8 @@ from datasets import (
     DatasetInfo,
     Features,
 )
-from datasets.arrow_dataset import Column
+from datasets.arrow_dataset import Column, SplitDict
+from robo_orchard_core.utils.config import ClassType
 from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
 from sqlalchemy.sql import func
@@ -52,6 +53,9 @@ from robo_orchard_lab.dataset.robot.dataset_db_engine import (
     get_local_db_md5,
     get_local_db_url,
     try_upgrade_database,
+)
+from robo_orchard_lab.dataset.robot.dataset_ex import (
+    DatasetItem,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
@@ -70,6 +74,7 @@ __all__ = [
     "RODatasetInfo",
     "ROMultiRowDataset",
     "ConcatRODataset",
+    "RODatasetItem",
     "_complete_dataset_info",
     "get_row_num_from_dataset_info",
 ]
@@ -154,7 +159,7 @@ class RODataset(TorchDataset):
             self.frame_dataset = HFDataset.load_from_disk(
                 dataset_path, storage_options=storage_options
             )
-        except ValueError as e:  # noqa
+        except (TypeError, ValueError) as e:  # noqa
             from robo_orchard_lab.dataset.robot._hf_dataset import (
                 load_from_disk,
             )
@@ -886,7 +891,7 @@ class ROMultiRowDataset(RODataset):
             Defaults to None.
         meta_index2meta (bool, optional): Whether to convert the index-based
             metadata to actual metadata objects when accessing the dataset.
-            Defaults to True.
+            Defaults to False.
     """
 
     def __init__(
@@ -894,7 +899,7 @@ class ROMultiRowDataset(RODataset):
         dataset_path: str,
         row_sampler: MultiRowSamplerConfig,
         storage_options: dict | None = None,
-        meta_index2meta: bool = True,
+        meta_index2meta: bool = False,
     ):
         super().__init__(dataset_path, storage_options, meta_index2meta)
         self._column_datasets = {}
@@ -1191,6 +1196,42 @@ class ConcatRODataset(TorchDataset):
         return ret
 
 
+class RODatasetItem(DatasetItem[RODataset]):
+    """A DatasetItem for RODataset."""
+
+    class_type: ClassType[RODataset] = RODataset
+    dataset_path: str
+    storage_options: dict | None = None
+    meta_index2meta: bool = False
+
+    transform: Callable | None = None
+
+    def get_dataset_row_num(self) -> int:
+        """Get the number of rows in the dataset."""
+        rows = get_row_num_from_dataset_info(
+            dataset_path=self.dataset_path,
+        )
+        if rows is not None:
+            return rows
+
+        dataset = RODataset(
+            dataset_path=self.dataset_path,
+            storage_options=self.storage_options,
+            meta_index2meta=self.meta_index2meta,
+        )
+        return len(dataset)
+
+    def _create_dataset(self) -> RODataset:
+        """Create a dataset from the dataset item configuration."""
+        dataset = RODataset(
+            dataset_path=self.dataset_path,
+            storage_options=self.storage_options,
+            meta_index2meta=self.meta_index2meta,
+        )
+        dataset.set_transform(self.transform)
+        return dataset
+
+
 def _get_dataset_db_url(dataset_path: str) -> URL:
     fs: fsspec.AbstractFileSystem = fsspec.core.url_to_fs(dataset_path)[0]
     file_list = fs.ls(dataset_path, detail=False)
@@ -1269,13 +1310,12 @@ def _complete_dataset_info(
     if dataset_info.dataset_size is None:
         dataset_info.dataset_size = total_size
     if dataset_info.splits is None:
-        dataset_info.splits = {
-            "train": SplitInfo(
-                name="train",
-                num_bytes=total_size,
-                num_examples=total_rows,
-            )
-        }
+        dataset_info.splits = SplitDict()
+        dataset_info.splits["train"] = SplitInfo(
+            name="train",
+            num_bytes=total_size,
+            num_examples=total_rows,
+        )
     return True, dataset_info
 
 
@@ -1304,7 +1344,6 @@ def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
 
     """
     import datasets.config as hg_datasets_config
-    from datasets import SplitInfo
 
     dataset_info_path = os.path.join(
         dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
@@ -1319,8 +1358,4 @@ def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
     if dataset_info.splits is None:
         return None
 
-    cnt = 0
-    for split in dataset_info.splits.items():
-        assert isinstance(split, SplitInfo)
-        cnt += split.num_examples
-    return cnt
+    return dataset_info.splits.total_num_examples

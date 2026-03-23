@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 from __future__ import annotations
 import os
+from abc import ABCMeta, abstractmethod
 from typing import Any, Iterator, Literal, Protocol, runtime_checkable
 
 import numpy as np
@@ -28,6 +29,7 @@ from typing_extensions import TypeAlias
 
 __all__ = [
     "IndiceTable",
+    "ChunkedIndiceTable",
     "IndiceTableSampler",
 ]
 
@@ -49,7 +51,68 @@ class AccessibleByIndex(Protocol):
     def __getitem__(self, index: int) -> int: ...
 
 
-class IndiceTable:
+class TableMixin(metaclass=ABCMeta):
+    @abstractmethod
+    def take(self, key: int | slice | range | Iterator[int]): ...
+
+    @abstractmethod
+    def shuffle(
+        self, generator: torch.Generator | np.random.Generator | None = None
+    ):
+        """Shuffle the indices and return a new table.
+
+        After shuffling, the order of the indices will be changed, but the
+        set of indices will remain the same.
+
+        Args:
+            generator (torch.Generator | np.random.Generator | None, optional):
+                Generator used in shuffling. If None, a new generator will be
+                created with a random seed. Default: None.
+        """
+        ...
+
+    @abstractmethod
+    def to_pylist(self) -> list: ...
+
+    @abstractmethod
+    def to_numpy(self) -> np.ndarray: ...
+
+    @abstractmethod
+    def __len__(self) -> int: ...
+
+    @abstractmethod
+    def __iter__(self): ...
+
+    @abstractmethod
+    def __getitem__(self, index: int) -> int: ...
+
+    @abstractmethod
+    def shard(
+        self,
+        num_shards: int,
+        shard_id: int,
+        contiguous: bool = True,
+        shard_strategy: ShardStrategy = None,
+    ):
+        """Shard the indices into num_shards shards.
+
+        Args:
+            num_shards (int): Number of shards to divide the dataset into.
+            shard_id (int): Index of the current shard.
+            contiguous (bool, optional): If True, then the dataset will
+                be split into contiguous chunks. If False, then the dataset
+                will be split into non-contiguous chunks. Default: True.
+            shard_strategy (ShardStrategy, optional): Strategy to handle
+                the last few indices if the dataset size is not
+                divisible by num_shards. Options are "drop_last" to drop the last
+                few indices or "pad_last" to pad the last few indices with the
+                beginning indices. If None, then no special handling will be done and
+                the last shard may have fewer indices than the others. Default: None.
+        """  # noqa: E501
+        ...
+
+
+class IndiceTable(TableMixin):
     """Class that use pyarrow Table to store indices.
 
     Args:
@@ -63,13 +126,15 @@ class IndiceTable:
 
     def __init__(
         self,
-        indices: Table
-        | list[int]
-        | str
-        | torch.Tensor
-        | np.ndarray
-        | int
-        | pa.Table,
+        indices: (
+            Table
+            | list[int]
+            | str
+            | torch.Tensor
+            | np.ndarray
+            | int
+            | pa.Table
+        ),
     ):
         if isinstance(indices, Table):
             self.table = indices
@@ -77,7 +142,7 @@ class IndiceTable:
             self.table = Table(indices)
         elif isinstance(indices, int):
             self.table = self._list2memtable(
-                np.arange(indices, dtype=np.uint64)
+                np.arange(indices, dtype=np.int64)
             )
         elif isinstance(indices, (list, np.ndarray, torch.Tensor)):
             self.table = self._list2memtable(indices)
@@ -144,16 +209,6 @@ class IndiceTable:
     def shuffle(
         self, generator: torch.Generator | np.random.Generator | None = None
     ) -> IndiceTable:
-        """Shuffle the indices in place.
-
-        After shuffling, the order of the indices will be changed, but the
-        set of indices will remain the same.
-
-        Args:
-            generator (torch.Generator | np.random.Generator | None, optional):
-                Generator used in shuffling. If None, a new generator will be
-                created with a random seed. Default: None.
-        """
         if generator is None:
             seed = int(torch.empty((), dtype=torch.int64).random_().item())
             generator = torch.Generator()
@@ -194,21 +249,6 @@ class IndiceTable:
         contiguous: bool = True,
         shard_strategy: ShardStrategy = None,
     ) -> IndiceTable:
-        """Shard the indices into num_shards shards.
-
-        Args:
-            num_shards (int): Number of shards to divide the dataset into.
-            shard_id (int): Index of the current shard.
-            contiguous (bool, optional): If True, then the dataset will
-                be split into contiguous chunks. If False, then the dataset
-                will be split into non-contiguous chunks. Default: True.
-            shard_strategy (ShardStrategy, optional): Strategy to handle
-                the last few indices if the dataset size is not
-                divisible by num_shards. Options are "drop_last" to drop the last
-                few indices or "pad_last" to pad the last few indices with the
-                beginning indices. If None, then no special handling will be done and
-                the last shard may have fewer indices than the others. Default: None.
-        """  # noqa: E501
         if not 0 <= shard_id < num_shards:
             raise ValueError("shard_id should be in [0, num_shards-1]")
 
@@ -273,6 +313,167 @@ class IndiceTable:
         )
 
 
+class ChunkedIndiceTable(TableMixin):
+    """A chunked version of IndiceTable.
+
+    This class wrappes an IndiceTable and provides a way to access
+    the indices in chunks. This is useful when the number of indices is very
+    large and we want to process them in smaller batches to benefit from
+    better cache locality.
+
+    Args:
+        indice_table (IndiceTable): The underlying IndiceTable to sample from.
+        chunk_size (int): The size of each chunk. The last chunk may be
+            smaller than chunk_size if the total number of indices is not
+            divisible by chunk_size.
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        indice_table: IndiceTable | list[IndiceTable],
+        chunk_size: int | None,
+    ):
+        if isinstance(indice_table, IndiceTable) and chunk_size is not None:
+            MIN_CHUNK_SIZE = 2  # noqa: N806
+            chunk_size = min(
+                max(chunk_size, MIN_CHUNK_SIZE), len(indice_table)
+            )
+            # special case for empty indice_table.
+            if chunk_size == 0:
+                self._full_table = IndiceTable([])
+                self.chunks = []
+                self._chunk_size = 0
+                self._cum_chunk_sizes = np.array([], dtype=np.int64)
+                return
+            num_chunks = (len(indice_table) + chunk_size - 1) // chunk_size
+            self.chunks = [
+                indice_table.take(
+                    slice(
+                        i * chunk_size,
+                        min((i + 1) * chunk_size, len(indice_table)),
+                    )
+                )
+                for i in range(num_chunks)
+            ]
+            self._full_table = indice_table
+            self._chunk_size = chunk_size
+
+        elif isinstance(indice_table, list) and chunk_size is None:
+            self.chunks = indice_table
+            self._full_table = IndiceTable(
+                concat_tables([chunk.table for chunk in self.chunks])
+            )
+            self._chunk_size = None
+        else:
+            raise ValueError(
+                "If indice_table is an IndiceTable, chunk_size must "
+                "be provided. "
+                "If indice_table is a list of IndiceTable, "
+                "chunk_size must be None."
+            )
+
+        self._cum_chunk_sizes = np.cumsum(
+            [len(chunk) for chunk in self.chunks]
+        )
+
+    def __getitem__(self, index: int) -> int:
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError("Index out of range")
+        chunk_idx = np.searchsorted(self._cum_chunk_sizes, index, side="right")
+        if chunk_idx == 0:
+            local_idx = index
+        else:
+            local_idx = index - self._cum_chunk_sizes[chunk_idx - 1]
+        return self.chunks[chunk_idx][local_idx]
+
+    @property
+    def chunk_size(self) -> int:
+        if self._chunk_size is not None:
+            return self._chunk_size
+        else:
+            if len(self.chunks) == 0:
+                return 0
+            elif len(self.chunks) == 1:
+                return len(self.chunks[0])
+            else:
+                # For simplicity, we assume all chunks have the same
+                # size except the last one. Two chunks are enough to
+                # determine the chunk size in this case.
+                return max(len(chunk) for chunk in self.chunks[0:2])
+
+    def shuffle(
+        self, generator: torch.Generator | np.random.Generator | None = None
+    ) -> ChunkedIndiceTable:
+        if generator is None:
+            seed = int(torch.empty((), dtype=torch.int64).random_().item())
+            generator = torch.Generator()
+            generator.manual_seed(seed)
+            chunk_indices = torch.randperm(
+                len(self.chunks), generator=generator
+            ).numpy()
+        elif isinstance(generator, torch.Generator):
+            chunk_indices = torch.randperm(
+                len(self.chunks), generator=generator
+            ).numpy()
+        elif isinstance(generator, np.random.Generator):
+            # get genrerator seed:
+            assert isinstance(generator, np.random.Generator)
+            chunk_indices = generator.permutation(len(self.chunks))
+        new_chunks = [
+            chunk.shuffle(generator=generator) for chunk in self.chunks
+        ]
+        new_chunks = [new_chunks[i] for i in chunk_indices]
+        return ChunkedIndiceTable(indice_table=new_chunks, chunk_size=None)
+
+    def take(
+        self, key: int | slice | range | Iterator[int]
+    ) -> ChunkedIndiceTable:
+        """Return a new ChunkedIndiceTable with the rows specified by key."""
+
+        return ChunkedIndiceTable(
+            indice_table=self._full_table.take(key),
+            chunk_size=self.chunk_size,
+        )
+
+    def to_pylist(self) -> list[int]:
+        return self._full_table.to_pylist()
+
+    def to_numpy(self) -> np.ndarray:
+        return self._full_table.to_numpy()
+
+    def __len__(self) -> int:
+        return len(self._full_table)
+
+    def __iter__(self) -> Iterator[int]:
+        for chunk in self.chunks:
+            for index in chunk:
+                yield index
+
+    def shard(
+        self,
+        num_shards: int,
+        shard_id: int,
+        contiguous: bool = True,
+        shard_strategy: ShardStrategy = None,
+    ):
+        if contiguous is False:
+            raise TypeError(
+                "Non-contiguous sharding is not supported for "
+                "ChunkedIndiceTable"
+            )
+        return ChunkedIndiceTable(
+            indice_table=self._full_table.shard(
+                num_shards=num_shards,
+                shard_id=shard_id,
+                contiguous=contiguous,
+                shard_strategy=shard_strategy,
+            ),
+            chunk_size=self.chunk_size,
+        )
+
+
 class IndiceTableSampler(Sampler[int]):
     """Sampler that samples elements from a given list of indices.
 
@@ -282,6 +483,10 @@ class IndiceTableSampler(Sampler[int]):
             of type uint64, a list of integers, a numpy array of integers,
             a torch tensor of integers, or a string representing the path to
             a pyarrow Table file.
+        shuffle_chunk_size (int, optional): The size of each chunk for shuffle.
+            If provided, the indices will be split into chunks of the given
+            size. If None, then no chunking will be done and the indices will
+            be treated as a single chunk. Default: None.
         shuffle (bool, optional): If True, then the indices will be shuffled
             before being returned. Default: False.
         generator (torch.Generator, optional): Generator used in sampling.
@@ -299,16 +504,28 @@ class IndiceTableSampler(Sampler[int]):
             | np.ndarray
             | int
             | IndiceTable
+            | ChunkedIndiceTable
         ),
         shuffle: bool = False,
+        shuffle_chunk_size: int | None = None,
         generator: torch.Generator | np.random.Generator | None = None,
     ) -> None:
         self.generator = generator
         self.shuffle = shuffle
-        if isinstance(indices, IndiceTable):
-            self.table = indices
-        else:
+        if not isinstance(indices, TableMixin):
             self.table = IndiceTable(indices)
+        else:
+            self.table = indices
+        if shuffle_chunk_size is not None and shuffle:
+            if not isinstance(self.table, ChunkedIndiceTable):
+                self.table = ChunkedIndiceTable(
+                    self.table, chunk_size=shuffle_chunk_size
+                )
+            else:
+                raise ValueError(
+                    "shuffle_chunk_size should not be provided when "
+                    "indices is already a ChunkedIndiceTable."
+                )
 
     def shuffle_indices(self) -> None:
         """Shuffle the indices in place."""
@@ -317,11 +534,11 @@ class IndiceTableSampler(Sampler[int]):
     def __iter__(self) -> Iterator[int]:
         if self.shuffle:
             new_table = self.table.shuffle(generator=self.generator)
-            for i in range(len(new_table)):
-                yield new_table[i]
+            for index in new_table:
+                yield index
         else:
-            for i in range(len(self)):
-                yield self.table[i]
+            for index in self.table:
+                yield index
 
     def __len__(self) -> int:
         return len(self.table)

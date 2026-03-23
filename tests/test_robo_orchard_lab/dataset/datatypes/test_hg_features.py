@@ -30,6 +30,9 @@ from robo_orchard_lab.dataset.datatypes.hg_features.tensor import (
     AnyTensorFeature,
     TypedTensorFeature,
 )
+from test_robo_orchard_lab.dataset.datatypes._hf_datasets_compat import (
+    get_generator_example,
+)
 
 
 class TestTypedTensorFeature:
@@ -84,7 +87,7 @@ class TestTypedTensorFeature:
 
         def generate_data():
             for item in data:
-                yield features.encode_example({"data": item})
+                yield get_generator_example(features, {"data": item})
 
         d = Dataset.from_generator(
             generate_data, features=features, streaming=True
@@ -120,7 +123,7 @@ class TestAnyTensorFeature:
 
         def generate_data():
             for item in data:
-                yield features.encode_example({"data": item})
+                yield get_generator_example(features, {"data": item})
 
         d = Dataset.from_generator(
             generate_data, features=features, streaming=True
@@ -213,7 +216,7 @@ class TestPickleFeature:
 
         def generate_data():
             for item in data:
-                yield features.encode_example({"data": item})
+                yield get_generator_example(features, {"data": item})
 
         d = Dataset.from_generator(
             generate_data, features=features, streaming=True

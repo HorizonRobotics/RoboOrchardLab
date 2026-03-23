@@ -15,3 +15,4 @@
 # permissions and limitations under the License.
 
 from .encoder_ctx import *
+from .encoder_ctx_proto import *

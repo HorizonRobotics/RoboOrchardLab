@@ -30,6 +30,10 @@ from .layers import (
     UpsampleHead,
 )
 from .loss import HoloBrainActionLoss
+from .pipeline import (
+    HoloBrainInferencePipeline,
+    HoloBrainInferencePipelineCfg,
+)
 from .processor import HoloBrainProcessor, HoloBrainProcessorCfg
 from .robot_state_encoder import (
     HoloBrainEncoderBaseConfig,

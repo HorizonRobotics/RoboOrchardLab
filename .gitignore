@@ -25,6 +25,7 @@ docs/build/
 build/
 
 ## dev
+dev.sh
 .coverage
 coverage.xml
 .mypy_cache
@@ -74,6 +75,8 @@ dummy*
 .vscode/**
 !.vscode/extensions.json
 !.vscode/settings_recommended.json
+.devcontainer/
+.history/
 
 ## Editor temporaries
 *.swa
@@ -95,6 +98,10 @@ dummy*
 *~
 .~lock.*
 *.lock
+
+# uv
+!uv.lock
+uv.toml
 
 ## macOS dir files
 .DS_Store
@@ -172,3 +179,5 @@ compile_commands.json
 
 ## Compiled MATLAB
 *.mex*
+.claude/settings.local.json
+.env

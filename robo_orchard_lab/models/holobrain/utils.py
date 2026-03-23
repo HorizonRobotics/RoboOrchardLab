@@ -56,6 +56,9 @@ def apply_scale_shift(
     if joint_scale_shift is None:
         return robot_state
 
+    joint_scale_shift = joint_scale_shift.to(
+        dtype=robot_state.dtype, device=robot_state.device
+    )
     if robot_state.shape[0] != joint_scale_shift.shape[0]:
         num_parallel = robot_state.shape[0] // joint_scale_shift.shape[0]
         joint_scale_shift = joint_scale_shift.repeat_interleave(

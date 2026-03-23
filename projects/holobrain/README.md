@@ -30,12 +30,22 @@ Xuewu Lin, Yun Du, Hongyu Xie, Yiwei Jin, Jiawei Li, Shijie Wu, Qingze Wang, Men
 </div>
 
 ## :file_folder: Quick Start
+
+Get up and running with HoloBrain using RoboTwin2.0 simulation data. This walkthrough covers data preparation, training, evaluation, and model export — everything you need to understand the basic pipeline.
+
+> [!NOTE]
+> **Working with a real robot?**
+> This Quick Start uses simulation data. If you're working with physical hardware, check out these guides instead:
+> * **[Real Robot Pipeline Guide](REALBOT_PIPELINE_GUIDE.md)** — from data recording and packaging all the way through to model training.
+> * **[Real Robot Deployment Guide](REALBOT_DEPLOY_GUIDE.md)** — hardware setup, camera calibration, and running inference on the real robot.
+
 ###  1. Installation
 ```bash
 cd /path/to/robo_orchard_lab
 make version
 pip install ".[holobrain_0]"
 ```
+note: pytorch3d==0.7.8 is recommended to be installed from [source](https://github.com/facebookresearch/pytorch3d), flash-attn is recommended to be installed from [whl package](https://github.com/Dao-AILab/flash-attention/releases/tag/v2.8.1).
 
 ###  2. Prepare Data
 #### Preparing [RoboTwin2.0](https://github.com/RoboTwin-Platform/RoboTwin) Training Data.
@@ -43,7 +53,7 @@ Follow the instructions in the RoboTwin code repository to download the required
 Then, use the following command to package the data into LMDB format for training.
 ```bash
 # require data format from the robotwin2.0 master branch before commit e71140e9734e69686daa420a9be8b75a20ff4587
-python3 -m robo_orchard_lab.dataset.robotwin.robotwin_packer.py \
+python3 -m robo_orchard_lab.dataset.robotwin.robotwin_packer \
     --input_path path/to/robotwin_data \
     --output_path "projects/holobrain/data/lmdb" \
     --task_names ${task_names} \
@@ -85,7 +95,10 @@ accelerate launch  \
 #### Close loop evaluation on RoboTwin2.0 Env
 Refer to [robotwin_eval](projects/holobrain/holobrain_robotwin_eval/README.md).
 
-### 5. Export Model and Processors
+### 5. Export Model and Processors and Pipeline
+
+Export bundles the trained checkpoint, processor configs, and pipeline definition into a single self-contained artifact that is ready for deployment.
+
 ```bash
 cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
@@ -94,22 +107,28 @@ python3 export.py --config ${CONFIG} --workspace ./model_export_path
 ```
 
 ### 6. Model Inference
-The exported model and processor can be used very conveniently. You can insert the code below into any location to perform model inference.
-```python
-from robo_orchard_lab.models.holobrain.processor import (
-  HoloBrainProcessor,
-  MultiArmManipulationInput,
-  MultiArmManipulationOutput,
-)
-from robo_orchard_lab.models.mixin import ModelMixin
 
-processor = HoloBrainProcessor.load("./model_export_path", "robotwin2_0_processor.json")
-model = ModelMixin.load_model("./model_export_path/model", load_impl="native")
+The exported artifact can be used very conveniently. You can insert the code below into any location to perform model inference.
+
+```python
+from robo_orchard_lab.models.holobrain.pipeline import (
+  HoloBrainInferencePipeline
+)
+from robo_orchard_lab.models.holobrain.processor import (
+    MultiArmManipulationInput,
+    MultiArmManipulationOutput,
+)
+# use robotwin2_0 as example
+pipeline = HoloBrainInferencePipeline.load_pipeline(
+    directory="hf://model/HorizonRobotics/HoloBrain_v0.0_Qwen/post_training_robotwin", # or your model dir
+    inference_prefix="robotwin2_0",
+    device="cuda",
+    load_impl="native",
+)
+pipeline.model.eval()
 
 input_data: MultiArmManipulationInput
-input_data = processor.pre_process(input_data)
-model_outs = model(input_data)
-output_data: MultiArmManipulationOutput = processor.post_process(input_data, model_outs)  
+output_data: MultiArmManipulationOutput = pipeline(input_data)
 ```
 
 ## :page_facing_up: Citation

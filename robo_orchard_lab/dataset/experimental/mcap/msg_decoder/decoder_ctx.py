@@ -16,12 +16,15 @@
 
 from typing import Any, Callable, Iterable, Optional
 
+from foxglove import Schema as FoxgloveSchema
+
 from mcap.decoder import DecoderFactory as McapDecoderFactory
 from mcap.exceptions import DecoderNotFoundError
 from mcap.records import (
     Message as McapMessage,
     Schema,
 )
+from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
 from robo_orchard_lab.dataset.experimental.mcap.msg_decoder.factory import (
     DecoderFactoryWithConverter,
 )
@@ -78,8 +81,8 @@ class McapDecoderContext:
     def decode_message(
         self,
         message_encoding: str,
-        message: McapMessage,
-        schema: Optional[Schema],
+        message: McapMessage | StampedMessage[Any],
+        schema: Schema | None | FoxgloveSchema,
     ) -> Any:
         """Decode a message using the appropriate decoder.
 
@@ -97,14 +100,22 @@ class McapDecoderContext:
 
         Args:
             message_encoding (str): The encoding type of the message.
-            message (McapMessage): The message to decode.
-            schema (Optional[Schema]): The schema associated with the message,
-                or None if no schema is available.
+            message (McapMessage|StampedMessage[Any]): The message to decode.
+            schema (Schema | None | FoxgloveSchema): The schema associated
+                with the message, or None if no schema is available.
 
         Returns:
             Any: The decoded message data.
 
         """
+        if isinstance(schema, FoxgloveSchema):
+            raise NotImplementedError(
+                "Decoding for FoxgloveSchema is not implemented yet."
+            )
+        if isinstance(message, StampedMessage):
+            raise NotImplementedError(
+                "Decoding of StampedMessage is not implemented yet. "
+            )
 
         decoder = self._decoders.get(message.channel_id)
         if decoder is not None:

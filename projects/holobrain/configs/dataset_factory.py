@@ -51,6 +51,7 @@ def apply_dataset_register():
     global REGISTERED
     if REGISTERED:
         return
+    import config_agilex_ro_dataset  # noqa: F401
     import config_robotwin_dataset  # noqa: F401
 
     REGISTERED = True

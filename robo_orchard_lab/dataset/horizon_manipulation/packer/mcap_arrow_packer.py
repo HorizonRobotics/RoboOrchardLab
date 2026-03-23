@@ -16,6 +16,7 @@
 
 import argparse
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -29,7 +30,6 @@ from robo_orchard_core.utils.logging import LoggerManager
 from robo_orchard_core.utils.math import Transform3D_M
 
 from robo_orchard_lab.dataset.datatypes import (
-    BatchCameraDataEncoded,
     BatchCameraDataEncodedFeature,
     BatchFrameTransform,
     BatchJointsState,
@@ -38,10 +38,12 @@ from robo_orchard_lab.dataset.datatypes import (
 from robo_orchard_lab.dataset.horizon_manipulation.packer.utils import (
     McapParseConfig,
     PackConfig,
+    apply_camera_calibration_overrides,
     filter_static_frames,
+    get_index_camera,
     parse_mcap,
-    scale_images_and_update_intrinsics,
     time_sync,
+    update_camera_poses_from_tf_graph,
 )
 from robo_orchard_lab.dataset.robot.packaging import (
     DataFrame,
@@ -60,7 +62,7 @@ logger = LoggerManager().get_child(__name__)
 logger.setLevel(logging.INFO)
 
 # ========= Arrow Dataset Feature Definition =========
-LmdbDatasetFeatures = hg_datasets.Features(
+ArrowDatasetFeatures = hg_datasets.Features(
     {
         "joints": BatchJointsStateFeature(dtype="float32"),
         "actions": BatchJointsStateFeature(dtype="float32"),
@@ -114,7 +116,10 @@ class McapEpisodePackaging(EpisodePackaging):
         self.date = date
         self.pack_config = pack_config
         self.urdf_path = urdf_path
-        self.process_data()
+
+        mcap_path = glob.glob(os.path.join(self.episode_path, "*.mcap"))[0]
+        self.mcap_path = mcap_path
+        self.uuid = hashlib.md5(self.mcap_path.encode("utf-8")).hexdigest()
 
     def forward_kinematics(self, joint_states: BatchJointsState):
         """Computes the forward kinematics for the dual-arm robot.
@@ -176,35 +181,38 @@ class McapEpisodePackaging(EpisodePackaging):
         meta_from_file = json.load(
             open(os.path.join(self.episode_path, "episode_meta.json"), "r")
         )
-        self.meta_data = meta_from_file | {
-            "uuid": self.uuid,
-            "num_steps": self.num_steps,
-            "mcap_path": self.mcap_path,
-            "urdf_path": self.urdf_path,
-        }
-        urdf_content = open(self.urdf_path, "r").read()
+        self.meta_data = meta_from_file
+
+        episode_data = EpisodeData(
+            info={
+                "uuid": self.uuid,
+                "date": self.date,
+            }
+        )
+        robot = RobotData(
+            name="piper",
+            content=open(self.urdf_path, "r").read(),
+            content_format=RobotDescriptionFormat.URDF,
+        )
+        task = TaskData(
+            name=self.meta_data["task_name"],
+            description=self.meta_data["instruction"],
+        )
+
         return EpisodeMeta(
-            episode=EpisodeData(),
-            robot=RobotData(
-                name=os.path.basename(self.urdf_path),
-                content=urdf_content,
-                content_format=RobotDescriptionFormat.URDF,
-            ),
-            task=TaskData(
-                name=self.meta_data["task_name"],
-                description=self.meta_data["instruction"],
-            ),
+            episode=episode_data,
+            robot=robot,
+            task=task,
         )
 
     def process_data(self):
-        self.uuid = f"{self.task_name}/{self.user}/{self.date}"
-        logger.info(f"Start processing episode: {self.uuid}")
-        mcap_path = glob.glob(os.path.join(self.episode_path, "*.mcap"))[0]
         pack_config: PackConfig = self.pack_config
         parse_config: McapParseConfig = pack_config.PARSE_CONFIG
 
         # Parse MCAP
-        mcap_data = parse_mcap(mcap_path=mcap_path, parse_config=parse_config)
+        mcap_data = parse_mcap(
+            mcap_path=self.mcap_path, parse_config=parse_config
+        )
         batch_tf_list, batch_joint_dict, batch_image_dict, batch_depth_dict = (
             mcap_data
         )
@@ -233,10 +241,13 @@ class McapEpisodePackaging(EpisodePackaging):
             tail_time_to_filter=pack_config.TAIL_TIME_TO_FILTER,
         )
 
-        # Scale images and update intrinsics
-        scale_images_and_update_intrinsics(
+        # Apply resize and topic-based extrinsic overrides before the TF
+        # graph is materialized for downstream pose queries.
+        batch_tf_list = apply_camera_calibration_overrides(
+            batch_tf_list=batch_tf_list,
             image_data=[batch_image_dict, batch_depth_dict],
             image_scale_ratio=pack_config.IMAGE_SCALE,
+            extrinsic_overrides=pack_config.EXTRINSIC_OVERRIDES,
         )
 
         self.tf_graph = BatchFrameTransformGraph(batch_tf_list)
@@ -244,7 +255,6 @@ class McapEpisodePackaging(EpisodePackaging):
         self.batch_image_dict = batch_image_dict
         self.batch_depth_dict = batch_depth_dict
 
-        self.mcap_path = mcap_path
         self.base_time = batch_image_dict[pack_config.SYNC_CAMERA].timestamps
         self.num_steps = len(self.base_time)
 
@@ -261,34 +271,8 @@ class McapEpisodePackaging(EpisodePackaging):
             DataFrame: An object representing all data for a single,
                 synchronized frame of the episode.
         """
-
-        def get_index_camera(data: BatchCameraDataEncoded, index):
-            ret_dict = {}
-            for key in [
-                "topic",
-                "frame_id",
-                "image_shape",
-                "distortion",
-                "format",
-            ]:
-                ret_dict[key] = getattr(data, key)
-            ret_dict["sensor_data"] = [data.sensor_data[index]]
-            ret_dict["timestamps"] = [data.timestamps[index]]
-            ret_dict["intrinsic_matrices"] = data.intrinsic_matrices[
-                index : index + 1
-            ]
-
-            if data.pose is not None:
-                pose = BatchFrameTransform(
-                    parent_frame_id=data.pose.parent_frame_id,
-                    child_frame_id=data.pose.child_frame_id,
-                    xyz=data.pose.xyz[index : index + 1],
-                    quat=data.pose.quat[index : index + 1],
-                )
-                ret_dict["pose"] = pose
-
-            ret = BatchCameraDataEncoded(**ret_dict)
-            return ret
+        logger.info(f"Start processing episode: {self.uuid}")
+        self.process_data()
 
         if self.num_steps == 0:
             logger.warning(
@@ -327,12 +311,19 @@ class McapEpisodePackaging(EpisodePackaging):
         )
         self.tf_graph.add_tf(batch_left_ee_pose)
         self.tf_graph.add_tf(batch_right_ee_pose)
-        for topic in parse_config.COLOR_IMAGE_TOPICS:
-            color_frame = self.batch_image_dict[topic].frame_id
-            pose = self.tf_graph.get_tf("world", color_frame)
-            if pose.batch_size == 1 and self.num_steps > 1:
-                pose = pose.repeat(self.num_steps)
-            self.batch_image_dict[topic].pose = pose
+
+        # Refresh both color and depth poses from the same TF graph so the
+        # exported camera metadata stays aligned.
+        update_camera_poses_from_tf_graph(
+            tf_graph=self.tf_graph,
+            camera_dict=self.batch_image_dict,
+            num_steps=self.num_steps,
+        )
+        update_camera_poses_from_tf_graph(
+            tf_graph=self.tf_graph,
+            camera_dict=self.batch_depth_dict,
+            num_steps=self.num_steps,
+        )
 
         for i in range(self.num_steps):
             features = {"joints": joint_states[i], "actions": action_states[i]}
@@ -353,6 +344,16 @@ class McapEpisodePackaging(EpisodePackaging):
                 timestamp_ns_max=frame_ts_ns,
                 timestamp_ns_min=frame_ts_ns,
             )
+
+        # Clean up large data to prevent memory leak
+        del self.batch_joint_dict
+        del self.batch_image_dict
+        del self.batch_depth_dict
+        del self.tf_graph
+        self.batch_joint_dict = None
+        self.batch_image_dict = None
+        self.batch_depth_dict = None
+        self.tf_graph = None
 
 
 def make_dataset_from_mcap(
@@ -392,6 +393,7 @@ def make_dataset_from_mcap(
 
     for path_pattern in input_path_list:
         input_files = glob.glob(path_pattern)
+        input_files.sort()
         for input_file in input_files:
             episode_path = os.path.dirname(input_file)
             date = os.path.basename(episode_path)
@@ -416,12 +418,7 @@ def make_dataset_from_mcap(
                 urdf_path=urdf_path,
                 pack_config=pack_config,
             )
-            if packer.num_steps > 0:
-                episodes.append(packer)
-            else:
-                logger.warning(
-                    f"Skipping {packer.uuid} has 0 steps after processing."
-                )
+            episodes.append(packer)
         except Exception:
             logger.error(
                 f"Failed to process episode at {episode_path}", exc_info=True
@@ -432,7 +429,7 @@ def make_dataset_from_mcap(
         return
     logger.info(f"Packaging {len(episodes)} valid episodes into Arrow format.")
 
-    packing = DatasetPackaging(features=LmdbDatasetFeatures)
+    packing = DatasetPackaging(features=ArrowDatasetFeatures)
     packing.packaging(
         episodes=episodes,
         dataset_path=output_path,
@@ -502,6 +499,7 @@ if __name__ == "__main__":
             "/observation/cameras/right/depth_image/camera_info",
         ],
     )
+
     pack_config = PackConfig(
         SYNC_CAMERA="/observation/cameras/middle/color_image/image_raw",
         IMAGE_SCALE=args.image_scale_factor,
@@ -509,6 +507,7 @@ if __name__ == "__main__":
         HEAD_TIME_TO_FILTER=None,
         TAIL_TIME_TO_FILTER=None,
         PARSE_CONFIG=parse_config,
+        EXTRINSIC_OVERRIDES=None,
     )
 
     make_dataset_from_mcap(

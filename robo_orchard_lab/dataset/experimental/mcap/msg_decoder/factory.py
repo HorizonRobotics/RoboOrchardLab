@@ -96,6 +96,7 @@ class DecoderFactoryWithConverter(McapDecoderFactory):
     def decoder_for(
         self, message_encoding: str, schema: Schema | None
     ) -> Callable[[bytes], Any] | None:
+        old_decoder = None
         for decoder_factory in self.decoder_factories:
             if old_decoder := decoder_factory.decoder_for(
                 message_encoding, schema

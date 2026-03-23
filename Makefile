@@ -4,6 +4,12 @@ version_type := local
 EXTRA_ARGS =
 PIP_ARGS =
 BUILD_ARGS =
+# Personal overrides (e.g. PIP, RUN). See .env.example.
+-include .env
+# Package installer. Default: pip. Override in .env: PIP=uv pip --python python3 --system
+PIP ?= pip
+# Command runner. Default: empty (run directly).
+RUN ?=
 COMMIT_UNIXTIME := $(shell git log -n 1 --pretty='format:%ct')
 COMMIT_DATETIME := $(shell date -d @${COMMIT_UNIXTIME} +'%Y%m%d%H%M%S')
 COMMIT_ID := $(shell git rev-parse --short HEAD)
@@ -35,23 +41,23 @@ version:
 	@echo ${VERSION_POSTFIX} > VERSION_POSTFIX
 
 install: version
-	pip3 install .${EXTRA_ARGS} ${BUILD_ARGS} ${PIP_ARGS}
+	$(PIP) install .${EXTRA_ARGS} ${BUILD_ARGS} ${PIP_ARGS}
 
 install-editable: version
-	pip3 install --config-settings editable_mode=compat -e .${EXTRA_ARGS} ${BUILD_ARGS} ${PIP_ARGS}
+	$(PIP) install --config-settings editable_mode=compat -e .${EXTRA_ARGS} ${BUILD_ARGS} ${PIP_ARGS}
 
 dev-env:
-	@pip3 install -r scm/requirements.txt ${PIP_ARGS}
-	@pip3 install "lerobot>=0.4.0" --no-deps ${PIP_ARGS}
-	@pre-commit install
+	@$(PIP) install -r scm/requirements.txt ${PIP_ARGS}
+	@$(PIP) install "lerobot>=0.4.0" --no-deps ${PIP_ARGS}
+	@$(RUN) pre-commit install
 
 auto-format:
-	python3 scm/lint/check_lint.py --auto_format
+	$(RUN) python3 scm/lint/check_lint.py --auto_format
 
 check-lint:
-	@python3 scm/lint/check_lint.py
-	@pre-commit run check-merge-conflict
-	@pre-commit run check-license-header --all-files
+	@$(RUN) python3 scm/lint/check_lint.py
+	@$(RUN) pre-commit run check-merge-conflict
+	@$(RUN) pre-commit run check-license-header --all-files
 
 dist-build: version
 	@mkdir -p build/dist
@@ -64,13 +70,13 @@ doc-clean:
 	make -C docs clean
 
 test:
-	make -C tests
+	make -C tests RUN="$(RUN)"
 
 test_ut:
-	make -C tests test_ut
+	make -C tests test_ut RUN="$(RUN)"
 
 test_it:
-	make -C tests test_it
+	make -C tests test_it RUN="$(RUN)"
 
 show-args:
 	@echo "PIP_ARGS: $(PIP_ARGS)"

@@ -37,8 +37,8 @@ bash_command_template = (
     "  --vlm_ckpt_dir {vlm_ckpt_dir} "
     "  --urdf_dir {urdf_dir} "
     "  --model_config {model_config} "
-    "  --model_processor {model_processor} "
     "  --model_prefix {model_prefix} "
+    "  --valid_action_step {valid_action_step} "
     "  --test_num {test_num}"
 )
 
@@ -72,8 +72,8 @@ def eval_tasks(robotwin_dir, gpu_id, task_names, args, results=None):
             vlm_ckpt_dir=vlm_ckpt_dir,
             urdf_dir=urdf_dir,
             model_config=model_config,
-            model_processor=args.model_processor,
             model_prefix=args.model_prefix,
+            valid_action_step=args.valid_action_step,
             test_num=args.test_num,
         )
         with open(log_file, "w", encoding="utf-8") as f:
@@ -109,10 +109,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task_config", type=str)
     parser.add_argument("--model_config", type=str)
-    parser.add_argument(
-        "--model_processor", type=str, default="robotwin2_0_processor"
-    )
     parser.add_argument("--model_prefix", type=str, default="model")
+    parser.add_argument(
+        "--valid_action_step",
+        type=int,
+        default=32,
+        help="Action steps per policy call (same as policy.valid_action_step)",
+    )
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--vlm_ckpt_dir", type=str, default=None)
     parser.add_argument("--urdf_dir", type=str, default=None)

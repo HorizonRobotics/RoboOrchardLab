@@ -37,6 +37,7 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
 )
 from robo_orchard_lab.pipeline.hooks.optimizer import OptimizerHookConfig
 from robo_orchard_lab.pipeline.hooks.validation import ValidationHookConfig
+from robo_orchard_lab.utils.accelerate import prepare_data_loader
 from robo_orchard_lab.utils.huggingface import (
     AcceleratorState,
     accelerator_load_state,
@@ -245,7 +246,7 @@ class HookBasedTrainer:
         self,
         accelerator: Accelerator,
         model: torch.nn.Module,
-        dataloader: DataLoader | Iterable,
+        dataloader: DataLoader,
         batch_processor: BatchProcessorMixin,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
@@ -283,10 +284,19 @@ class HookBasedTrainer:
             model.accelerate_model_id = len(accelerator._models)
             model.accelerator_register_all_hooks(accelerator)
 
-        # prepare using accelerator
+        # wrap prepare dataloader with accelerator.prepare_data_loader
+        # to handle IterableDataset with multiple processes.
         self.dataloader, self.model, self.optimizer, self.lr_scheduler = (
-            accelerator.prepare(dataloader, model, optimizer, lr_scheduler)
+            accelerator.prepare(
+                prepare_data_loader(
+                    accelerator=accelerator, data_loader=dataloader
+                ),
+                model,
+                optimizer,
+                lr_scheduler,
+            )
         )
+
         self.dataloader: DataLoader = self.dataloader
         self.model: torch.nn.Module = self.model
         self.optimizer: AcceleratedOptimizer = self.optimizer

@@ -137,8 +137,8 @@ def wrap_github_dependency(
         return dependencies
 
     replace_pair = (
-        "github.com/HorizonRobotics/",
-        "robot-lab-gitlab-internal.hobot.cc/robot-lab-internal/open-source/",
+        "git+https://github.com/HorizonRobotics/",
+        "git+ssh://git@robot-lab-gitlab-internal.hobot.cc/robot-lab-internal/open-source/",
     )
 
     if isinstance(dependencies, list):
@@ -232,7 +232,7 @@ if __name__ == "__main__":
         # Do not delete the line below, just comment it out and add the
         # new line.
         # "robo_orchard_core==0.4.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@ae83c81b8b37ab9a99f4d0c4d994eac4f492e1ee",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@82c9a4015e7547ad198fc44e358935764fb4bc06",
     ]
     # optional dependencies
     extras_require = {
@@ -245,7 +245,7 @@ if __name__ == "__main__":
         ],
         "sem": [
             "transformers<=4.57.1",
-            "pytorch3d==0.7.8",
+            "pytorch3d>=0.7.8",
             "pytorch-kinematics",
             "ninja",
             "diffusers",
@@ -255,14 +255,16 @@ if __name__ == "__main__":
         "holobrain_0": [
             "torch>=2.6.0",
             "transformers<=4.57.1",
-            "pytorch3d==0.7.8",
+            "pytorch3d>=0.7.8",
             "pytorch-kinematics",
             "ninja",
             "diffusers",
             "lmdb",
             "h5py",
             "terminaltables",
-            "flash-attn",
+            "flash-attn<=2.8.3",
+            "flask",
+            "gevent",
             "imageio[ffmpeg]",
         ],
         "mcap_datasets": [
@@ -271,7 +273,8 @@ if __name__ == "__main__":
             "mcap>=1.2.2",
             "foxglove-schemas-protobuf>=0.3.0",
             "opencv-python",
-            "robo_orchard_schemas==0.2.0",
+            "robo_orchard_schemas==0.3.0.dev20260213135045",
+            "foxglove-sdk",
         ],
         "aux_think": [
             "transformers",
@@ -305,6 +308,22 @@ if __name__ == "__main__":
             "hydra-core",
             "deepspeed",
         ],
+        "progress_think": [
+            "transformers",
+            "tokenizers",
+            "peft",
+            "markdown2[all]",
+            "scikit-learn>=1.2.2",
+            "opencv-python",
+            "uvicorn",
+            "fastapi",
+            "timm",
+            "ninja",
+            "tyro",
+            "loguru",
+            "hydra-core",
+            "deepspeed",
+        ],
         "finegrasp": [
             "scipy",
             "einops",
@@ -312,7 +331,7 @@ if __name__ == "__main__":
             "open3d",
         ],
         "all": [
-            "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp]"
+            "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp,progress_think]"
         ],
     }
     install_requires = wrap_github_dependency(install_requires)

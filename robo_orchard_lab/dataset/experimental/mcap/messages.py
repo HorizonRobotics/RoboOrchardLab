@@ -23,8 +23,13 @@ from typing import (
     Generic,
     Iterator,
     Literal,
-    Optional,
+    TypeGuard,
     TypeVar,
+)
+
+from foxglove import (
+    Channel as FoxgloveChannel,
+    Schema as FoxgloveSchema,
 )
 
 from mcap.records import (
@@ -56,20 +61,36 @@ class StampedMessage(Generic[T]):
 
     data: T
     """The actual message data."""
-    log_time: int | None
+    log_time: int
     """The log time in nanoseconds."""
-    pub_time: int | None
+    pub_time: int | None = None
     """The publish time in nanoseconds."""
 
 
 @dataclass
 class McapMessageTuple:
-    schema: Optional[McapSchema]
-    channel: McapChannel
-    message: McapMessage
+    schema: McapSchema | None | FoxgloveSchema
+    channel: McapChannel | FoxgloveChannel
+    message: McapMessage | StampedMessage[Any]
+
+    @property
+    def topic(self) -> str:
+        if isinstance(self.channel, McapChannel):
+            return self.channel.topic
+        elif isinstance(self.channel, FoxgloveChannel):
+            return self.channel.topic()
+        else:
+            raise TypeError(
+                f"Unsupported channel type: {type(self.channel)}. "
+                "Expected McapChannel or FoxgloveChannel."
+            )
 
     def decode(self, decoder_ctx: McapDecoderContext) -> Any:
         """Decode the message using the provided decoder context."""
+        if isinstance(self.message, StampedMessage):
+            raise NotImplementedError(
+                "Decoding of StampedMessage is not implemented yet. "
+            )
         return decoder_ctx.decode_message(
             message_encoding=self.channel.message_encoding,
             message=self.message,
@@ -97,23 +118,52 @@ class McapDecodedMessageTuple(McapMessageTuple):
 
 @dataclass
 class McapMessagesTuple:
-    schema: Optional[McapSchema]
-    channel: McapChannel
-    messages: list[McapMessage]
+    schema: McapSchema | None | FoxgloveSchema
+    channel: McapChannel | FoxgloveChannel
+    # messages: list[McapMessage] | list[StampedMessage[Any]]
+    messages: list[McapMessage | StampedMessage[Any]]
+
+    @property
+    def topic(self) -> str:
+        if isinstance(self.channel, McapChannel):
+            return self.channel.topic
+        elif isinstance(self.channel, FoxgloveChannel):
+            return self.channel.topic()
+        else:
+            raise TypeError(
+                f"Unsupported channel type: {type(self.channel)}. "
+                "Expected McapChannel or FoxgloveChannel."
+            )
 
     @property
     def min_log_time(self) -> int:
         """Return the minimum log time of all messages."""
         if not self.messages:
             raise ValueError("No messages in the tuple.")
-        return min(msg.log_time for msg in self.messages)
+        return min(
+            msg.log_time for msg in self.messages if msg.log_time is not None
+        )
 
     @property
     def max_log_time(self) -> int:
         """Return the maximum log time of all messages."""
         if not self.messages:
             raise ValueError("No messages in the tuple.")
-        return max(msg.log_time for msg in self.messages)
+        return max(
+            msg.log_time for msg in self.messages if msg.log_time is not None
+        )
+
+    def _is_messages_stamped_message(
+        self, data: list
+    ) -> TypeGuard[list[StampedMessage[Any]]]:
+        """Check if the messages are all StampedMessage."""
+        return all(isinstance(msg, StampedMessage) for msg in data)
+
+    def _is_messages_mcap_message(
+        self, data: list
+    ) -> TypeGuard[list[McapMessage]]:
+        """Check if the messages are all McapMessage."""
+        return all(isinstance(msg, McapMessage) for msg in data)
 
     def split(
         self,
@@ -133,10 +183,11 @@ class McapMessagesTuple:
                 will be used to find the split point. Defaults to False.
 
         """
+        messages = self.messages
         left = []
         right = []
         if not is_sorted_asc:
-            for msg in self.messages:
+            for msg in messages:
                 if msg.log_time < log_time:
                     left.append(msg)
                 else:
@@ -144,11 +195,9 @@ class McapMessagesTuple:
         else:
             # If the messages are already sorted ascending by log_time,
             # we can use binary search to find the split point.
-            idx = bisect_left(
-                self.messages, log_time, key=lambda msg: msg.log_time
-            )
-            left = self.messages[:idx]
-            right = self.messages[idx:]
+            idx = bisect_left(messages, log_time, key=lambda msg: msg.log_time)
+            left = messages[:idx]
+            right = messages[idx:]
 
         ret_left = (
             McapMessagesTuple(
@@ -173,10 +222,13 @@ class McapMessagesTuple:
         reverse: bool = False,
     ) -> None:
         """Sort the messages by log time."""
+
         if key == "log_time":
             # Sort by log_time, which is an attribute of McapMessage
             self.messages.sort(key=lambda msg: msg.log_time, reverse=reverse)
         elif key == "publish_time":
+            if not self._is_messages_mcap_message(self.messages):
+                raise TypeError("All messages must be McapMessage instances.")
             # Sort by pub_time, which is an attribute of McapMessage
             self.messages.sort(
                 key=lambda msg: msg.publish_time, reverse=reverse
@@ -186,11 +238,11 @@ class McapMessagesTuple:
                 f"Invalid sort key: {key}. Use 'log_time' or 'pub_time'."
             )
 
-    def __iter__(self) -> Iterator[McapMessage]:
+    def __iter__(self) -> Iterator[McapMessage | StampedMessage[Any]]:
         """Return an iterator over the messages in the tuple."""
         return iter(self.messages)
 
-    def __getitem__(self, index: int) -> McapMessage:
+    def __getitem__(self, index: int) -> McapMessage | StampedMessage[Any]:
         return self.messages[index]
 
     def __len__(self) -> int:
@@ -199,7 +251,8 @@ class McapMessagesTuple:
 
     def append(self, msg: McapMessage | McapMessageTuple) -> None:
         """Append a new message to the messages tuple."""
-
+        if not self._is_messages_mcap_message(self.messages):
+            raise TypeError("All messages must be McapMessage instances.")
         if isinstance(msg, McapMessage):
             self.messages.append(msg)
         elif isinstance(msg, McapMessageTuple):
@@ -208,6 +261,7 @@ class McapMessagesTuple:
                 raise ValueError(
                     f"Channel mismatch: {self.channel.topic} != {msg.channel.topic}"  # noqa: E501
                 )
+            assert isinstance(msg.message, McapMessage)
             self.messages.append(msg.message)
         else:
             raise TypeError(
