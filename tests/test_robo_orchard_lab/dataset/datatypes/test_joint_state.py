@@ -26,6 +26,9 @@ from datasets.features.features import (
 from robo_orchard_lab.dataset.datatypes.joint_state import (
     BatchJointsState,
 )
+from test_robo_orchard_lab.dataset.datatypes._hf_datasets_compat import (
+    get_generator_example,
+)
 
 
 class TestBatchJointsState:
@@ -68,7 +71,7 @@ class TestBatchJointsState:
             # Use a generator to create the dataset
             def dataset_iter():
                 for item in data:
-                    yield features.encode_example({"data": item})
+                    yield get_generator_example(features, {"data": item})
 
             dataset = Dataset.from_generator(
                 dataset_iter,

@@ -27,6 +27,9 @@ from robo_orchard_lab.dataset.datatypes.geometry import (
     BatchFrameTransform,
     BatchPose,
 )
+from test_robo_orchard_lab.dataset.datatypes._hf_datasets_compat import (
+    get_generator_example,
+)
 
 
 class TestBatchPose:
@@ -62,7 +65,7 @@ class TestBatchPose:
             # Use a generator to create the dataset
             def dataset_iter():
                 for item in data:
-                    yield features.encode_example({"data": item})
+                    yield get_generator_example(features, {"data": item})
 
             dataset = Dataset.from_generator(
                 dataset_iter,
@@ -123,7 +126,7 @@ class TestBatchFrameTransform:
             # Use a generator to create the dataset
             def dataset_iter():
                 for item in data:
-                    yield features.encode_example({"data": item})
+                    yield get_generator_example(features, {"data": item})
 
             dataset = Dataset.from_generator(
                 dataset_iter,

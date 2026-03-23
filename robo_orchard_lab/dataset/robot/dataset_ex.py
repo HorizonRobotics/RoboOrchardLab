@@ -16,13 +16,17 @@
 
 from __future__ import annotations
 import copy
+import inspect
 from abc import ABCMeta, abstractmethod
+from functools import partial
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
     Generic,
     Iterable,
     Iterator,
+    overload,
 )
 
 import numpy as np
@@ -31,6 +35,7 @@ from datasets import IterableDataset as HFIterableDataset
 from pydantic import Field
 from robo_orchard_core.utils.config import ClassType, Config
 from torch.utils.data import (
+    DataLoader as TorchDataLoader,
     Dataset as TorchDataset,
     IterableDataset as TorchIterableDataset,
 )
@@ -47,6 +52,7 @@ from robo_orchard_lab.dataset.sampler import (
 __all__ = [
     "ShardConfig",
     "BatchLoaderConfig",
+    "DataLoader",
     "ShuffleConfig",
     "IterableDatasetMixin",
     "DatasetWithIndices",
@@ -57,6 +63,7 @@ __all__ = [
 
 
 DatasetType = TypeVar("DatasetType", bound=TorchDataset)
+_TORCH_DATALOADER_INIT_SIGNATURE = inspect.signature(TorchDataLoader.__init__)
 
 
 class ShardConfig(Config):
@@ -68,7 +75,265 @@ class BatchLoaderConfig(Config):
     batch_size: int = 1
     collate_fn: Callable | None = None
     drop_last: bool = False
-    prefetch_factor: int | None = None
+
+
+def _collate_self_batched_item(
+    batch: list[Any], user_collate_fn: Callable | None = None
+) -> Any:
+    if len(batch) != 1:
+        raise ValueError(
+            "Self-batched datasets expect DataLoader to receive exactly "
+            f"one item per batch, but got {len(batch)} items."
+        )
+    item = batch[0]
+    if user_collate_fn is None:
+        return item
+    return user_collate_fn(item)
+
+
+def _is_self_batched_iterable_dataset(dataset: Any) -> bool:
+    return (
+        isinstance(dataset, IterableDatasetMixin)
+        and dataset.batch_loader_kwargs is not None
+    )
+
+
+class DataLoader(TorchDataLoader):
+    """A thin wrapper around PyTorch ``DataLoader``.
+
+    For iterable datasets that already yield batches through
+    ``batch_loader_kwargs``, this loader clones the input dataset, aligns the
+    dataset-side batch settings with the caller-provided dataloader batch
+    arguments, and then configures the outer ``TorchDataLoader`` to forward one
+    already-formed batch at a time.
+
+    When ``same_dataset_in_batch`` is True and the input dataset is a
+    ``DictIterableDataset`` without ``batch_loader_kwargs``, this loader will
+    internally enable aligned ``batch_loader_kwargs`` on a cloned dataset so
+    each returned batch comes from a single inner dataset.
+
+    Args:
+        dataset: The dataset to load.
+        same_dataset_in_batch: When True and ``dataset`` is a
+            ``DictIterableDataset`` without ``batch_loader_kwargs``, force each
+            returned batch to come from a single inner dataset by enabling
+            dataset-side batch loading on a cloned dataset.
+        *args: Positional arguments forwarded to ``TorchDataLoader``.
+        **kwargs: Keyword arguments forwarded to ``TorchDataLoader``. Relevant
+            batch-related arguments, and ``shuffle`` when supported by the
+            dataset, are also aligned into dataset-side configuration when
+            self-batched loading is enabled.
+    """
+
+    @overload
+    def __init__(
+        self,
+        dataset: Any,
+        batch_size: int | None = 1,
+        shuffle: bool | ShuffleConfig | None = None,
+        sampler: Any | None = None,
+        batch_sampler: None = None,
+        num_workers: int = 0,
+        collate_fn: Callable | None = None,
+        pin_memory: bool = False,
+        drop_last: bool = False,
+        timeout: float = 0,
+        worker_init_fn: Callable | None = None,
+        multiprocessing_context: Any = None,
+        generator: torch.Generator | None = None,
+        *,
+        prefetch_factor: int | None = None,
+        persistent_workers: bool = False,
+        pin_memory_device: str = "",
+        in_order: bool = True,
+        same_dataset_in_batch: bool = False,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        dataset: Any,
+        batch_size: None = None,
+        shuffle: bool | ShuffleConfig | None = None,
+        sampler: None = None,
+        batch_sampler: Any = None,
+        num_workers: int = 0,
+        collate_fn: Callable | None = None,
+        pin_memory: bool = False,
+        drop_last: bool = False,
+        timeout: float = 0,
+        worker_init_fn: Callable | None = None,
+        multiprocessing_context: Any = None,
+        generator: torch.Generator | None = None,
+        *,
+        prefetch_factor: int | None = None,
+        persistent_workers: bool = False,
+        pin_memory_device: str = "",
+        in_order: bool = True,
+        same_dataset_in_batch: bool = False,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        dataset,
+        *args,
+        same_dataset_in_batch: bool = False,
+        **kwargs,
+    ):
+        self._uses_dataset_batch_loader = _is_self_batched_iterable_dataset(
+            dataset
+        ) or (
+            same_dataset_in_batch
+            and isinstance(dataset, DictIterableDataset)
+            and dataset.batch_loader_kwargs is None
+        )
+
+        dataloader_kwargs = self._bind_dataloader_kwargs(
+            dataset=dataset,
+            args=args,
+            kwargs=kwargs,
+        )
+
+        self._effective_batch_size: int = dataloader_kwargs.get(
+            "batch_size", 1
+        )
+        self._effective_drop_last: bool = dataloader_kwargs.get(
+            "drop_last", False
+        )
+
+        if self._uses_dataset_batch_loader:
+            dataset, batch_loader_kwargs = (
+                self._clone_dataset_with_aligned_batch_loader_kwargs(
+                    dataset=dataset,
+                    dataloader_kwargs=dataloader_kwargs,
+                )
+            )
+            self._effective_batch_size = batch_loader_kwargs.batch_size
+            self._effective_drop_last = batch_loader_kwargs.drop_last
+            dataloader_kwargs["dataset"] = dataset
+            dataloader_kwargs = (
+                self._normalize_outer_dataloader_for_self_batched_dataset(
+                    dataloader_kwargs
+                )
+            )
+
+        super().__init__(**dataloader_kwargs)
+
+    def __len__(self) -> int:
+        if isinstance(self.dataset, IterableDatasetMixin):
+            return self.dataset.get_total_batch_num(
+                num_workers=self.num_workers,
+                batch_size=self._effective_batch_size,
+                drop_last=self._effective_drop_last,
+            )
+
+        return super().__len__()
+
+    @staticmethod
+    def _bind_dataloader_kwargs(
+        dataset: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        bound = _TORCH_DATALOADER_INIT_SIGNATURE.bind_partial(
+            None, dataset, *args, **kwargs
+        )
+        dataloader_kwargs = dict(bound.arguments)
+        dataloader_kwargs.pop("self", None)
+        return dataloader_kwargs
+
+    @staticmethod
+    def _clone_dataset_with_aligned_batch_loader_kwargs(
+        dataset: Any,
+        dataloader_kwargs: dict[str, Any],
+    ) -> tuple[IterableDatasetMixin, BatchLoaderConfig]:
+        assert isinstance(dataset, IterableDatasetMixin)
+        batch_loader_kwargs = dataset.batch_loader_kwargs
+        aligned_batch_loader_kwargs = (
+            BatchLoaderConfig(**batch_loader_kwargs.to_dict())
+            if batch_loader_kwargs is not None
+            else BatchLoaderConfig()
+        )
+        for key in BatchLoaderConfig.model_fields:
+            if key in dataloader_kwargs:
+                setattr(
+                    aligned_batch_loader_kwargs,
+                    key,
+                    dataloader_kwargs[key],
+                )
+        aligned_shuffle_config = DataLoader._align_dataset_shuffle_config(
+            dataset=dataset,
+            dataloader_shuffle=dataloader_kwargs.get("shuffle"),
+        )
+
+        if isinstance(dataset, IterableWithLenDataset):
+            cloned_dataset = IterableWithLenDataset(
+                dataset=dataset.dataset,
+                indices=dataset.indice_sampler.table,
+                shuffle=aligned_shuffle_config,
+                shard_kwargs=dataset.shard_kwargs,
+                generator=dataset.indice_sampler.generator,
+                batch_loader_kwargs=aligned_batch_loader_kwargs,
+            )
+        elif isinstance(dataset, DictIterableDataset):
+            cloned_dataset = DictIterableDataset(
+                datasets=dataset.dataset_items,
+                shuffle=aligned_shuffle_config,
+                shard_kwargs=dataset.shard_kwargs,
+                generator=dataset._generator,
+                batch_loader_kwargs=aligned_batch_loader_kwargs,
+                max_dataset_concurrency=dataset._max_dataset_concurrency,
+            )
+        else:
+            raise TypeError(
+                "Self-batched dataset cloning only supports "
+                "IterableWithLenDataset and DictIterableDataset."
+            )
+
+        return cloned_dataset, aligned_batch_loader_kwargs
+
+    @staticmethod
+    def _align_dataset_shuffle_config(
+        dataset: IterableDatasetMixin,
+        dataloader_shuffle: bool | ShuffleConfig | None,
+    ) -> ShuffleConfig:
+        if isinstance(dataset, IterableWithLenDataset):
+            dataset_shuffle = dataset._shuffle_config
+        elif isinstance(dataset, DictIterableDataset):
+            dataset_shuffle = dataset._shuffle
+        else:
+            raise TypeError(
+                "Dataset shuffle alignment only supports "
+                "IterableWithLenDataset and DictIterableDataset."
+            )
+
+        aligned_shuffle_config = ShuffleConfig(**dataset_shuffle.to_dict())
+        if dataloader_shuffle is None:
+            return aligned_shuffle_config
+        if isinstance(dataloader_shuffle, ShuffleConfig):
+            return ShuffleConfig(**dataloader_shuffle.to_dict())
+
+        aligned_shuffle_config.shuffle = dataloader_shuffle
+        return aligned_shuffle_config
+
+    @staticmethod
+    def _normalize_outer_dataloader_for_self_batched_dataset(
+        dataloader_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize outer DataLoader kwargs for self-batched datasets.
+
+        In this mode the dataset itself already yields complete batches. The
+        outer ``TorchDataLoader`` should therefore only transport one dataset
+        item at a time and unwrap it, instead of trying to batch samples again.
+        """
+        dataloader_kwargs["batch_size"] = 1
+        dataloader_kwargs["collate_fn"] = partial(_collate_self_batched_item)
+        # ``drop_last`` has already been applied by the inner dataset batch
+        # generation logic via ``batch_loader_kwargs``. The outer dataloader is
+        # only used to forward one already-formed batch at a time, so keeping
+        # ``drop_last=True`` here would risk dropping an entire final batch at
+        # the wrong layer.
+        dataloader_kwargs["drop_last"] = False
+        dataloader_kwargs["shuffle"] = False
+        return dataloader_kwargs
 
 
 class ShuffleConfig(Config):
@@ -105,6 +370,11 @@ class ShuffleConfig(Config):
 class IterableDatasetMixin(metaclass=ABCMeta):
     @abstractmethod
     def __iter__(self):
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
         raise NotImplementedError
 
     @property
@@ -333,7 +603,7 @@ class IterableWithLenDataset(
 
     dataset: DatasetType
     indice_sampler: IndiceTableSampler
-    batch_loader_kwargs: BatchLoaderConfig | None
+    _batch_loader_kwargs: BatchLoaderConfig | None
 
     def __init__(
         self,
@@ -378,7 +648,11 @@ class IterableWithLenDataset(
         )
         if isinstance(batch_loader_kwargs, dict):
             batch_loader_kwargs = BatchLoaderConfig(**batch_loader_kwargs)
-        self.batch_loader_kwargs = batch_loader_kwargs
+        self._batch_loader_kwargs = batch_loader_kwargs
+
+    @property
+    def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
+        return self._batch_loader_kwargs
 
     @property
     def shard_kwargs(self) -> ShardConfig:
@@ -772,6 +1046,10 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         self._total_indices_length: list[int] | None = None
 
     @property
+    def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
+        return self._batch_loader_kwargs
+
+    @property
     def shard_kwargs(self) -> ShardConfig:
         return self._shard_kwargs
 
@@ -785,7 +1063,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             datasets=sharded_items,
             shuffle=self._shuffle,
             generator=self._generator,
-            batch_loader_kwargs=self._batch_loader_kwargs,
+            batch_loader_kwargs=self.batch_loader_kwargs,
             max_dataset_concurrency=self._max_dataset_concurrency,
             shard_kwargs=self.shard_kwargs,
         )
@@ -814,7 +1092,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         _ = self.total_iterator_length
         assert self._total_indices_length is not None
 
-        if self._batch_loader_kwargs is not None:
+        if self.batch_loader_kwargs is not None:
             for indices_length in self._total_indices_length:
                 total_batch_num += _get_total_batch_num(
                     rows=indices_length,
@@ -885,7 +1163,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 shuffle=self._shuffle,
                 shard_kwargs=self.shard_kwargs,
                 generator=self._generator,
-                batch_loader_kwargs=self._batch_loader_kwargs,
+                batch_loader_kwargs=self.batch_loader_kwargs,
             )
             cur_dataset_iters.append((idx, iter(iter_dataset)))
         assert self._total_indices_length is not None

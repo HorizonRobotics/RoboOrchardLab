@@ -7,9 +7,7 @@ description: Load these baseline instructions for any task in this repository.
 ## Defaults
 
 - Reply in the same language as the user unless asked otherwise.
-- Prefer the smallest viable change.
-- Read the relevant code, call sites, and tests before editing.
-- Prefer the lowest-risk option when multiple solutions work.
+- Read the relevant code, call sites, and tests before editing. 
 
 ## Scope and Safety
 
