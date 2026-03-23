@@ -43,6 +43,6 @@
         "projects/holobrain_internal/common/holobrain_behavior1k_policy"
     ],
     "job_password": "123456",
-    "queue_name": "project-5090-robot-lab-debug-bcloud-bj",
-    "project_id": "Robot-lab"
+    "queue_name": "project-5090-robot-lab-bcloud-bj",
+    "project_id": "horizon-labs"
 }
