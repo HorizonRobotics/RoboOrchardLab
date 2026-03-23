@@ -53,6 +53,7 @@ def apply_dataset_register():
         return
     import config_agibot_dataset  # noqa: F401
     import config_agibot_digit_dataset  # noqa: F401
+    import config_agibot_geniesim_dataset  # noqa: F401
     import config_agilex_dataset  # noqa: F401
     import config_agilex_ro_dataset  # noqa: F401
     import config_behavior_dataset  # noqa: F401
