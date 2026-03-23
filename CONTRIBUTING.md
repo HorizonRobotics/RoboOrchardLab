@@ -1,5 +1,11 @@
 # Contribution Guide
 
+## AI-assisted contribution
+
+- This project is compatible with AI-assisted development, and contributors are encouraged to use GitHub Copilot, Codex, or other coding agents.
+- The repository includes AI agent instructions in `AGENTS.md` and `.github/instructions/`; use them as the source of truth when working with AI tools.
+- AI-assisted changes should still stay focused, reuse existing patterns, and be reviewed and validated before commit.
+
 ## Install by editable mode
 
 ```bash
