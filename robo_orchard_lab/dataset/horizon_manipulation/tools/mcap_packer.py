@@ -664,7 +664,8 @@ if __name__ == "__main__":
     if args.embodiedment_meta_file is not None:
         if args.embodiedment is None:
             parser.error(
-                "--embodiedment is required when --embodiedment_meta_file is specified"
+                "--embodiedment is required when "
+                "--embodiedment_meta_file is specified"
             )
         with open(args.embodiedment_meta_file, "r") as f:
             embodiedment_meta = json.load(f)
@@ -677,7 +678,8 @@ if __name__ == "__main__":
 
     if args.urdf is None:
         parser.error(
-            "Either --urdf or --embodiedment_meta_file (with --embodiedment) must be specified"
+            "Either --urdf or --embodiedment_meta_file "
+            "(with --embodiedment) must be specified"
         )
     logger.info(f"urdf: {args.urdf}")
     packer = PiperMcapPacker(
