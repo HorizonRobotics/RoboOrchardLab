@@ -199,7 +199,7 @@ def rebuild_env_content(
 
 
 SCAN_MAX_WORKERS = max(2, min(os.cpu_count() or 4, 8))
-DEFAULT_EMBODIEDMENT = "piper"
+DEFAULT_EMBODIMENT = "piper"
 
 
 class EpisodeRecord(BaseModel):
@@ -1081,7 +1081,7 @@ def read_embodiment_tag(episode_dir: Path) -> str:
 
 def parse_record_embodiments(value: str) -> list[str]:
     items = parse_filter_items(value)
-    return items or [DEFAULT_EMBODIEDMENT]
+    return items or [DEFAULT_EMBODIMENT]
 
 
 def resolve_embodiment(value: str) -> str:
