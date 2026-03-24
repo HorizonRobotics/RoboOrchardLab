@@ -219,6 +219,21 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             need_sort=False,
         )
 
+    def test_unbatched_iterable_len(self, dummy_array_dataset: Dataset):
+        dataset = IterableWithLenDataset(dummy_array_dataset)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=None,
+            num_workers=0,
+        )
+
+        dataloader_items = list(dataloader)
+
+        assert dataloader_items == list(dummy_array_dataset)
+        assert len(dataloader) == len(dummy_array_dataset)
+        assert len(dataloader_items) == len(dataloader)
+
     def test_iterable_with_len_self_batched_overrides_dataset_config(
         self, dummy_array_dataset: Dataset
     ):

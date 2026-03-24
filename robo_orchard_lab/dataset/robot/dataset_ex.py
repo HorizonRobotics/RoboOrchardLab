@@ -194,8 +194,9 @@ class DataLoader(TorchDataLoader):
             kwargs=kwargs,
         )
 
-        self._effective_batch_size: int = dataloader_kwargs.get(
-            "batch_size", 1
+        batch_size = dataloader_kwargs.get("batch_size", 1)
+        self._effective_batch_size: int = (
+            1 if batch_size is None else batch_size
         )
         self._effective_drop_last: bool = dataloader_kwargs.get(
             "drop_last", False

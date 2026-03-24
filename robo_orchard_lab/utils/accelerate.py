@@ -23,6 +23,25 @@ from torch.utils.data import DataLoader
 __all__ = ["prepare_data_loader"]
 
 
+def _warn_and_reset_dataloader_config(
+    dataloader_config: object,
+    field_name: str,
+    expected_value: object,
+    warning_message: str,
+) -> None:
+    field_value = getattr(dataloader_config, field_name)
+    if field_value == expected_value:
+        return
+
+    warnings.warn(
+        warning_message
+        + f" Found {field_name}={field_value!r}; "
+        + f"reset it to {expected_value!r}.",
+        UserWarning,
+    )
+    setattr(dataloader_config, field_name, expected_value)
+
+
 def prepare_data_loader(
     accelerator: Accelerator,
     data_loader: DataLoader,
@@ -51,30 +70,37 @@ def prepare_data_loader(
                 UserWarning,
             )
             dataset.shard_kwargs.shard_strategy = "pad_last"
-        if accelerator.dataloader_config.dispatch_batches is not False:
-            warnings.warn(
+        _warn_and_reset_dataloader_config(
+            dataloader_config=accelerator.dataloader_config,
+            field_name="dispatch_batches",
+            expected_value=False,
+            warning_message=(
                 "Using IterableDatasetMixin with multi-process training and "
-                "dispatch_batches is not set to False will lead to "
-                "inefficient data loading! Please set dispatch_batches to "
-                "False in the dataloader config. ",
-                UserWarning,
-            )
-        if accelerator.dataloader_config.even_batches is not False:
-            warnings.warn(
+                "dispatch_batches != False will lead to inefficient data "
+                "loading."
+            ),
+        )
+        _warn_and_reset_dataloader_config(
+            dataloader_config=accelerator.dataloader_config,
+            field_name="even_batches",
+            expected_value=False,
+            warning_message=(
                 "even_batches in accelerator dataloader config is not "
-                "supported for IterableDataset. You should set drop_last in "
-                "the dataloader to get rid of the last incomplete batch "
-                "instead. ",
-                UserWarning,
-            )
-        if accelerator.dataloader_config.split_batches is not False:
-            warnings.warn(
+                "supported for IterableDataset. Set drop_last in the "
+                "dataloader instead if you need to drop the last incomplete "
+                "batch."
+            ),
+        )
+        _warn_and_reset_dataloader_config(
+            dataloader_config=accelerator.dataloader_config,
+            field_name="split_batches",
+            expected_value=False,
+            warning_message=(
                 "Using IterableDatasetMixin with multi-process training and "
-                "split_batches is not set to False will lead to "
-                "inefficient data loading! Please set split_batches to "
-                "False in the dataloader config. ",
-                UserWarning,
-            )
+                "split_batches != False will lead to inefficient data "
+                "loading."
+            ),
+        )
     ret = accelerator.prepare_data_loader(data_loader, **kwargs)
 
     if (
