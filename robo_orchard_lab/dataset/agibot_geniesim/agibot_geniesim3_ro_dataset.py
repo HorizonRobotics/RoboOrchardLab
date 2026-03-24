@@ -222,7 +222,11 @@ class AgibotGenieSim3RODataset(TorchDataset):
             pred_steps=pred_steps,
         )
         datasets = [
-            ROMultiRowDataset(dataset_path=p, row_sampler=row_sampler)
+            ROMultiRowDataset(
+                dataset_path=p,
+                row_sampler=row_sampler,
+                meta_index2meta=True,
+            )
             for p in paths
         ]
         arrow_parser = ArrowDataParse(
