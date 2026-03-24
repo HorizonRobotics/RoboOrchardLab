@@ -20,6 +20,8 @@ import io
 import json
 import os
 import queue
+import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -34,7 +36,15 @@ from typing import Any, cast
 from urllib.parse import quote_plus
 
 import yaml
-from flask import Flask, abort, jsonify, render_template, request, send_file
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+)
 from pydantic import BaseModel, ConfigDict
 
 
@@ -67,9 +77,18 @@ def load_dotenv_file(env_path: Path) -> None:
 
 
 PROJECT_ROOT = Path(__file__).parent
+WORKSPACE_ROOT = PROJECT_ROOT.parent.parent.parent.parent
 
+ENV_PATH = PROJECT_ROOT / ".env"
+ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
 
-load_dotenv_file(PROJECT_ROOT / ".env")
+if ENV_PATH.exists():
+    load_dotenv_file(ENV_PATH)
+elif ENV_EXAMPLE_PATH.exists():
+    shutil.copy(ENV_EXAMPLE_PATH, ENV_PATH)
+    load_dotenv_file(ENV_PATH)
+
+ENV_CONFIGURED = ENV_PATH.exists()
 
 
 def get_env_value(name: str, default: str) -> str:
@@ -101,12 +120,86 @@ CACHE_DIR = get_env_path("CACHE_DIR", PROJECT_ROOT / ".cache")
 SUBMIT_CONFIG_DIR = get_env_path(
     "SUBMIT_CONFIG_DIR", PROJECT_ROOT / ".submit_configs"
 )
+REMOTE_UPLOAD_CONFIG_PATH = get_env_path(
+    "REMOTE_UPLOAD_CONFIG_PATH",
+    PROJECT_ROOT / "remote_upload_hosts.example.json",
+)
 AUTO_REFRESH_STARTED = False
 SCAN_TASK_LOCK = Lock()
 SCAN_TASKS: dict[str, dict[str, Any]] = {}
 SUBMIT_TASK_LOCK = Lock()
 SUBMIT_TASKS: dict[str, dict[str, Any]] = {}
+REMOTE_UPLOAD_TASK_LOCK = Lock()
+REMOTE_UPLOAD_TASKS: dict[str, dict[str, Any]] = {}
+
+
+def reinitialize_from_env() -> None:
+    global \
+        ENV_CONFIGURED, \
+        BASE_DATA_PATH, \
+        CACHE_DIR, \
+        SUBMIT_CONFIG_DIR, \
+        REMOTE_UPLOAD_CONFIG_PATH
+    BASE_DATA_PATH = Path(get_env_value("DATA_ROOT", "./data"))
+    CACHE_DIR = get_env_path("CACHE_DIR", PROJECT_ROOT / ".cache")
+    SUBMIT_CONFIG_DIR = get_env_path(
+        "SUBMIT_CONFIG_DIR", PROJECT_ROOT / ".submit_configs"
+    )
+    REMOTE_UPLOAD_CONFIG_PATH = get_env_path(
+        "REMOTE_UPLOAD_CONFIG_PATH",
+        PROJECT_ROOT / "remote_upload_hosts.example.json",
+    )
+    ENV_CONFIGURED = True
+
+
+def parse_env_file_for_setup(content: str) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    pending_comments: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line.startswith("#"):
+            pending_comments.append(line[1:].strip())
+        elif "=" in line:
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if (
+                len(value) >= 2
+                and value[0] == value[-1]
+                and value[0] in {'"', "'"}
+            ):
+                value = value[1:-1]
+            fields.append(
+                {
+                    "key": key,
+                    "value": value,
+                    "description": " ".join(pending_comments),
+                    "needs_attention": "/path/to/your/" in value,
+                }
+            )
+            pending_comments = []
+        elif not line:
+            pending_comments = []
+    return fields
+
+
+def rebuild_env_content(
+    template_content: str, new_values: dict[str, str]
+) -> str:
+    lines = []
+    for raw_line in template_content.splitlines():
+        stripped = raw_line.strip()
+        if "=" in stripped and not stripped.startswith("#"):
+            key = stripped.split("=", 1)[0].strip()
+            if key in new_values:
+                lines.append(f"{key}={new_values[key]}")
+                continue
+        lines.append(raw_line)
+    return "\n".join(lines) + "\n"
+
+
 SCAN_MAX_WORKERS = max(2, min(os.cpu_count() or 4, 8))
+DEFAULT_EMBODIEDMENT = "piper"
 
 
 class EpisodeRecord(BaseModel):
@@ -114,6 +207,7 @@ class EpisodeRecord(BaseModel):
 
     user_name: str
     task_name: str
+    embodiedment: str
     episode_id: str
     day: str
     path: str
@@ -129,6 +223,7 @@ class FilterOptions(BaseModel):
 
     user_name: str = ""
     task_name: str = ""
+    embodiedment: str = ""
     date_prefix: str = ""
     data_root: str = ""
     refresh: bool = False
@@ -219,6 +314,15 @@ def get_submit_config_patch_path() -> Path:
 
 def build_submit_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
+    repo_root = str(WORKSPACE_ROOT)
+    existing_pythonpath = env.get("PYTHONPATH", "").strip()
+    pythonpath_entries = [
+        entry for entry in existing_pythonpath.split(os.pathsep) if entry
+    ]
+    if repo_root not in pythonpath_entries:
+        pythonpath_entries.insert(0, repo_root)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
     if not get_env_bool("SUBMIT_JOB_CLEAR_PROXY", True):
         return env
 
@@ -393,6 +497,385 @@ def get_submit_task(task_id: str) -> dict[str, Any] | None:
         return dict(task) if task is not None else None
 
 
+def get_remote_upload_command(config_path: Path) -> list[str]:
+    return [
+        "python3",
+        str(PROJECT_ROOT / "remote_upload_orchestrator.py"),
+        "--config",
+        str(config_path),
+        "--log-dir",
+        str(WORKSPACE_ROOT / ".remote_upload_logs"),
+    ]
+
+
+def create_remote_upload_task(
+    config_path: Path, config_text: str
+) -> dict[str, Any]:
+    task = {
+        "task_id": uuid.uuid4().hex,
+        "config_path": str(config_path),
+        "config_text": config_text,
+        "command": get_remote_upload_command(config_path),
+        "command_text": " ".join(get_remote_upload_command(config_path)),
+        "status": "pending",
+        "message": "Waiting to start remote upload...",
+        "error_message": "",
+        "returncode": None,
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "finished_at": None,
+        "cancel_requested": False,
+        "stdout": "",
+        "stderr": "",
+        "host_logs": {},
+        "main_log": "",
+        "log_dir": "",
+        "log_file_offsets": {},
+        "process_pid": None,
+    }
+    with REMOTE_UPLOAD_TASK_LOCK:
+        REMOTE_UPLOAD_TASKS[task["task_id"]] = task
+    return dict(task)
+
+
+def update_remote_upload_task(task_id: str, **kwargs: Any) -> None:
+    with REMOTE_UPLOAD_TASK_LOCK:
+        if task_id in REMOTE_UPLOAD_TASKS:
+            REMOTE_UPLOAD_TASKS[task_id].update(kwargs)
+
+
+def append_remote_upload_task_log(task_id: str, field: str, text: str) -> None:
+    if not text:
+        return
+    with REMOTE_UPLOAD_TASK_LOCK:
+        if task_id in REMOTE_UPLOAD_TASKS:
+            REMOTE_UPLOAD_TASKS[task_id][field] = (
+                str(REMOTE_UPLOAD_TASKS[task_id].get(field, "")) + text
+            )
+
+
+def append_remote_upload_host_log(
+    task_id: str, host_name: str, text: str
+) -> None:
+    if not text:
+        return
+    with REMOTE_UPLOAD_TASK_LOCK:
+        if task_id not in REMOTE_UPLOAD_TASKS:
+            return
+        host_logs = cast(
+            dict[str, str],
+            REMOTE_UPLOAD_TASKS[task_id].setdefault("host_logs", {}),
+        )
+        host_logs[host_name] = str(host_logs.get(host_name, "")) + text
+
+
+def get_remote_upload_task(task_id: str) -> dict[str, Any] | None:
+    with REMOTE_UPLOAD_TASK_LOCK:
+        task = REMOTE_UPLOAD_TASKS.get(task_id)
+        if task is None:
+            return None
+        snapshot = dict(task)
+        snapshot["host_logs"] = dict(
+            cast(dict[str, str], task.get("host_logs", {}))
+        )
+        snapshot["log_file_offsets"] = dict(
+            cast(dict[str, int], task.get("log_file_offsets", {}))
+        )
+        return snapshot
+
+
+def is_remote_upload_cancel_requested(task_id: str) -> bool:
+    task = get_remote_upload_task(task_id)
+    return bool(task is not None and task.get("cancel_requested"))
+
+
+def load_remote_upload_default_config() -> str:
+    if not REMOTE_UPLOAD_CONFIG_PATH.exists():
+        raise FileNotFoundError(
+            f"Remote upload config not found: {REMOTE_UPLOAD_CONFIG_PATH}"
+        )
+    return REMOTE_UPLOAD_CONFIG_PATH.read_text(encoding="utf-8")
+
+
+def build_remote_upload_default_config(filters: FilterOptions) -> str:
+    config_text = load_remote_upload_default_config()
+    payload = json.loads(config_text or "{}") or {}
+    if not isinstance(payload, dict):
+        raise ValueError("Remote upload config must contain a JSON object")
+
+    defaults = payload.get("defaults")
+    if defaults is None:
+        defaults = {}
+        payload["defaults"] = defaults
+    if not isinstance(defaults, dict):
+        raise ValueError("Remote upload config defaults must be a JSON object")
+
+    user_names = ",".join(parse_filter_items(filters.user_name))
+    task_names = ",".join(parse_filter_items(filters.task_name))
+    embodiedments = ",".join(parse_filter_items(filters.embodiedment))
+    date_prefixes = ",".join(parse_filter_items(filters.date_prefix))
+    data_root = normalize_filter(filters.data_root)
+
+    if user_names:
+        defaults["user_names"] = user_names
+    if task_names:
+        defaults["task_names"] = task_names
+    if embodiedments:
+        defaults["embodiedment"] = embodiedments
+    if date_prefixes:
+        defaults["date_prefix"] = date_prefixes
+    if data_root:
+        defaults["output_path"] = data_root
+
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def detect_remote_upload_run_log_dir(text: str) -> Path | None:
+    pattern = re.compile(r"\.remote_upload_logs/\d{8}_\d{6}")
+    match = pattern.search(text)
+    if match is None:
+        return None
+    candidate = WORKSPACE_ROOT / match.group(0)
+    return candidate if candidate.exists() else None
+
+
+def get_remote_upload_log_base_dir(task: dict[str, Any]) -> Path:
+    command = [str(part) for part in cast(list[str], task.get("command", []))]
+    for index, part in enumerate(command):
+        if part != "--log-dir":
+            continue
+        if index + 1 < len(command):
+            return Path(command[index + 1]).expanduser()
+        break
+    return WORKSPACE_ROOT / ".remote_upload_logs"
+
+
+def detect_remote_upload_run_log_dir_from_disk(
+    task: dict[str, Any],
+) -> Path | None:
+    base_dir = get_remote_upload_log_base_dir(task)
+    if not base_dir.exists():
+        return None
+
+    started_at_raw = str(task.get("started_at", "")).strip()
+    started_at: datetime | None = None
+    if started_at_raw:
+        try:
+            started_at = datetime.strptime(started_at_raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            started_at = None
+
+    candidates: list[Path] = []
+    for child in base_dir.iterdir():
+        if not child.is_dir() or not re.fullmatch(r"\d{8}_\d{6}", child.name):
+            continue
+        if started_at is None:
+            candidates.append(child)
+            continue
+        try:
+            child_time = datetime.strptime(child.name, "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        if child_time >= started_at:
+            candidates.append(child)
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.name)
+
+
+def sync_remote_upload_log_files(task_id: str) -> None:
+    task = get_remote_upload_task(task_id)
+    if task is None:
+        return
+
+    log_dir_value = str(task.get("log_dir", "")).strip()
+    log_dir = Path(log_dir_value) if log_dir_value else None
+    if log_dir is None or not log_dir.exists():
+        detected_dir = detect_remote_upload_run_log_dir_from_disk(task)
+        if detected_dir is None:
+            combined_output = (
+                f"{task.get('stdout', '')}\n{task.get('stderr', '')}"
+            )
+            detected_dir = detect_remote_upload_run_log_dir(combined_output)
+        if detected_dir is None:
+            return
+        log_dir = detected_dir
+        update_remote_upload_task(task_id, log_dir=str(log_dir))
+
+    file_offsets = cast(dict[str, int], task.get("log_file_offsets", {}))
+    for log_file in sorted(log_dir.glob("*.log")):
+        file_key = str(log_file)
+        offset = int(file_offsets.get(file_key, 0))
+        try:
+            content = log_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if offset >= len(content):
+            continue
+        new_chunk = content[offset:]
+        host_name = log_file.stem
+        append_remote_upload_host_log(task_id, host_name, new_chunk)
+        update_remote_upload_task(
+            task_id,
+            log_file_offsets={
+                **cast(
+                    dict[str, int],
+                    (get_remote_upload_task(task_id) or {}).get(
+                        "log_file_offsets", {}
+                    ),
+                ),
+                file_key: len(content),
+            },
+        )
+
+
+def _pump_stream(
+    stream: Any,
+    field: str,
+    log_queue: queue.Queue[tuple[str, str]],
+) -> None:
+    try:
+        if stream is None:
+            return
+        for line in iter(stream.readline, ""):
+            if not line:
+                break
+            log_queue.put((field, line))
+    finally:
+        if stream is not None:
+            stream.close()
+
+
+def run_remote_upload_task(task_id: str, command: list[str]) -> None:
+    update_remote_upload_task(
+        task_id, status="running", message="Remote upload is running..."
+    )
+    log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=build_submit_subprocess_env(),
+            cwd=str(PROJECT_ROOT),
+        )
+    except OSError as exc:
+        update_remote_upload_task(
+            task_id,
+            status="failed",
+            error_message=str(exc),
+            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return
+
+    update_remote_upload_task(task_id, process_pid=process.pid)
+
+    stdout_thread = Thread(
+        target=_pump_stream,
+        args=(process.stdout, "stdout", log_queue),
+        daemon=True,
+        name=f"remote-upload-stdout-{task_id[:8]}",
+    )
+    stderr_thread = Thread(
+        target=_pump_stream,
+        args=(process.stderr, "stderr", log_queue),
+        daemon=True,
+        name=f"remote-upload-stderr-{task_id[:8]}",
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    while process.poll() is None:
+        while True:
+            try:
+                field, chunk = log_queue.get_nowait()
+            except queue.Empty:
+                break
+            append_remote_upload_task_log(task_id, field, chunk)
+        sync_remote_upload_log_files(task_id)
+        if is_remote_upload_cancel_requested(task_id):
+            update_remote_upload_task(
+                task_id,
+                message=(
+                    "Cancel requested. Waiting for the remote upload "
+                    "process to stop..."
+                ),
+            )
+            process.terminate()
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                append_remote_upload_task_log(
+                    task_id,
+                    "stderr",
+                    (
+                        "Local orchestrator did not exit after SIGTERM "
+                        "within 20 seconds; sending SIGKILL.\n"
+                    ),
+                )
+                process.kill()
+                process.wait()
+            break
+        time.sleep(0.1)
+
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    while True:
+        try:
+            field, chunk = log_queue.get_nowait()
+        except queue.Empty:
+            break
+        append_remote_upload_task_log(task_id, field, chunk)
+    sync_remote_upload_log_files(task_id)
+
+    returncode = process.returncode
+    cancelled = is_remote_upload_cancel_requested(task_id)
+    task_snapshot = get_remote_upload_task(task_id) or {}
+    stderr_text = str(task_snapshot.get("stderr", "")).strip()
+    stdout_text = str(task_snapshot.get("stdout", "")).strip()
+    update_remote_upload_task(
+        task_id,
+        returncode=returncode,
+        process_pid=None,
+        status="cancelled"
+        if cancelled
+        else ("completed" if returncode == 0 else "failed"),
+        message=(
+            "Remote upload cancelled"
+            if cancelled
+            else (
+                "Remote upload completed successfully"
+                if returncode == 0
+                else (stderr_text or stdout_text or "Remote upload failed")
+            )
+        ),
+        error_message=""
+        if cancelled or returncode == 0
+        else (stderr_text or stdout_text),
+        finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
+def start_remote_upload_task(config_text: str) -> dict[str, Any]:
+    json.loads(config_text)
+    config_dir = CACHE_DIR / "remote_upload_configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / f"remote_upload_{uuid.uuid4().hex}.json"
+    config_path.write_text(config_text, encoding="utf-8")
+    task = create_remote_upload_task(config_path, config_text)
+    thread = Thread(
+        target=run_remote_upload_task,
+        args=(task["task_id"], task["command"]),
+        daemon=True,
+        name=f"remote-upload-task-{task['task_id'][:8]}",
+    )
+    thread.start()
+    return get_remote_upload_task(task["task_id"]) or task
+
+
 def _drain_submit_queue(
     task_id: str, log_queue: queue.Queue[tuple[str, str]]
 ) -> None:
@@ -426,27 +909,15 @@ def run_submit_task(task_id: str, command: list[str]) -> None:
         )
         return
 
-    def pump_stream(stream: Any, field: str) -> None:
-        try:
-            if stream is None:
-                return
-            for line in iter(stream.readline, ""):
-                if not line:
-                    break
-                log_queue.put((field, line))
-        finally:
-            if stream is not None:
-                stream.close()
-
     stdout_thread = Thread(
-        target=pump_stream,
-        args=(process.stdout, "stdout"),
+        target=_pump_stream,
+        args=(process.stdout, "stdout", log_queue),
         daemon=True,
         name=f"submit-stdout-{task_id[:8]}",
     )
     stderr_thread = Thread(
-        target=pump_stream,
-        args=(process.stderr, "stderr"),
+        target=_pump_stream,
+        args=(process.stderr, "stderr", log_queue),
         daemon=True,
         name=f"submit-stderr-{task_id[:8]}",
     )
@@ -567,12 +1038,48 @@ def read_duration_hours(episode_dir: Path) -> float:
     return round_hours(nanoseconds_value / 1_000_000_000 / 3600)
 
 
+def read_embodiedment_tag(episode_dir: Path) -> str:
+    episode_meta_path = episode_dir / "episode_meta.json"
+    if not episode_meta_path.exists():
+        return ""
+
+    try:
+        payload = json.loads(episode_meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    metas = payload.get("metas")
+    if not isinstance(metas, dict):
+        return ""
+
+    embodiedment = metas.get("embodiedment")
+    if not isinstance(embodiedment, list):
+        return ""
+
+    normalized = sorted(
+        item.strip().lower()
+        for item in embodiedment
+        if isinstance(item, str) and item.strip()
+    )
+    return ",".join(normalized)
+
+
+def parse_record_embodiedments(value: str) -> list[str]:
+    items = parse_filter_items(value)
+    return items or [DEFAULT_EMBODIEDMENT]
+
+
+def resolve_embodiedment(value: str) -> str:
+    return ",".join(parse_record_embodiedments(value))
+
+
 def build_episode_record(
     user_name: str, task_name: str, episode_dir: Path
 ) -> EpisodeRecord:
     return EpisodeRecord(
         user_name=user_name,
         task_name=task_name,
+        embodiedment=read_embodiedment_tag(episode_dir),
         episode_id=episode_dir.name,
         day=infer_day_from_episode_dir(episode_dir),
         path=str(episode_dir),
@@ -910,6 +1417,15 @@ def parse_filter_items(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def resolve_base_paths(filters: FilterOptions) -> list[Path]:
+    paths = [Path(item) for item in parse_filter_items(filters.data_root)]
+    return paths or [BASE_DATA_PATH]
+
+
+def format_base_paths(base_paths: list[Path]) -> str:
+    return ",".join(str(path) for path in base_paths)
+
+
 def extract_episode_time_prefix(episode_id: str) -> str:
     if episode_id.startswith("episode_"):
         return episode_id[len("episode_") :]
@@ -931,6 +1447,7 @@ def parse_filters(args: Any) -> FilterOptions:
     return FilterOptions(
         user_name=normalize_filter(args.get("user_name")),
         task_name=normalize_filter(args.get("task_name")),
+        embodiedment=normalize_filter(args.get("embodiedment")),
         date_prefix=normalize_filter(args.get("date_prefix")),
         data_root=normalize_filter(args.get("data_root")),
         refresh=normalize_filter(args.get("refresh")).lower()
@@ -941,7 +1458,7 @@ def parse_filters(args: Any) -> FilterOptions:
 
 
 def resolve_base_path(filters: FilterOptions) -> Path:
-    return Path(filters.data_root) if filters.data_root else BASE_DATA_PATH
+    return resolve_base_paths(filters)[0]
 
 
 def get_cache_key(base_path: Path) -> str:
@@ -1155,6 +1672,55 @@ def get_cached_episode_records(
     }
 
 
+def merge_cache_infos(cache_infos: list[dict[str, Any]]) -> dict[str, Any]:
+    if not cache_infos:
+        return {
+            "cache_hit": False,
+            "cache_source": "refresh",
+            "cache_created_at": "",
+            "cache_entry_count": 0,
+        }
+
+    cache_hit = all(bool(item.get("cache_hit")) for item in cache_infos)
+    cache_sources = [
+        str(item.get("cache_source", "")) for item in cache_infos if item
+    ]
+    cache_created_candidates = [
+        str(item.get("cache_created_at", ""))
+        for item in cache_infos
+        if str(item.get("cache_created_at", "")).strip()
+    ]
+    return {
+        "cache_hit": cache_hit,
+        "cache_source": ",".join(cache_sources),
+        "cache_created_at": max(cache_created_candidates, default=""),
+        "cache_entry_count": sum(
+            int(item.get("cache_entry_count", 0)) for item in cache_infos
+        ),
+    }
+
+
+def get_cached_episode_records_for_paths(
+    base_paths: list[Path], refresh: bool = False
+) -> tuple[list[EpisodeRecord], dict[str, Any]]:
+    all_records: list[EpisodeRecord] = []
+    cache_infos: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    for base_path in base_paths:
+        records, cache_info = get_cached_episode_records(
+            base_path, refresh=refresh
+        )
+        cache_infos.append(cache_info)
+        for record in records:
+            if record.path in seen_paths:
+                continue
+            seen_paths.add(record.path)
+            all_records.append(record)
+
+    return all_records, merge_cache_infos(cache_infos)
+
+
 def create_episode_zip_bytes(episode_path: Path) -> io.BytesIO:
     buffer = io.BytesIO()
     with zipfile.ZipFile(
@@ -1216,12 +1782,17 @@ def filter_records(
 ) -> list[EpisodeRecord]:
     user_names = set(parse_filter_items(filters.user_name))
     task_names = set(parse_filter_items(filters.task_name))
+    embodiedments = set(parse_filter_items(filters.embodiedment))
     date_prefixes = parse_filter_items(filters.date_prefix)
 
     def matched(record: EpisodeRecord) -> bool:
         if user_names and record.user_name not in user_names:
             return False
         if task_names and record.task_name not in task_names:
+            return False
+        if embodiedments and embodiedments.isdisjoint(
+            parse_record_embodiedments(record.embodiedment)
+        ):
             return False
         episode_time_prefix = extract_episode_time_prefix(record.episode_id)
         if date_prefixes and not any(
@@ -1248,6 +1819,8 @@ def build_summary(
     by_user_hours: dict[str, float] = defaultdict(float)
     by_task_total: dict[str, int] = defaultdict(int)
     by_task_hours: dict[str, float] = defaultdict(float)
+    by_embodiedment_total: dict[str, int] = defaultdict(int)
+    by_embodiedment_hours: dict[str, float] = defaultdict(float)
 
     for record in records:
         by_user_task_day[record.user_name][record.task_name][record.day] += 1
@@ -1260,6 +1833,13 @@ def build_summary(
         by_user_hours[record.user_name] += record.duration_hours
         by_task_total[record.task_name] += 1
         by_task_hours[record.task_name] += record.duration_hours
+        for resolved_embodiedment in parse_record_embodiedments(
+            record.embodiedment
+        ):
+            by_embodiedment_total[resolved_embodiedment] += 1
+            by_embodiedment_hours[resolved_embodiedment] += (
+                record.duration_hours
+            )
 
     all_days = sorted(by_day_total.keys())
     users: list[dict[str, Any]] = []
@@ -1314,11 +1894,16 @@ def build_summary(
         task_name: round_hours(hours)
         for task_name, hours in sorted(by_task_hours.items())
     }
+    hours_by_embodiedment = {
+        embodiedment: round_hours(hours)
+        for embodiedment, hours in sorted(by_embodiedment_hours.items())
+    }
     episodes = [
         {
             "episode_id": record.episode_id,
             "user_name": record.user_name,
             "task_name": record.task_name,
+            "embodiedment": resolve_embodiedment(record.embodiedment),
             "day": record.day,
             "path": record.path,
             "duration_hours": record.duration_hours,
@@ -1350,6 +1935,7 @@ def build_summary(
         "filters": {
             "user_name": "",
             "task_name": "",
+            "embodiedment": "",
             "date_prefix": "",
             "data_root": str(base_path),
             "refresh": False,
@@ -1380,6 +1966,12 @@ def build_summary(
                 task_name: format_duration_hours(hours)
                 for task_name, hours in hours_by_task.items()
             },
+            "by_embodiedment": dict(sorted(by_embodiedment_total.items())),
+            "hours_by_embodiedment": hours_by_embodiedment,
+            "duration_text_by_embodiedment": {
+                embodiedment: format_duration_hours(hours)
+                for embodiedment, hours in hours_by_embodiedment.items()
+            },
         },
         "users": users,
         "episodes": episodes,
@@ -1406,6 +1998,7 @@ def build_summary_with_filters(
     summary["filters"] = {
         "user_name": filters.user_name,
         "task_name": filters.task_name,
+        "embodiedment": filters.embodiedment,
         "date_prefix": filters.date_prefix,
         "data_root": str(base_path),
         "refresh": filters.refresh,
@@ -1427,14 +2020,31 @@ def build_summary_with_filters(
     return summary
 
 
+def build_summary_with_filters_for_paths(
+    records: list[EpisodeRecord],
+    base_paths: list[Path],
+    filters: FilterOptions,
+    cache_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary = build_summary_with_filters(
+        records, base_paths[0], filters, cache_info
+    )
+    joined_base_paths = format_base_paths(base_paths)
+    summary["base_path"] = joined_base_paths
+    summary["filters"]["data_root"] = joined_base_paths
+    return summary
+
+
 def load_summary_from_request_args(args: Any) -> dict[str, Any]:
     ensure_auto_refresh_started()
     filters = parse_filters(args)
-    base_path = resolve_base_path(filters)
-    records, cache_info = get_cached_episode_records(
-        base_path, refresh=filters.refresh
+    base_paths = resolve_base_paths(filters)
+    records, cache_info = get_cached_episode_records_for_paths(
+        base_paths, refresh=filters.refresh
     )
-    return build_summary_with_filters(records, base_path, filters, cache_info)
+    return build_summary_with_filters_for_paths(
+        records, base_paths, filters, cache_info
+    )
 
 
 def build_loading_summary(
@@ -1449,6 +2059,7 @@ def build_loading_summary(
         "filters": {
             "user_name": filters.user_name,
             "task_name": filters.task_name,
+            "embodiedment": filters.embodiedment,
             "date_prefix": filters.date_prefix,
             "data_root": str(base_path),
             "refresh": filters.refresh,
@@ -1472,6 +2083,9 @@ def build_loading_summary(
             "by_task": {},
             "hours_by_task": {},
             "duration_text_by_task": {},
+            "by_embodiedment": {},
+            "hours_by_embodiedment": {},
+            "duration_text_by_embodiedment": {},
         },
         "users": [],
         "episodes": [],
@@ -1493,15 +2107,79 @@ def build_loading_summary(
     }
 
 
+def build_loading_summary_for_paths(
+    base_paths: list[Path], filters: FilterOptions, task_ids: list[str]
+) -> dict[str, Any]:
+    summary = build_loading_summary(base_paths[0], filters, task_ids[0])
+    joined_base_paths = format_base_paths(base_paths)
+    summary["base_path"] = joined_base_paths
+    summary["filters"]["data_root"] = joined_base_paths
+    summary["loading"]["scan_task_id"] = ",".join(task_ids)
+    if len(base_paths) > 1:
+        summary["loading"]["message"] = (
+            "No cache found yet. Starting initial scans for multiple data roots..."  # noqa: E501
+        )
+    return summary
+
+
 def maybe_build_initial_loading_summary(args: Any) -> dict[str, Any] | None:
     ensure_auto_refresh_started()
     filters = parse_filters(args)
-    base_path = resolve_base_path(filters)
-    if filters.refresh or has_cached_episode_records(base_path):
+    base_paths = resolve_base_paths(filters)
+    if filters.refresh or all(
+        has_cached_episode_records(base_path) for base_path in base_paths
+    ):
         return None
 
-    task_id = start_scan_task(base_path)
-    return build_loading_summary(base_path, filters, task_id)
+    task_ids = [
+        start_scan_task(base_path)
+        for base_path in base_paths
+        if not has_cached_episode_records(base_path)
+    ]
+    if not task_ids:
+        return None
+    return build_loading_summary_for_paths(base_paths, filters, task_ids)
+
+
+@app.before_request
+def require_setup() -> Any:
+    if ENV_CONFIGURED:
+        return None
+    if request.endpoint in {"setup_page", "save_setup_api"}:
+        return None
+    return redirect("/setup")
+
+
+@app.get("/setup")
+def setup_page():
+    env_content = (
+        ENV_PATH.read_text(encoding="utf-8") if ENV_PATH.exists() else ""
+    )
+    fields = parse_env_file_for_setup(env_content)
+    return render_template("setup.html", fields=fields, env_path=str(ENV_PATH))
+
+
+@app.post("/api/setup")
+def save_setup_api():
+    data = request.get_json(silent=True) or {}
+    new_values = data.get("fields")
+    if not isinstance(new_values, dict):
+        abort(400, description="fields must be a JSON object")
+
+    template_content = (
+        ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+        if ENV_EXAMPLE_PATH.exists()
+        else ENV_PATH.read_text(encoding="utf-8")
+        if ENV_PATH.exists()
+        else ""
+    )
+    env_content = rebuild_env_content(
+        template_content, cast(dict[str, str], new_values)
+    )
+    ENV_PATH.write_text(env_content, encoding="utf-8")
+    load_dotenv_file(ENV_PATH)
+    reinitialize_from_env()
+    return jsonify({"status": "ok"})
 
 
 @app.get("/")
@@ -1528,19 +2206,25 @@ def create_scan_task_api():
     if not data_root:
         data_root = str(BASE_DATA_PATH)
 
-    base_path = Path(data_root)
+    base_paths = [Path(item) for item in parse_filter_items(data_root)] or [
+        BASE_DATA_PATH
+    ]
     if refresh_mode not in {"full", "partial"}:
         abort(400, description="refresh_mode must be full or partial")
     if refresh_mode == "partial" and not date_prefixes:
         abort(400, description="date_prefix is required for partial refresh")
 
-    task_id = start_scan_task(
-        base_path,
-        refresh_mode=refresh_mode,
-        target_date_prefixes=date_prefixes,
-    )
-    task = get_scan_task(task_id)
-    return jsonify(task), 202
+    tasks = []
+    for base_path in base_paths:
+        task_id = start_scan_task(
+            base_path,
+            refresh_mode=refresh_mode,
+            target_date_prefixes=date_prefixes,
+        )
+        task = get_scan_task(task_id)
+        if task is not None:
+            tasks.append(task)
+    return jsonify({"tasks": tasks}), 202
 
 
 @app.get("/api/scan-tasks/<task_id>")
@@ -1579,14 +2263,23 @@ def prepare_submit_job_api():
     if source not in {"check", "pack"}:
         abort(400, description="source must be check or pack")
 
-    base_path = Path(data_root) if data_root else BASE_DATA_PATH
+    base_paths = [Path(item) for item in parse_filter_items(data_root)] or [
+        BASE_DATA_PATH
+    ]
+    base_path = base_paths[0]
     filters = FilterOptions(
         user_name=str(filters_payload.get("user_name", "")).strip(),
         task_name=str(filters_payload.get("task_name", "")).strip(),
+        embodiedment=str(filters_payload.get("embodiedment", "")).strip(),
         date_prefix=str(filters_payload.get("date_prefix", "")).strip(),
-        data_root=str(base_path),
+        data_root=format_base_paths(base_paths),
     )
-    if not (filters.user_name or filters.task_name or filters.date_prefix):
+    if not (
+        filters.user_name
+        or filters.task_name
+        or filters.embodiedment
+        or filters.date_prefix
+    ):
         abort(400, description="Please search first before submitting jobs")
 
     try:
@@ -1623,6 +2316,68 @@ def get_submit_task_api(task_id: str):
     return jsonify(task)
 
 
+@app.get("/api/remote-upload/config")
+def get_remote_upload_config_api():
+    filters = FilterOptions(
+        user_name=normalize_filter(request.args.get("user_name")),
+        task_name=normalize_filter(request.args.get("task_name")),
+        embodiedment=normalize_filter(request.args.get("embodiedment")),
+        date_prefix=normalize_filter(request.args.get("date_prefix")),
+        data_root=normalize_filter(request.args.get("data_root")),
+    )
+    try:
+        config_text = build_remote_upload_default_config(filters)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        abort(404, description=str(exc))
+
+    return jsonify(
+        {
+            "config_path": str(REMOTE_UPLOAD_CONFIG_PATH),
+            "config_text": config_text,
+        }
+    )
+
+
+@app.post("/api/remote-upload/tasks")
+def create_remote_upload_task_api():
+    data = request.get_json(silent=True) or {}
+    config_text = str(data.get("config_text", "")).strip()
+    if not config_text:
+        abort(400, description="config_text is required")
+
+    try:
+        task = start_remote_upload_task(config_text)
+    except json.JSONDecodeError as exc:
+        abort(400, description=f"Invalid remote upload config: {exc}")
+
+    return jsonify(task), 202
+
+
+@app.get("/api/remote-upload/tasks/<task_id>")
+def get_remote_upload_task_api(task_id: str):
+    task = get_remote_upload_task(task_id)
+    if task is None:
+        abort(404, description="Remote upload task not found")
+    return jsonify(task)
+
+
+@app.post("/api/remote-upload/tasks/<task_id>/cancel")
+def cancel_remote_upload_task_api(task_id: str):
+    task = get_remote_upload_task(task_id)
+    if task is None:
+        abort(404, description="Remote upload task not found")
+
+    update_remote_upload_task(
+        task_id,
+        cancel_requested=True,
+        message=(
+            "Cancel requested. Waiting for the remote upload process "
+            "to stop..."
+        ),
+    )
+    return jsonify(get_remote_upload_task(task_id))
+
+
 @app.get("/api/download")
 def download_episode_zip():
     episode_path_raw = request.args.get("episode_path", "").strip()
@@ -1653,14 +2408,15 @@ def download_episode_status():
     if not episode_path.exists() or not episode_path.is_dir():
         abort(404, description="Episode path not found")
 
+    file_count = count_episode_files(episode_path)
     return jsonify(
         {
             "episode_path": str(episode_path),
-            "file_count": count_episode_files(episode_path),
+            "file_count": file_count,
             "status": "preparing",
             "message": (
                 "Packaging in progress. "
-                f"Detected {count_episode_files(episode_path)} files. "
+                f"Detected {file_count} files. "
                 "Please wait..."
             ),
         }

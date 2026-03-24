@@ -755,7 +755,7 @@ def test_scan_task_api_completes_and_reports_progress(tmp_path: Path):
         "/api/scan-tasks", json={"data_root": str(tmp_path)}
     )
     assert response.status_code == 202
-    task = response.get_json()
+    task = response.get_json()["tasks"][0]
     assert task["status"] in {"pending", "running", "completed"}
 
     task_id = task["task_id"]
@@ -789,8 +789,7 @@ def test_scan_task_can_be_cancelled(tmp_path: Path):
         "/api/scan-tasks", json={"data_root": str(tmp_path)}
     )
     assert response.status_code == 202
-    task = response.get_json()
-    task_id = task["task_id"]
+    task_id = response.get_json()["tasks"][0]["task_id"]
 
     cancel_response = client.post(f"/api/scan-tasks/{task_id}/cancel")
     assert cancel_response.status_code == 200
@@ -836,7 +835,7 @@ def test_scan_task_cancel_stops_slow_running_scan(tmp_path: Path, monkeypatch):
         "/api/scan-tasks", json={"data_root": str(tmp_path)}
     )
     assert response.status_code == 202
-    task_id = response.get_json()["task_id"]
+    task_id = response.get_json()["tasks"][0]["task_id"]
 
     time.sleep(0.05)
     cancel_response = client.post(f"/api/scan-tasks/{task_id}/cancel")
@@ -980,6 +979,7 @@ def test_merge_records_for_date_prefixes_keeps_other_days(tmp_path: Path):
     existing_first = app_module.EpisodeRecord(
         user_name="alice",
         task_name="pick",
+        embodiedment="",
         episode_id="episode_2026_03_12-10_00_00",
         day="2026-03-12",
         path=str(tmp_path / "alice" / "pick" / "episode_2026_03_12-10_00_00"),
@@ -988,6 +988,7 @@ def test_merge_records_for_date_prefixes_keeps_other_days(tmp_path: Path):
     existing_second = app_module.EpisodeRecord(
         user_name="alice",
         task_name="pick",
+        embodiedment="",
         episode_id="episode_2026_03_13-10_00_00",
         day="2026-03-13",
         path=str(tmp_path / "alice" / "pick" / "episode_2026_03_13-10_00_00"),
@@ -996,6 +997,7 @@ def test_merge_records_for_date_prefixes_keeps_other_days(tmp_path: Path):
     refreshed = app_module.EpisodeRecord(
         user_name="alice",
         task_name="pick",
+        embodiedment="",
         episode_id="episode_2026_03_12-11_00_00",
         day="2026-03-12",
         path=str(tmp_path / "alice" / "pick" / "episode_2026_03_12-11_00_00"),

@@ -411,6 +411,87 @@
         min-height: 220px;
         max-height: 32vh;
       }
+      .remote-upload-panel {
+        display: grid;
+        grid-template-columns: minmax(420px, 0.95fr) minmax(560px, 1.35fr);
+        gap: 14px;
+        min-height: 0;
+      }
+      .remote-upload-overlay-card {
+        width: min(1500px, calc(100vw - 24px));
+        max-height: calc(100vh - 24px);
+      }
+      .remote-upload-config-editor {
+        min-height: 62vh;
+        max-height: 62vh;
+      }
+      .remote-upload-logs-layout {
+        display: grid;
+        grid-template-rows: minmax(180px, 0.7fr) minmax(260px, 1fr);
+        gap: 14px;
+        min-height: 0;
+      }
+      .remote-upload-window {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 12px;
+        overflow: auto;
+        min-height: 0;
+      }
+      .remote-upload-window h4 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+      .remote-upload-window pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .remote-upload-host-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 12px;
+        align-content: start;
+      }
+      .remote-upload-host-log {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: white;
+        padding: 10px;
+        min-height: 220px;
+        max-height: 320px;
+        overflow: auto;
+      }
+      .remote-upload-host-log h4 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .remote-upload-host-log pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .remote-upload-meta {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      @media (max-width: 1100px) {
+        .remote-upload-panel {
+          grid-template-columns: 1fr;
+        }
+        .remote-upload-logs-layout {
+          grid-template-rows: minmax(180px, auto) minmax(260px, auto);
+        }
+      }
       .submit-toolbar {
         display: flex;
         gap: 12px;
@@ -504,6 +585,41 @@
         </div>
       </div>
     </div>
+    <div id="remote-upload-overlay" class="overlay" aria-hidden="true">
+      <div class="overlay-card submit-overlay-card remote-upload-overlay-card">
+        <h3 class="overlay-title">Upload Data to Remote Hosts</h3>
+        <div class="submit-overlay-body">
+          <p id="remote-upload-message" class="overlay-text">Load the default remote upload JSON config, adjust it if needed, then click "Upload" to start.</p>
+          <div class="remote-upload-meta">
+            <span id="remote-upload-config-tag" class="tag">Config: loading...</span>
+            <span id="remote-upload-status-tag" class="tag">Not Started</span>
+          </div>
+          <div class="remote-upload-panel">
+            <textarea id="remote-upload-config-editor" class="json-editor remote-upload-config-editor" spellcheck="false"></textarea>
+            <div class="remote-upload-logs-layout">
+              <div class="remote-upload-window">
+                <h4>Main Process Log</h4>
+                <pre id="remote-upload-main-log">Main process log will appear here during upload.</pre>
+              </div>
+              <div class="remote-upload-window">
+                <h4>Per-host Logs</h4>
+                <div id="remote-upload-host-logs" class="remote-upload-host-grid">
+                  <div class="empty">Host logs will appear here during upload.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="overlay-actions space-between">
+          <button type="button" class="button-secondary" onclick="minimizeRemoteUploadOverlay()">Minimize</button>
+          <div class="action-group">
+            <button type="button" class="button-secondary" id="refresh-remote-upload-config-button" onclick="prepareRemoteUpload(true)">Reload Default Config</button>
+            <button type="button" class="button-secondary" id="cancel-remote-upload-button" onclick="cancelRemoteUploadTask()" disabled>Cancel Upload</button>
+            <button id="confirm-remote-upload-button" type="button" onclick="confirmRemoteUpload()">Upload</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <div
       id="page-loading-state"
@@ -538,6 +654,7 @@
         <div class="toolbar">
           <button type="button" onclick="refreshSummary()">Refresh Statistics</button>
           <button type="button" class="button-secondary" onclick="refreshSelectedDates()">Refresh Selected Date Cache</button>
+          <button type="button" onclick="prepareRemoteUpload()">Remote Upload Data</button>
           <span class="tag">Generated At: {{ summary.generated_at }}</span>
           <span class="tag">Cache Time: {{ summary.cache.cache_created_at or 'First Load' }}</span>
           <span class="tag">Cache Status: {{ 'Cache Hit' if summary.cache.cache_hit else 'Just Refreshed' }}</span>
@@ -561,12 +678,16 @@
             <label for="date_prefix">date_prefix</label>
             <input id="date_prefix" name="date_prefix" type="text" placeholder="Date prefixes in episode_id, separate with commas" value="{{ summary.filters.date_prefix }}" />
           </div>
+          <div class="field">
+            <label for="embodiedment">embodiedment</label>
+            <input id="embodiedment" name="embodiedment" type="text" placeholder="Exact match, separate with commas" value="{{ summary.filters.embodiedment }}" />
+          </div>
           <div class="actions">
             <button type="button" onclick="submitSearch()">Search</button>
             <a class="button-secondary" href="/">Clear Filters</a>
           </div>
         </form>
-        {% if summary.filters.data_root or summary.filters.user_name or summary.filters.task_name or summary.filters.date_prefix %}
+  {% if summary.filters.data_root or summary.filters.user_name or summary.filters.task_name or summary.filters.date_prefix or summary.filters.embodiedment %}
         <div class="filter-tags">
           {% if summary.filters.data_root %}
           <span class="tag">data_root: {{ summary.filters.data_root }}</span>
@@ -580,6 +701,9 @@
           {% if summary.filters.date_prefix %}
           <span class="tag">date_prefix: {{ summary.filters.date_prefix }}</span>
           {% endif %}
+          {% if summary.filters.embodiedment %}
+          <span class="tag">embodiedment: {{ summary.filters.embodiedment }}</span>
+          {% endif %}
         </div>
         {% endif %}
       </section>
@@ -590,6 +714,7 @@
           <div class="chart-controls">
             <button type="button" id="chart-group-task" class="toggle-button active" onclick="setChartGroupMode('task')">By Task</button>
             <button type="button" id="chart-group-user" class="toggle-button" onclick="setChartGroupMode('user')">By User</button>
+            <button type="button" id="chart-group-embodiedment" class="toggle-button" onclick="setChartGroupMode('embodiedment')">By Embodiedment</button>
             <button type="button" id="chart-metric-duration" class="toggle-button active" onclick="setChartMetricMode('duration')">Duration</button>
             <button type="button" id="chart-metric-episodes" class="toggle-button" onclick="setChartMetricMode('episodes')">Episodes</button>
           </div>
@@ -613,10 +738,10 @@
           </div>
           <div class="pagination-controls">
             {% if summary.pagination.has_prev %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
             {% endif %}
             {% if summary.pagination.has_next %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
             {% endif %}
             <input
               class="pagination-jump"
@@ -636,6 +761,7 @@
               <th>episode_id</th>
               <th>user_name</th>
               <th>task_name</th>
+              <th>embodiedment</th>
               <th>duration</th>
               <th>Actions</th>
             </tr>
@@ -646,6 +772,7 @@
               <td>{{ episode.episode_id }}</td>
               <td>{{ episode.user_name }}</td>
               <td>{{ episode.task_name }}</td>
+              <td>{{ episode.embodiedment }}</td>
               <td>{{ episode.duration_text }}</td>
               <td>
                 <div class="action-group">
@@ -668,10 +795,10 @@
           </div>
           <div class="pagination-controls">
             {% if summary.pagination.has_prev %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
             {% endif %}
             {% if summary.pagination.has_next %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
             {% endif %}
             <input
               class="pagination-jump"
@@ -691,7 +818,7 @@
       </section>
       {% if not summary.episodes %}
       <section class="card">
-  <div class="empty">No data matched the current `data_root`, `user_name`, `task_name`, and `date_prefix` filters.</div>
+  <div class="empty">No data matched the current `data_root`, `user_name`, `task_name`, `date_prefix`, and `embodiedment` filters.</div>
       </section>
       {% endif %}
     </div>
@@ -705,6 +832,11 @@
       let currentSubmitSource = null;
   let currentSubmitTaskId = null;
   let submitPollTimer = null;
+    let currentRemoteUploadTaskId = null;
+    let remoteUploadPollTimer = null;
+  let remoteUploadOverlayMinimized = false;
+  let remoteUploadOverlayState = null;
+      const REMOTE_UPLOAD_SESSION_STORAGE_KEY = "remoteUploadSessionState";
       let currentChartGroupMode = "task";
       let currentChartMetricMode = "duration";
       let summaryTotals = {};
@@ -726,12 +858,24 @@
 
       function getChartEntries(groupMode, metricMode) {
         const totals = summaryTotals || {};
-        const names = groupMode === "user"
-          ? Object.keys(totals.by_user || {})
-          : Object.keys(totals.by_task || {});
-        const valueMap = metricMode === "duration"
-          ? (groupMode === "user" ? (totals.hours_by_user || {}) : (totals.hours_by_task || {}))
-          : (groupMode === "user" ? (totals.by_user || {}) : (totals.by_task || {}));
+        const groupedNames = {
+          user: Object.keys(totals.by_user || {}),
+          task: Object.keys(totals.by_task || {}),
+          embodiedment: Object.keys(totals.by_embodiedment || {}),
+        };
+        const groupedValues = metricMode === "duration"
+          ? {
+              user: totals.hours_by_user || {},
+              task: totals.hours_by_task || {},
+              embodiedment: totals.hours_by_embodiedment || {},
+            }
+          : {
+              user: totals.by_user || {},
+              task: totals.by_task || {},
+              embodiedment: totals.by_embodiedment || {},
+            };
+        const names = groupedNames[groupMode] || [];
+        const valueMap = groupedValues[groupMode] || {};
 
         return names
           .map((name) => ({ label: name, value: Number(valueMap[name] || 0) }))
@@ -751,12 +895,17 @@
         }
 
         const entries = getChartEntries(currentChartGroupMode, currentChartMetricMode);
-        const groupLabel = currentChartGroupMode === "user" ? "users" : "tasks";
+        const groupLabel = currentChartGroupMode === "user"
+          ? "users"
+          : currentChartGroupMode === "embodiedment"
+            ? "embodiedments"
+            : "tasks";
         const metricLabel = currentChartMetricMode === "duration" ? "duration" : "episode count";
         meta.textContent = `Sorted from highest to lowest ${metricLabel}, grouped by ${groupLabel}.`;
 
         document.getElementById("chart-group-task").classList.toggle("active", currentChartGroupMode === "task");
         document.getElementById("chart-group-user").classList.toggle("active", currentChartGroupMode === "user");
+  document.getElementById("chart-group-embodiedment").classList.toggle("active", currentChartGroupMode === "embodiedment");
         document.getElementById("chart-metric-duration").classList.toggle("active", currentChartMetricMode === "duration");
         document.getElementById("chart-metric-episodes").classList.toggle("active", currentChartMetricMode === "episodes");
 
@@ -816,6 +965,81 @@
           pageInput.value = "1";
         }
         document.getElementById("search-form").submit();
+      }
+
+      function buildRemoteUploadOverlayState() {
+        return {
+          configTag: document.getElementById("remote-upload-config-tag").textContent,
+          configText: document.getElementById("remote-upload-config-editor").value,
+          statusText: document.getElementById("remote-upload-status-tag").textContent,
+          messageText: document.getElementById("remote-upload-message").textContent,
+          mainLogText: document.getElementById("remote-upload-main-log").textContent,
+          hostLogsHtml: document.getElementById("remote-upload-host-logs").innerHTML,
+          confirmDisabled: document.getElementById("confirm-remote-upload-button").disabled,
+          confirmText: document.getElementById("confirm-remote-upload-button").textContent,
+          cancelDisabled: document.getElementById("cancel-remote-upload-button").disabled,
+          cancelText: document.getElementById("cancel-remote-upload-button").textContent,
+        };
+      }
+
+      function saveRemoteUploadSession() {
+        try {
+          const overlayVisible = document.getElementById("remote-upload-overlay").classList.contains("show");
+          const sessionState = {
+            taskId: currentRemoteUploadTaskId,
+            overlayMinimized: remoteUploadOverlayMinimized,
+            overlayVisible,
+            overlayState: overlayVisible ? buildRemoteUploadOverlayState() : remoteUploadOverlayState,
+            savedAt: Date.now(),
+          };
+          if (!sessionState.taskId && !sessionState.overlayState) {
+            window.localStorage.removeItem(REMOTE_UPLOAD_SESSION_STORAGE_KEY);
+            return;
+          }
+          window.localStorage.setItem(
+            REMOTE_UPLOAD_SESSION_STORAGE_KEY,
+            JSON.stringify(sessionState),
+          );
+        } catch (error) {
+          // Ignore browser storage failures so the page still works normally.
+        }
+      }
+
+      function clearRemoteUploadSession() {
+        try {
+          window.localStorage.removeItem(REMOTE_UPLOAD_SESSION_STORAGE_KEY);
+        } catch (error) {
+          // Ignore browser storage failures.
+        }
+      }
+
+      function loadRemoteUploadSession() {
+        try {
+          const raw = window.localStorage.getItem(REMOTE_UPLOAD_SESSION_STORAGE_KEY);
+          if (!raw) {
+            return null;
+          }
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object") {
+            return null;
+          }
+          return parsed;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      async function readJsonResponseSafely(response) {
+        const text = await response.text();
+        if (!text) {
+          return null;
+        }
+
+        try {
+          return JSON.parse(text);
+        } catch (error) {
+          return null;
+        }
       }
 
       function jumpToPage(page) {
@@ -881,6 +1105,56 @@
         currentSubmitConfigId = null;
       }
 
+      function openRemoteUploadOverlay(configPath, configText) {
+        document.getElementById("remote-upload-config-tag").textContent = `Config: ${configPath}`;
+        document.getElementById("remote-upload-config-editor").value = configText;
+        document.getElementById("remote-upload-status-tag").textContent = "Not Started";
+  document.getElementById("remote-upload-message").textContent = "The default remote upload JSON config has been loaded. Edit it if needed, then click \"Upload\".";
+        document.getElementById("remote-upload-main-log").textContent = "Main process log will appear here during upload.";
+        document.getElementById("remote-upload-host-logs").innerHTML = '<div class="empty">Host logs will appear here during upload.</div>';
+        document.getElementById("confirm-remote-upload-button").disabled = false;
+        document.getElementById("confirm-remote-upload-button").textContent = "Upload";
+        document.getElementById("cancel-remote-upload-button").disabled = true;
+        document.getElementById("cancel-remote-upload-button").textContent = "Cancel Upload";
+        remoteUploadOverlayState = null;
+        remoteUploadOverlayMinimized = false;
+        document.getElementById("remote-upload-overlay").classList.add("show");
+        saveRemoteUploadSession();
+      }
+
+      function restoreRemoteUploadOverlay() {
+        if (!remoteUploadOverlayState) {
+          return false;
+        }
+
+        document.getElementById("remote-upload-config-tag").textContent = remoteUploadOverlayState.configTag || "Config: loading...";
+        document.getElementById("remote-upload-config-editor").value = remoteUploadOverlayState.configText || "";
+        document.getElementById("remote-upload-status-tag").textContent = remoteUploadOverlayState.statusText || "Not Started";
+  document.getElementById("remote-upload-message").textContent = remoteUploadOverlayState.messageText || "The default remote upload JSON config has been loaded. Edit it if needed, then click \"Upload\".";
+        document.getElementById("remote-upload-main-log").textContent = remoteUploadOverlayState.mainLogText || "Main process log will appear here during upload.";
+        document.getElementById("remote-upload-host-logs").innerHTML = remoteUploadOverlayState.hostLogsHtml || '<div class="empty">Host logs will appear here during upload.</div>';
+        document.getElementById("confirm-remote-upload-button").disabled = Boolean(remoteUploadOverlayState.confirmDisabled);
+        document.getElementById("confirm-remote-upload-button").textContent = remoteUploadOverlayState.confirmText || "Upload";
+        document.getElementById("cancel-remote-upload-button").disabled = Boolean(remoteUploadOverlayState.cancelDisabled);
+        document.getElementById("cancel-remote-upload-button").textContent = remoteUploadOverlayState.cancelText || "Cancel Upload";
+
+        remoteUploadOverlayMinimized = false;
+        document.getElementById("remote-upload-overlay").classList.add("show");
+        saveRemoteUploadSession();
+
+        if (currentRemoteUploadTaskId) {
+          pollRemoteUploadTask(currentRemoteUploadTaskId);
+        }
+        return true;
+      }
+
+      function minimizeRemoteUploadOverlay() {
+        remoteUploadOverlayState = buildRemoteUploadOverlayState();
+        remoteUploadOverlayMinimized = true;
+        document.getElementById("remote-upload-overlay").classList.remove("show");
+        saveRemoteUploadSession();
+      }
+
       function renderSubmitResult(title, lines) {
         const resultPanel = document.getElementById("submit-result");
         const resultText = document.getElementById("submit-result-text");
@@ -895,6 +1169,225 @@
           submitPollTimer = null;
         }
         currentSubmitTaskId = null;
+      }
+
+      function stopRemoteUploadPolling() {
+        if (remoteUploadPollTimer) {
+          clearTimeout(remoteUploadPollTimer);
+          remoteUploadPollTimer = null;
+        }
+        saveRemoteUploadSession();
+      }
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function renderRemoteUploadLogs(task) {
+        const mainLogNode = document.getElementById("remote-upload-main-log");
+        const hostLogsRoot = document.getElementById("remote-upload-host-logs");
+        const stdout = task?.stdout || "";
+        const stderr = task?.stderr || "";
+        const mainLogText = [
+          stdout ? `stdout:\n${stdout}` : "",
+          stderr ? `stderr:\n${stderr}` : "",
+        ].filter(Boolean).join("\n\n");
+        mainLogNode.textContent = mainLogText || "Main process log will appear here during upload.";
+
+        const hostLogs = task?.host_logs || {};
+        const hostNames = Object.keys(hostLogs).sort();
+        if (!hostNames.length) {
+          hostLogsRoot.innerHTML = '<div class="empty">Host logs will appear here during upload.</div>';
+          return;
+        }
+
+        const existingNodes = new Map(
+          Array.from(hostLogsRoot.querySelectorAll(".remote-upload-host-log")).map(
+            (node) => [node.getAttribute("data-host-name") || "", node]
+          )
+        );
+
+        hostLogsRoot.querySelectorAll(".empty").forEach((node) => node.remove());
+
+        hostNames.forEach((hostName) => {
+          const logText = String(hostLogs[hostName] || "");
+          let hostNode = existingNodes.get(hostName);
+          let preNode = hostNode?.querySelector("pre") || null;
+
+          if (!hostNode || !preNode) {
+            hostNode = document.createElement("div");
+            hostNode.className = "remote-upload-host-log";
+            hostNode.setAttribute("data-host-name", hostName);
+
+            const titleNode = document.createElement("h4");
+            titleNode.textContent = hostName;
+            preNode = document.createElement("pre");
+
+            hostNode.appendChild(titleNode);
+            hostNode.appendChild(preNode);
+          }
+
+          const wasNearBottom =
+            hostNode.scrollHeight - hostNode.scrollTop - hostNode.clientHeight < 24;
+          const previousScrollTop = hostNode.scrollTop;
+
+          if (preNode.textContent !== logText) {
+            preNode.textContent = logText;
+          }
+
+          hostLogsRoot.appendChild(hostNode);
+
+          if (wasNearBottom) {
+            hostNode.scrollTop = hostNode.scrollHeight;
+          } else {
+            hostNode.scrollTop = previousScrollTop;
+          }
+
+          existingNodes.delete(hostName);
+        });
+
+        existingNodes.forEach((node) => node.remove());
+        saveRemoteUploadSession();
+      }
+
+      function applyRemoteUploadTaskToOverlay(task) {
+        document.getElementById("remote-upload-status-tag").textContent = task.status || "Unknown";
+        document.getElementById("remote-upload-message").textContent = task.message || "Remote upload is running...";
+        renderRemoteUploadLogs(task);
+
+        const isRunning = task.status === "pending" || task.status === "running";
+        const isCancelling = isRunning && Boolean(task.cancel_requested);
+        document.getElementById("remote-upload-status-tag").textContent = isCancelling
+          ? "Cancelling"
+          : (task.status || "Unknown");
+        document.getElementById("remote-upload-message").textContent = isCancelling
+          ? (task.message || "Cancel requested. Waiting for the remote upload process to stop...")
+          : (task.message || "Remote upload is running...");
+        document.getElementById("confirm-remote-upload-button").disabled = isRunning;
+        document.getElementById("confirm-remote-upload-button").textContent = isCancelling
+          ? "Cancelling..."
+          : (isRunning ? "Uploading..." : "Upload Again");
+        document.getElementById("cancel-remote-upload-button").disabled = !isRunning || isCancelling;
+        document.getElementById("cancel-remote-upload-button").textContent = isCancelling
+          ? "Cancelling..."
+          : "Cancel Upload";
+
+        remoteUploadOverlayState = buildRemoteUploadOverlayState();
+        saveRemoteUploadSession();
+
+        return { isRunning, isCancelling };
+      }
+
+      async function restoreRemoteUploadSession() {
+        const sessionState = loadRemoteUploadSession();
+        if (!sessionState) {
+          return false;
+        }
+
+        const hasActiveTask = typeof sessionState.taskId === "string" && sessionState.taskId.trim() !== "";
+        if (!hasActiveTask) {
+          clearRemoteUploadSession();
+          currentRemoteUploadTaskId = null;
+          remoteUploadOverlayState = null;
+          remoteUploadOverlayMinimized = false;
+          return false;
+        }
+
+        currentRemoteUploadTaskId = sessionState.taskId || null;
+        remoteUploadOverlayState = sessionState.overlayState || null;
+        remoteUploadOverlayMinimized = Boolean(sessionState.overlayMinimized);
+
+        if (remoteUploadOverlayState && !remoteUploadOverlayMinimized) {
+          restoreRemoteUploadOverlay();
+        }
+
+        if (!currentRemoteUploadTaskId) {
+          return Boolean(remoteUploadOverlayState);
+        }
+
+        try {
+          const response = await fetch(`/api/remote-upload/tasks/${currentRemoteUploadTaskId}`);
+          const data = await readJsonResponseSafely(response);
+          if (!response.ok) {
+            clearRemoteUploadSession();
+            currentRemoteUploadTaskId = null;
+            remoteUploadOverlayState = null;
+            remoteUploadOverlayMinimized = false;
+            return false;
+          }
+
+          if (!data || typeof data !== "object") {
+            clearRemoteUploadSession();
+            currentRemoteUploadTaskId = null;
+            remoteUploadOverlayState = null;
+            remoteUploadOverlayMinimized = false;
+            return false;
+          }
+
+          if (!remoteUploadOverlayState) {
+            const configPath = data.config_path || "Restored remote upload config";
+            const configText = data.config_text || "";
+            openRemoteUploadOverlay(configPath, configText);
+          }
+
+          applyRemoteUploadTaskToOverlay(data);
+
+          if (!remoteUploadOverlayMinimized) {
+            document.getElementById("remote-upload-overlay").classList.add("show");
+          } else {
+            document.getElementById("remote-upload-overlay").classList.remove("show");
+          }
+
+          const isRunning = data.status === "pending" || data.status === "running";
+          if (isRunning) {
+            pollRemoteUploadTask(currentRemoteUploadTaskId);
+          } else if (data.status === "completed" || data.status === "cancelled" || data.status === "failed") {
+            saveRemoteUploadSession();
+          }
+          return true;
+        } catch (error) {
+          return Boolean(remoteUploadOverlayState);
+        }
+      }
+
+      async function pollRemoteUploadTask(taskId) {
+        if (!taskId || currentRemoteUploadTaskId !== taskId) {
+          return;
+        }
+
+        try {
+          const response = await fetch(`/api/remote-upload/tasks/${taskId}`);
+          const data = await response.json();
+          if (!response.ok) {
+            showToast(data.description || data.message || "Failed to fetch remote upload task");
+            stopRemoteUploadPolling();
+            return;
+          }
+
+          const { isRunning } = applyRemoteUploadTaskToOverlay(data);
+
+          if (isRunning) {
+            remoteUploadPollTimer = setTimeout(() => pollRemoteUploadTask(taskId), 800);
+            return;
+          }
+
+          stopRemoteUploadPolling();
+          if (data.status === "completed") {
+            showToast("Remote upload completed successfully");
+          } else if (data.status === "cancelled") {
+            showToast(data.message || "Remote upload cancelled");
+          } else {
+            showToast(data.error_message || data.message || "Remote upload failed");
+          }
+        } catch (error) {
+          stopRemoteUploadPolling();
+          showToast(error?.message || "Failed to fetch remote upload progress");
+        }
       }
 
       async function pollSubmitTask(taskId) {
@@ -986,7 +1479,8 @@ ${data.message}` : "",
         const userName = document.getElementById("user_name").value.trim();
         const taskName = document.getElementById("task_name").value.trim();
         const datePrefix = document.getElementById("date_prefix").value.trim();
-        if (!(userName || taskName || datePrefix)) {
+  const embodiedment = document.getElementById("embodiedment").value.trim();
+  if (!(userName || taskName || datePrefix || embodiedment)) {
           showToast("You must search first before submitting a job");
           return;
         }
@@ -1002,6 +1496,7 @@ ${data.message}` : "",
               filters: {
                 user_name: userName,
                 task_name: taskName,
+                embodiedment,
                 date_prefix: datePrefix,
               },
             })
@@ -1063,6 +1558,123 @@ ${data.message}` : "",
           confirmButton.disabled = false;
           confirmButton.textContent = "Confirm Submit";
           showToast("Job submission failed. Please try again later");
+        }
+      }
+
+      async function prepareRemoteUpload(forceReload = false) {
+        if (!forceReload && await restoreRemoteUploadSession()) {
+          if (remoteUploadOverlayMinimized && restoreRemoteUploadOverlay()) {
+            return;
+          }
+          if (document.getElementById("remote-upload-overlay").classList.contains("show")) {
+            return;
+          }
+        }
+
+        if (!forceReload && document.getElementById("remote-upload-overlay").classList.contains("show")) {
+          return;
+        }
+
+        if (!forceReload && remoteUploadOverlayMinimized && restoreRemoteUploadOverlay()) {
+          return;
+        }
+
+        try {
+          document.getElementById("refresh-remote-upload-config-button").disabled = true;
+          const searchParams = new URLSearchParams({
+            data_root: document.getElementById("data_root").value.trim(),
+            user_name: document.getElementById("user_name").value.trim(),
+            task_name: document.getElementById("task_name").value.trim(),
+            date_prefix: document.getElementById("date_prefix").value.trim(),
+            embodiedment: document.getElementById("embodiedment").value.trim(),
+          });
+          const response = await fetch(`/api/remote-upload/config?${searchParams.toString()}`);
+          const data = await response.json();
+          if (!response.ok) {
+            showToast(data.description || data.message || "Failed to load remote upload config");
+            return;
+          }
+          openRemoteUploadOverlay(data.config_path, data.config_text || "");
+        } catch (error) {
+          showToast("Failed to load remote upload config. Please try again later");
+        } finally {
+          document.getElementById("refresh-remote-upload-config-button").disabled = false;
+        }
+      }
+
+      async function confirmRemoteUpload() {
+        const configText = document.getElementById("remote-upload-config-editor").value;
+        if (!configText.trim()) {
+          showToast("Remote upload JSON config cannot be empty");
+          return;
+        }
+
+        document.getElementById("confirm-remote-upload-button").disabled = true;
+        document.getElementById("confirm-remote-upload-button").textContent = "Uploading...";
+        document.getElementById("cancel-remote-upload-button").disabled = false;
+  document.getElementById("cancel-remote-upload-button").textContent = "Cancel Upload";
+        document.getElementById("remote-upload-status-tag").textContent = "Starting";
+        document.getElementById("remote-upload-message").textContent = "Starting remote upload task...";
+
+        try {
+          const response = await fetch("/api/remote-upload/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config_text: configText }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            document.getElementById("confirm-remote-upload-button").disabled = false;
+            document.getElementById("confirm-remote-upload-button").textContent = "Upload";
+            document.getElementById("cancel-remote-upload-button").disabled = true;
+            document.getElementById("cancel-remote-upload-button").textContent = "Cancel Upload";
+            showToast(data.description || data.message || "Failed to start remote upload");
+            return;
+          }
+
+          currentRemoteUploadTaskId = data.task_id;
+          renderRemoteUploadLogs(data);
+          remoteUploadOverlayState = buildRemoteUploadOverlayState();
+          saveRemoteUploadSession();
+          pollRemoteUploadTask(currentRemoteUploadTaskId);
+        } catch (error) {
+          document.getElementById("confirm-remote-upload-button").disabled = false;
+          document.getElementById("confirm-remote-upload-button").textContent = "Upload";
+          document.getElementById("cancel-remote-upload-button").disabled = true;
+          document.getElementById("cancel-remote-upload-button").textContent = "Cancel Upload";
+          showToast("Failed to start remote upload. Please try again later");
+        }
+      }
+
+      async function cancelRemoteUploadTask() {
+        if (!currentRemoteUploadTaskId) {
+          return;
+        }
+        document.getElementById("remote-upload-status-tag").textContent = "Cancelling";
+        document.getElementById("remote-upload-message").textContent = "Cancel requested. Waiting for the remote upload process to stop...";
+        document.getElementById("confirm-remote-upload-button").disabled = true;
+        document.getElementById("confirm-remote-upload-button").textContent = "Cancelling...";
+        document.getElementById("cancel-remote-upload-button").disabled = true;
+        document.getElementById("cancel-remote-upload-button").textContent = "Cancelling...";
+        try {
+          const response = await fetch(`/api/remote-upload/tasks/${currentRemoteUploadTaskId}/cancel`, { method: "POST" });
+          const data = await response.json();
+          if (!response.ok) {
+            document.getElementById("confirm-remote-upload-button").textContent = "Uploading...";
+            document.getElementById("cancel-remote-upload-button").disabled = false;
+            document.getElementById("cancel-remote-upload-button").textContent = "Cancel Upload";
+            showToast(data.description || data.message || "Failed to cancel remote upload");
+            return;
+          }
+          document.getElementById("remote-upload-status-tag").textContent = "Cancelling";
+          document.getElementById("remote-upload-message").textContent = data.message || "Cancel requested. Waiting for the remote upload process to stop...";
+          remoteUploadOverlayState = buildRemoteUploadOverlayState();
+          saveRemoteUploadSession();
+        } catch (error) {
+          document.getElementById("confirm-remote-upload-button").textContent = "Uploading...";
+          document.getElementById("cancel-remote-upload-button").disabled = false;
+          document.getElementById("cancel-remote-upload-button").textContent = "Cancel Upload";
+          showToast("Failed to cancel remote upload. Please try again later");
         }
       }
 
@@ -1168,12 +1780,63 @@ ${data.message}` : "",
         currentScanTaskId = null;
       }
 
+      function parseScanTaskIds(value) {
+        if (!value) {
+          return [];
+        }
+        return String(value)
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+
+      function buildCombinedScanState(taskStates) {
+        const states = taskStates.filter(Boolean);
+        if (!states.length) {
+          return null;
+        }
+        const progressValues = states.map((item) => Number(item.progress || 0));
+        const processedValues = states.map((item) => Number(item.processed || 0));
+        const totalValues = states.map((item) => Number(item.total || 0));
+        const completedCount = states.filter((item) => item.status === "completed").length;
+        const failedTask = states.find((item) => item.status === "failed");
+        const cancelledTask = states.find((item) => item.status === "cancelled");
+        const allCompleted = completedCount === states.length;
+
+        return {
+          status: failedTask
+            ? "failed"
+            : cancelledTask
+              ? "cancelled"
+              : allCompleted
+                ? "completed"
+                : "running",
+          message:
+            failedTask?.message
+            || cancelledTask?.message
+            || (states.length > 1
+              ? `Scanning ${completedCount}/${states.length} data roots...`
+              : states[0].message
+                || "Scanning data..."),
+          progress: Math.round(
+            progressValues.reduce((sum, value) => sum + value, 0) / states.length
+          ),
+          processed: processedValues.reduce((sum, value) => sum + value, 0),
+          total: totalValues.reduce((sum, value) => sum + value, 0),
+        };
+      }
+
       async function cancelScanTask() {
         if (!currentScanTaskId) {
           return;
         }
         try {
-          await fetch(`/api/scan-tasks/${currentScanTaskId}/cancel`, { method: "POST" });
+          const taskIds = parseScanTaskIds(currentScanTaskId);
+          await Promise.all(
+            taskIds.map((taskId) =>
+              fetch(`/api/scan-tasks/${taskId}/cancel`, { method: "POST" })
+            )
+          );
           showScanOverlay("Cancelling scan task...", 0, 0, 0);
         } catch (error) {
           showToast("Failed to cancel the scan. Please try again later");
@@ -1182,8 +1845,17 @@ ${data.message}` : "",
 
       async function pollScanTask(taskId, params) {
         try {
-          const response = await fetch(`/api/scan-tasks/${taskId}`);
-          const data = await response.json();
+          const taskIds = parseScanTaskIds(taskId);
+          const responses = await Promise.all(
+            taskIds.map(async (singleTaskId) => {
+              const response = await fetch(`/api/scan-tasks/${singleTaskId}`);
+              return response.json();
+            })
+          );
+          const data = buildCombinedScanState(responses);
+          if (!data) {
+            throw new Error("No scan task state available");
+          }
           showScanOverlay(data.message || "Scanning data...", data.progress || 0, data.processed || 0, data.total || 0);
 
           if (data.status === "completed") {
@@ -1246,8 +1918,11 @@ ${data.message}` : "",
             showToast(task.description || task.message || "Failed to start the scan task. Please try again later");
             return;
           }
-          currentScanTaskId = task.task_id;
-          pollScanTask(task.task_id, params);
+          const taskIds = Array.isArray(task.tasks)
+            ? task.tasks.map((item) => item?.task_id).filter(Boolean)
+            : [];
+          currentScanTaskId = taskIds.join(",");
+          pollScanTask(currentScanTaskId, params);
         } catch (error) {
           hideScanOverlay();
           showToast("Failed to start the scan task. Please try again later");
@@ -1280,6 +1955,7 @@ ${data.message}` : "",
       updateSelectedEpisodesCount();
       renderOverviewChart();
       startInitialLoadingScan();
+      restoreRemoteUploadSession();
     </script>
   </body>
 </html>

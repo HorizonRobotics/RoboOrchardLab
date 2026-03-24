@@ -14,29 +14,12 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from . import (
-    dataset,
-    distributed,
-    inference,
-    models,
-    pipeline,
-    utils,
-)
+import pytest
 
-try:
-    from .version import __full_version__, __git_hash__, __version__
-except ModuleNotFoundError as _:
-    __full_version__, __git_hash__, __version__ = "", "", ""
+import robo_orchard_lab.dataset.horizon_manipulation.tools.app as app_module
 
 
-def _set_env():
-    import os
-
-    from accelerate.utils import check_cuda_p2p_ib_support
-
-    if not check_cuda_p2p_ib_support():
-        os.environ["NCCL_P2P_DISABLE"] = "1"
-        os.environ["NCCL_IB_DISABLE"] = "1"
-
-
-_set_env()
+@pytest.fixture(autouse=True)
+def env_configured(monkeypatch):
+    """Bypass the /setup redirect so tests run without a .env file."""
+    monkeypatch.setattr(app_module, "ENV_CONFIGURED", True)

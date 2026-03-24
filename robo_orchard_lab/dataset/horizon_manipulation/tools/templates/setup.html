@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Initial Setup — Data Monitoring Dashboard</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --card: #ffffff;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --primary: #2563eb;
+        --primary-soft: #dbeafe;
+        --green: #059669;
+        --warn: #d97706;
+        --warn-soft: #fef3c7;
+        --red: #dc2626;
+        --red-soft: #fee2e2;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Arial, Helvetica, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 40px 24px 60px;
+      }
+      .hero {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+        padding: 28px 28px 20px;
+        margin-bottom: 20px;
+      }
+      .title {
+        margin: 0 0 6px;
+        font-size: 26px;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0 0 10px;
+        font-size: 14px;
+      }
+      .intro {
+        color: var(--muted);
+        margin: 0;
+        line-height: 1.6;
+        font-size: 14px;
+      }
+      .intro code {
+        background: #f1f5f9;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 13px;
+        color: var(--text);
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+        padding: 24px;
+        margin-bottom: 20px;
+      }
+      .section-title {
+        margin: 0 0 18px;
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 12px;
+      }
+      .setup-field {
+        margin-bottom: 20px;
+      }
+      .setup-field:last-child {
+        margin-bottom: 0;
+      }
+      .field-key {
+        font-weight: 700;
+        font-size: 14px;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .field-desc {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 6px;
+        line-height: 1.4;
+      }
+      .field-input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: white;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        transition: border-color 0.15s;
+      }
+      .field-input:focus {
+        outline: none;
+        border-color: var(--primary);
+      }
+      .setup-field.needs-attention .field-input {
+        border-color: var(--warn);
+        background: #fffbf0;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .badge-warn {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .badge-ok {
+        background: #ecfdf5;
+        color: var(--green);
+      }
+      .divider {
+        border: none;
+        border-top: 1px solid var(--line);
+        margin: 24px 0;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      button {
+        border: 0;
+        background: var(--primary);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .env-path-note {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .env-path-note code {
+        background: #f1f5f9;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+        color: var(--text);
+        word-break: break-all;
+      }
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        background: #111827;
+        color: white;
+        padding: 12px 16px;
+        border-radius: 12px;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(10px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 1000;
+        max-width: 360px;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      .success-banner {
+        display: none;
+        background: #ecfdf5;
+        border: 1px solid #6ee7b7;
+        border-radius: 10px;
+        padding: 12px 16px;
+        color: #065f46;
+        font-size: 14px;
+        margin-top: 14px;
+      }
+      .success-banner.show {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div class="wrap">
+      <section class="hero">
+        <h1 class="title">Initial Setup</h1>
+        <p class="sub">Data Monitoring Dashboard</p>
+        <p class="intro">
+          No <code>.env</code> configuration file was found. A template has been copied to
+          <code>{{ env_path }}</code>.
+          Please fill in the required fields below and click <strong>Save &amp; Start</strong>.
+        </p>
+      </section>
+
+      <div class="card">
+        <p class="section-title">Configuration Fields</p>
+
+        {% for field in fields %}
+        <div class="setup-field {% if field.needs_attention %}needs-attention{% endif %}" id="field-{{ field.key }}">
+          <div class="field-key">
+            {{ field.key }}
+            {% if field.needs_attention %}
+            <span class="badge badge-warn">Needs configuration</span>
+            {% endif %}
+          </div>
+          {% if field.description %}
+          <div class="field-desc">{{ field.description }}</div>
+          {% endif %}
+          <input
+            class="field-input"
+            type="text"
+            name="{{ field.key }}"
+            id="input-{{ field.key }}"
+            value="{{ field.value }}"
+            oninput="onFieldInput(this)"
+          />
+        </div>
+        {% if not loop.last %}
+        <hr class="divider" />
+        {% endif %}
+        {% endfor %}
+      </div>
+
+      <div class="card">
+        <div class="actions">
+          <button id="save-button" type="button" onclick="saveSetup()">Save &amp; Start</button>
+          <span class="env-path-note">Saves to <code>{{ env_path }}</code></span>
+        </div>
+        <div id="success-banner" class="success-banner">
+          Configuration saved. Redirecting to the dashboard...
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let toastTimer = null;
+
+      function showToast(message) {
+        const toast = document.getElementById("toast");
+        toast.textContent = message;
+        toast.classList.add("show");
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 4000);
+      }
+
+      function onFieldInput(input) {
+        const fieldEl = input.closest(".setup-field");
+        if (!fieldEl) return;
+        const val = input.value.trim();
+        const stillPlaceholder = val.includes("/path/to/your/");
+        if (stillPlaceholder) {
+          fieldEl.classList.add("needs-attention");
+        } else {
+          fieldEl.classList.remove("needs-attention");
+          const badge = fieldEl.querySelector(".badge-warn");
+          if (badge) badge.remove();
+        }
+      }
+
+      async function saveSetup() {
+        const inputs = document.querySelectorAll(".field-input");
+        const fields = {};
+        inputs.forEach((input) => {
+          fields[input.name] = input.value;
+        });
+
+        const saveButton = document.getElementById("save-button");
+        saveButton.disabled = true;
+        saveButton.textContent = "Saving...";
+
+        try {
+          const response = await fetch("/api/setup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fields }),
+          });
+
+          if (response.ok) {
+            document.getElementById("success-banner").classList.add("show");
+            saveButton.textContent = "Saved";
+            setTimeout(() => {
+              window.location.href = "/";
+            }, 800);
+          } else {
+            const data = await response.json().catch(() => ({}));
+            showToast(data.description || "Failed to save configuration.");
+            saveButton.disabled = false;
+            saveButton.textContent = "Save & Start";
+          }
+        } catch (err) {
+          showToast("Network error: " + err.message);
+          saveButton.disabled = false;
+          saveButton.textContent = "Save & Start";
+        }
+      }
+    </script>
+  </body>
+</html>

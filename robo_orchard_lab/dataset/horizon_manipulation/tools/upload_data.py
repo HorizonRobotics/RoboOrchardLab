@@ -16,6 +16,7 @@
 
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -28,7 +29,7 @@ from robo_orchard_core.utils.task_executor import (
 )
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 os.environ["AIDI_FS_TYPE"] = "S3"
 os.environ["AIDI_ENDPOINT"] = "http://aidi.hobot.cc"
@@ -98,12 +99,25 @@ def search_valid_data(date_prefix, user_names, task_names, data_root):
         if not any([data_time.startswith(x) for x in date_prefix]):
             continue
 
-        for user_name in user_names:
-            for task_name in task_names:
-                data_path = os.path.join(
-                    data_root, data_time, "data", user_name, task_name
-                )
-                if not os.path.exists(data_path):
+        data_time_path = os.path.join(data_root, data_time, "data")
+        if not os.path.isdir(data_time_path):
+            continue
+
+        actual_user_names = (
+            user_names
+            if user_names is not None
+            else os.listdir(data_time_path)
+        )
+        for user_name in actual_user_names:
+            user_path = os.path.join(data_time_path, user_name)
+            if not os.path.isdir(user_path):
+                continue
+            actual_task_names = (
+                task_names if task_names is not None else os.listdir(user_path)
+            )
+            for task_name in actual_task_names:
+                data_path = os.path.join(user_path, task_name)
+                if not os.path.isdir(data_path):
                     continue
                 valid_data_episodes.extend(
                     [os.path.join(data_path, x) for x in os.listdir(data_path)]
@@ -149,8 +163,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str)
     parser.add_argument("--output_path", type=str)
-    parser.add_argument("--user_names", type=str)
-    parser.add_argument("--task_names", type=str)
+    parser.add_argument("--user_names", type=str, default=None)
+    parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--date_prefix", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--token", type=str, default=None)
@@ -163,6 +177,7 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
+    logger.info(args)
 
     date_prefix = args.date_prefix
     if date_prefix is None:
@@ -170,20 +185,22 @@ if __name__ == "__main__":
     else:
         date_prefix = [x.strip() for x in date_prefix.split(",") if x.strip()]
 
-    user_names = args.user_names.split(",")
-    task_names = args.task_names.split(",")
+    user_names = (
+        [x.strip() for x in args.user_names.split(",") if x.strip()]
+        if args.user_names is not None
+        else None
+    )
+    task_names = (
+        [x.strip() for x in args.task_names.split(",") if x.strip()]
+        if args.task_names is not None
+        else None
+    )
     valid_data_episodes = search_valid_data(
         date_prefix, user_names, task_names, args.input_path
     )
     valid_data_episodes.sort()
     num_total_episode = len(valid_data_episodes)
     logger.info(f"Number of valid episodes: {num_total_episode}")
-    for user_name in user_names:
-        for task_name in task_names:
-            logger.info(
-                f"Number of valid episodes [{user_name} - {task_name}]: "
-                f"{len([x for x in valid_data_episodes if task_name in x and user_name in x])}"  # noqa: E501
-            )
 
     output_path = args.output_path
     if output_path.startswith("/horizon-bucket"):
