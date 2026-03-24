@@ -61,28 +61,29 @@ dataset_config = dict(
         ),
         scale_shift=[
             # torso
-            [1.4836, 0.3491],
-            [2.6616, -0.1309],
-            [1.7017, -0.1309],
-            [3.0543, 0.0000],
+            [0.6077, 1.0566],
+            [1.0677, -1.4653],
+            [0.8349, -0.7062],
+            # [0.0003, 0.0000],
+            [1.000, 0.0000],
             # left arm
-            [2.8798, -1.5708],
-            [1.6580, 1.4835],
-            [2.3562, 0.0000],
-            [1.2218, -0.8726],
-            [2.3562, 0.0000],
-            [1.0472, 0.0000],
-            [1.5708, 0.0000],
-            [1.0000, 0.0000],
+            [1.0423, -0.6566],
+            [0.3783, 0.2038],
+            [1.4073, -0.4143],
+            [0.8466, -0.7800],
+            [1.6147, 0.5790],
+            [0.9966, 0.0484],
+            [1.3972, -0.1692],
+            [0.0443, 0.0557],
             # right arm
-            [2.8798, -1.5708],
-            [1.6580, -1.4835],
-            [2.3562, 0.0000],
-            [1.2218, -0.8726],
-            [2.3562, 0.0000],
-            [1.0472, 0.0000],
-            [1.5708, 0.0000],
-            [1.0000, 0.0000],
+            [0.9649, -0.7043],
+            [0.3807, -0.2062],
+            [1.1241, 0.1019],
+            [0.8435, -0.7689],
+            [1.5155, -0.3252],
+            [0.9975, 0.0493],
+            [1.3175, 0.0838],
+            [0.0463, 0.0537],
         ],
         data_paths=[
             "data/behavior1k_lmdb_data/task_0000_manipulation_lmdb/",
@@ -180,28 +181,29 @@ dataset_config = dict(
         ),
         scale_shift=[
             # torso
-            [1.4836, 0.3491],
-            [2.6616, -0.1309],
-            [1.7017, -0.1309],
-            [3.0543, 0.0000],
+            [0.6077, 1.0566],
+            [1.0677, -1.4653],
+            [0.8349, -0.7062],
+            # [0.0003, 0.0000],
+            [1.000, 0.0000],
             # left arm
-            [2.8798, -1.5708],
-            [1.6580, 1.4835],
-            [2.3562, 0.0000],
-            [1.2218, -0.8726],
-            [2.3562, 0.0000],
-            [1.0472, 0.0000],
-            [1.5708, 0.0000],
-            [1.0000, 0.0000],
+            [1.0423, -0.6566],
+            [0.3783, 0.2038],
+            [1.4073, -0.4143],
+            [0.8466, -0.7800],
+            [1.6147, 0.5790],
+            [0.9966, 0.0484],
+            [1.3972, -0.1692],
+            [0.0443, 0.0557],
             # right arm
-            [2.8798, -1.5708],
-            [1.6580, -1.4835],
-            [2.3562, 0.0000],
-            [1.2218, -0.8726],
-            [2.3562, 0.0000],
-            [1.0472, 0.0000],
-            [1.5708, 0.0000],
-            [1.0000, 0.0000],
+            [0.9649, -0.7043],
+            [0.3807, -0.2062],
+            [1.1241, 0.1019],
+            [0.8435, -0.7689],
+            [1.5155, -0.3252],
+            [0.9975, 0.0493],
+            [1.3175, 0.0838],
+            [0.0463, 0.0537],
         ],
         data_paths=[
             "data/behavior1k_lmdb_data/task_0000_navigation_lmdb/",
@@ -281,18 +283,10 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
         UnsqueezeBatch,
     )
 
-    joint_state_loss_weights = [1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
-    loss_weights = np.array(
-        [
-            # [[1, 0, 0, 0, 0, 0, 0, 0]] * 3
-            # + [joint_state_loss_weights] * 20
-            [joint_state_loss_weights] * 20
-        ]
-    ).tolist()
-
     joint_mask = (
         # torso
-        [True] * 4
+        [True] * 3
+        + [False]
         +
         # left arm
         [True] * 7
@@ -302,11 +296,8 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
         [True] * 7
         + [False]
     )
-
-    add_data_relative_items = dict(
+    add_joint_mask = dict(
         type=AddItems,
-        state_loss_weights=loss_weights,
-        fk_loss_weight=loss_weights,
         joint_mask=joint_mask,
     )
 
@@ -357,7 +348,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
     )
 
     transforms = [
-        add_data_relative_items,
+        add_joint_mask,
         resize,
         to_tensor,
         ego_to_cam,
@@ -382,6 +373,16 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
 
         camera_mask = dict(type=CameraMask, max_masks=3)
         transforms.insert(2, camera_mask)
+
+        joint_state_loss_weights = [1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+        loss_weights = np.array([[joint_state_loss_weights] * 20]).tolist()
+        add_loss_weight = dict(
+            type=AddItems,
+            state_loss_weights=loss_weights,
+            fk_loss_weight=loss_weights,
+        )
+        transforms.append(add_loss_weight)
+
     elif mode == "validation":
         state_sampling = dict(
             type=SimpleStateSampling,

@@ -317,11 +317,11 @@ def dequantize_depth(
 
 def compute_episode_keep_indices(
     mobile_traj: np.ndarray,
+    base_qvel: np.ndarray,
     state: np.ndarray,
     action: np.ndarray,
     extrinsic: np.ndarray,
     intrinsic: np.ndarray,
-    # static_threshold: float = 1e-3,
     static_threshold: float = 1e-3,
     base_time: np.ndarray | None = None,
     head_time_to_filter: float | None = None,
@@ -359,6 +359,7 @@ def compute_episode_keep_indices(
 
     keep_indices = static_mask & time_mask
 
+    base_qvel_filt = base_qvel[keep_indices]
     mobile_traj_filt = mobile_traj[keep_indices]
     state_filt = state[keep_indices]
     action_filt = action[keep_indices]
@@ -369,6 +370,7 @@ def compute_episode_keep_indices(
     return (
         keep_indices,
         mobile_traj_filt,
+        base_qvel_filt,
         state_filt,
         action_filt,
         extrinsic_filt,

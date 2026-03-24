@@ -83,7 +83,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         hist_steps=None,
         pred_steps=None,
         reset_step=1000,
-        dataset_name="b1k",
+        dataset_name="behavior",
         **kwargs,
     ):
         super().__init__(
@@ -96,6 +96,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             lazy_init=lazy_init,
             num_episode=num_episode,
             reset_step=reset_step,
+            dataset_name=dataset_name,
             **kwargs,
         )
 
@@ -154,8 +155,10 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             ]
         else:
             next_shard = None
+
         if pre_shard is not None:
             step_index_in_shard += len(pre_shard)
+
         data = self._concat_shards(pre_shard, current_shard, next_shard)
         return data, step_index_in_shard
 
@@ -287,6 +290,26 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             data = transform(data)
 
         return data
+
+    def draw_depth_heatmap(self, depths):
+        heatmaps = []
+        for depth in depths:
+            if torch.is_tensor(depth):
+                depth = depth.detach().cpu().numpy()
+
+            depth = np.nan_to_num(depth)
+            dmin = np.percentile(depth, 2)
+            dmax = np.percentile(depth, 98)
+            if dmax - dmin < 1e-6:
+                dmax = dmin + 1e-6
+
+            depth = np.clip(depth, dmin, dmax)
+            depth_norm = (depth - dmin) / (dmax - dmin)
+            depth_norm = (depth_norm * 255).astype(np.uint8)
+            heatmap = cv2.applyColorMap(depth_norm, cv2.COLORMAP_TURBO)
+            heatmaps.append(heatmap)
+
+        return np.concatenate(heatmaps, axis=1)
 
     def draw_traj_board(
         self,
@@ -502,6 +525,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         ):
             data = self.__getitem__(i)
 
+            # joint
             joint_img = self.draw_joint(
                 imgs=data["imgs"],
                 joint_pose=data["hist_robot_state"][-1],
@@ -511,6 +535,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             board_h = joint_img.shape[0]
             board_w = joint_img.shape[0]
 
+            # traj
             real_range_m = 2.0 * traj_viz_range
             scale = board_w / real_range_m
             traj_board = self.draw_traj_board(
@@ -521,7 +546,14 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
                 viz_scale=traj_viz_scale,
             )
 
-            vis_img = np.concatenate([joint_img, traj_board], axis=1)
+            # depth
+            depth_img = self.draw_depth_heatmap(data["depths"])
+            blank = np.ones_like(traj_board) * 255
+            depth_img = np.concatenate([depth_img, blank], axis=1)
+
+            # concat
+            top_row = np.concatenate([joint_img, traj_board], axis=1)
+            vis_img = np.concatenate([top_row, depth_img], axis=0)
 
             # write text
             font = cv2.FONT_HERSHEY_SIMPLEX

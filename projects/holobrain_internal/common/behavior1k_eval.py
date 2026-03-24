@@ -28,6 +28,7 @@ from collections import defaultdict
 
 import requests
 import torch
+import torch.distributed as dist
 from filelock import FileLock, Timeout
 from omnigibson.learning.utils.eval_utils import TASK_NAMES_TO_INDICES
 
@@ -173,10 +174,6 @@ def download_job_ckpt_processor(
     )
     for url in [model_url, model_config_url, processor_url]:
         file_name = os.path.join(output_dir, url.split("/")[-1])
-        # if url.endswith("config.json"):
-        #     file_name = file_name.replace(
-        #         f"{model_prefix}.config.json", "model.config.json"
-        #     )
         download_file(url, file_name)
 
     target_vlm_ckpt_dir = os.path.join(output_dir, "ckpt")
@@ -188,26 +185,30 @@ def download_job_ckpt_processor(
         os.symlink(urdf_dir, target_urdf_dir)
 
 
+def shard_jobs_by_world(jobs, world_size, world_rank):
+    return jobs[world_rank::world_size]
+
+
 def worker_loop(gpu_id: int, worker_local_id: int, job_queue, args, results):
     logger = logging.getLogger(__file__)
 
-    # Make xvfb server-num stable and unique per (gpu_id, worker_local_id),
-    # and still safe if the worker runs multiple jobs.
-    # Each job increments an offset to avoid reuse.
-    base = 1000 + gpu_id * 100 + worker_local_id * 10
+    base = 1000 + args.world_rank * 1000 + gpu_id * 100 + worker_local_id * 10
     job_count = 0
 
     while True:
         job = job_queue.get()
         if job is None:  # sentinel
             job_queue.task_done()
-            logger.info(f"[worker] gpu={gpu_id} wid={worker_local_id} exit")
+            logger.info(
+                f"[worker] rank={args.world_rank} "
+                f"gpu={gpu_id} wid={worker_local_id} exit"
+            )
             return
 
         task_name, inst_list = job
         inst_str = str(inst_list)
 
-        xvfb_num = base + (job_count % 10)  # small rotation per worker
+        xvfb_num = base + (job_count % 10)
         job_count += 1
 
         command = bash_command_template.format(
@@ -225,8 +226,8 @@ def worker_loop(gpu_id: int, worker_local_id: int, job_queue, args, results):
         )
 
         logger.info(
-            f"[worker] gpu={gpu_id} "
-            f"wid={worker_local_id} "
+            f"[worker] rank={args.world_rank} "
+            f"gpu={gpu_id} wid={worker_local_id} "
             f"run: {task_name} {inst_list}"
         )
         logger.info(command)
@@ -236,7 +237,7 @@ def worker_loop(gpu_id: int, worker_local_id: int, job_queue, args, results):
             inst_tag = f"{inst_list[0]}_{inst_list[-1]}"
             log_file = os.path.join(
                 args.job_log_dir,
-                f"job_{task_name}_{inst_tag}.log",
+                f"rank_{args.world_rank}_job_{task_name}_{inst_tag}.log",
             )
 
             with open(log_file, "w") as f:
@@ -251,13 +252,15 @@ def worker_loop(gpu_id: int, worker_local_id: int, job_queue, args, results):
             if ret.returncode != 0:
                 ok = False
                 logger.error(
-                    f"[worker] gpu={gpu_id} wid={worker_local_id} "
+                    f"[worker] rank={args.world_rank} "
+                    f"gpu={gpu_id} wid={worker_local_id} "
                     f"{task_name} {inst_list} failed: {ret.returncode}"
                 )
         except Exception as e:
             ok = False
             logger.error(
-                f"[worker] gpu={gpu_id} wid={worker_local_id} "
+                f"[worker] rank={args.world_rank} "
+                f"gpu={gpu_id} wid={worker_local_id} "
                 f"{task_name} {inst_list} crashed: {e}"
             )
 
@@ -288,10 +291,16 @@ if __name__ == "__main__":
 
     # job slicing
     parser.add_argument("--instance_per_job", type=int, default=10)
-
     parser.add_argument("--max_jobs_per_gpu", type=int, default=1)
 
     args = parser.parse_args()
+
+    args.world_size = int(os.environ.get("WORLD_SIZE", "1") or "1")
+    args.world_rank = int(os.environ.get("RANK", "0") or "0")
+
+    use_dist = args.world_size > 1
+    if use_dist:
+        dist.init_process_group(backend="gloo")
 
     # derive log_path
     parts = args.model_path.strip("/").split("/")
@@ -332,28 +341,47 @@ if __name__ == "__main__":
         f"instance_per_job must be in [1, {total_instances}]"
     )
 
-    # build jobs in (task, instance_list)
+    # build global jobs in (task, instance_list)
     jobs = []
     for task in task_names:
         for i in range(0, total_instances, chunk_size):
             jobs.append((task, all_instances[i : i + chunk_size]))
 
-    logger.info("====== Job Plan ======")
+    logger.info("====== Global Job Plan ======")
     for j, (t, inst) in enumerate(jobs):
-        # this line is only informational now; real scheduling is dynamic
-        logger.info(f"job={j:03d} task={t} inst={inst}")
-    logger.info("======================")
+        logger.info(f"global_job={j:03d} task={t} inst={inst}")
+    logger.info("=============================")
 
     max_jobs_per_gpu = int(args.max_jobs_per_gpu)
     assert max_jobs_per_gpu >= 1, "--max_jobs_per_gpu must be >= 1"
+
+    local_jobs = shard_jobs_by_world(
+        jobs=jobs,
+        world_size=args.world_size,
+        world_rank=args.world_rank,
+    )
+
+    logger.info(
+        f"[dist] world_size={args.world_size}, "
+        f"world_rank={args.world_rank}, "
+        f"num_gpus={num_gpus}, "
+        f"max_jobs_per_gpu={max_jobs_per_gpu}, "
+        f"local_jobs={len(local_jobs)}, "
+        f"global_jobs={len(jobs)}"
+    )
+
+    logger.info("====== Local Job Plan ======")
+    for j, (t, inst) in enumerate(local_jobs):
+        logger.info(f"local_job={j:03d} task={t} inst={inst}")
+    logger.info("============================")
 
     manager = multiprocessing.Manager()
     results = manager.dict()
 
     job_queue = multiprocessing.JoinableQueue(maxsize=0)
 
-    # enqueue jobs
-    for job in jobs:
+    # enqueue only local jobs
+    for job in local_jobs:
         job_queue.put(job)
 
     # start workers: num_gpus * max_jobs_per_gpu
@@ -385,8 +413,15 @@ if __name__ == "__main__":
     results = dict(results)
     success = sum(bool(v) for v in results.values())
     logger.info(
-        f"Success: {success}/{len(jobs)} (results_recorded={len(results)})"
+        f"Success: {success}/{len(local_jobs)} "
+        f"(results_recorded={len(results)})"
     )
 
-    # compute q_score
-    cal_q_score(os.path.join(args.log_path, "metrics"))
+    if use_dist:
+        dist.barrier()
+
+    if args.world_rank == 0:
+        cal_q_score(os.path.join(args.log_path, "metrics"))
+
+    if use_dist:
+        dist.destroy_process_group()

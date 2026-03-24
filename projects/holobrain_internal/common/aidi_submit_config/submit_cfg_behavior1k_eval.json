@@ -1,7 +1,7 @@
 {
     "job_name": "eval_behavior1k_holobrain",
     "workspace_folder": "submit-holobrain",
-    "docker_image": "hub.hobot.cc/auto/robot_lab_base:ubuntu2204-gcc11.4-py310-cu128-torch270-b1k-v1.0",
+    "docker_image": "hub.hobot.cc/auto/robot_lab_base:ubuntu2204-gcc114-py310-cu128-torch270-b1k-v2.3.1",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,
@@ -24,16 +24,21 @@
         "export OMNIGIBSON_DATA_PATH=${WORKING_PATH}/datasets",
         "export TORCHDYNAMO_DISABLE=1",
 
+        "export WORLD_SIZE=$VC_TASK_NUM",
+        "export RANK=$(sed -nE 's/.*--machine_rank ([0-9]+).*/\\1/p' rank)",
+        "export MASTER_ADDR=$(echo $VC_TASK_HOSTS | cut -d',' -f1)",
+        "export MASTER_PORT=29500",
+
         "source /App/miniconda3/etc/profile.d/conda.sh",
         "conda activate behavior",
 
         "python3 behavior1k_eval.py \\",
-        "   --model_path http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/qingze.wang/plat_gpu/2026-02-10/15-11/b1k_common47_task_all_b1011e0a_064f_11f1_a970_93556534aa1e/output/checkpoints/checkpoint_8/ \\",
+        "   --model_path http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/qingze.wang-labs/plat_gpu/2026-03-18/10-15/bcloud-bj-zone1-920590a4a474/output/checkpoints/checkpoint_8/ \\",
         "   --model_processor behavior1k_manipulation_processor \\",
-        "   --model_prefix model_0 \\",
+        "   --model_prefix model \\",
         "   --vlm_ckpt_dir /horizon-bucket/robot_lab2/users/qingze.wang/ckpt \\",
         "   --urdf_dir /horizon-bucket/robot_lab2/users/qingze.wang/urdf \\",
-        "   --task_names turning_on_radio,picking_up_trash,putting_away_Halloween_decorations,cleaning_up_plates_and_food \\",
+        "   --task_names picking_up_trash \\",
         "   --instance_per_job 5 "
     ],
     "to_upload": [

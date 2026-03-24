@@ -123,7 +123,7 @@ class HoloBrainPolicy:
             extr = np.eye(4, dtype=float)  # (4, 4)
             extr[:3, :3] = rot_matrix
             extr[:3, 3] = pos
-            extrinsic[cam] = extr
+            extrinsic[cam] = np.linalg.inv(extr)
 
         proprio = obs["robot_r1::proprio"]
         joint_state = np.hstack(

@@ -215,67 +215,58 @@ class JointStateNoise:
 
 
 class SimpleStateSampling:
-    def __init__(self, hist_steps, pred_steps, mode="training"):
+    def __init__(
+        self,
+        hist_steps,
+        pred_steps,
+        downsample=1,
+        torso_idx=3,
+        left_gripper_idx=11,
+        right_gripper_idx=19,
+        mode="training",
+    ):
         self.hist_steps = hist_steps
         self.pred_steps = pred_steps
+        self.downsample = downsample
+        self.torso_idx = torso_idx
+        self.left_gripper_idx = left_gripper_idx
+        self.right_gripper_idx = right_gripper_idx
         self.mode = mode
 
     def __call__(self, data):
         if "joint_state" not in data and "hist_joint_state" in data:
             return data
 
-        joint_state = data["joint_state"]  # N x num_joint
+        ds = max(1, int(getattr(self, "downsample", 1)))
+        state = data["joint_state"]  # N x num_joint
         step_index = data["step_index"]
         hist_steps = self.hist_steps
         pred_steps = self.pred_steps
 
-        if "ee_state" in data:
-            ee_state = data["ee_state"]  # N x [num_gripper*[xyzqxqyqzqw]]
-            state = np.concatenate(
-                [joint_state, ee_state],
-                axis=1,
-            )
-        else:
-            state = joint_state
-
-        num_joint = joint_state.shape[1]
-
-        # hist_joint_state
-        hist_state = state[
-            max(0, step_index + 1 - hist_steps) : step_index + 1
-        ]
-        if hist_state.shape[0] != hist_steps:
-            last_valid_state = state[
-                max(0, step_index) : max(0, step_index) + 1
-            ]
+        hist_joint_state = state[step_index::-ds][:hist_steps][::-1]
+        if hist_joint_state.shape[0] < hist_steps:
+            pad_value = state[step_index : step_index + 1]
             padding = np.tile(
-                last_valid_state, (hist_steps - hist_state.shape[0], 1)
+                pad_value, (hist_steps - hist_joint_state.shape[0], 1)
             )
-            hist_state = np.concatenate([hist_state, padding], axis=0)
-        hist_joint_state = hist_state[:, :num_joint]
-
-        # assert len(hist_joint_state) >= 2
-        # hist_joint_state[-1, :] = data["action"][step_index, :]
+            hist_joint_state = np.concatenate(
+                [hist_joint_state, padding], axis=0
+            )
+        hist_joint_state[:, self.torso_idx] = 0.0
 
         data.update(
             hist_joint_state=hist_joint_state,
         )
-
-        if "ee_state" in data:
-            hist_ee_state = hist_state[:, num_joint:]
-            data.update(
-                hist_ee_state=hist_ee_state,
-            )
 
         if self.mode == "training":
             # pred_joint_action
             action = data["action"]
 
             pred_joint_state = action[
-                step_index + 1 : step_index + 1 + pred_steps
+                step_index + 1 : step_index + 1 + ds * pred_steps : ds
             ]
             mask_joint = np.ones(pred_steps, dtype=np.float32)
-            if pred_joint_state.shape[0] != pred_steps:
+            if pred_joint_state.shape[0] < pred_steps:
                 pad_len = pred_steps - pred_joint_state.shape[0]
                 padding = np.tile(action[-1:], (pad_len, 1))
                 pred_joint_state = np.concatenate(
@@ -283,24 +274,43 @@ class SimpleStateSampling:
                 )
                 mask_joint[-pad_len:] = 0.0
 
-            mobile_traj = data["mobile_traj"][
-                step_index : step_index + pred_steps,
+            # fix torso and gripper
+            pred_joint_state[:, self.torso_idx] = 0.0
+            pred_joint_state[:, self.left_gripper_idx] = np.where(
+                pred_joint_state[:, self.left_gripper_idx] == -1, 0.0, 0.1
+            )
+            pred_joint_state[:, self.right_gripper_idx] = np.where(
+                pred_joint_state[:, self.right_gripper_idx] == -1, 0.0, 0.1
+            )
+
+            mobile_traj = data["mobile_traj"]
+            pred_mobile_traj = mobile_traj[
+                step_index + 1 : step_index + 1 + pred_steps * ds : ds
             ]
-            if mobile_traj.shape[0] == 1:
-                pred_mobile_traj = np.zeros((pred_steps, 3), dtype=np.float32)
+            pred_mobile_traj0 = mobile_traj[step_index : step_index + 1]
+            pred_mobile_traj = np.concatenate(
+                [pred_mobile_traj0, pred_mobile_traj], axis=0
+            )
+
+            if pred_mobile_traj.shape[0] <= 1:
+                traj_dim = mobile_traj.shape[1]
+                pred_mobile_traj = np.zeros(
+                    (pred_steps, traj_dim), dtype=np.float32
+                )
                 mask_mobile = np.zeros(pred_steps, dtype=np.float32)
             else:
-                pred_mobile_traj = utils.traj_world_to_local(mobile_traj)
-                pred_mobile_traj = pred_mobile_traj[1:, :]
-
-                mask_mobile = np.ones(pred_steps, dtype=np.float32)
-                if pred_mobile_traj.shape[0] < pred_steps:
-                    pad_len = pred_steps - pred_mobile_traj.shape[0]
-                    padding = np.tile(pred_mobile_traj[-1:], (pad_len, 1))
+                mask_mobile = np.ones(pred_steps + 1, dtype=np.float32)
+                if pred_mobile_traj.shape[0] < pred_steps + 1:
+                    pad_len = pred_steps + 1 - pred_mobile_traj.shape[0]
+                    padding = np.tile(mobile_traj[-1:], (pad_len, 1))
                     pred_mobile_traj = np.concatenate(
                         [pred_mobile_traj, padding], axis=0
                     )
                     mask_mobile[-pad_len:] = 0.0
+
+                pred_mobile_traj = utils.traj_world_to_local(pred_mobile_traj)
+                pred_mobile_traj = pred_mobile_traj[1:, :]
+                mask_mobile = mask_mobile[1:]
 
             pred_mask = (mask_joint * mask_mobile).astype(np.bool_)
 

@@ -147,7 +147,10 @@ class BehaviorPacker:
             robot_ori_sin[:, yaw_idx],
             robot_ori_cos[:, yaw_idx],
         )
-        yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
+
+        # yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
+        # remove discontinuity
+        yaw = np.unwrap(yaw)
 
         traj_xy_yaw = np.concatenate(
             [xy, yaw[:, None]],
@@ -269,6 +272,11 @@ class BehaviorPacker:
 
         full_obs = np.array(df["observation.state"].tolist(), dtype=np.float32)
 
+        # base_qvel
+        base_qvel = full_obs[
+            :, utils.PROPRIOCEPTION_INDICES["R1Pro"]["base_qvel"]
+        ]
+
         # joint state
         state = [
             full_obs[:, utils.PROPRIO_QPOS_INDICES["R1Pro"]["torso"]],
@@ -330,7 +338,7 @@ class BehaviorPacker:
             intr[:, :3, :3] = utils.CAMERA_INTRINSICS["R1Pro"][cam]
             intrinsic[:, cam_idx] = intr
 
-        return (mobile_traj, state, action, extrinsic, intrinsic)
+        return (mobile_traj, base_qvel, state, action, extrinsic, intrinsic)
 
     def load_frames(
         self,
@@ -643,6 +651,7 @@ class BehaviorPacker:
             # load state/action
             (
                 mobile_traj,
+                base_qvel,
                 state,
                 action,
                 extrinsic,
@@ -652,18 +661,21 @@ class BehaviorPacker:
             num_steps = state.shape[0]
             skill_keep_masks = []
             for i, skill in enumerate(skills):
+                print(skill)
                 skill_uuid = f"{task_id}_{episode_id}_{suffix}{i}"
                 start, end = skill["start"], skill["end"]
 
                 (
                     skill_keep,
                     mobile_traj_f,
+                    _,
                     state_f,
                     action_f,
                     extrinsic_f,
                     intrinsic_f,
                 ) = utils.compute_episode_keep_indices(
                     mobile_traj=mobile_traj[start:end],
+                    base_qvel=base_qvel[start:end],
                     state=state[start:end],
                     action=action[start:end],
                     extrinsic=extrinsic[start:end],

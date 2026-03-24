@@ -34,7 +34,7 @@ import omnigibson.utils.transform_utils as T  # noqa: N812
 import torch as th
 from av.container import Container
 from av.stream import Stream
-from deploy_policy import SEMPolicy
+from deploy_policy import HoloBrainPolicy
 from gello.robots.sim_robot.og_teleop_cfg import DISABLED_TRANSITION_RULES
 from gello.robots.sim_robot.og_teleop_utils import (
     augment_rooms,
@@ -148,6 +148,70 @@ def traj_local_to_world(
     quat_world = yaw_to_quat(yaw_world)
 
     return xyz_world, quat_world
+
+
+def traj_world_to_local(pos_world, quat_world, base_pos, base_quat):
+    base_yaw = quat_to_yaw(base_quat)
+
+    # position
+    dp = pos_world[:, :2] - base_pos[:2]
+    c, s = np.cos(-base_yaw), np.sin(-base_yaw)
+    rot = np.array([[c, -s], [s, c]])
+    xy_local = (rot @ dp.T).T
+
+    # yaw
+    yaw_world = quat_to_yaw(quat_world)
+    yaw_local = yaw_world - base_yaw
+    yaw_local = (yaw_local + np.pi) % (2 * np.pi) - np.pi
+
+    return np.concatenate([xy_local, yaw_local[:, None]], axis=-1)
+
+
+def _interp_angle(yaw, t_old, t_new):
+    out = np.zeros_like(t_new)
+
+    for i, t in enumerate(t_new):
+        j = int(np.floor(t))
+
+        if j >= len(yaw) - 1:
+            out[i] = yaw[-1]
+            continue
+
+        a = t - j
+
+        y0 = yaw[j]
+        y1 = yaw[j + 1]
+
+        # shortest angular distance
+        diff = np.arctan2(np.sin(y1 - y0), np.cos(y1 - y0))
+
+        out[i] = y0 + a * diff
+
+    return out
+
+
+def interpolate_traj_action(traj, action, factor=4):
+    t = traj.shape[0]
+
+    t_old = np.arange(t)
+    t_new = np.linspace(0, t - 1, (t - 1) * factor + 1)
+
+    traj_xy = np.stack(
+        [np.interp(t_new, t_old, traj[:, i]) for i in range(2)],
+        axis=1,
+    )
+    yaw_i = _interp_angle(traj[:, 2], t_old, t_new)
+    traj_i = np.concatenate([traj_xy, yaw_i[:, None]], axis=1)
+
+    action_i = np.stack(
+        [
+            np.interp(t_new, t_old, action[:, i])
+            for i in range(action.shape[1])
+        ],
+        axis=1,
+    )
+
+    return traj_i, action_i
 
 
 class Evaluator:
@@ -303,7 +367,7 @@ class Evaluator:
 
     def load_policy(self) -> Any:
         """Loads and returns the policy instance."""
-        policy = SEMPolicy(
+        policy = HoloBrainPolicy(
             model_path=self.cfg["model_path"],
             processor=self.cfg["model_processor"],
             model_prefix=self.cfg["model_prefix"],
@@ -314,7 +378,7 @@ class Evaluator:
         """Load agent and task metrics."""
         return [AgentMetric(self.human_stats), TaskMetric(self.human_stats)]
 
-    def step(self, pos, quat, action) -> Tuple[bool, bool]:
+    def step(self, traj_pos, traj_quat, action) -> Tuple[bool, bool]:
         """Performs a single step of the task by executing the policy.
 
         interacting with the environment, processing observations,
@@ -343,7 +407,7 @@ class Evaluator:
             6. Returns the termination and truncation status.
         """
 
-        self.robot.set_position_orientation(pos, quat)
+        self.robot.set_position_orientation(traj_pos, traj_quat)
         obs, _, terminated, truncated, info = self.env.step(
             action, n_render_iterations=1
         )
@@ -589,6 +653,9 @@ if __name__ == "__main__":
     with open_dict(config):
         config.instruction = task_cfg[config.task.name]
 
+        if "rtc_start_step" not in config:
+            config.rtc_start_step = None
+
     # set headless mode
     gm.HEADLESS = config.headless
 
@@ -707,6 +774,7 @@ if __name__ == "__main__":
             for epi in range(m.NUM_EVAL_EPISODES):
                 evaluator.reset()
                 done = False
+
                 if config.write_video:
                     video_name = (
                         str(video_path)
@@ -722,22 +790,25 @@ if __name__ == "__main__":
 
                 while not done:
                     action, traj = evaluator.policy.forward(obs=evaluator.obs)
-
-                    zeros = np.zeros(
-                        (action.shape[0], 3),
-                        dtype=action.dtype,
-                    )
-                    action = np.concatenate([zeros, action], axis=1)
-
                     base_pos, base_quat = (
                         evaluator.robot.get_position_orientation()
                     )
-                    pos, quat = traj_local_to_world(traj, base_pos, base_quat)
+                    traj_pos, traj_quat = traj_local_to_world(
+                        traj, base_pos, base_quat
+                    )
 
-                    for i in range(action.shape[0] // 2):
+                    # torso/left/right gripper fix
+                    action[:, 3] = 0.0
+                    action[:, 11] = np.where(action[:, 11] < 0.08, -1, 1)
+                    action[:, 19] = np.where(action[:, 19] < 0.08, -1, 1)
+                    zeros = np.zeros((action.shape[0], 3), dtype=action.dtype)
+                    action = np.concatenate([zeros, action], axis=1)
+
+                    horizon = len(action) // 2
+                    for i in range(horizon):
                         terminated, truncated = evaluator.step(
-                            pos[i],
-                            quat[i],
+                            traj_pos[i],
+                            traj_quat[i],
                             action[i, :],
                         )
                         if terminated or truncated:
