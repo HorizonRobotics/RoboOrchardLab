@@ -799,11 +799,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str)
     parser.add_argument("--output_path", type=str)
-    parser.add_argument("--urdf", type=str)
+    parser.add_argument("--urdf", type=str, default=None)
     parser.add_argument("--user_names", type=str, default=None)
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--date_prefix", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--embodiedment_meta_file", type=str, default=None)
+    parser.add_argument("--embodiedment", type=str, default=None)
+    parser.add_argument("--use_extra_calibration", action="store_true")
     args = parser.parse_args()
 
     if args.task_names is None:
@@ -811,6 +814,19 @@ if __name__ == "__main__":
     else:
         task_names = args.task_names.split(",")
 
+    calibration_dict = None
+    if args.embodiedment_meta_file is not None:
+        with open(args.embodiedment_meta_file, "r") as f:
+            embodiedment_meta = json.load(f)
+        embodiedment_meta = embodiedment_meta[args.embodiedment]
+        if args.use_extra_calibration:
+            calibration_dict = embodiedment_meta["calibration"]
+            logger.info(f"use extra calibration: {calibration_dict}")
+        if args.urdf is None:
+            args.urdf = embodiedment_meta["urdf"]
+
+    assert args.urdf is not None
+    logger.info(f"urdf: {args.urdf}")
     checker = PiperMcapChecker(
         input_path=args.input_path,
         output_path=args.output_path,
@@ -819,5 +835,6 @@ if __name__ == "__main__":
         user_names=args.user_names,
         date_prefix=args.date_prefix,
         num_workers=args.num_workers,
+        calibration_dict=calibration_dict,
     )
     checker()

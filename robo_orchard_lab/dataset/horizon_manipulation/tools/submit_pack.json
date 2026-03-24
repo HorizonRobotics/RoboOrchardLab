@@ -18,10 +18,11 @@
         "python robo_orchard_lab/dataset/horizon_manipulation/tools/mcap_packer.py \\",
         "    --input_path /horizon-bucket/robot_lab/users/xuewu.lin/self-collected-data/raw_data \\",
         "    --output_path /job_data/${user_name}-${task_name}-${date_prefix} \\",
-        "    --urdf ./urdf/piper_description_dualarm_new.urdf \\",
         "    --user_names ${user_name} \\",
         "    --task_names ${task_name} \\",
         "    --num_steps_per_shard 200 \\",
+        "    --embodiedment_meta_file ./urdf/embodiedment_meta_file.json \\",
+        "    --embodiedment piper \\",
         "    --date_prefix ${date_prefix}"
     ],
     "to_upload": [

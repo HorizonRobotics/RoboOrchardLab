@@ -1485,6 +1485,12 @@ ${data.message}` : "",
           return;
         }
 
+        const embodiedmentKeys = Object.keys(summaryTotals.by_embodiedment || {});
+        if (embodiedmentKeys.length > 1) {
+          showToast(`Cannot submit: data contains multiple embodiments (${embodiedmentKeys.join(", ")}). Please filter to a single embodiment first.`);
+          return;
+        }
+
         const dataRoot = document.getElementById("data_root").value.trim() || "{{ summary.base_path }}";
         try {
           const response = await fetch("/api/submit-jobs/prepare", {

@@ -82,13 +82,13 @@ WORKSPACE_ROOT = PROJECT_ROOT.parent.parent.parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
 
-if ENV_PATH.exists():
+ENV_CONFIGURED = ENV_PATH.exists()
+
+if ENV_CONFIGURED:
     load_dotenv_file(ENV_PATH)
 elif ENV_EXAMPLE_PATH.exists():
     shutil.copy(ENV_EXAMPLE_PATH, ENV_PATH)
     load_dotenv_file(ENV_PATH)
-
-ENV_CONFIGURED = ENV_PATH.exists()
 
 
 def get_env_value(name: str, default: str) -> str:
@@ -265,6 +265,15 @@ def derive_submit_selection(
             }
         )
 
+    all_embodiedments: list[str] = sorted(
+        {
+            e
+            for r in records
+            for e in parse_record_embodiedments(r.embodiedment)
+        }
+    )
+    embodiedment = all_embodiedments[0] if all_embodiedments else ""
+
     return {
         "user_names": user_names,
         "task_names": task_names,
@@ -272,6 +281,7 @@ def derive_submit_selection(
         "user_name": user_names[0],
         "task_name": task_names[0],
         "date_prefix": date_prefixes[0],
+        "embodiedment": embodiedment,
     }
 
 
@@ -386,6 +396,7 @@ def build_initial_submit_config(
     joined_user_names = ",".join(selection["user_names"])
     joined_task_names = ",".join(selection["task_names"])
     joined_date_prefixes = ",".join(selection["date_prefixes"])
+    embodiedment = str(selection.get("embodiedment", ""))
 
     for index, item in enumerate(cmd):
         if not isinstance(item, str):
@@ -405,6 +416,9 @@ def build_initial_submit_config(
                 f"    --output_path {output_path}"
                 + "/${user_name}-${task_name}-${date_prefix} \\"
             )
+        elif item.startswith("    --embodiedment ") and embodiedment:
+            suffix = " \\" if item.endswith(" \\") else ""
+            cmd[index] = f"    --embodiedment {embodiedment}{suffix}"
 
     template["cmd"] = cmd
     template["job_name"] = "-".join(
