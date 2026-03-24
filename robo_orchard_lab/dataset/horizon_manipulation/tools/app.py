@@ -1067,7 +1067,7 @@ def read_embodiment_tag(episode_dir: Path) -> str:
     if not isinstance(metas, dict):
         return ""
 
-    embodiment = metas.get("embodiment")
+    embodiment = metas.get("embodiment") or metas.get("embodiedment")
     if not isinstance(embodiment, list):
         return ""
 
@@ -1527,7 +1527,16 @@ def load_cache_from_disk(cache_key: str) -> dict[str, Any] | None:
         return None
 
     try:
-        records = [EpisodeRecord.model_validate(item) for item in records_data]
+        records = [
+            EpisodeRecord.model_validate(
+                {
+                    **item,
+                    "embodiment": item.get("embodiment")
+                    or item.get("embodiedment", ""),
+                }
+            )
+            for item in records_data
+        ]
     except Exception:
         return None
 
