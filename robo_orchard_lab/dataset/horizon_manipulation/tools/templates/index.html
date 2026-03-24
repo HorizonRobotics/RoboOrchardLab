@@ -1479,15 +1479,15 @@ ${data.message}` : "",
         const userName = document.getElementById("user_name").value.trim();
         const taskName = document.getElementById("task_name").value.trim();
         const datePrefix = document.getElementById("date_prefix").value.trim();
-  const embodiedment = document.getElementById("embodiedment").value.trim();
-  if (!(userName || taskName || datePrefix || embodiedment)) {
+        const embodiedment = document.getElementById("embodiedment").value.trim();
+        if (!(userName || taskName || datePrefix || embodiedment)) {
           showToast("You must search first before submitting a job");
           return;
         }
 
         const embodiedmentKeys = Object.keys(summaryTotals.by_embodiedment || {});
         if (embodiedmentKeys.length > 1) {
-          showToast(`Cannot submit: data contains multiple embodiments (${embodiedmentKeys.join(", ")}). Please filter to a single embodiment first.`);
+          showToast(`Cannot submit: data contains multiple embodiedments (${embodiedmentKeys.join(", ")}). Please filter to a single embodiedment first.`);
           return;
         }
 

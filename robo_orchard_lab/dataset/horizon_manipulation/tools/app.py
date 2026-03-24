@@ -272,6 +272,11 @@ def derive_submit_selection(
             for e in parse_record_embodiedments(r.embodiedment)
         }
     )
+    if len(all_embodiedments) > 1:
+        raise ValueError(
+            f"Cannot submit: records contain multiple embodiments "
+            f"{all_embodiedments}. Filter to a single embodiment first."
+        )
     embodiedment = all_embodiedments[0] if all_embodiedments else ""
 
     return {
