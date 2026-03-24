@@ -979,7 +979,7 @@ def test_merge_records_for_date_prefixes_keeps_other_days(tmp_path: Path):
     existing_first = app_module.EpisodeRecord(
         user_name="alice",
         task_name="pick",
-        embodiedment="",
+        embodiment="",
         episode_id="episode_2026_03_12-10_00_00",
         day="2026-03-12",
         path=str(tmp_path / "alice" / "pick" / "episode_2026_03_12-10_00_00"),
@@ -988,7 +988,7 @@ def test_merge_records_for_date_prefixes_keeps_other_days(tmp_path: Path):
     existing_second = app_module.EpisodeRecord(
         user_name="alice",
         task_name="pick",
-        embodiedment="",
+        embodiment="",
         episode_id="episode_2026_03_13-10_00_00",
         day="2026-03-13",
         path=str(tmp_path / "alice" / "pick" / "episode_2026_03_13-10_00_00"),
@@ -997,7 +997,7 @@ def test_merge_records_for_date_prefixes_keeps_other_days(tmp_path: Path):
     refreshed = app_module.EpisodeRecord(
         user_name="alice",
         task_name="pick",
-        embodiedment="",
+        embodiment="",
         episode_id="episode_2026_03_12-11_00_00",
         day="2026-03-12",
         path=str(tmp_path / "alice" / "pick" / "episode_2026_03_12-11_00_00"),

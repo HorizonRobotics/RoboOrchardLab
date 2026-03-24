@@ -679,15 +679,15 @@
             <input id="date_prefix" name="date_prefix" type="text" placeholder="Date prefixes in episode_id, separate with commas" value="{{ summary.filters.date_prefix }}" />
           </div>
           <div class="field">
-            <label for="embodiedment">embodiedment</label>
-            <input id="embodiedment" name="embodiedment" type="text" placeholder="Exact match, separate with commas" value="{{ summary.filters.embodiedment }}" />
+            <label for="embodiment">embodiment</label>
+            <input id="embodiment" name="embodiment" type="text" placeholder="Exact match, separate with commas" value="{{ summary.filters.embodiment }}" />
           </div>
           <div class="actions">
             <button type="button" onclick="submitSearch()">Search</button>
             <a class="button-secondary" href="/">Clear Filters</a>
           </div>
         </form>
-  {% if summary.filters.data_root or summary.filters.user_name or summary.filters.task_name or summary.filters.date_prefix or summary.filters.embodiedment %}
+  {% if summary.filters.data_root or summary.filters.user_name or summary.filters.task_name or summary.filters.date_prefix or summary.filters.embodiment %}
         <div class="filter-tags">
           {% if summary.filters.data_root %}
           <span class="tag">data_root: {{ summary.filters.data_root }}</span>
@@ -701,8 +701,8 @@
           {% if summary.filters.date_prefix %}
           <span class="tag">date_prefix: {{ summary.filters.date_prefix }}</span>
           {% endif %}
-          {% if summary.filters.embodiedment %}
-          <span class="tag">embodiedment: {{ summary.filters.embodiedment }}</span>
+          {% if summary.filters.embodiment %}
+          <span class="tag">embodiment: {{ summary.filters.embodiment }}</span>
           {% endif %}
         </div>
         {% endif %}
@@ -714,7 +714,7 @@
           <div class="chart-controls">
             <button type="button" id="chart-group-task" class="toggle-button active" onclick="setChartGroupMode('task')">By Task</button>
             <button type="button" id="chart-group-user" class="toggle-button" onclick="setChartGroupMode('user')">By User</button>
-            <button type="button" id="chart-group-embodiedment" class="toggle-button" onclick="setChartGroupMode('embodiedment')">By Embodiedment</button>
+            <button type="button" id="chart-group-embodiment" class="toggle-button" onclick="setChartGroupMode('embodiment')">By Embodiedment</button>
             <button type="button" id="chart-metric-duration" class="toggle-button active" onclick="setChartMetricMode('duration')">Duration</button>
             <button type="button" id="chart-metric-episodes" class="toggle-button" onclick="setChartMetricMode('episodes')">Episodes</button>
           </div>
@@ -738,10 +738,10 @@
           </div>
           <div class="pagination-controls">
             {% if summary.pagination.has_prev %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiment={{ summary.filters.embodiment | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
             {% endif %}
             {% if summary.pagination.has_next %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiment={{ summary.filters.embodiment | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
             {% endif %}
             <input
               class="pagination-jump"
@@ -761,7 +761,7 @@
               <th>episode_id</th>
               <th>user_name</th>
               <th>task_name</th>
-              <th>embodiedment</th>
+              <th>embodiment</th>
               <th>duration</th>
               <th>Actions</th>
             </tr>
@@ -772,7 +772,7 @@
               <td>{{ episode.episode_id }}</td>
               <td>{{ episode.user_name }}</td>
               <td>{{ episode.task_name }}</td>
-              <td>{{ episode.embodiedment }}</td>
+              <td>{{ episode.embodiment }}</td>
               <td>{{ episode.duration_text }}</td>
               <td>
                 <div class="action-group">
@@ -795,10 +795,10 @@
           </div>
           <div class="pagination-controls">
             {% if summary.pagination.has_prev %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiment={{ summary.filters.embodiment | urlencode }}&page={{ summary.pagination.page - 1 }}&page_size={{ summary.pagination.page_size }}">Previous</a>
             {% endif %}
             {% if summary.pagination.has_next %}
-            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiedment={{ summary.filters.embodiedment | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
+            <a class="button-secondary" href="?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiment={{ summary.filters.embodiment | urlencode }}&page={{ summary.pagination.page + 1 }}&page_size={{ summary.pagination.page_size }}">Next</a>
             {% endif %}
             <input
               class="pagination-jump"
@@ -818,7 +818,7 @@
       </section>
       {% if not summary.episodes %}
       <section class="card">
-  <div class="empty">No data matched the current `data_root`, `user_name`, `task_name`, `date_prefix`, and `embodiedment` filters.</div>
+  <div class="empty">No data matched the current `data_root`, `user_name`, `task_name`, `date_prefix`, and `embodiment` filters.</div>
       </section>
       {% endif %}
     </div>
@@ -861,18 +861,18 @@
         const groupedNames = {
           user: Object.keys(totals.by_user || {}),
           task: Object.keys(totals.by_task || {}),
-          embodiedment: Object.keys(totals.by_embodiedment || {}),
+          embodiment: Object.keys(totals.by_embodiment || {}),
         };
         const groupedValues = metricMode === "duration"
           ? {
               user: totals.hours_by_user || {},
               task: totals.hours_by_task || {},
-              embodiedment: totals.hours_by_embodiedment || {},
+              embodiment: totals.hours_by_embodiment || {},
             }
           : {
               user: totals.by_user || {},
               task: totals.by_task || {},
-              embodiedment: totals.by_embodiedment || {},
+              embodiment: totals.by_embodiment || {},
             };
         const names = groupedNames[groupMode] || [];
         const valueMap = groupedValues[groupMode] || {};
@@ -897,15 +897,15 @@
         const entries = getChartEntries(currentChartGroupMode, currentChartMetricMode);
         const groupLabel = currentChartGroupMode === "user"
           ? "users"
-          : currentChartGroupMode === "embodiedment"
-            ? "embodiedments"
+          : currentChartGroupMode === "embodiment"
+            ? "embodiments"
             : "tasks";
         const metricLabel = currentChartMetricMode === "duration" ? "duration" : "episode count";
         meta.textContent = `Sorted from highest to lowest ${metricLabel}, grouped by ${groupLabel}.`;
 
         document.getElementById("chart-group-task").classList.toggle("active", currentChartGroupMode === "task");
         document.getElementById("chart-group-user").classList.toggle("active", currentChartGroupMode === "user");
-  document.getElementById("chart-group-embodiedment").classList.toggle("active", currentChartGroupMode === "embodiedment");
+  document.getElementById("chart-group-embodiment").classList.toggle("active", currentChartGroupMode === "embodiment");
         document.getElementById("chart-metric-duration").classList.toggle("active", currentChartMetricMode === "duration");
         document.getElementById("chart-metric-episodes").classList.toggle("active", currentChartMetricMode === "episodes");
 
@@ -1479,15 +1479,15 @@ ${data.message}` : "",
         const userName = document.getElementById("user_name").value.trim();
         const taskName = document.getElementById("task_name").value.trim();
         const datePrefix = document.getElementById("date_prefix").value.trim();
-        const embodiedment = document.getElementById("embodiedment").value.trim();
-        if (!(userName || taskName || datePrefix || embodiedment)) {
+        const embodiment = document.getElementById("embodiment").value.trim();
+        if (!(userName || taskName || datePrefix || embodiment)) {
           showToast("You must search first before submitting a job");
           return;
         }
 
-        const embodiedmentKeys = Object.keys(summaryTotals.by_embodiedment || {});
-        if (embodiedmentKeys.length > 1) {
-          showToast(`Cannot submit: data contains multiple embodiedments (${embodiedmentKeys.join(", ")}). Please filter to a single embodiedment first.`);
+        const embodimentKeys = Object.keys(summaryTotals.by_embodiment || {});
+        if (embodimentKeys.length > 1) {
+          showToast(`Cannot submit: data contains multiple embodiments (${embodimentKeys.join(", ")}). Please filter to a single embodiment first.`);
           return;
         }
 
@@ -1502,7 +1502,7 @@ ${data.message}` : "",
               filters: {
                 user_name: userName,
                 task_name: taskName,
-                embodiedment,
+                embodiment,
                 date_prefix: datePrefix,
               },
             })
@@ -1592,7 +1592,7 @@ ${data.message}` : "",
             user_name: document.getElementById("user_name").value.trim(),
             task_name: document.getElementById("task_name").value.trim(),
             date_prefix: document.getElementById("date_prefix").value.trim(),
-            embodiedment: document.getElementById("embodiedment").value.trim(),
+            embodiment: document.getElementById("embodiment").value.trim(),
           });
           const response = await fetch(`/api/remote-upload/config?${searchParams.toString()}`);
           const data = await response.json();

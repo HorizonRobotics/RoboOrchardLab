@@ -804,8 +804,8 @@ if __name__ == "__main__":
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--date_prefix", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--embodiedment_meta_file", type=str, default=None)
-    parser.add_argument("--embodiedment", type=str, default=None)
+    parser.add_argument("--embodiment_meta_file", type=str, default=None)
+    parser.add_argument("--embodiment", type=str, default=None)
     parser.add_argument("--use_extra_calibration", action="store_true")
     args = parser.parse_args()
 
@@ -815,25 +815,25 @@ if __name__ == "__main__":
         task_names = args.task_names.split(",")
 
     calibration_dict = None
-    if args.embodiedment_meta_file is not None:
-        if args.embodiedment is None:
+    if args.embodiment_meta_file is not None:
+        if args.embodiment is None:
             parser.error(
-                "--embodiedment is required when "
-                "--embodiedment_meta_file is specified"
+                "--embodiment is required when "
+                "--embodiment_meta_file is specified"
             )
-        with open(args.embodiedment_meta_file, "r") as f:
-            embodiedment_meta = json.load(f)
-        embodiedment_meta = embodiedment_meta[args.embodiedment]
+        with open(args.embodiment_meta_file, "r") as f:
+            embodiment_meta = json.load(f)
+        embodiment_meta = embodiment_meta[args.embodiment]
         if args.use_extra_calibration:
-            calibration_dict = embodiedment_meta["calibration"]
+            calibration_dict = embodiment_meta["calibration"]
             logger.info(f"use extra calibration: {calibration_dict}")
         if args.urdf is None:
-            args.urdf = embodiedment_meta["urdf"]
+            args.urdf = embodiment_meta["urdf"]
 
     if args.urdf is None:
         parser.error(
-            "Either --urdf or --embodiedment_meta_file "
-            "(with --embodiedment) must be specified"
+            "Either --urdf or --embodiment_meta_file "
+            "(with --embodiment) must be specified"
         )
     logger.info(f"urdf: {args.urdf}")
     checker = PiperMcapChecker(

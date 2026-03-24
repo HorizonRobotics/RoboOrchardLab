@@ -207,7 +207,7 @@ class EpisodeRecord(BaseModel):
 
     user_name: str
     task_name: str
-    embodiedment: str
+    embodiment: str
     episode_id: str
     day: str
     path: str
@@ -223,7 +223,7 @@ class FilterOptions(BaseModel):
 
     user_name: str = ""
     task_name: str = ""
-    embodiedment: str = ""
+    embodiment: str = ""
     date_prefix: str = ""
     data_root: str = ""
     refresh: bool = False
@@ -265,19 +265,15 @@ def derive_submit_selection(
             }
         )
 
-    all_embodiedments: list[str] = sorted(
-        {
-            e
-            for r in records
-            for e in parse_record_embodiedments(r.embodiedment)
-        }
+    all_embodiments: list[str] = sorted(
+        {e for r in records for e in parse_record_embodiments(r.embodiment)}
     )
-    if len(all_embodiedments) > 1:
+    if len(all_embodiments) > 1:
         raise ValueError(
             f"Cannot submit: records contain multiple embodiments "
-            f"{all_embodiedments}. Filter to a single embodiment first."
+            f"{all_embodiments}. Filter to a single embodiment first."
         )
-    embodiedment = all_embodiedments[0] if all_embodiedments else ""
+    embodiment = all_embodiments[0] if all_embodiments else ""
 
     return {
         "user_names": user_names,
@@ -286,7 +282,7 @@ def derive_submit_selection(
         "user_name": user_names[0],
         "task_name": task_names[0],
         "date_prefix": date_prefixes[0],
-        "embodiedment": embodiedment,
+        "embodiment": embodiment,
     }
 
 
@@ -401,7 +397,7 @@ def build_initial_submit_config(
     joined_user_names = ",".join(selection["user_names"])
     joined_task_names = ",".join(selection["task_names"])
     joined_date_prefixes = ",".join(selection["date_prefixes"])
-    embodiedment = str(selection.get("embodiedment", ""))
+    embodiment = str(selection.get("embodiment", ""))
 
     for index, item in enumerate(cmd):
         if not isinstance(item, str):
@@ -421,9 +417,9 @@ def build_initial_submit_config(
                 f"    --output_path {output_path}"
                 + "/${user_name}-${task_name}-${date_prefix} \\"
             )
-        elif item.startswith("    --embodiedment ") and embodiedment:
+        elif item.startswith("    --embodiment ") and embodiment:
             suffix = " \\" if item.endswith(" \\") else ""
-            cmd[index] = f"    --embodiedment {embodiedment}{suffix}"
+            cmd[index] = f"    --embodiment {embodiment}{suffix}"
 
     template["cmd"] = cmd
     template["job_name"] = "-".join(
@@ -630,7 +626,7 @@ def build_remote_upload_default_config(filters: FilterOptions) -> str:
 
     user_names = ",".join(parse_filter_items(filters.user_name))
     task_names = ",".join(parse_filter_items(filters.task_name))
-    embodiedments = ",".join(parse_filter_items(filters.embodiedment))
+    embodiments = ",".join(parse_filter_items(filters.embodiment))
     date_prefixes = ",".join(parse_filter_items(filters.date_prefix))
     data_root = normalize_filter(filters.data_root)
 
@@ -638,8 +634,8 @@ def build_remote_upload_default_config(filters: FilterOptions) -> str:
         defaults["user_names"] = user_names
     if task_names:
         defaults["task_names"] = task_names
-    if embodiedments:
-        defaults["embodiedment"] = embodiedments
+    if embodiments:
+        defaults["embodiment"] = embodiments
     if date_prefixes:
         defaults["date_prefix"] = date_prefixes
     if data_root:
@@ -1057,7 +1053,7 @@ def read_duration_hours(episode_dir: Path) -> float:
     return round_hours(nanoseconds_value / 1_000_000_000 / 3600)
 
 
-def read_embodiedment_tag(episode_dir: Path) -> str:
+def read_embodiment_tag(episode_dir: Path) -> str:
     episode_meta_path = episode_dir / "episode_meta.json"
     if not episode_meta_path.exists():
         return ""
@@ -1071,25 +1067,25 @@ def read_embodiedment_tag(episode_dir: Path) -> str:
     if not isinstance(metas, dict):
         return ""
 
-    embodiedment = metas.get("embodiedment")
-    if not isinstance(embodiedment, list):
+    embodiment = metas.get("embodiment")
+    if not isinstance(embodiment, list):
         return ""
 
     normalized = sorted(
         item.strip().lower()
-        for item in embodiedment
+        for item in embodiment
         if isinstance(item, str) and item.strip()
     )
     return ",".join(normalized)
 
 
-def parse_record_embodiedments(value: str) -> list[str]:
+def parse_record_embodiments(value: str) -> list[str]:
     items = parse_filter_items(value)
     return items or [DEFAULT_EMBODIEDMENT]
 
 
-def resolve_embodiedment(value: str) -> str:
-    return ",".join(parse_record_embodiedments(value))
+def resolve_embodiment(value: str) -> str:
+    return ",".join(parse_record_embodiments(value))
 
 
 def build_episode_record(
@@ -1098,7 +1094,7 @@ def build_episode_record(
     return EpisodeRecord(
         user_name=user_name,
         task_name=task_name,
-        embodiedment=read_embodiedment_tag(episode_dir),
+        embodiment=read_embodiment_tag(episode_dir),
         episode_id=episode_dir.name,
         day=infer_day_from_episode_dir(episode_dir),
         path=str(episode_dir),
@@ -1466,7 +1462,7 @@ def parse_filters(args: Any) -> FilterOptions:
     return FilterOptions(
         user_name=normalize_filter(args.get("user_name")),
         task_name=normalize_filter(args.get("task_name")),
-        embodiedment=normalize_filter(args.get("embodiedment")),
+        embodiment=normalize_filter(args.get("embodiment")),
         date_prefix=normalize_filter(args.get("date_prefix")),
         data_root=normalize_filter(args.get("data_root")),
         refresh=normalize_filter(args.get("refresh")).lower()
@@ -1801,7 +1797,7 @@ def filter_records(
 ) -> list[EpisodeRecord]:
     user_names = set(parse_filter_items(filters.user_name))
     task_names = set(parse_filter_items(filters.task_name))
-    embodiedments = set(parse_filter_items(filters.embodiedment))
+    embodiments = set(parse_filter_items(filters.embodiment))
     date_prefixes = parse_filter_items(filters.date_prefix)
 
     def matched(record: EpisodeRecord) -> bool:
@@ -1809,8 +1805,8 @@ def filter_records(
             return False
         if task_names and record.task_name not in task_names:
             return False
-        if embodiedments and embodiedments.isdisjoint(
-            parse_record_embodiedments(record.embodiedment)
+        if embodiments and embodiments.isdisjoint(
+            parse_record_embodiments(record.embodiment)
         ):
             return False
         episode_time_prefix = extract_episode_time_prefix(record.episode_id)
@@ -1838,8 +1834,8 @@ def build_summary(
     by_user_hours: dict[str, float] = defaultdict(float)
     by_task_total: dict[str, int] = defaultdict(int)
     by_task_hours: dict[str, float] = defaultdict(float)
-    by_embodiedment_total: dict[str, int] = defaultdict(int)
-    by_embodiedment_hours: dict[str, float] = defaultdict(float)
+    by_embodiment_total: dict[str, int] = defaultdict(int)
+    by_embodiment_hours: dict[str, float] = defaultdict(float)
 
     for record in records:
         by_user_task_day[record.user_name][record.task_name][record.day] += 1
@@ -1852,13 +1848,9 @@ def build_summary(
         by_user_hours[record.user_name] += record.duration_hours
         by_task_total[record.task_name] += 1
         by_task_hours[record.task_name] += record.duration_hours
-        for resolved_embodiedment in parse_record_embodiedments(
-            record.embodiedment
-        ):
-            by_embodiedment_total[resolved_embodiedment] += 1
-            by_embodiedment_hours[resolved_embodiedment] += (
-                record.duration_hours
-            )
+        for resolved_embodiment in parse_record_embodiments(record.embodiment):
+            by_embodiment_total[resolved_embodiment] += 1
+            by_embodiment_hours[resolved_embodiment] += record.duration_hours
 
     all_days = sorted(by_day_total.keys())
     users: list[dict[str, Any]] = []
@@ -1913,16 +1905,16 @@ def build_summary(
         task_name: round_hours(hours)
         for task_name, hours in sorted(by_task_hours.items())
     }
-    hours_by_embodiedment = {
-        embodiedment: round_hours(hours)
-        for embodiedment, hours in sorted(by_embodiedment_hours.items())
+    hours_by_embodiment = {
+        embodiment: round_hours(hours)
+        for embodiment, hours in sorted(by_embodiment_hours.items())
     }
     episodes = [
         {
             "episode_id": record.episode_id,
             "user_name": record.user_name,
             "task_name": record.task_name,
-            "embodiedment": resolve_embodiedment(record.embodiedment),
+            "embodiment": resolve_embodiment(record.embodiment),
             "day": record.day,
             "path": record.path,
             "duration_hours": record.duration_hours,
@@ -1954,7 +1946,7 @@ def build_summary(
         "filters": {
             "user_name": "",
             "task_name": "",
-            "embodiedment": "",
+            "embodiment": "",
             "date_prefix": "",
             "data_root": str(base_path),
             "refresh": False,
@@ -1985,11 +1977,11 @@ def build_summary(
                 task_name: format_duration_hours(hours)
                 for task_name, hours in hours_by_task.items()
             },
-            "by_embodiedment": dict(sorted(by_embodiedment_total.items())),
-            "hours_by_embodiedment": hours_by_embodiedment,
-            "duration_text_by_embodiedment": {
-                embodiedment: format_duration_hours(hours)
-                for embodiedment, hours in hours_by_embodiedment.items()
+            "by_embodiment": dict(sorted(by_embodiment_total.items())),
+            "hours_by_embodiment": hours_by_embodiment,
+            "duration_text_by_embodiment": {
+                embodiment: format_duration_hours(hours)
+                for embodiment, hours in hours_by_embodiment.items()
             },
         },
         "users": users,
@@ -2017,7 +2009,7 @@ def build_summary_with_filters(
     summary["filters"] = {
         "user_name": filters.user_name,
         "task_name": filters.task_name,
-        "embodiedment": filters.embodiedment,
+        "embodiment": filters.embodiment,
         "date_prefix": filters.date_prefix,
         "data_root": str(base_path),
         "refresh": filters.refresh,
@@ -2078,7 +2070,7 @@ def build_loading_summary(
         "filters": {
             "user_name": filters.user_name,
             "task_name": filters.task_name,
-            "embodiedment": filters.embodiedment,
+            "embodiment": filters.embodiment,
             "date_prefix": filters.date_prefix,
             "data_root": str(base_path),
             "refresh": filters.refresh,
@@ -2102,9 +2094,9 @@ def build_loading_summary(
             "by_task": {},
             "hours_by_task": {},
             "duration_text_by_task": {},
-            "by_embodiedment": {},
-            "hours_by_embodiedment": {},
-            "duration_text_by_embodiedment": {},
+            "by_embodiment": {},
+            "hours_by_embodiment": {},
+            "duration_text_by_embodiment": {},
         },
         "users": [],
         "episodes": [],
@@ -2289,14 +2281,14 @@ def prepare_submit_job_api():
     filters = FilterOptions(
         user_name=str(filters_payload.get("user_name", "")).strip(),
         task_name=str(filters_payload.get("task_name", "")).strip(),
-        embodiedment=str(filters_payload.get("embodiedment", "")).strip(),
+        embodiment=str(filters_payload.get("embodiment", "")).strip(),
         date_prefix=str(filters_payload.get("date_prefix", "")).strip(),
         data_root=format_base_paths(base_paths),
     )
     if not (
         filters.user_name
         or filters.task_name
-        or filters.embodiedment
+        or filters.embodiment
         or filters.date_prefix
     ):
         abort(400, description="Please search first before submitting jobs")
@@ -2340,7 +2332,7 @@ def get_remote_upload_config_api():
     filters = FilterOptions(
         user_name=normalize_filter(request.args.get("user_name")),
         task_name=normalize_filter(request.args.get("task_name")),
-        embodiedment=normalize_filter(request.args.get("embodiedment")),
+        embodiment=normalize_filter(request.args.get("embodiment")),
         date_prefix=normalize_filter(request.args.get("date_prefix")),
         data_root=normalize_filter(request.args.get("data_root")),
     )
