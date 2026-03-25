@@ -26,20 +26,6 @@ import torch
 
 from robo_orchard_lab.utils import log_basic_config
 
-bash_command_template = (
-    "export CUDA_VISIBLE_DEVICES={gpu_id} \n"
-    "python3 script/eval_policy.py --config holobrain_robotwin_policy/deploy_policy.yml "  # noqa: E501
-    "  --overrides "
-    "  --task_config {task_config} "
-    "  --task_name {task_name} "
-    "  --vlm_ckpt_dir {vlm_ckpt_dir} "
-    "  --urdf_dir {urdf_dir} "
-    "  --model_config {model_config} "
-    "  --model_processor {model_processor} "
-    "  --model_prefix {model_prefix} "
-    "  --test_num {test_num}"
-)
-
 
 def eval_tasks(gpu_id, task_names, args, results=None):
     if_cluster = os.environ.get("CLUSTER") is not None
@@ -53,30 +39,49 @@ def eval_tasks(gpu_id, task_names, args, results=None):
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, "log.txt")
         logger.info(f"Start to eval task[{task_name}], log file: {log_file}")
-        command = bash_command_template.format(
-            gpu_id=gpu_id,
-            task_name=task_name,
-            task_config=args.task_config,
-            vlm_ckpt_dir=args.vlm_ckpt_dir,
-            urdf_dir=args.urdf_dir,
-            model_config=args.model_config,
-            model_processor=args.model_processor,
-            model_prefix=args.model_prefix,
-            test_num=args.test_num,
-        )
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        command = [
+            "python3",
+            "script/eval_policy.py",
+            "--config",
+            "holobrain_robotwin_policy/deploy_policy.yml",
+            "--overrides",
+            "--task_config",
+            args.task_config,
+            "--task_name",
+            task_name,
+            "--vlm_ckpt_dir",
+            args.vlm_ckpt_dir,
+            "--urdf_dir",
+            args.urdf_dir,
+            "--model_config",
+            args.model_config,
+            "--model_processor",
+            args.model_processor,
+            "--model_prefix",
+            args.model_prefix,
+            "--test_num",
+            str(args.test_num),
+        ]
         with open(log_file, "w", encoding="utf-8") as f:
             ret = subprocess.run(
-                command, shell=True, stdout=f, stderr=subprocess.STDOUT
+                command, env=env, stdout=f, stderr=subprocess.STDOUT
             )
         if ret.returncode == 0:
             with open(log_file, "r", encoding="utf-8") as f:
                 output = f.read().strip().split("\n")
             for out in output[::-1]:
                 if "Success rate" in out:
-                    results[task_name] = float(
-                        re.findall(r"\d+\.?\d+%", out)[0][:-1]
-                    )
-                    logger.info(f"{task_name}: {out}")
+                    matches = re.findall(r"\d+\.?\d+%", out)
+                    if matches:
+                        results[task_name] = float(matches[0][:-1])
+                        logger.info(f"{task_name}: {out}")
+                    else:
+                        logger.error(
+                            f"Failed to parse result for task {task_name}"
+                        )
+                        results[task_name] = 0.0
                     break
         else:
             logger.info(
