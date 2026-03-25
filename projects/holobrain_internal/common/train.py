@@ -39,7 +39,7 @@ from robo_orchard_lab.pipeline.hooks import (
 )
 from robo_orchard_lab.utils import log_basic_config
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 
 class MyBatchProcessor(SimpleBatchProcessor):
