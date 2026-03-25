@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import pickle
+import re
 import subprocess
 
 import yaml
@@ -108,6 +109,10 @@ def _build_isaac_command(
     test_num,
     output_dir,
 ):
+    if not re.fullmatch(r"[a-zA-Z0-9_\-]+", task_name):
+        raise ValueError(
+            f"Invalid task_name '{task_name}': only [a-zA-Z0-9_-] allowed"
+        )
     gen_cmd = [
         "python3",
         f"examples/manipulation-app/pick_place/config/gen_dualarm_piper_{task_name}.py",
