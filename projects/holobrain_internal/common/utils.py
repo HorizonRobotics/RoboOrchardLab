@@ -134,7 +134,6 @@ class ActionMetric:
         self.eval_horizons = (
             as_sequence(eval_horizons) if eval_horizons is not None else None
         )
-        self.reset()
         self.end_effector_idx = (
             as_sequence(end_effector_idx)
             if end_effector_idx is not None
