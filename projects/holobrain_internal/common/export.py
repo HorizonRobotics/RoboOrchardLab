@@ -44,7 +44,8 @@ def main(args):
 
     if args.kwargs is not None:
         if os.path.isfile(args.kwargs):
-            kwargs = json.load(open(args.kwargs, "r"))
+            with open(args.kwargs, "r") as f:
+                kwargs = json.load(f)
         else:
             kwargs = json.loads(args.kwargs)
         config.update(kwargs)
