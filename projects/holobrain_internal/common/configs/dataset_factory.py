@@ -15,8 +15,10 @@
 # permissions and limitations under the License.
 
 
+import threading
 from typing import Callable
 
+_REGISTRY_LOCK = threading.Lock()
 REGISTERED = False
 TRAIN_DATASET_BUILD_FUNCS = set()
 VALIDATION_DATASET_BUILD_FUNCS = set()
@@ -25,7 +27,8 @@ PROCESSOR_BUILD_FUNCS = set()
 
 def train_dataset_register():
     def decorator(func: Callable):
-        TRAIN_DATASET_BUILD_FUNCS.add(func)
+        with _REGISTRY_LOCK:
+            TRAIN_DATASET_BUILD_FUNCS.add(func)
         return func
 
     return decorator
@@ -33,7 +36,8 @@ def train_dataset_register():
 
 def validation_dataset_register():
     def decorator(func: Callable):
-        VALIDATION_DATASET_BUILD_FUNCS.add(func)
+        with _REGISTRY_LOCK:
+            VALIDATION_DATASET_BUILD_FUNCS.add(func)
         return func
 
     return decorator
@@ -41,7 +45,8 @@ def validation_dataset_register():
 
 def processor_register():
     def decorator(func: Callable):
-        PROCESSOR_BUILD_FUNCS.add(func)
+        with _REGISTRY_LOCK:
+            PROCESSOR_BUILD_FUNCS.add(func)
         return func
 
     return decorator
@@ -49,24 +54,25 @@ def processor_register():
 
 def apply_dataset_register():
     global REGISTERED
-    if REGISTERED:
-        return
-    import config_agibot_dataset  # noqa: F401
-    import config_agibot_digit_dataset  # noqa: F401
-    import config_agibot_geniesim_dataset  # noqa: F401
-    import config_agilex_dataset  # noqa: F401
-    import config_agilex_ro_dataset  # noqa: F401
-    import config_behavior_dataset  # noqa: F401
-    import config_droid_dataset  # noqa: F401
-    import config_egodex_dataset  # noqa: F401
-    import config_interna1_dataset  # noqa: F401
-    import config_isaac_dataset  # noqa: F401
-    import config_libero_dataset  # noqa: F401
-    import config_rh20t_dataset  # noqa: F401
-    import config_robotwin_dataset  # noqa: F401
-    import config_table30_ro_dataset  # noqa: F401
+    with _REGISTRY_LOCK:
+        if REGISTERED:
+            return
+        import config_agibot_dataset  # noqa: F401
+        import config_agibot_digit_dataset  # noqa: F401
+        import config_agibot_geniesim_dataset  # noqa: F401
+        import config_agilex_dataset  # noqa: F401
+        import config_agilex_ro_dataset  # noqa: F401
+        import config_behavior_dataset  # noqa: F401
+        import config_droid_dataset  # noqa: F401
+        import config_egodex_dataset  # noqa: F401
+        import config_interna1_dataset  # noqa: F401
+        import config_isaac_dataset  # noqa: F401
+        import config_libero_dataset  # noqa: F401
+        import config_rh20t_dataset  # noqa: F401
+        import config_robotwin_dataset  # noqa: F401
+        import config_table30_ro_dataset  # noqa: F401
 
-    REGISTERED = True
+        REGISTERED = True
 
 
 def build_training_dataset(config, lazy_init=False):
