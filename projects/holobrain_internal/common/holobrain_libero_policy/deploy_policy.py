@@ -116,14 +116,21 @@ def download_job_ckpt_processor(
         download_file(url, file_name)
 
 
+# Robot state layout per joint: [gripper(1), x, y, z(3), qw, qx, qy, qz(4)]
+_STATE_DIM = 8
+_JOINT_DIM = 1
+_POS_END = 4  # indices 1:4
+_QUAT_START = 4  # indices 4:8
+
+
 def apply_transform(robot_state, transform):
     device = robot_state.device
     dtype = robot_state.dtype
     original_shape = robot_state.shape
-    state_flat = robot_state.reshape(-1, 8)
-    joint_val = state_flat[:, :1]
-    pos = state_flat[:, 1:4]
-    quat = state_flat[:, 4:]
+    state_flat = robot_state.reshape(-1, _STATE_DIM)
+    joint_val = state_flat[:, :_JOINT_DIM]
+    pos = state_flat[:, _JOINT_DIM:_POS_END]
+    quat = state_flat[:, _QUAT_START:]
     r_mats = quaternion_to_matrix(quat)
     t_mats = torch.eye(4, device=device, dtype=dtype).repeat(
         state_flat.shape[0], 1, 1
