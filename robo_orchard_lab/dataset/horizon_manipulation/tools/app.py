@@ -408,28 +408,23 @@ def build_initial_submit_config(
             cmd[index] = f"user_name={joined_user_names}"
         elif item.startswith("task_name="):
             cmd[index] = f"task_name={joined_task_names}"
+        elif item.startswith("embodiment=") and embodiment:
+            cmd[index] = f"embodiment={embodiment}"
         elif item.startswith("input_path="):
             cmd[index] = f"input_path={input_path}"
-        elif item.startswith("    --input_path "):
-            cmd[index] = f"    --input_path {input_path} \\"
-        elif item.startswith("    --output_path ") and source == "pack":
-            cmd[index] = (
-                f"    --output_path {output_path}"
-                + "/${user_name}-${task_name}-${date_prefix} \\"
-            )
-        elif item.startswith("    --embodiment ") and embodiment:
-            suffix = " \\" if item.endswith(" \\") else ""
-            cmd[index] = f"    --embodiment {embodiment}{suffix}"
+        elif item.startswith("output_path=") and source == "pack":
+            # For 'check', output_path is fixed to /job_data inside the job
+            # container and is intentionally not overridden here.
+            cmd[index] = f"output_path={output_path}"
 
     template["cmd"] = cmd
-    template["job_name"] = "-".join(
-        [
-            f"data-{source}",
-            *selection["user_names"],
-            *selection["task_names"],
-            *selection["date_prefixes"],
-        ]
+    job_name_parts = [f"data-{source}", *selection["user_names"]]
+    if embodiment:
+        job_name_parts.append(embodiment)
+    job_name_parts.extend(
+        [*selection["task_names"], *selection["date_prefixes"]]
     )
+    template["job_name"] = "-".join(job_name_parts)
     template["to_upload"] = [get_robo_orchard_lab_dir()]
     submit_config_patch = load_submit_config_patch()
     return deep_merge_dict(template, submit_config_patch)

@@ -1133,7 +1133,7 @@ def test_prepare_submit_job_creates_initial_config(
     assert data["config"]["to_upload"] == [str(robo_dir)]
     assert (
         data["config"]["job_name"]
-        == "data-check-amy-zoe-pick_box-place_box-2026_03_12-2026_03_13"
+        == "data-check-amy-zoe-piper-pick_box-place_box-2026_03_12-2026_03_13"
     )
     assert "input_path=" + str(tmp_path) in data["config"]["cmd"]
     assert "user_name=amy,zoe" in data["config"]["cmd"]
@@ -1196,7 +1196,8 @@ def test_prepare_submit_job_preserves_user_requested_date_prefix(
     data = response.get_json()
     assert data["selection"]["date_prefixes"] == ["2026_02_24-11"]
     assert (
-        data["config"]["job_name"] == "data-check-zoe-pick_box-2026_02_24-11"
+        data["config"]["job_name"]
+        == "data-check-zoe-piper-pick_box-2026_02_24-11"
     )
     assert "input_path=" + str(tmp_path) in data["config"]["cmd"]
     assert "date_prefix=2026_02_24-11" in data["config"]["cmd"]
