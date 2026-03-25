@@ -26,9 +26,11 @@ PROCESSOR_BUILD_FUNCS = set()
 
 
 def train_dataset_register():
+    # No lock needed: decorators are called during module import, which is
+    # always triggered from within apply_dataset_register while holding
+    # _REGISTRY_LOCK — acquiring it again here would deadlock.
     def decorator(func: Callable):
-        with _REGISTRY_LOCK:
-            TRAIN_DATASET_BUILD_FUNCS.add(func)
+        TRAIN_DATASET_BUILD_FUNCS.add(func)
         return func
 
     return decorator
@@ -36,8 +38,7 @@ def train_dataset_register():
 
 def validation_dataset_register():
     def decorator(func: Callable):
-        with _REGISTRY_LOCK:
-            VALIDATION_DATASET_BUILD_FUNCS.add(func)
+        VALIDATION_DATASET_BUILD_FUNCS.add(func)
         return func
 
     return decorator
@@ -45,8 +46,7 @@ def validation_dataset_register():
 
 def processor_register():
     def decorator(func: Callable):
-        with _REGISTRY_LOCK:
-            PROCESSOR_BUILD_FUNCS.add(func)
+        PROCESSOR_BUILD_FUNCS.add(func)
         return func
 
     return decorator
@@ -54,7 +54,11 @@ def processor_register():
 
 def apply_dataset_register():
     global REGISTERED
+    # Fast path: no lock needed for the first read.
+    if REGISTERED:
+        return
     with _REGISTRY_LOCK:
+        # Second check inside the lock to handle concurrent callers.
         if REGISTERED:
             return
         import config_agibot_dataset  # noqa: F401
