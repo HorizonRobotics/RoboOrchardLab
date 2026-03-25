@@ -729,6 +729,7 @@
         <div class="submit-toolbar">
           <button type="button" onclick="prepareSubmitJob('check')">Submit Checking Job</button>
           <button type="button" onclick="prepareSubmitJob('pack')">Submit Packaging Job</button>
+          <a class="button-secondary" href="/api/export-paths?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiment={{ summary.filters.embodiment | urlencode }}">Export Paths</a>
           <span class="tag" id="selected-episodes-tag">Will submit the current search result: {{ summary.total_episodes }} episodes</span>
         </div>
         {% if summary.pagination.total_pages > 1 %}
@@ -1712,10 +1713,28 @@ ${data.message}` : "",
       }
 
       async function copyEpisodePath(path) {
-        try {
-          await navigator.clipboard.writeText(path);
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(path);
+            showToast("Episode path copied to clipboard");
+            return;
+          } catch (error) {
+            // fall through to legacy fallback
+          }
+        }
+        // Fallback for non-HTTPS (http:// remote server) environments
+        const textarea = document.createElement("textarea");
+        textarea.value = path;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const success = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (success) {
           showToast("Episode path copied to clipboard");
-        } catch (error) {
+        } else {
           showToast("Copy failed. Please check browser clipboard permissions");
         }
       }

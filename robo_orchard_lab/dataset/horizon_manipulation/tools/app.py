@@ -2413,6 +2413,32 @@ def download_episode_zip():
     )
 
 
+@app.get("/api/export-paths")
+def export_episode_paths():
+    filters = parse_filters(request.args)
+    base_paths = resolve_base_paths(filters)
+    records, _ = get_cached_episode_records_for_paths(
+        base_paths, refresh=False
+    )
+    filtered = filter_records(records, filters)
+    if not filtered:
+        abort(404, description="No episodes match the current filters.")
+    # Sort newest first, consistent with the episode list on the main page
+    sorted_records = sorted(
+        filtered,
+        key=lambda r: (r.day, r.user_name, r.task_name, r.episode_id),
+        reverse=True,
+    )
+    paths_text = "\n".join(record.path for record in sorted_records)
+    filename = f"episode_paths_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    return send_file(
+        io.BytesIO(paths_text.encode("utf-8")),
+        mimetype="text/plain",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
 @app.get("/api/download-status")
 def download_episode_status():
     episode_path_raw = request.args.get("episode_path", "").strip()

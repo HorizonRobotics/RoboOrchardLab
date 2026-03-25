@@ -94,9 +94,9 @@ class ArrowDataParse:
                 )
             else:
                 decoded_depth = np.zeros(default_shape, dtype=np.float32)
-            assert (
-                decoded_depth is not None
-            ), f"Failed to decode depth for {feature_name}"
+            assert decoded_depth is not None, (
+                f"Failed to decode depth for {feature_name}"
+            )
             depths.append(decoded_depth / self.depth_scale)
         return {"depths": depths}
 
