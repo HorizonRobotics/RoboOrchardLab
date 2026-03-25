@@ -14,10 +14,16 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import threading
+from typing import Any, cast
+
 import pytest
 import torch
 from robo_orchard_core.utils.config import ClassType
-from torch.utils.data import Dataset
+from torch.utils.data import (
+    Dataset,
+    IterableDataset as TorchIterableDataset,
+)
 
 from robo_orchard_lab.dataset.robot import (
     BatchLoaderConfig,
@@ -27,7 +33,11 @@ from robo_orchard_lab.dataset.robot import (
     IterableWithLenDataset,
     ShuffleConfig,
 )
-from robo_orchard_lab.dataset.robot.dataset_ex import DictIterableDataset
+from robo_orchard_lab.dataset.robot.dataset_ex import (
+    _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE,
+    DictIterableDataset,
+    _create_prefetch_iterator,
+)
 
 
 class ArrayDataset(Dataset):
@@ -39,6 +49,32 @@ class ArrayDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+
+class BatchedArrayDataset(ArrayDataset):
+    def __init__(self, data: list):
+        super().__init__(data)
+        self.getitem_calls: list[int] = []
+        self.getitems_calls: list[list[int]] = []
+
+    def __getitem__(self, idx):
+        self.getitem_calls.append(idx)
+        return super().__getitem__(idx)
+
+    def __getitems__(self, indices: list[int]) -> list:
+        self.getitems_calls.append(list(indices))
+        return [self.data[idx] for idx in indices]
+
+
+class ArrayIterableDataset(TorchIterableDataset):
+    def __init__(self, data: list[int]):
+        self.data = data
+
+    def __iter__(self):
+        yield from self.data
+
+    def __len__(self):
+        return len(self.data)
 
 
 class ArrayDatasetItem(DatasetItem[ArrayDataset]):
@@ -113,6 +149,55 @@ class TestIterableDatasetMixin:
             f"Items from dataloader do not match items from dataset.\n"
             f"Dataloader items: {dataloader_items}\n"
             f"Dataset items: {dataset_items}"
+        )
+
+
+class TestNonIterableDatasetMixinDataLoader:
+    def test_map_dataset_accepts_shuffle_config(self):
+        dataset = ArrayDataset(data=list(range(10)))
+
+        with pytest.warns(UserWarning) as warning_records:
+            dataloader = DataLoader(
+                dataset,
+                batch_size=2,
+                shuffle=ShuffleConfig(shuffle=True, chunk_size=4),
+                num_workers=0,
+            )
+
+        flattened_items: list[int] = []
+        for batch in dataloader:
+            flattened_items.extend(cast(torch.Tensor, batch).tolist())
+
+        assert sorted(flattened_items) == dataset.data
+        assert any(
+            "ShuffleConfig.chunk_size" in str(record.message)
+            for record in warning_records
+        )
+
+    def test_iterable_dataset_accepts_shuffle_config_without_error(self):
+        dataset = ArrayIterableDataset(data=list(range(10)))
+
+        with pytest.warns(UserWarning) as warning_records:
+            dataloader = DataLoader(
+                dataset,
+                batch_size=2,
+                shuffle=ShuffleConfig(shuffle=True, chunk_size=4),
+                num_workers=0,
+            )
+
+        flattened_items: list[int] = []
+        for batch in dataloader:
+            flattened_items.extend(cast(torch.Tensor, batch).tolist())
+
+        assert flattened_items == dataset.data
+        warning_messages = [str(record.message) for record in warning_records]
+        assert any(
+            "ShuffleConfig.chunk_size" in message
+            for message in warning_messages
+        )
+        assert any(
+            "Resetting `shuffle=False`" in message
+            for message in warning_messages
         )
 
 
@@ -219,7 +304,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             need_sort=False,
         )
 
-    def test_unbatched_iterable_len(self, dummy_array_dataset: Dataset):
+    def test_unbatched_iterable_len(self, dummy_array_dataset: ArrayDataset):
         dataset = IterableWithLenDataset(dummy_array_dataset)
 
         dataloader = DataLoader(
@@ -230,7 +315,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
 
         dataloader_items = list(dataloader)
 
-        assert dataloader_items == list(dummy_array_dataset)
+        assert dataloader_items == dummy_array_dataset.data
         assert len(dataloader) == len(dummy_array_dataset)
         assert len(dataloader_items) == len(dataloader)
 
@@ -262,6 +347,45 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
         assert dataloader.dataset.batch_loader_kwargs.drop_last is True
         assert len(list(dataloader)) == len(dataloader)
 
+    def test_use_dataset_side_batching_supports_iterable_with_len(
+        self, dummy_array_dataset: Dataset
+    ):
+        dataset = IterableWithLenDataset(dummy_array_dataset)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            drop_last=False,
+            num_workers=0,
+            use_dataset_side_batching=True,
+        )
+
+        assert dataloader.dataset is not dataset
+        assert dataset.batch_loader_kwargs is None
+        assert isinstance(dataloader.dataset, IterableWithLenDataset)
+        assert dataloader.dataset.batch_loader_kwargs is not None
+        assert dataloader.dataset.batch_loader_kwargs.batch_size == 3
+        assert dataloader.dataset.batch_loader_kwargs.drop_last is False
+        assert len(list(dataloader)) == len(dataloader)
+
+    def test_iterable_with_len_accepts_dataloader_shuffle_true(
+        self, dummy_array_dataset: Dataset
+    ):
+        dataset = IterableWithLenDataset(dummy_array_dataset, shuffle=False)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            shuffle=True,
+            num_workers=0,
+        )
+
+        assert isinstance(dataloader.dataset, IterableWithLenDataset)
+        assert dataloader.dataset is not dataset
+        assert dataset._shuffle_config.shuffle is False
+        assert dataloader.dataset._shuffle_config.shuffle is True
+        assert len(list(dataloader)) == len(dataloader)
+
     def test_iterable_with_len_self_batched_aligns_shuffle_config(
         self, dummy_array_dataset: Dataset
     ):
@@ -291,6 +415,31 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
         assert dataloader.dataset._shuffle_config.chunk_size == 4
         assert dataloader.dataset._shuffle_config.prefetch_factor == 3
         assert len(list(dataloader)) == len(dataloader)
+
+    def test_iterable_with_len_uses_virtual_batch_getitems(self):
+        dataset = BatchedArrayDataset(data=list(range(10)))
+
+        iterable_dataset = IterableWithLenDataset(dataset)
+
+        assert list(iterable_dataset) == list(range(10))
+        assert dataset.getitem_calls == []
+        assert dataset.getitems_calls
+        assert sum(len(batch) for batch in dataset.getitems_calls) == len(
+            dataset
+        )
+        assert all(
+            len(batch) <= _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE
+            for batch in dataset.getitems_calls
+        )
+
+    def test_iterable_with_len_shard_uses_accelerate_signature(
+        self, dummy_array_dataset: ArrayDataset
+    ):
+        dataset = IterableWithLenDataset(dummy_array_dataset)
+
+        sharded_dataset = dataset.shard(num_shards=3, index=1)
+
+        assert list(sharded_dataset) == [4, 5, 6]
 
 
 class TestDictIterableDataset(TestIterableDatasetMixin):
@@ -343,7 +492,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             need_sort=False,
         )
 
-    def test_same_dataset_in_batch_option(
+    def test_use_dataset_side_batching_option(
         self, dummy_dataset_items: list[DatasetItem]
     ):
         dataset = DictIterableDataset(dummy_dataset_items)
@@ -353,7 +502,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=3,
             num_workers=0,
             drop_last=False,
-            same_dataset_in_batch=True,
+            use_dataset_side_batching=True,
         )
 
         assert isinstance(dataloader.dataset, DictIterableDataset)
@@ -376,7 +525,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
                 item >= 100 for item in batch
             )
 
-    def test_same_dataset_in_batch_aligns_batch_loader_kwargs(
+    def test_use_dataset_side_batching_aligns_batch_loader_kwargs(
         self, dummy_dataset_items: list[DatasetItem]
     ):
         dataset = DictIterableDataset(dummy_dataset_items)
@@ -386,7 +535,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=4,
             num_workers=0,
             drop_last=True,
-            same_dataset_in_batch=True,
+            use_dataset_side_batching=True,
         )
 
         assert dataset.batch_loader_kwargs is None
@@ -410,7 +559,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
                 item >= 100 for item in batch
             )
 
-    def test_same_dataset_in_batch_accepts_shuffle_config(
+    def test_use_dataset_side_batching_accepts_shuffle_config(
         self, dummy_dataset_items: list[DatasetItem]
     ):
         dataset = DictIterableDataset(
@@ -426,7 +575,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             dataset,
             batch_size=3,
             num_workers=0,
-            same_dataset_in_batch=True,
+            use_dataset_side_batching=True,
             shuffle=ShuffleConfig(
                 shuffle=True,
                 chunk_size=3,
@@ -455,6 +604,24 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             assert all(item < 100 for item in batch) or all(
                 item >= 100 for item in batch
             )
+
+    def test_dict_iterable_accepts_dataloader_shuffle_true(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(dummy_dataset_items, shuffle=False)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            shuffle=True,
+            num_workers=0,
+        )
+
+        assert isinstance(dataloader.dataset, DictIterableDataset)
+        assert dataloader.dataset is not dataset
+        assert dataset._shuffle.shuffle is False
+        assert dataloader.dataset._shuffle.shuffle is True
+        assert len(list(dataloader)) == len(dataloader)
 
     @pytest.mark.parametrize(
         "batch_size, num_workers, drop_last",
@@ -543,3 +710,176 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert dataloader.dataset.batch_loader_kwargs.batch_size == 3
         assert dataloader.dataset.batch_loader_kwargs.drop_last is True
         assert len(list(dataloader)) == len(dataloader)
+
+    def test_dataset_item_shard_uses_accelerate_signature(self):
+        item = ArrayDatasetItem(data=list(range(10)))
+
+        sharded_item = item.shard(num_shards=3, index=1)
+
+        assert sharded_item.num_shards == 3
+        assert sharded_item.shard_id == 1
+
+    def test_dict_iterable_shard_uses_accelerate_signature(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(dummy_dataset_items)
+
+        sharded_dataset = dataset.shard(num_shards=2, index=1)
+
+        assert isinstance(sharded_dataset, DictIterableDataset)
+        assert len(sharded_dataset.dataset_items) == len(dataset.dataset_items)
+        assert [item.shard_id for item in sharded_dataset.dataset_items] == [
+            1,
+            1,
+        ]
+        assert [item.num_shards for item in sharded_dataset.dataset_items] == [
+            2,
+            2,
+        ]
+
+
+class TestCreatePrefetchIterator:
+    def _count_prefetch_threads(self) -> int:
+        return sum(
+            thread.name == "dataset-prefetch-producer"
+            for thread in threading.enumerate()
+        )
+
+    def test_waits_for_full_prefetch_window_before_shuffle(self):
+        # When shuffling is enabled, the iterator should wait for a full
+        # prefetch window before yielding any item so that the shuffle has a
+        # meaningful sample pool.
+        allow_second_item = threading.Event()
+        first_item_ready = threading.Event()
+        yielded_items = []
+
+        def blocking_iter():
+            yield 0
+            if not allow_second_item.wait(timeout=1):
+                raise TimeoutError("Timed out waiting for the second item.")
+            yield 1
+
+        generator = torch.Generator()
+        generator.manual_seed(0)
+        prefetch_iter = _create_prefetch_iterator(
+            iter(blocking_iter()),
+            prefetch_size=2,
+            shuffle=True,
+            generator=generator,
+        )
+
+        def consume_first_item():
+            yielded_items.append(next(prefetch_iter))
+            first_item_ready.set()
+
+        consumer_thread = threading.Thread(target=consume_first_item)
+        consumer_thread.start()
+
+        # The consumer must still be blocked because only one sample is ready
+        # and `prefetch_size=2` has not been satisfied yet.
+        assert not first_item_ready.wait(timeout=0.1)
+
+        # Once the second sample arrives, the first shuffled item can be
+        # yielded and the remaining item should still be preserved.
+        allow_second_item.set()
+        assert first_item_ready.wait(timeout=1)
+        assert yielded_items[0] in {0, 1}
+
+        consumer_thread.join(timeout=1)
+        remaining_items = list(prefetch_iter)
+        assert sorted(yielded_items + remaining_items) == [0, 1]
+
+    def test_prefetches_next_window_while_consuming_current_window(self):
+        # After the first window is handed to the consumer, the producer should
+        # immediately start filling the next window instead of waiting for the
+        # current one to be fully drained.
+        attempted_refill = threading.Event()
+        allow_tail_items = threading.Event()
+
+        def blocking_iter():
+            yield 0
+            yield 1
+            attempted_refill.set()
+            if not allow_tail_items.wait(timeout=1):
+                raise TimeoutError("Timed out waiting for tail items.")
+            yield 2
+            yield 3
+
+        prefetch_iter = _create_prefetch_iterator(
+            iter(blocking_iter()),
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert next(prefetch_iter) == 0
+        # Reaching this event means the producer has already advanced to the
+        # next refill stage while the current window is still being consumed.
+        assert attempted_refill.wait(timeout=1)
+
+        allow_tail_items.set()
+        remaining_items = list(prefetch_iter)
+        assert remaining_items == [1, 2, 3]
+
+    def test_close_stops_prefetch_thread_waiting_on_full_queue(self):
+        # Closing the generator early should notify the producer and let the
+        # background thread exit instead of remaining blocked on a full queue.
+        allow_refill = threading.Event()
+
+        def blocking_iter():
+            yield 0
+            yield 1
+            if not allow_refill.wait(timeout=1):
+                raise TimeoutError("Timed out waiting for refill release.")
+            yield 2
+
+        baseline_threads = self._count_prefetch_threads()
+        prefetch_iter = _create_prefetch_iterator(
+            iter(blocking_iter()),
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert next(prefetch_iter) == 0
+        cast(Any, prefetch_iter).close()
+
+        # Release the upstream iterator and wait briefly for the prefetch
+        # thread count to return to its baseline.
+        allow_refill.set()
+        for _ in range(20):
+            if self._count_prefetch_threads() == baseline_threads:
+                break
+            threading.Event().wait(0.05)
+
+        assert self._count_prefetch_threads() == baseline_threads
+
+    def test_raises_producer_error_without_draining_ready_queue(self):
+        # If the producer fails after the current window has been handed off,
+        # the consumer should observe that failure on the next pull instead of
+        # silently draining the rest of the ready queue first.
+        fail_now = threading.Event()
+        failure_branch_reached = threading.Event()
+
+        def failing_iter():
+            yield 0
+            yield 1
+            if not fail_now.wait(timeout=1):
+                raise TimeoutError("Timed out waiting to trigger failure.")
+            failure_branch_reached.set()
+            raise RuntimeError("producer failed")
+
+        prefetch_iter = _create_prefetch_iterator(
+            iter(failing_iter()),
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert next(prefetch_iter) == 0
+        fail_now.set()
+        # Wait until the producer has actually reached the failing branch so
+        # the next `next()` call deterministically checks error propagation.
+        assert failure_branch_reached.wait(timeout=1)
+        with pytest.raises(RuntimeError, match="producer failed"):
+            next(prefetch_iter)

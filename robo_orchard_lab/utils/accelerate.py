@@ -17,10 +17,32 @@
 import warnings
 
 from accelerate import Accelerator
-from accelerate.data_loader import DataLoaderDispatcher
+from accelerate.data_loader import (
+    DataLoaderDispatcher,
+    DataLoaderShard,
+    IterableDatasetShard,
+)
 from torch.utils.data import DataLoader
 
 __all__ = ["prepare_data_loader"]
+
+_DISPATCHER_SLOW_PATH_WARNING = (
+    "The prepared dataloader fell back to DataLoaderDispatcher. "
+    "This dispatcher-based path is very inefficient for "
+    "IterableDatasetMixin in multi-process training. To avoid this "
+    "slow path, keep `dispatch_batches=False` and avoid "
+    "`put_on_device=True` in the accelerate prepare path for "
+    "iterable datasets."
+)
+
+_ITERABLE_SHARD_SLOW_PATH_WARNING = (
+    "The prepared dataloader fell back to accelerate "
+    "IterableDatasetShard. This shard wrapper is very inefficient "
+    "for IterableDatasetMixin. To avoid this slow path, ensure the "
+    "dataset exposes an `n_shards` value larger than the current "
+    "number of processes so accelerate can use dataset-native "
+    "sharding."
+)
 
 
 def _warn_and_reset_dataloader_config(
@@ -40,6 +62,27 @@ def _warn_and_reset_dataloader_config(
         UserWarning,
     )
     setattr(dataloader_config, field_name, expected_value)
+
+
+def _warn_if_prepare_falls_back_to_slow_path(
+    data_loader: object,
+) -> None:
+    if isinstance(data_loader, DataLoaderDispatcher):
+        warnings.warn(_DISPATCHER_SLOW_PATH_WARNING, UserWarning)
+        return
+
+    if not isinstance(data_loader, DataLoaderShard):
+        return
+
+    base_dataloader = getattr(data_loader, "base_dataloader", None)
+    if base_dataloader is None:
+        return
+
+    if isinstance(
+        getattr(base_dataloader, "dataset", None),
+        IterableDatasetShard,
+    ):
+        warnings.warn(_ITERABLE_SHARD_SLOW_PATH_WARNING, UserWarning)
 
 
 def prepare_data_loader(
@@ -104,16 +147,9 @@ def prepare_data_loader(
     ret = accelerator.prepare_data_loader(data_loader, **kwargs)
 
     if (
-        isinstance(ret, DataLoaderDispatcher)
-        and isinstance(dataset, IterableDatasetMixin)
+        isinstance(dataset, IterableDatasetMixin)
         and accelerator.num_processes > 1
     ):
-        warnings.warn(
-            "The prepared dataloader is a DataLoaderDispatcher, which may "
-            "have performance issues when used with an IterableDatasetMixin "
-            "and multi-process training. Please set dataloader_config "
-            "properly to get better performance. ",
-            UserWarning,
-        )
+        _warn_if_prepare_falls_back_to_slow_path(ret)
 
     return ret
