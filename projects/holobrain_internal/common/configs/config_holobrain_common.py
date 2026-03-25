@@ -19,7 +19,7 @@ import os as _os
 
 _CKPT_BASE = _os.environ.get(
     "HOLOBRAIN_CKPT_DIR",
-    _os.path.join(_os.path.dirname(__file__), "../../ckpt"),
+    _os.path.join(_os.path.dirname(__file__), "../ckpt"),
 )
 
 config = dict(
