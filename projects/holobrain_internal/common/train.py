@@ -79,9 +79,13 @@ def main(args, accelerator):
 
     if args.kwargs is not None:
         if os.path.isfile(args.kwargs):
-            kwargs = json.load(open(args.kwargs, "r"))
+            with open(args.kwargs, "r") as f:
+                kwargs = json.load(f)
         else:
             kwargs = json.loads(args.kwargs)
+        unknown_keys = set(kwargs.keys()) - set(config.keys())
+        if unknown_keys:
+            raise ValueError(f"Unknown config keys in kwargs: {unknown_keys}")
         config.update(kwargs)
 
     if accelerator.is_main_process:
