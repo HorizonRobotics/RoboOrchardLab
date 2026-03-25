@@ -24,7 +24,7 @@ from accelerate.data_loader import (
 )
 from torch.utils.data import DataLoader
 
-__all__ = ["prepare_data_loader"]
+__all__ = ["configure_data_loader_for_accelerate", "prepare_data_loader"]
 
 _DISPATCHER_SLOW_PATH_WARNING = (
     "The prepared dataloader fell back to DataLoaderDispatcher. "
@@ -85,6 +85,80 @@ def _warn_if_prepare_falls_back_to_slow_path(
         warnings.warn(_ITERABLE_SHARD_SLOW_PATH_WARNING, UserWarning)
 
 
+def configure_data_loader_for_accelerate(
+    accelerator: Accelerator,
+    data_loader: DataLoader,
+) -> bool:
+    """Normalize dataloader settings before calling `Accelerator.prepare`.
+
+    Recommended usage:
+        When the dataloader should be prepared together with model,
+        optimizer, and lr_scheduler, call this helper first, then call
+        `accelerator.prepare(...)` exactly once on all objects.
+
+    Pattern:
+        `configure_data_loader_for_accelerate(accelerator, dataloader)`
+        `dataloader, model, optimizer, scheduler = accelerator.prepare(`
+        `    dataloader, model, optimizer, scheduler`
+        `)`
+
+    Returns:
+        bool: Whether the prepared dataloader should be checked for
+            IterableDataset slow-path warnings.
+    """
+
+    from robo_orchard_lab.dataset.robot.dataset_ex import IterableDatasetMixin
+
+    dataset = data_loader.dataset
+    if not (
+        isinstance(dataset, IterableDatasetMixin)
+        and accelerator.num_processes > 1
+    ):
+        return False
+
+    if dataset.shard_kwargs.shard_strategy is None:
+        warnings.warn(
+            "The dataset is an iterable dataset and the shard strategy "
+            "is not set for multi-process training. This may lead to "
+            "unbalanced data loading and potential system hang. "
+            "Reset the shard strategy to 'pad_last'. ",
+            UserWarning,
+        )
+        dataset.shard_kwargs.shard_strategy = "pad_last"
+    _warn_and_reset_dataloader_config(
+        dataloader_config=accelerator.dataloader_config,
+        field_name="dispatch_batches",
+        expected_value=False,
+        warning_message=(
+            "Using IterableDatasetMixin with multi-process training and "
+            "dispatch_batches != False will lead to inefficient data "
+            "loading."
+        ),
+    )
+    _warn_and_reset_dataloader_config(
+        dataloader_config=accelerator.dataloader_config,
+        field_name="even_batches",
+        expected_value=False,
+        warning_message=(
+            "even_batches in accelerator dataloader config is not "
+            "supported for IterableDataset. Set drop_last in the "
+            "dataloader instead if you need to drop the last incomplete "
+            "batch."
+        ),
+    )
+    _warn_and_reset_dataloader_config(
+        dataloader_config=accelerator.dataloader_config,
+        field_name="split_batches",
+        expected_value=False,
+        warning_message=(
+            "Using IterableDatasetMixin with multi-process training and "
+            "split_batches != False will lead to inefficient data "
+            "loading."
+        ),
+    )
+    return True
+
+
 def prepare_data_loader(
     accelerator: Accelerator,
     data_loader: DataLoader,
@@ -95,61 +169,36 @@ def prepare_data_loader(
     This function is a wrapper around accelerator.prepare_data_loader to handle
     the case when the dataset is `IterableDatasetMixin`.
 
+    Warning:
+        This function already calls `accelerator.prepare_data_loader()`.
+        Do not pass the returned dataloader to `accelerator.prepare(...)`
+        again, or it may be wrapped and sharded a second time.
+
+        If the dataloader must be prepared together with model, optimizer,
+        and lr_scheduler, call `configure_data_loader_for_accelerate(...)`
+        first, then call `accelerator.prepare(...)` once on all objects.
+
+    Recommended usage:
+        Use this helper only when the dataloader must be prepared on its own.
+
+    Pattern:
+        `dataloader = prepare_data_loader(accelerator, dataloader)`
+
+    Avoid:
+        `dataloader = prepare_data_loader(accelerator, dataloader)`
+        `dataloader, model, optimizer, scheduler = accelerator.prepare(`
+        `    dataloader, model, optimizer, scheduler`
+        `)`
+
     """
 
-    from robo_orchard_lab.dataset.robot.dataset_ex import IterableDatasetMixin
-
-    dataset = data_loader.dataset
-    if (
-        isinstance(dataset, IterableDatasetMixin)
-        and accelerator.num_processes > 1
-    ):
-        if dataset.shard_kwargs.shard_strategy is None:
-            warnings.warn(
-                "The dataset is an iterable dataset and the shard strategy "
-                "is not set for multi-process training. This may lead to "
-                "unbalanced data loading and potential system hang. "
-                "Reset the shard strategy to 'pad_last'. ",
-                UserWarning,
-            )
-            dataset.shard_kwargs.shard_strategy = "pad_last"
-        _warn_and_reset_dataloader_config(
-            dataloader_config=accelerator.dataloader_config,
-            field_name="dispatch_batches",
-            expected_value=False,
-            warning_message=(
-                "Using IterableDatasetMixin with multi-process training and "
-                "dispatch_batches != False will lead to inefficient data "
-                "loading."
-            ),
-        )
-        _warn_and_reset_dataloader_config(
-            dataloader_config=accelerator.dataloader_config,
-            field_name="even_batches",
-            expected_value=False,
-            warning_message=(
-                "even_batches in accelerator dataloader config is not "
-                "supported for IterableDataset. Set drop_last in the "
-                "dataloader instead if you need to drop the last incomplete "
-                "batch."
-            ),
-        )
-        _warn_and_reset_dataloader_config(
-            dataloader_config=accelerator.dataloader_config,
-            field_name="split_batches",
-            expected_value=False,
-            warning_message=(
-                "Using IterableDatasetMixin with multi-process training and "
-                "split_batches != False will lead to inefficient data "
-                "loading."
-            ),
-        )
+    should_check_slow_path = configure_data_loader_for_accelerate(
+        accelerator=accelerator,
+        data_loader=data_loader,
+    )
     ret = accelerator.prepare_data_loader(data_loader, **kwargs)
 
-    if (
-        isinstance(dataset, IterableDatasetMixin)
-        and accelerator.num_processes > 1
-    ):
+    if should_check_slow_path:
         _warn_if_prepare_falls_back_to_slow_path(ret)
 
     return ret

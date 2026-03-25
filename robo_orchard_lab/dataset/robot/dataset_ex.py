@@ -1233,6 +1233,28 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             shard_kwargs=self.shard_kwargs,
         )
 
+    def __repr__(self) -> str:
+        """Return a safe summary repr for notebook and console display.
+
+        The runtime class also inherits from Hugging Face's
+        ``IterableDataset`` for compatibility with downstream integrations.
+        That base class expects internal attributes such as ``_info`` and
+        ``_ex_iterable`` to exist when building its repr, which this custom
+        iterable does not initialize. Defining a local repr keeps interactive
+        display and debugging safe without changing the dataset's iteration
+        behavior.
+
+        Returns:
+            str: Concise summary of the iterable dataset configuration.
+        """
+        return (
+            f"{self.__class__.__name__}("
+            f"dataset_items={len(self.dataset_items)}, "
+            f"shuffle={self._shuffle.shuffle}, "
+            f"batch_loader_kwargs={self.batch_loader_kwargs!r}, "
+            f"max_dataset_concurrency={self._max_dataset_concurrency})"
+        )
+
     @property
     def total_dataset_length(self) -> int:
         if self._total_dataset_length is None:

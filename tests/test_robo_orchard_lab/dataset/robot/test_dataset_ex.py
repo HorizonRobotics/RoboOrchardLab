@@ -492,6 +492,16 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             need_sort=False,
         )
 
+    def test_repr_does_not_require_hf_internal_info(
+        self, dummy_dataset_items: list[DatasetItem]
+    ):
+        dataset = DictIterableDataset(dummy_dataset_items)
+
+        repr_text = repr(dataset)
+
+        assert "DictIterableDataset(" in repr_text
+        assert "dataset_items=2" in repr_text
+
     def test_use_dataset_side_batching_option(
         self, dummy_dataset_items: list[DatasetItem]
     ):

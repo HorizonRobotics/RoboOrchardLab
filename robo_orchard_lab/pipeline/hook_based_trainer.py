@@ -37,7 +37,10 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
 )
 from robo_orchard_lab.pipeline.hooks.optimizer import OptimizerHookConfig
 from robo_orchard_lab.pipeline.hooks.validation import ValidationHookConfig
-from robo_orchard_lab.utils.accelerate import prepare_data_loader
+from robo_orchard_lab.utils.accelerate import (
+    _warn_if_prepare_falls_back_to_slow_path,
+    configure_data_loader_for_accelerate,
+)
 from robo_orchard_lab.utils.huggingface import (
     AcceleratorState,
     accelerator_load_state,
@@ -284,18 +287,21 @@ class HookBasedTrainer:
             model.accelerate_model_id = len(accelerator._models)
             model.accelerator_register_all_hooks(accelerator)
 
-        # wrap prepare dataloader with accelerator.prepare_data_loader
-        # to handle IterableDataset with multiple processes.
+        # Normalize iterable-dataset settings before a single
+        # accelerator.prepare(...) call across all training objects.
+        should_check_slow_path = configure_data_loader_for_accelerate(
+            accelerator=accelerator, data_loader=dataloader
+        )
         self.dataloader, self.model, self.optimizer, self.lr_scheduler = (
             accelerator.prepare(
-                prepare_data_loader(
-                    accelerator=accelerator, data_loader=dataloader
-                ),
+                dataloader,
                 model,
                 optimizer,
                 lr_scheduler,
             )
         )
+        if should_check_slow_path:
+            _warn_if_prepare_falls_back_to_slow_path(self.dataloader)
 
         self.dataloader: DataLoader = self.dataloader
         self.model: torch.nn.Module = self.model

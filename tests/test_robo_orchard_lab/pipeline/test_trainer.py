@@ -14,25 +14,35 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-
 from dataclasses import dataclass
 from typing import Optional
 
 import pytest
 import torch
 from accelerate import Accelerator
+from accelerate.data_loader import DataLoaderShard
+from accelerate.utils import DataLoaderConfiguration
+from robo_orchard_core.utils.config import ClassType
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchmetrics import Metric
 
-from robo_orchard_lab.pipeline import SimpleTrainer
+from robo_orchard_lab.dataset.robot import (
+    DatasetItem,
+    DictIterableDataset,
+)
+from robo_orchard_lab.dataset.robot.dataset_ex import (
+    DataLoader as RODataLoader,
+)
 from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
+from robo_orchard_lab.pipeline.hook_based_trainer import HookBasedTrainer
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
     PipelineHookArgs,
     PipelineHooks,
 )
+from robo_orchard_lab.pipeline.trainer import SimpleTrainer
 
 
 @dataclass
@@ -201,6 +211,30 @@ class TensorDataset(torch.utils.data.Dataset):
         return self.data[idx]
 
 
+class ArrayDataset(torch.utils.data.Dataset):
+    def __init__(self, data: list[int]):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        value = self.data[idx]
+        return torch.tensor([value, value], dtype=torch.float32)
+
+
+class ArrayDatasetItem(DatasetItem[ArrayDataset]):
+    class_type: ClassType[ArrayDataset] = ArrayDataset
+
+    data: list[int]
+
+    def get_dataset_row_num(self) -> int:
+        return len(self.data)
+
+    def _create_dataset(self) -> ArrayDataset:
+        return ArrayDataset(self.data)
+
+
 # the fixture scope should be function, not session!
 @pytest.fixture(scope="function")
 def dummy_trainer():
@@ -234,6 +268,52 @@ def test_trainer_initialization(dummy_trainer):
     """Test trainer initialization."""
     assert dummy_trainer.max_epoch == 1
     # assert dummy_trainer.lr_scheduler_step_at == "step"
+
+
+def test_hook_based_trainer_prepares_iterable_dataloader_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    accelerator = Accelerator(
+        dataloader_config=DataLoaderConfiguration(
+            use_seedable_sampler=True,
+            dispatch_batches=False,
+            split_batches=False,
+            even_batches=False,
+        ),
+    )
+    monkeypatch.setattr(accelerator.state, "num_processes", 4)
+    monkeypatch.setattr(accelerator.state, "process_index", 0)
+    monkeypatch.setattr(accelerator.state, "local_process_index", 0)
+
+    dataset = DictIterableDataset(
+        [ArrayDatasetItem(data=list(range(32)))],
+    )
+    dataloader = RODataLoader(
+        dataset=dataset,
+        batch_size=4,
+        num_workers=0,
+    )
+    model = SimpleModel()
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+
+    trainer = HookBasedTrainer(
+        model=model,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        max_epoch=1,
+    )
+
+    assert isinstance(trainer.dataloader, DataLoaderShard)
+    base_dataset = trainer.dataloader.base_dataloader.dataset
+    assert isinstance(base_dataset, DictIterableDataset)
+    assert base_dataset.shard_kwargs.shard_strategy == "pad_last"
+    assert base_dataset.dataset_items[0].num_shards == 4
+    assert base_dataset.dataset_items[0].shard_id == 0
+    assert base_dataset.total_iterator_length == 8
 
 
 def test_training_loop(dummy_trainer: SimpleTrainer):
