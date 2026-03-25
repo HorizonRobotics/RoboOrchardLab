@@ -20,30 +20,12 @@ import logging
 import multiprocessing
 import os
 import subprocess
-import sys
 from datetime import datetime
 
 import torch
 from libero.libero import benchmark
 
 from robo_orchard_lab.utils import log_basic_config
-
-bash_command_template = (
-    "export CUDA_VISIBLE_DEVICES={gpu_id} && "
-    "python3 eval_policy.py --config holobrain_libero_policy/deploy_policy.yml"
-    "  --task_id {task_id} "
-    "  --output_dir {output_dir} "
-    "  --task_suite {task_suite} "
-    "  --num_trials_per_task {num_trials_per_task} "
-    "  --num_steps_wait {num_steps_wait} "
-    "  --save_video {save_video} "
-    "  --overrides "
-    "  --model_config {model_config} "
-    "  --model_prefix {model_prefix} "
-    "  --vlm_ckpt_dir {vlm_ckpt_dir} "
-    "  --urdf_dir {urdf_dir} "
-    "  --model_processor {model_processor} "
-)
 
 
 def eval_tasks(gpu_id, tasks, args, results=None):
@@ -60,23 +42,40 @@ def eval_tasks(gpu_id, tasks, args, results=None):
         logger.info(
             f"Start to eval {suite_name} task_{task_id}, log file: {log_file}"
         )
-        command = bash_command_template.format(
-            gpu_id=gpu_id,
-            task_id=task_id,
-            output_dir=log_dir,
-            task_suite=suite_name,
-            num_trials_per_task=args.num_trials_per_task,
-            num_steps_wait=args.num_steps_wait,
-            save_video=args.save_video,
-            model_config=args.model_config,
-            model_prefix=args.model_prefix,
-            vlm_ckpt_dir=args.vlm_ckpt_dir,
-            urdf_dir=args.urdf_dir,
-            model_processor=args.model_processor,
-        )
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        command = [
+            "python3",
+            "eval_policy.py",
+            "--config",
+            "holobrain_libero_policy/deploy_policy.yml",
+            "--task_id",
+            str(task_id),
+            "--output_dir",
+            log_dir,
+            "--task_suite",
+            suite_name,
+            "--num_trials_per_task",
+            str(args.num_trials_per_task),
+            "--num_steps_wait",
+            str(args.num_steps_wait),
+            "--save_video",
+            str(args.save_video),
+            "--overrides",
+            "--model_config",
+            args.model_config,
+            "--model_prefix",
+            args.model_prefix,
+            "--vlm_ckpt_dir",
+            args.vlm_ckpt_dir,
+            "--urdf_dir",
+            args.urdf_dir,
+            "--model_processor",
+            args.model_processor,
+        ]
         with open(log_file, "w", encoding="utf-8") as f:
             ret = subprocess.run(
-                command, shell=True, stdout=f, stderr=subprocess.STDOUT
+                command, env=env, stdout=f, stderr=subprocess.STDOUT
             )
         if ret.returncode == 0:
             json_result_file = os.path.join(log_dir, "results.json")
@@ -139,8 +138,7 @@ if __name__ == "__main__":
 
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
-        logger.error("No GPUs found! Please check CUDA availability.")
-        sys.exit(1)
+        raise RuntimeError("No GPUs found! Please check CUDA availability.")
 
     logger.info(f"Found {num_gpus} GPUs. Distributing {num_tasks} tasks...")
 
