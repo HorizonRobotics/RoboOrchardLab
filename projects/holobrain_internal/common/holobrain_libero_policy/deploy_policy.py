@@ -175,7 +175,7 @@ class HoloBrainPolicy:
 
         self.model = ModelMixin.load_model(config, load_impl="native")
         self.model.eval()
-        self.model.requires_grad_()
+        self.model.requires_grad_(False)
 
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
