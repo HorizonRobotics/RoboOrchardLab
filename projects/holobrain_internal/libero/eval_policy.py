@@ -222,8 +222,8 @@ def main(args, config):
     task_suite = benchmark_dict[task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
     task_id = args.task_id
-    assert task_id < num_tasks_in_suite, (
-        f"task_id {task_id} exceeds task number {num_tasks_in_suite}"
+    assert 0 <= task_id < num_tasks_in_suite, (
+        f"task_id {task_id} is out of range [0, {num_tasks_in_suite})"
     )
     logger.info(f"Task suite: {task_suite_name}, task_id: {task_id}")
 
