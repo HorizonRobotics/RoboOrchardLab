@@ -96,22 +96,51 @@ def get_task_config(multi_task_config, task_name):
     return merged_config
 
 
-bash_command_template = (
-    "python3 examples/manipulation-app/pick_place/config/gen_dualarm_piper_{task_name}.py "  # noqa: E501
-    "  --task_config {task_config} && "
-    "python3 examples/manipulation-app/pick_place/scripts/eval_policy_sem.py "  # noqa: E501
-    "  --model_config {model_config} "
-    "  --model_processor {model_processor} "
-    "  --model_prefix {model_prefix}"
-    "  --vlm_ckpt_dir {vlm_ckpt_dir}"
-    "  --urdf_dir {urdf_dir}"
-    "  --task_name {task_name}"
-    "  --seed {seed}"
-    "  --rollouts {test_num}"
-    "  --output_dir {output_dir}"
-    "  --task_config {task_config} "
-    "  --maximum_step 1000"  # TODO, make it configurable
-)
+def _build_isaac_command(
+    task_name,
+    task_config,
+    model_config,
+    model_processor,
+    model_prefix,
+    vlm_ckpt_dir,
+    urdf_dir,
+    seed,
+    test_num,
+    output_dir,
+):
+    gen_cmd = [
+        "python3",
+        f"examples/manipulation-app/pick_place/config/gen_dualarm_piper_{task_name}.py",
+        "--task_config",
+        task_config,
+    ]
+    eval_cmd = [
+        "python3",
+        "examples/manipulation-app/pick_place/scripts/eval_policy_sem.py",
+        "--model_config",
+        model_config,
+        "--model_processor",
+        model_processor,
+        "--model_prefix",
+        model_prefix,
+        "--vlm_ckpt_dir",
+        vlm_ckpt_dir,
+        "--urdf_dir",
+        urdf_dir,
+        "--task_name",
+        task_name,
+        "--seed",
+        str(seed),
+        "--rollouts",
+        str(test_num),
+        "--output_dir",
+        output_dir,
+        "--task_config",
+        task_config,
+        "--maximum_step",
+        "1000",
+    ]
+    return gen_cmd, eval_cmd
 
 
 def log_task_table(all_task_data):
@@ -217,29 +246,24 @@ if __name__ == "__main__":
             f"Generated temp config for {task_name}: {task_config_path}"
         )
 
-        command = [
-            "bash",
-            "-c",
-            (
-                bash_command_template.format(
-                    gpu_id=gpu_id,
-                    task_name=task_name,
-                    vlm_ckpt_dir=args.vlm_ckpt_dir,
-                    urdf_dir=args.urdf_dir,
-                    model_config=args.model_config,
-                    model_processor=args.model_processor,
-                    model_prefix=args.model_prefix,
-                    test_num=args.test_num,
-                    seed=args.seed,
-                    output_dir=log_dir,
-                    task_config=task_config_path,
-                )
-            ),
-        ]
-        p = subprocess.Popen(
-            command,
-            env=env,
+        gen_cmd, eval_cmd = _build_isaac_command(
+            task_name=task_name,
+            task_config=task_config_path,
+            model_config=args.model_config,
+            model_processor=args.model_processor,
+            model_prefix=args.model_prefix,
+            vlm_ckpt_dir=args.vlm_ckpt_dir,
+            urdf_dir=args.urdf_dir,
+            seed=args.seed,
+            test_num=args.test_num,
+            output_dir=log_dir,
         )
+        gen_ret = subprocess.run(gen_cmd, env=env)
+        if gen_ret.returncode != 0:
+            raise RuntimeError(
+                f"gen_dualarm_piper_{task_name}.py failed with returncode {gen_ret.returncode}"  # noqa: E501
+            )
+        p = subprocess.Popen(eval_cmd, env=env)
         processes.append(p)
         task_to_proc[p] = task_name
     for p in processes:
