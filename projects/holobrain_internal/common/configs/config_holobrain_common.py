@@ -15,6 +15,13 @@
 # permissions and limitations under the License.
 
 
+import os as _os
+
+_CKPT_BASE = _os.environ.get(
+    "HOLOBRAIN_CKPT_DIR",
+    _os.path.join(_os.path.dirname(__file__), "../../ckpt"),
+)
+
 config = dict(
     hist_steps=1,
     pred_steps=64,
@@ -69,11 +76,13 @@ config = dict(
         "libero",
         "agibot_digit_challenge",
     ],
-    # vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
-    vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
+    # vlm_pretrain=_os.path.join(_CKPT_BASE, "Qwen3-VL-4B-Instruct"),
+    vlm_pretrain=_os.path.join(_CKPT_BASE, "Qwen2.5-VL-3B-Instruct"),
     num_vlm_layers=1,
     freeze_vlm=False,
-    checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
+    checkpoint=_os.path.join(
+        _CKPT_BASE, "HoloBrain_v0.0_Qwen/model.safetensors"
+    ),
 )
 
 
