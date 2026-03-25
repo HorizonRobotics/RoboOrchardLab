@@ -81,8 +81,10 @@ class GetFile:
 
     def __enter__(self):
         if not self.url.startswith("http"):
+            self._tmp_path = None
             return self.url
         file_name = "_" + self.url.split("/")[-1]
+        self._tmp_path = file_name
         with requests.get(self.url, stream=True, timeout=1800) as r:
             r.raise_for_status()
             with open(file_name, "wb") as f:
@@ -92,7 +94,9 @@ class GetFile:
         return file_name
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
+        if exc_type is not None and self._tmp_path is not None:
+            if os.path.exists(self._tmp_path):
+                os.remove(self._tmp_path)
 
 
 def load_checkpoint(model, checkpoint=None, accelerator=None, **kwargs):
