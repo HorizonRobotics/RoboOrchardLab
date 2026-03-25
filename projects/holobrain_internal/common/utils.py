@@ -83,7 +83,7 @@ class GetFile:
         if not self.url.startswith("http"):
             return self.url
         file_name = "_" + self.url.split("/")[-1]
-        with requests.get(self.url, stream=True) as r:
+        with requests.get(self.url, stream=True, timeout=1800) as r:
             r.raise_for_status()
             with open(file_name, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
