@@ -319,6 +319,7 @@ def build_model(config):
                         timestep_loss_weight=1000,
                         parallel_loss_weight=0.1,
                         smooth_l1_beta=0.04,
+                        loss_mode="smooth_l1",
                     ),
                 ),
                 robot_encoder=dict(

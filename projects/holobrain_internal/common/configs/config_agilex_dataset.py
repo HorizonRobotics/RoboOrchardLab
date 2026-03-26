@@ -177,6 +177,47 @@ default_calibrations = dict(
             ],
         },
     ),
+    horizon_piper_x_435=dict(
+        middle={
+            "position": [
+                -0.010783568385050412,
+                -0.2559182030838615,
+                0.5173197227547938,
+            ],
+            "orientation": [
+                -0.6344593881273598,
+                0.6670669773214551,
+                -0.2848079166270871,
+                0.2671467447131103,
+            ],
+        },
+        left={
+            "position": [
+                -0.0066753085430642164,
+                -0.07067909189160133,
+                0.04071981595986668,
+            ],
+            "orientation": [
+                -0.16576259418303393,
+                -0.001324287215046063,
+                0.009535575604591298,
+                0.9861186954068825,
+            ],
+        },
+        right={
+            "position": [
+                -0.014657614694640091,
+                -0.08231392542130013,
+                0.05495365864846876,
+            ],
+            "orientation": [
+                -0.1878112655573414,
+                0.01474422824253986,
+                -0.020030077316378438,
+                0.9818901834044282,
+            ],
+        },
+    ),
 )
 
 
@@ -221,6 +262,8 @@ def get_data_paths(dataset_name):
         ]
     elif dataset_name == "agilex":
         patterns = ["./data/agilex_collect/lmdb_dataset*"]
+    elif dataset_name == "horizon_beijing_piper_x":
+        patterns = ["./data/horizon_beijing/*-piper_x-*-*"]
     else:
         raise ValueError
     for pattern in patterns:
@@ -269,6 +312,14 @@ dataset_config = dict(
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
+    ),
+    horizon_beijing_piper_x=dict(
+        data_paths=lambda: get_data_paths("horizon_beijing_piper_x"),
+        default_calibration=default_calibrations["horizon_piper_x_435"],
+        urdf="./urdf/piper_x_description_dualarm.urdf",
+        cam_names=["left", "right", "middle"],
+        load_extrinsic=False,
+        flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "piper_x").hex[:4], 16),
     ),
     # Agilex External Dataset
     agilex=dict(
