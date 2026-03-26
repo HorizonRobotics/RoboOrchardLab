@@ -33,6 +33,11 @@ Repository skills live in `.agents/skills/`.
 - Current top-level skills:
   - `.agents/skills/remote-codereview/SKILL.md`
   - `.agents/skills/feature-dev/SKILL.md`
+- `feature-dev` is split into finer-grained sub-skills under `.agents/skills/feature-dev/`:
+  - `code-architect`
+  - `code-explorer`
+  - `code-reviewer`
+- `remote-codereview` is for remote GitHub PR / GitLab MR review flows; `feature-dev/code-reviewer` is the lighter-weight local implementation review sub-skill.
 
 ## Repository Notes
 

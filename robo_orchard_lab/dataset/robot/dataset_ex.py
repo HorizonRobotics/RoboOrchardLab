@@ -1247,9 +1247,18 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         Returns:
             str: Concise summary of the iterable dataset configuration.
         """
+        dataset_items_repr = ",\n    ".join(
+            repr(item) for item in self.dataset_items
+        )
+        if dataset_items_repr:
+            dataset_items_repr = f"[\n    {dataset_items_repr}\n  ]"
+        else:
+            dataset_items_repr = "[]"
+
         return (
             f"{self.__class__.__name__}("
             f"dataset_items={len(self.dataset_items)}, "
+            f"items={dataset_items_repr}, "
             f"shuffle={self._shuffle.shuffle}, "
             f"batch_loader_kwargs={self.batch_loader_kwargs!r}, "
             f"max_dataset_concurrency={self._max_dataset_concurrency})"

@@ -4,7 +4,12 @@ description: Load these instructions when validating changes or working with rep
 
 # Workflow and Validation Instructions
 
-Use this file for validation scope and workflow execution decisions.
+## Sources of Truth
+
+- Use `Makefile` when a relevant target exists.
+- Use `pyproject.toml` and pytest config for tool behavior.
+- Prefer source files over `build/`; use `build/` only for debugging generated output.
+- If workflow files disagree, report the mismatch instead of guessing.
 
 ## Validation
 
