@@ -11,8 +11,8 @@
     <a href="https://scholar.google.com/citations?user=HQfc8TEAAAAJ&hl=en" target="_blank">Zhizhong Su</a>,
     <a>Yutian Zhou</a>,
     <a>Wanting Li</a>,
-    <text>Deying Li</text>
-    <a href="https://zhaoxinf.github.io/" target="_blank">Zhaoxin Fan</a>,
+    <text>Deying Li</text>,
+    <a href="https://zhaoxinf.github.io/" target="_blank">Zhaoxin Fan</a>
 </div>
 
 
@@ -122,11 +122,11 @@ python analyze_results.py --path result-path
 ## Citation
 
 ```bibtex
-@article{wang2025progress,
+@inproceedings{wang2026progress,
   title={Progress-Think: Semantic Progress Reasoning for Vision-Language Navigation},
   author={Wang, Shuo and Wang, Yucheng and Lian, Guoxin and Wang, Yongcai and Chen, Maiyue and Wang, Kaihui and Zhang, Bo and Su, Zhizhong and Zhou, Yutian and Li, Wanting and others},
-  journal={arXiv preprint arXiv:2511.17097},
-  year={2025}
+  booktitle = { 2026 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) },
+  year={2026}
 }
 ```
 
