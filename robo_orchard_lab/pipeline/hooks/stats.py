@@ -355,13 +355,16 @@ class StatsMonitor(PipelineHooks):
             elapsed_epochs = args.epoch_id - self._last_epoch_id + 1
             avg_epoch_time = epoch_duration / elapsed_epochs
             elapsed_steps = args.global_step_id - self._epoch_start_step_id
-            avg_step_time = epoch_duration / elapsed_steps
 
             if elapsed_steps > 0:
+                avg_step_time = epoch_duration / elapsed_steps
                 speed = self.total_batch_size / avg_step_time
                 speed_str = f"{speed:.2f}"
+                avg_step_time_str = f"{avg_step_time:.2f} sec."
             else:
+                avg_step_time = None
                 speed_str = "N/A"
+                avg_step_time_str = "N/A"
 
             if len(self._step_times) > 0:
                 smooth_avg_step_time = sum(self._step_times) / len(
@@ -396,7 +399,7 @@ class StatsMonitor(PipelineHooks):
             msg += f"Epoch Time: {epoch_duration:.2f} sec.\t"
             msg += f"Average Training Speed: {speed_str} samples/sec across all devices.\t"  # noqa: E501
             msg += f"Average Epoch Time: {avg_epoch_time:.2f} sec.\t"
-            msg += f"Average Step Time: {avg_step_time:.2f} sec.\t"
+            msg += f"Average Step Time: {avg_step_time_str}\t"
             msg += f"Estimated Remaining Time: {remaining_time_str}.\t"
             if args.optimizer is not None:
                 for idx, param in enumerate(args.optimizer.param_groups):
