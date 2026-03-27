@@ -22,6 +22,8 @@ except ImportError:
 
 from robo_orchard_lab.envs.maniskill import ManiSkillEnv, ManiSkillEnvCfg
 
+pytestmark = pytest.mark.sim_env
+
 
 class TestManiSkillEnv:
     def test_env_create(self):

@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import multiprocessing as mp
+import os
 import threading
 from typing import Any, cast
 
@@ -87,6 +89,40 @@ class ArrayDatasetItem(DatasetItem[ArrayDataset]):
 
     def _create_dataset(self) -> ArrayDataset:
         return ArrayDataset(self.data)
+
+
+def _get_dataloader_multiprocessing_context(
+    num_workers: int,
+) -> str | None:
+    """Return the multiprocessing context for DataLoader tests.
+
+    Default to a non-fork context because running the full dataset suite after
+    importing many native extensions can make `fork`-based DataLoader workers
+    unstable. Allow an explicit environment override for local speed tests.
+    """
+
+    if num_workers <= 0:
+        return None
+
+    start_methods = mp.get_all_start_methods()
+    override = os.environ.get(
+        "ROBO_ORCHARD_TEST_DATALOADER_MP_CONTEXT",
+    )
+    if override:
+        if override not in start_methods:
+            raise ValueError(
+                "Unsupported multiprocessing context "
+                f"{override!r}. Available contexts: {start_methods}."
+            )
+        return override
+
+    if "forkserver" in start_methods:
+        return "forkserver"
+    if "spawn" in start_methods:
+        return "spawn"
+    if "fork" in start_methods:
+        return "fork"
+    return None
 
 
 @pytest.fixture()
@@ -236,7 +272,9 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,
@@ -257,7 +295,9 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
         dataloader = DataLoader(
             dataset,
             num_workers=num_workers,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,
@@ -276,7 +316,9 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -296,7 +338,9 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
         dataloader = DataLoader(
             dataset,
             num_workers=num_workers,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -464,7 +508,9 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -484,7 +530,9 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         dataloader = DataLoader(
             dataset,
             num_workers=num_workers,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_item_consistency(
             dataloader=dataloader,
@@ -663,7 +711,9 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=drop_last,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,
@@ -684,7 +734,9 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         dataloader = DataLoader(
             dataset,
             num_workers=num_workers,
-            multiprocessing_context="forkserver" if num_workers > 0 else None,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
         )
         self._check_dataloader_total_batch_consistency(
             dataloader=dataloader,

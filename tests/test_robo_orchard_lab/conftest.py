@@ -13,8 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import logging
 import os
 import tempfile
+import warnings
 
 import pytest
 
@@ -32,6 +34,22 @@ try:
     torch.multiprocessing.set_sharing_strategy("file_system")
 except Exception:
     pass
+
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*register_feature.*experimental.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=(
+        "Failed to load dataset using `datasets.load_from_disk`\\. "
+        "Falling back to use wrapped version\\."
+    ),
+    category=UserWarning,
+)
+logging.getLogger("curobo").setLevel(logging.ERROR)
 
 
 @pytest.fixture()

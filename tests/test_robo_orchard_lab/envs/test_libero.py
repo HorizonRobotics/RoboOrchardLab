@@ -34,6 +34,8 @@ from robosuite.controllers.osc import OperationalSpaceController
 
 from robo_orchard_lab.envs.libero import LiberoEvalEnv, LiberoEvalEnvCfg
 
+pytestmark = pytest.mark.sim_env
+
 
 @pytest.fixture()
 def dummy_libero_eval_env_cfg() -> LiberoEvalEnvCfg:

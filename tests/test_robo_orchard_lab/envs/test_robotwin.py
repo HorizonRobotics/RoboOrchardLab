@@ -18,6 +18,8 @@ import pytest
 
 from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
 
+pytestmark = pytest.mark.sim_env
+
 
 @pytest.fixture()
 def dummy_env_without_expert_check():
