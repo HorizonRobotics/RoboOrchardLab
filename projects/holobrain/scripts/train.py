@@ -18,28 +18,47 @@ import argparse
 import json
 import logging
 import os
+import sys
 from multiprocessing import set_start_method
+from pathlib import Path
 
-import torch
-from accelerate import Accelerator
-from accelerate.state import AcceleratorState, is_initialized
-from accelerate.utils import DataLoaderConfiguration, ProjectConfiguration
-from utils import ActionMetric, load_checkpoint, load_config
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-from robo_orchard_lab.dataset.collates import collate_batch_dict
-from robo_orchard_lab.dataset.dataset_wrapper import (
+import torch  # noqa: E402
+from accelerate import Accelerator  # noqa: E402
+from accelerate.state import AcceleratorState, is_initialized  # noqa: E402
+from accelerate.utils import (  # noqa: E402
+    DataLoaderConfiguration,
+    ProjectConfiguration,
+)
+
+from projects.holobrain.utils import (  # noqa: E402
+    ActionMetric,
+    load_checkpoint,
+    load_config,
+)
+from robo_orchard_lab.dataset.collates import collate_batch_dict  # noqa: E402
+from robo_orchard_lab.dataset.dataset_wrapper import (  # noqa: E402
     DistributedBatchFlagSampler,
 )
-from robo_orchard_lab.pipeline import SimpleTrainer
-from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
-from robo_orchard_lab.pipeline.hooks import (
+from robo_orchard_lab.pipeline import SimpleTrainer  # noqa: E402
+from robo_orchard_lab.pipeline.batch_processor import (  # noqa: E402
+    SimpleBatchProcessor,
+)
+from robo_orchard_lab.pipeline.hooks import (  # noqa: E402
     LossMovingAverageTrackerConfig,
     SaveCheckpointConfig,
     StatsMonitorConfig,
 )
-from robo_orchard_lab.utils import log_basic_config
+from robo_orchard_lab.utils import log_basic_config  # noqa: E402
 
 logger = logging.getLogger(__file__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIGS_DIR = PROJECT_ROOT / "configs"
 
 
 class MyBatchProcessor(SimpleBatchProcessor):
@@ -58,7 +77,7 @@ def main(args, accelerator):
         import shutil
 
         shutil.copytree(
-            "configs",
+            CONFIGS_DIR,
             os.path.join(args.workspace, "configs"),
             dirs_exist_ok=True,
         )

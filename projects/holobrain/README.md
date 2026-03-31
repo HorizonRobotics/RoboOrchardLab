@@ -61,10 +61,10 @@ python3 -m robo_orchard_lab.dataset.robotwin.robotwin_packer \
 ```
 
 Visualize data for checking.
-```
+```bash
 cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
-python3 data_visualize.py --config ${CONFIG}  $@
+python3 scripts/data_visualize.py --config ${CONFIG}  $@
 ```
 
 ### 3. Run Training
@@ -73,7 +73,7 @@ cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
 
 # train with single-gpu
-python3 train.py --config ${CONFIG}
+python3 scripts/train.py --config ${CONFIG}
 
 # train with multi-gpu multi-machine
 # example: 2 machines × 8 gpus
@@ -85,7 +85,7 @@ accelerate launch  \
     --machine_rank ${current_rank} \
     --main_process_ip ${main_process_ip} \
     --main_process_port 1227 \
-    train.py \
+    scripts/train.py \
     --workspace ./workspace \
     --config ${CONFIG}
 ```
@@ -93,7 +93,18 @@ accelerate launch  \
 ### 4. Run Evaluation
 
 #### Close loop evaluation on RoboTwin2.0 Env
-Refer to [robotwin_eval](projects/holobrain/holobrain_robotwin_eval/README.md).
+Use the maintained evaluation entrypoint:
+
+```bash
+cd projects/holobrain
+python3 scripts/robotwin_eval.py \
+  --model_dir ${MODEL_DIR} \
+  --task_names ["place_empty_cup","adjust_bottle","stack_blocks_three"] \
+  --mode ray \
+  --device cuda \
+  --gpu_ids [0,1,2,3,4,5,6,7] \
+  --workers_per_gpu 1
+```
 
 ### 5. Export Model and Processors and Pipeline
 
@@ -103,7 +114,7 @@ Export bundles the trained checkpoint, processor configs, and pipeline definitio
 cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py # or configs/config_holobrain_gd_common.py
 
-python3 export.py --config ${CONFIG} --workspace ./model_export_path
+python3 scripts/export.py --config ${CONFIG} --workspace ./model_export_path
 ```
 
 ### 6. Model Inference

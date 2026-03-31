@@ -18,6 +18,8 @@ from __future__ import annotations
 import functools
 import importlib
 import os
+import shutil
+import subprocess
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -80,6 +82,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
         self._eval_chosen_instruction: str | None = None
+        self._video_ffmpeg: subprocess.Popen[bytes] | None = None
 
     def _check_and_update_seed(self):
         instructions = None
@@ -94,6 +97,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 "This may take a while... "
                 "You can set `check_expert=False` to skip this step."
             )
+            requested_seed = self.cfg.seed
             task, success = self._check_expert_traj()
             retry_num = 0
             while not success:
@@ -105,13 +109,25 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                         "Please check the task configuration!"
                     )
 
+                failed_seed = self.cfg.seed
                 self.cfg.seed += 1
+                logger.warning(
+                    "Expert trajectory check failed for task "
+                    f"{self.cfg.task_name} at seed {failed_seed}; "
+                    f"retrying with seed {self.cfg.seed}."
+                )
                 task, success = self._check_expert_traj()
                 if success:
                     logger.info(
                         f"Successfully created task {self.cfg.task_name} "
                         f"with seed {self.cfg.seed} using expert trajectory."
                     )
+            if retry_num > 0:
+                logger.info(
+                    f"Requested seed {requested_seed} for task "
+                    f"{self.cfg.task_name} resolved to actual seed "
+                    f"{self.cfg.seed} after {retry_num} retries."
+                )
 
             assert task is not None
             instructions = generate_episode_descriptions(
@@ -257,8 +273,11 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         else:
             terminated = False
 
+        raw_obs = self._task.get_obs()
+        self._write_video_frame(raw_obs)
+
         return RoboTwinEnvStepReturn(
-            observations=self._get_obs(),
+            observations=self._format_obs(raw_obs),
             rewards=self._task.eval_success,
             terminated=terminated,
             truncated=truncated,
@@ -272,6 +291,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         task_name: str | None = None,
         clear_cache: bool = False,
         return_obs: bool = True,
+        video_path: str | None = None,
+        video_dir: str | None = None,
+        video_episode_idx: int | None = None,
     ) -> tuple[RoboTwinObsType, dict]:
         """Reset the environment.
 
@@ -343,7 +365,19 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
         self._eval_chosen_instruction = None
 
-        obs = self._get_obs() if return_obs else None
+        if (
+            video_path is None
+            and video_dir is not None
+            and video_episode_idx is not None
+        ):
+            video_path = os.path.join(
+                video_dir,
+                f"episode_{video_episode_idx}_seed_{self.cfg.seed}.mp4",
+            )
+
+        raw_obs = self._task.get_obs()
+        self._start_video_recording(video_path=video_path, raw_obs=raw_obs)
+        obs = self._format_obs(raw_obs) if return_obs else None
 
         self._robot_urdf_chains = {
             k: KinematicChain.from_content(v, format="urdf")
@@ -373,6 +407,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
     def close(self, clear_cache: bool = True):
         """Close the environment."""
+        self._stop_video_recording()
         if hasattr(self, "_task") and self._task is not None:
             self._task.close_env(clear_cache=clear_cache)
             if self._task.render_freq > 0:
@@ -396,6 +431,10 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
         """
         ret = self._task.get_obs()
+        return self._format_obs(ret)
+
+    def _format_obs(self, ret: dict[str, Any]) -> dict[str, Any]:
+        """Format raw RoboTwin observations into orchard-compatible ones."""
         ret["instructions"] = self.instructions
         if self.cfg.format_datatypes:
             ret["joints"] = get_joints(
@@ -406,6 +445,116 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             ret.pop("observation")
         ret["tf"] = self._get_tf()
         return ret
+
+    @staticmethod
+    def _extract_video_frame(raw_obs: dict[str, Any]) -> np.ndarray | None:
+        observation = raw_obs.get("observation")
+        if not isinstance(observation, dict):
+            return None
+        head_camera = observation.get("head_camera")
+        if not isinstance(head_camera, dict):
+            return None
+        frame = head_camera.get("rgb")
+        if frame is None:
+            return None
+
+        frame_np = np.asarray(frame)
+        if frame_np.ndim != 3 or frame_np.shape[2] != 3:
+            return None
+        if frame_np.dtype != np.uint8:
+            frame_np = frame_np.astype(np.uint8)
+        return np.ascontiguousarray(frame_np)
+
+    def _start_video_recording(
+        self,
+        video_path: str | None,
+        raw_obs: dict[str, Any],
+    ) -> None:
+        self._stop_video_recording()
+        if video_path is None:
+            return
+
+        frame = self._extract_video_frame(raw_obs)
+        if frame is None:
+            logger.warning(
+                "Skip RoboTwin episode video recording because the head "
+                "camera RGB frame is unavailable."
+            )
+            return
+        if shutil.which("ffmpeg") is None:
+            logger.warning(
+                "Skip RoboTwin episode video recording because ffmpeg is "
+                "not available in PATH."
+            )
+            return
+
+        output_dir = os.path.dirname(video_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        height, width, _ = frame.shape
+        try:
+            self._video_ffmpeg = subprocess.Popen(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "rawvideo",
+                    "-pixel_format",
+                    "rgb24",
+                    "-video_size",
+                    f"{width}x{height}",
+                    "-framerate",
+                    "10",
+                    "-i",
+                    "-",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-vcodec",
+                    "libx264",
+                    "-crf",
+                    "23",
+                    video_path,
+                ],
+                stdin=subprocess.PIPE,
+            )
+        except Exception:
+            self._video_ffmpeg = None
+            logger.exception(
+                "Failed to start RoboTwin episode video recording at %s.",
+                video_path,
+            )
+            return
+
+        self._write_video_frame(raw_obs)
+
+    def _write_video_frame(self, raw_obs: dict[str, Any]) -> None:
+        if self._video_ffmpeg is None or self._video_ffmpeg.stdin is None:
+            return
+
+        frame = self._extract_video_frame(raw_obs)
+        if frame is None:
+            return
+
+        try:
+            self._video_ffmpeg.stdin.write(frame.tobytes())
+        except Exception:
+            logger.exception("Failed to write RoboTwin episode video frame.")
+            self._stop_video_recording()
+
+    def _stop_video_recording(self) -> None:
+        if self._video_ffmpeg is None:
+            return
+        try:
+            if self._video_ffmpeg.stdin is not None:
+                self._video_ffmpeg.stdin.close()
+            self._video_ffmpeg.wait()
+        except Exception:
+            logger.exception("Failed to finalize RoboTwin episode video.")
+        finally:
+            self._video_ffmpeg = None
 
     @property
     def num_envs(self) -> int:

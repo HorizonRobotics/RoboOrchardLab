@@ -67,8 +67,9 @@ If you have a **customized hardware setup** (e.g., different camera positions, a
 Once your hardware is set up and cameras are calibrated, the first step is to start the HoloBrain inference server. This server loads your trained model and serves action predictions over the network — the real robot app (Section 3) connects to it to get real-time commands.
 
 ```bash
-# RoboOrchardLab · projects/holobrain/inference_server.py
-python3 inference_server.py \
+cd projects/holobrain
+# RoboOrchardLab · projects/holobrain/scripts/inference_server.py
+python3 scripts/inference_server.py \
     --model_dir "/your/model_dir" \
     --port 2000 \
     --server_name holobrain \

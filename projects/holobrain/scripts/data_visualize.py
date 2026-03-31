@@ -18,10 +18,19 @@ import argparse
 import json
 import logging
 import os
+import sys
 
-from utils import HolobrainVideoVisualizer, load_config
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-from robo_orchard_lab.utils import log_basic_config
+from projects.holobrain.utils import (  # noqa: E402
+    HolobrainVideoVisualizer,
+    load_config,
+)
+from robo_orchard_lab.utils import log_basic_config  # noqa: E402
 
 logger = logging.getLogger(__file__)
 

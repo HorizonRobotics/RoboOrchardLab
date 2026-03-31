@@ -17,19 +17,30 @@
 import argparse
 import json
 import logging
+import os
+import sys
 from io import BytesIO
 
-import numpy as np
-import torch
-from flask import Flask, Response, jsonify, request
-from gevent.pywsgi import WSGIServer
-from robo_orchard_core.utils.cli import SettingConfig, pydantic_from_argparse
-from robo_orchard_core.utils.logging import LoggerManager
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-from robo_orchard_lab.models.holobrain.pipeline import (
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from flask import Flask, Response, jsonify, request  # noqa: E402
+from gevent.pywsgi import WSGIServer  # noqa: E402
+from robo_orchard_core.utils.cli import (  # noqa: E402
+    SettingConfig,
+    pydantic_from_argparse,
+)
+from robo_orchard_core.utils.logging import LoggerManager  # noqa: E402
+
+from robo_orchard_lab.models.holobrain.pipeline import (  # noqa: E402
     HoloBrainInferencePipeline,
 )
-from robo_orchard_lab.models.holobrain.processor import (
+from robo_orchard_lab.models.holobrain.processor import (  # noqa: E402
     MultiArmManipulationInput,
 )
 
@@ -43,7 +54,7 @@ INTERPOLATION = CONTROL_HZ / TRAINING_HZ
 class Config(SettingConfig):
     model_dir: str = "models"
     """The directory of the model, including the model_config,
-    ckpt and pipeline, you could get it from the export.py script."""
+    ckpt and pipeline, you could get it from the scripts/export.py script."""
     port: int = 2000
     """The port of the server."""
     server_name: str = "holobrain"
@@ -65,6 +76,7 @@ except SystemExit as e:
 
 pipeline = HoloBrainInferencePipeline.load_pipeline(
     directory=args.model_dir,
+    inference_prefix="inference",
     device="cuda",
     load_weights=True,
     load_impl="native",

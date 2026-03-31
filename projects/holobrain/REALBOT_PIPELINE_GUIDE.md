@@ -208,6 +208,7 @@ This step verifies the correctness and quality of your packaged dataset. It is *
 **Output:** Reconstructed `.mcap` files for visual inspection in tools like [Foxglove](https://foxglove.dev/).
 
 ```bash
+cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py
 python3 data_convert_mcap.py --config ${CONFIG}
 ```
@@ -226,8 +227,9 @@ Output `.mcap` files are saved to `./workspace/` by default. Use `--workspace <p
 **Output:** Visualization videos (`.mp4`) showing exactly what the model will "see" as input tensors.
 
 ```bash
+cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py
-python3 data_visualize.py --config ${CONFIG}
+python3 scripts/data_visualize.py --config ${CONFIG}
 ```
 
 Output videos are saved to `./workspace/` by default. Use `--workspace <path>` to change the output directory.
@@ -318,10 +320,11 @@ This is downloaded automatically on the first training run. Starting from this c
 ### 4.6 Launching the Training
 
 ```bash
+cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py
 
 # Single-GPU training
-python3 train.py --config ${CONFIG}
+python3 scripts/train.py --config ${CONFIG}
 
 # Multi-GPU / multi-machine training (example: 2 machines × 8 GPUs)
 accelerate launch  \
@@ -332,7 +335,7 @@ accelerate launch  \
     --machine_rank ${current_rank} \
     --main_process_ip ${main_process_ip} \
     --main_process_port 1227 \
-    train.py \
+    scripts/train.py \
     --workspace ./workspace \
     --config ${CONFIG}
 ```
@@ -361,8 +364,9 @@ After training, you need to **export** the checkpoint into a deployment-ready di
 ### 5.1 Export Command
 
 ```bash
+cd projects/holobrain
 CONFIG=configs/config_holobrain_qwen_common.py
-python3 export.py --config ${CONFIG} --workspace ./workspace
+python3 scripts/export.py --config ${CONFIG} --workspace ./workspace
 ```
 
 The exported directory (`./workspace`) will contain the `model/` subdirectory and processor JSON files listed above.
@@ -391,6 +395,6 @@ This usually means the camera topic names in your dataset config (`cam_names`) d
 
 **Q: Training loss doesn't decrease.**
 Common causes:
-1. **Dataset paths don't resolve:** The training script may silently load zero episodes. Run `data_visualize.py` first to confirm data loads correctly.
+1. **Dataset paths don't resolve:** The training script may silently load zero episodes. Run `python3 scripts/data_visualize.py` first to confirm data loads correctly.
 2. **Wrong URDF:** If the URDF doesn't match the robot that recorded the data, kinematics transforms will produce garbage. Verify you're using the correct URDF file.
 3. **Corrupted data:** Run the data checking step (Step 3) to inspect the actual training inputs visually.

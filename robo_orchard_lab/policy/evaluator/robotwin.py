@@ -18,9 +18,11 @@ import copy
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
+import ray
 import torch
 from pydantic import Field
 from robo_orchard_core.utils.config import (
@@ -74,6 +76,7 @@ SEM_TASKS_16 = (
 class RoboTwinTaskQueueItem:
     task_name: str
     seed: int | None
+    episode_idx: int = 0
 
 
 @dataclass
@@ -86,8 +89,13 @@ class TaskInfo:
     tasks: dict[str, TaskStatus]
     task_queue: queue.Queue[RoboTwinTaskQueueItem]
     episode_per_task: int
+    started_tasks: set[str] | None = None
 
     lock: threading.RLock = threading.RLock()
+
+    def __post_init__(self) -> None:
+        if self.started_tasks is None:
+            self.started_tasks = set()
 
     def get_task_item(self) -> RoboTwinTaskQueueItem | None:
         """Get a task item from the queue.
@@ -101,30 +109,94 @@ class TaskInfo:
                 for info in self.tasks.values()
             ):
                 return None
-            ret = self.task_queue.get()
-            self.tasks[ret.task_name].episode_count += 1
-            return ret
+            while not self.task_queue.empty():
+                ret = self.task_queue.get()
+                if (
+                    self.tasks[ret.task_name].episode_count
+                    < self.episode_per_task
+                ):
+                    return ret
+            return None
 
-    def push_task_item(
+    def complete_task_item(
         self,
         item: RoboTwinTaskQueueItem,
+        next_seed: int,
     ) -> bool:
-        """Push a task item back to the queue.
+        """Mark an episode complete and enqueue the next seed if needed.
 
-        The item should be pushed back only if the task has not
-        reached the episode_per_task limit.
-
-        User should make sure that the item information is updated
-        correctly before pushing back.
-
+        Returns:
+            bool: True if the next seed was enqueued, False otherwise.
         """
         with self.lock:
             name = item.task_name
+            self.tasks[name].episode_count += 1
             if self.tasks[name].episode_count < self.episode_per_task:
-                self.task_queue.put(item)
+                self.task_queue.put(
+                    RoboTwinTaskQueueItem(
+                        task_name=name,
+                        seed=next_seed,
+                        episode_idx=item.episode_idx + 1,
+                    )
+                )
                 return True
             else:
                 return False
+
+    def requeue_task_item(
+        self,
+        item: RoboTwinTaskQueueItem,
+    ) -> bool:
+        """Put an unfinished task item back into the queue."""
+        with self.lock:
+            if (
+                self.tasks[item.task_name].episode_count
+                >= self.episode_per_task
+            ):
+                return False
+            self.task_queue.put(item)
+            return True
+
+    def has_pending_work(self) -> bool:
+        """Return whether there are remaining episodes to evaluate."""
+        with self.lock:
+            return any(
+                info.episode_count < self.episode_per_task
+                for info in self.tasks.values()
+            )
+
+    def mark_task_started(self, task_name: str) -> bool:
+        """Return whether the task is seen for the first time."""
+        with self.lock:
+            assert self.started_tasks is not None
+            if task_name in self.started_tasks:
+                return False
+            self.started_tasks.add(task_name)
+            return True
+
+
+@dataclass
+class WorkerEvalResult:
+    worker_idx: int
+    generation: int
+    item: RoboTwinTaskQueueItem
+    next_seed: int | None = None
+    metric_info: dict[str, Any] | None = None
+    metrics: SuccessRateMetric | None = None
+    error: BaseException | None = None
+
+
+@dataclass
+class WorkerSlot:
+    evaluator: PolicyEvaluatorRemote
+    generation: int = 0
+    item: RoboTwinTaskQueueItem | None = None
+    thread: threading.Thread | None = None
+    started_at: float | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self.item is not None
 
 
 @dataclass
@@ -269,6 +341,7 @@ class RoboTwinRemoteEvaluator:
             remote_class_config=cfg.remote_class_config,
             ray_init_config=cfg.ray_init_config,
         )
+        self._remote_cfg = remote_cfg
 
         self.evaluators = [remote_cfg() for _ in range(cfg.num_parallel_envs)]
         self.metric = SuccessRateMetric()
@@ -314,6 +387,7 @@ class RoboTwinRemoteEvaluator:
                 RoboTwinTaskQueueItem(
                     task_name=task_name,
                     seed=self._robotwin_eval_start_seed,
+                    episode_idx=0,
                 )
             )
         task_info = TaskInfo(
@@ -323,73 +397,282 @@ class RoboTwinRemoteEvaluator:
         )
 
         if need_setup:
-            # the first time to setup.
-            # the evaluator number is guaranteed to be not greater than
-            # the task number.
             future_setups = []
             for evaluator in self.evaluators:
                 cur_task = current_tasks[0]
-                env_cfg = self._generate_env_cfg(cur_task)
-                future = evaluator.async_setup(
-                    env_cfg=env_cfg,
+                future = self._setup_evaluator_async(
+                    evaluator=evaluator,
+                    task_name=cur_task,
                     policy_or_cfg=policy_or_cfg,
-                    metrics=SuccessRateMetric(),
                     device=device,
                 )
                 future_setups.append(future)
             for future in future_setups:
                 future.result()
 
-        threads: list[threading.Thread] = []
-        for evaluator in self.evaluators:
-            # reset metrics before evaluation
-            thread = threading.Thread(
-                target=self._task_eval_thread,
-                args=(evaluator, task_info),
+        result_queue: queue.Queue[WorkerEvalResult] = queue.Queue()
+        workers = [
+            WorkerSlot(evaluator=evaluator) for evaluator in self.evaluators
+        ]
+
+        while task_info.has_pending_work() or any(
+            worker.busy for worker in workers
+        ):
+            for worker_idx, worker in enumerate(workers):
+                if worker.busy:
+                    continue
+                item = task_info.get_task_item()
+                if item is None:
+                    continue
+                self._log_task_started_if_needed(
+                    task_info=task_info, item=item
+                )
+                thread = threading.Thread(
+                    target=self._task_eval_thread,
+                    args=(
+                        worker_idx,
+                        worker.generation,
+                        worker.evaluator,
+                        item,
+                        result_queue,
+                    ),
+                    daemon=True,
+                )
+                worker.item = item
+                worker.thread = thread
+                worker.started_at = time.monotonic()
+                thread.start()
+
+            self._drain_worker_results(
+                result_queue=result_queue,
+                workers=workers,
+                task_info=task_info,
+                policy_or_cfg=policy_or_cfg,
+                device=device,
             )
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
-        # collect metrics
+            self._handle_worker_timeouts(
+                workers=workers,
+                task_info=task_info,
+                policy_or_cfg=policy_or_cfg,
+                device=device,
+            )
+
+            if task_info.has_pending_work() and not any(
+                worker.busy for worker in workers
+            ):
+                continue
+
+            time.sleep(self.cfg.worker_poll_interval_s)
+
         return True
 
     def _task_eval_thread(
         self,
+        worker_idx: int,
+        generation: int,
         evaluator: PolicyEvaluatorRemote,
-        info: TaskInfo,
+        item: RoboTwinTaskQueueItem,
+        result_queue: queue.Queue[WorkerEvalResult],
     ):
-        evaluator.reset_metrics()
-        while (item := info.get_task_item()) is not None:
+        try:
+            evaluator.reset_metrics()
             env_reset_kwargs = {
                 "seed": item.seed,
                 "task_name": item.task_name,
                 "clear_cache": True,
-                "return_obs": False,
+                "return_obs": True,
+                "video_dir": self._get_episode_video_dir(
+                    task_name=item.task_name,
+                ),
+                "video_episode_idx": item.episode_idx,
             }
-            _, env_info = evaluator.reset_env(**env_reset_kwargs)
-            item.seed = env_info["seed"] + 1
-            info.push_task_item(item)
             metric_info = evaluator.evaluate_episode(
                 max_steps=1500,
-                env_reset_kwargs={
-                    "clear_cache": True,
-                    "seed": None,
-                },
+                env_reset_kwargs=env_reset_kwargs,
             )
-            # update metrics
-            last_update = metric_info["last_update"]
             current_metrics = evaluator.get_metrics()
-            assert isinstance(current_metrics, SuccessRateMetric)
-            self.metric.merge([current_metrics])
-            evaluator.reset_metrics()
-            success_info = self.metric.info[item.task_name]
+            assert current_metrics is not None
+            actual_seed = current_metrics.last_update_info["seed"]
+            result_queue.put(
+                WorkerEvalResult(
+                    worker_idx=worker_idx,
+                    generation=generation,
+                    item=item,
+                    next_seed=actual_seed + 1,
+                    metric_info=metric_info,
+                    metrics=current_metrics,
+                )
+            )
+        except BaseException as exc:
+            result_queue.put(
+                WorkerEvalResult(
+                    worker_idx=worker_idx,
+                    generation=generation,
+                    item=item,
+                    error=exc,
+                )
+            )
+
+    def _setup_evaluator_async(
+        self,
+        evaluator: PolicyEvaluatorRemote,
+        task_name: str,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        device: str | torch.device | None = None,
+    ):
+        env_cfg = self._generate_env_cfg(task_name)
+        return evaluator.async_setup(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_or_cfg,
+            metrics=SuccessRateMetric(),
+            device=device,
+        )
+
+    def _replace_evaluator(
+        self,
+        worker: WorkerSlot,
+        task_name: str,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        device: str | torch.device | None = None,
+    ) -> PolicyEvaluatorRemote:
+        self._kill_evaluator(worker.evaluator)
+        worker.generation += 1
+        worker.evaluator = self._remote_cfg()
+        self._setup_evaluator_async(
+            evaluator=worker.evaluator,
+            task_name=task_name,
+            policy_or_cfg=policy_or_cfg,
+            device=device,
+        ).result()
+        return worker.evaluator
+
+    def _kill_evaluator(self, evaluator: PolicyEvaluatorRemote) -> None:
+        remote = getattr(evaluator, "_remote", None)
+        if remote is None:
+            return
+        try:
+            ray.kill(remote, no_restart=True)
+        except Exception:
+            logger.exception("Failed to kill timed-out remote evaluator.")
+
+    def _log_task_started_if_needed(
+        self,
+        task_info: TaskInfo,
+        item: RoboTwinTaskQueueItem,
+    ) -> None:
+        if task_info.mark_task_started(item.task_name):
+            print(f"{item.task_name}: started", flush=True)
+
+    def _drain_worker_results(
+        self,
+        result_queue: queue.Queue[WorkerEvalResult],
+        workers: list[WorkerSlot],
+        task_info: TaskInfo,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        device: str | torch.device | None = None,
+    ) -> None:
+        while True:
+            try:
+                result = result_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            worker = workers[result.worker_idx]
+            if result.generation != worker.generation:
+                continue
+            if worker.item is None:
+                continue
+
+            worker.item = None
+            worker.thread = None
+            worker.started_at = None
+
+            if result.error is not None:
+                task_info.requeue_task_item(result.item)
+                logger.error(
+                    "Worker failed on task %s seed %s.",
+                    result.item.task_name,
+                    result.item.seed,
+                    exc_info=(
+                        type(result.error),
+                        result.error,
+                        result.error.__traceback__,
+                    ),
+                )
+                self._replace_evaluator(
+                    worker=worker,
+                    task_name=result.item.task_name,
+                    policy_or_cfg=policy_or_cfg,
+                    device=device,
+                )
+                continue
+
+            assert result.metrics is not None
+            assert result.metric_info is not None
+            assert result.next_seed is not None
+            self.metric.merge([result.metrics])
+            result.metrics.reset()
+            has_next = task_info.complete_task_item(
+                result.item, result.next_seed
+            )
+            success_info = self.metric.info[result.item.task_name]
             print(
                 "Episode done: ",
-                last_update,
+                result.metric_info["last_update"],
                 " Task status: ",
                 success_info.summary(),
                 flush=True,
+            )
+            if not has_next:
+                summary = success_info.summary()
+                print(
+                    (
+                        f"{result.item.task_name}: Success rate: "
+                        f"{summary['success_count']}/"
+                        f"{summary['total_count']} => "
+                        f"{summary['success_rate'] * 100:.1f}%"
+                    ),
+                    flush=True,
+                )
+
+    def _handle_worker_timeouts(
+        self,
+        workers: list[WorkerSlot],
+        task_info: TaskInfo,
+        policy_or_cfg: PolicyConfig | PolicyMixin,
+        device: str | torch.device | None = None,
+    ) -> None:
+        timeout = self.cfg.episode_timeout_s
+        if timeout is None:
+            return
+
+        now = time.monotonic()
+        for worker in workers:
+            if not worker.busy or worker.started_at is None:
+                continue
+            if now - worker.started_at <= timeout:
+                continue
+
+            assert worker.item is not None
+            timed_out_item = worker.item
+            task_info.requeue_task_item(timed_out_item)
+            logger.warning(
+                (
+                    "Worker timed out on task %s seed %s after %.1fs. "
+                    "Replacing worker."
+                ),
+                timed_out_item.task_name,
+                timed_out_item.seed,
+                timeout,
+            )
+            worker.item = None
+            worker.thread = None
+            worker.started_at = None
+            self._replace_evaluator(
+                worker=worker,
+                task_name=timed_out_item.task_name,
+                policy_or_cfg=policy_or_cfg,
+                device=device,
             )
 
     def _generate_env_cfg(self, task_name: str) -> RoboTwinEnvCfg:
@@ -409,9 +692,21 @@ class RoboTwinRemoteEvaluator:
             check_task_init=False,
             eval_mode=True,
             max_instruction_num=EVAL_INSTRUCTION_NUM,
-            format_datatypes=True,
+            format_datatypes=self.cfg.format_datatypes,
             task_config_path=task_config_path,
             seed=self._robotwin_eval_start_seed,
+        )
+
+    def _get_episode_video_dir(
+        self,
+        task_name: str,
+    ) -> str | None:
+        if self.cfg.artifact_root_dir is None:
+            return None
+        return os.path.join(
+            self.cfg.artifact_root_dir,
+            task_name,
+            self.cfg.config_type,
         )
 
     @property
@@ -435,14 +730,24 @@ class RoboTwinRemoteEvaluatorCfg(ClassConfig[RoboTwinRemoteEvaluator]):
 
     seed: int = 0
 
+    format_datatypes: bool = True
+    """Whether to convert RoboTwin env observations to orchard datatypes."""
+
     num_parallel_envs: int = Field(ge=1, default=1)
     """Number of parallel environments to run in the remote evaluator."""
+
+    episode_timeout_s: float | None = Field(default=600.0, gt=0)
+    """Timeout for one evaluation episode before replacing the worker."""
+
+    worker_poll_interval_s: float = Field(default=0.1, gt=0)
+    """Polling interval for collecting worker results and timeout checks."""
 
     remote_class_config: RayRemoteClassConfig = RayRemoteClassConfig(
         num_cpus=8, num_gpus=1, memory=16 * 1024**3
     )
     """The configuration for the remote class."""
     ray_init_config: dict[str, Any] | None = None
+    artifact_root_dir: str | None = None
 
     def __post_init__(self):
         if self.num_parallel_envs > len(self.task_names):

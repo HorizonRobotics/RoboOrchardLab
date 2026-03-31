@@ -19,24 +19,33 @@ import json
 import logging
 import os
 import shutil
+import sys
+from pathlib import Path
 
-from utils import load_checkpoint, load_config
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-from robo_orchard_lab.models.holobrain import HoloBrainProcessor
-from robo_orchard_lab.models.holobrain.pipeline import (
+from projects.holobrain.utils import load_checkpoint, load_config  # noqa: E402
+from robo_orchard_lab.models.holobrain import HoloBrainProcessor  # noqa: E402
+from robo_orchard_lab.models.holobrain.pipeline import (  # noqa: E402
     HoloBrainInferencePipeline,
     HoloBrainInferencePipelineCfg,
 )
-from robo_orchard_lab.models.mixin import ModelMixin
-from robo_orchard_lab.utils import log_basic_config
+from robo_orchard_lab.models.mixin import ModelMixin  # noqa: E402
+from robo_orchard_lab.utils import log_basic_config  # noqa: E402
 
 logger = logging.getLogger(__file__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIGS_DIR = PROJECT_ROOT / "configs"
 
 
 def main(args):
     os.makedirs(args.workspace, exist_ok=True)
     shutil.copytree(
-        "configs",
+        CONFIGS_DIR,
         os.path.join(args.workspace, "configs"),
         dirs_exist_ok=True,
     )

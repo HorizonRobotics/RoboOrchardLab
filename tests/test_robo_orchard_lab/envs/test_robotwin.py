@@ -14,6 +14,9 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from unittest.mock import MagicMock, patch
+
+import numpy as np
 import pytest
 
 from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
@@ -59,3 +62,40 @@ class TestRoboTwinEnv:
         urdf_dict = env.get_robot_urdf()
         assert urdf_dict is not None
         assert "left" in urdf_dict
+
+    def test_video_recording_lifecycle(self):
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._video_ffmpeg = None
+
+        raw_obs = {
+            "observation": {
+                "head_camera": {
+                    "rgb": np.zeros((4, 5, 3), dtype=np.uint8),
+                }
+            }
+        }
+        ffmpeg = MagicMock()
+        ffmpeg.stdin = MagicMock()
+
+        with (
+            patch(
+                "robo_orchard_lab.envs.robotwin.env.shutil.which",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch(
+                "robo_orchard_lab.envs.robotwin.env.subprocess.Popen",
+                return_value=ffmpeg,
+            ) as mock_popen,
+        ):
+            env._start_video_recording(
+                video_path="/tmp/task/demo_clean/100000.mp4",
+                raw_obs=raw_obs,
+            )
+            env._write_video_frame(raw_obs)
+            env._stop_video_recording()
+
+        mock_popen.assert_called_once()
+        assert ffmpeg.stdin.write.call_count == 2
+        ffmpeg.stdin.close.assert_called_once()
+        ffmpeg.wait.assert_called_once()
+        assert env._video_ffmpeg is None
