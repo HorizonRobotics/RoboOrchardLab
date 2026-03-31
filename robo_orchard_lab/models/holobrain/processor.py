@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 import copy
+import logging
 import os
 import shutil
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from robo_orchard_lab.inference.processor import (
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 from robo_orchard_lab.utils.path import in_cwd
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["HoloBrainProcessor", "HoloBrainProcessorCfg"]
 
@@ -235,6 +238,8 @@ class HoloBrainProcessor(ProcessorMixin):
                     shutil.copy2(urdf, target_urdf_path)
                 except shutil.SameFileError:
                     pass
+                except PermissionError:
+                    logger.info(f"copy {urdf} with PermissionError")
 
         with open(os.path.join(path, processor_name), "w") as fh:
             fh.write(cfg.model_dump_json(indent=4))
