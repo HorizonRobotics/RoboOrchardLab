@@ -23,6 +23,7 @@ import queue
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 import zipfile
@@ -246,6 +247,27 @@ def record_matches_any_date_prefix(
     )
 
 
+def _resolve_date_prefixes(
+    records: list[EpisodeRecord], filters: FilterOptions
+) -> list[str]:
+    requested = parse_filter_items(filters.date_prefix)
+    return (
+        requested
+        if requested
+        else sorted(
+            {
+                prefix
+                for r in records
+                if (
+                    prefix := extract_episode_time_prefix(r.episode_id).split(
+                        "-"
+                    )[0]
+                )
+            }
+        )
+    )
+
+
 def derive_submit_selection(
     records: list[EpisodeRecord], filters: FilterOptions
 ) -> dict[str, list[str] | str]:
@@ -254,15 +276,11 @@ def derive_submit_selection(
 
     user_names = sorted({record.user_name for record in records})
     task_names = sorted({record.task_name for record in records})
-    requested_date_prefixes = parse_filter_items(filters.date_prefix)
-    if requested_date_prefixes:
-        date_prefixes = requested_date_prefixes
-    else:
-        date_prefixes = sorted(
-            {
-                extract_episode_time_prefix(record.episode_id).split("-")[0]
-                for record in records
-            }
+    date_prefixes = _resolve_date_prefixes(records, filters)
+    if not date_prefixes:
+        raise ValueError(
+            "Cannot derive date prefixes from records; "
+            "episode IDs may be malformed"
         )
 
     all_embodiments: list[str] = sorted(
@@ -281,6 +299,58 @@ def derive_submit_selection(
         "date_prefixes": date_prefixes,
         "user_name": user_names[0],
         "task_name": task_names[0],
+        "date_prefix": date_prefixes[0],
+        "embodiment": embodiment,
+    }
+
+
+def split_records_by_combination(
+    records: list[EpisodeRecord],
+) -> dict[tuple[str, str, str], list[EpisodeRecord]]:
+    """Group records by (user_name, task_name, embodiment) combination.
+
+    Each group is guaranteed to have exactly one user, one task, and one
+    embodiment. Records with multiple embodiments are replicated across the
+    relevant groups.
+    """
+    groups: dict[tuple[str, str, str], list[EpisodeRecord]] = {}
+    for record in records:
+        for emb in parse_record_embodiments(record.embodiment):
+            key = (record.user_name, record.task_name, emb)
+            groups.setdefault(key, []).append(record)
+    return dict(sorted(groups.items()))
+
+
+def _derive_selection_fixed(
+    records: list[EpisodeRecord],
+    filters: FilterOptions,
+    user_name: str,
+    task_name: str,
+    embodiment: str,
+) -> dict[str, list[str] | str]:
+    """Build a selection dict with all three dimensions fixed.
+
+    When ``filters.date_prefix`` is explicitly set, all specified prefixes are
+    forwarded to the job even if only a subset of them match records in this
+    group.  This is intentional: the job script will simply find no data for
+    the non-matching prefixes, so the result is still correct.  In auto-derive
+    mode (no ``date_prefix`` filter) the prefixes are computed from the actual
+    records in the group, so they are always exact.
+    """
+    if not records:
+        raise ValueError("No records selected for submit")
+    date_prefixes = _resolve_date_prefixes(records, filters)
+    if not date_prefixes:
+        raise ValueError(
+            "Cannot derive date prefixes from records; "
+            "episode IDs may be malformed"
+        )
+    return {
+        "user_names": [user_name],
+        "task_names": [task_name],
+        "date_prefixes": date_prefixes,
+        "user_name": user_name,
+        "task_name": task_name,
         "date_prefix": date_prefixes[0],
         "embodiment": embodiment,
     }
@@ -461,6 +531,48 @@ def create_submit_config(
         "episode_paths": [record.path for record in selected_records],
         "config": config,
     }
+
+
+def create_submit_configs_split(
+    source: str, base_path: Path, filters: FilterOptions
+) -> list[dict[str, Any]]:
+    """Return one config per (user, task, embodiment) combination."""
+    selected_records = collect_submit_records(base_path, filters)
+    groups = split_records_by_combination(selected_records)
+    results = []
+    written_paths: list[Path] = []
+    try:
+        for (
+            user_name,
+            task_name,
+            embodiment,
+        ), group_records in groups.items():
+            selection = _derive_selection_fixed(
+                group_records, filters, user_name, task_name, embodiment
+            )
+            config = build_initial_submit_config(source, selection, base_path)
+            config_id = uuid.uuid4().hex
+            config_path = get_submit_config_path(config_id)
+            config_path.write_text(
+                json.dumps(config, indent=4, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            written_paths.append(config_path)
+            results.append(
+                {
+                    "config_id": config_id,
+                    "source": source,
+                    "group_value": f"{user_name} / {task_name} / {embodiment}",
+                    "selection": selection,
+                    "episode_count": len(group_records),
+                    "config": config,
+                }
+            )
+    except Exception:
+        for p in written_paths:
+            p.unlink(missing_ok=True)
+        raise
+    return results
 
 
 def create_submit_task(
@@ -901,48 +1013,53 @@ def run_submit_task(task_id: str, command: list[str]) -> None:
     update_submit_task(task_id, status="running")
     log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
 
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=build_submit_subprocess_env(),
-        )
-    except OSError as exc:
-        update_submit_task(
-            task_id,
-            status="failed",
-            error_message=str(exc),
-            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        )
-        return
+    # Each job gets its own temp dir as cwd so that concurrent batch
+    # submissions do not overwrite each other's aidi_job_submit.json
+    # (written by the CLI to cwd before submitting).
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=build_submit_subprocess_env(),
+                cwd=tmp_dir,
+            )
+        except OSError as exc:
+            update_submit_task(
+                task_id,
+                status="failed",
+                error_message=str(exc),
+                finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return
 
-    stdout_thread = Thread(
-        target=_pump_stream,
-        args=(process.stdout, "stdout", log_queue),
-        daemon=True,
-        name=f"submit-stdout-{task_id[:8]}",
-    )
-    stderr_thread = Thread(
-        target=_pump_stream,
-        args=(process.stderr, "stderr", log_queue),
-        daemon=True,
-        name=f"submit-stderr-{task_id[:8]}",
-    )
-    stdout_thread.start()
-    stderr_thread.start()
+        stdout_thread = Thread(
+            target=_pump_stream,
+            args=(process.stdout, "stdout", log_queue),
+            daemon=True,
+            name=f"submit-stdout-{task_id[:8]}",
+        )
+        stderr_thread = Thread(
+            target=_pump_stream,
+            args=(process.stderr, "stderr", log_queue),
+            daemon=True,
+            name=f"submit-stderr-{task_id[:8]}",
+        )
+        stdout_thread.start()
+        stderr_thread.start()
 
-    while process.poll() is None:
+        while process.poll() is None:
+            _drain_submit_queue(task_id, log_queue)
+            time.sleep(0.1)
+
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
         _drain_submit_queue(task_id, log_queue)
-        time.sleep(0.1)
 
-    stdout_thread.join(timeout=1)
-    stderr_thread.join(timeout=1)
-    _drain_submit_queue(task_id, log_queue)
-
-    returncode = process.returncode
+        returncode = process.returncode
     update_submit_task(
         task_id,
         returncode=returncode,
@@ -958,6 +1075,9 @@ def start_submit_task(
     if not config_path.exists():
         raise FileNotFoundError("submit config not found")
 
+    # Write config_data back so single-submit callers can pass a user-edited
+    # dict that differs from what is on disk.  In the batch path the caller
+    # loads from disk first, so this is effectively a no-op write.
     config_path.write_text(
         json.dumps(config_data, indent=4, ensure_ascii=False), encoding="utf-8"
     )
@@ -2275,6 +2395,8 @@ def prepare_submit_job_api():
         else {}
     )
 
+    split = bool(data.get("split", False))
+
     if source not in {"check", "pack"}:
         abort(400, description="source must be check or pack")
 
@@ -2298,11 +2420,18 @@ def prepare_submit_job_api():
         abort(400, description="Please search first before submitting jobs")
 
     try:
-        payload = create_submit_config(source, base_path, filters)
-    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        if split:
+            jobs = create_submit_configs_split(source, base_path, filters)
+            if not jobs:
+                abort(
+                    400, description="No (user, task, embodiment) groups found"
+                )
+            return jsonify({"split": True, "jobs": jobs}), 201
+        else:
+            payload = create_submit_config(source, base_path, filters)
+            return jsonify(payload), 201
+    except (ValueError, OSError, RuntimeError) as exc:
         abort(400, description=str(exc))
-
-    return jsonify(payload), 201
 
 
 @app.post("/api/submit-jobs/<config_id>/submit")
@@ -2321,6 +2450,91 @@ def submit_job_api(config_id: str):
         abort(400, description=str(exc))
 
     return jsonify(result), 202
+
+
+@app.post("/api/submit-jobs/batch-submit")
+def batch_submit_jobs_api():
+    data = request.get_json(silent=True) or {}
+    jobs = data.get("jobs")
+    if not isinstance(jobs, list) or not jobs:
+        abort(400, description="jobs must be a non-empty list")
+    if len(jobs) > 100:
+        abort(400, description="batch size cannot exceed 100 jobs")
+    results = []
+    seen_config_ids: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            results.append(
+                {"config_id": None, "task": None, "error": "invalid job entry"}
+            )
+            continue
+        config_id = str(job.get("config_id", "")).strip()
+        if not config_id:
+            results.append(
+                {
+                    "config_id": config_id,
+                    "task": None,
+                    "error": "config_id is required",
+                }
+            )
+            continue
+        if not re.fullmatch(r"[0-9a-f]{32}", config_id):
+            results.append(
+                {
+                    "config_id": config_id,
+                    "task": None,
+                    "error": "invalid config_id format",
+                }
+            )
+            continue
+        if config_id in seen_config_ids:
+            results.append(
+                {
+                    "config_id": config_id,
+                    "task": None,
+                    "error": "duplicate config_id in batch",
+                }
+            )
+            continue
+        seen_config_ids.add(config_id)
+        # Load config from disk; do not trust client-supplied config
+        config_path = get_submit_config_path(config_id)
+        try:
+            config_data = cast(
+                dict[str, Any],
+                json.loads(config_path.read_text(encoding="utf-8")),
+            )
+        except OSError as exc:
+            results.append(
+                {
+                    "config_id": config_id,
+                    "task": None,
+                    "error": str(exc),
+                }
+            )
+            continue
+        except json.JSONDecodeError as exc:
+            results.append(
+                {
+                    "config_id": config_id,
+                    "task": None,
+                    "error": f"invalid config: {exc}",
+                }
+            )
+            continue
+        try:
+            task = start_submit_task(config_id, config_data)
+            results.append(
+                {"config_id": config_id, "task": task, "error": None}
+            )
+        except (OSError, RuntimeError) as exc:
+            results.append(
+                {"config_id": config_id, "task": None, "error": str(exc)}
+            )
+    # 202 is returned regardless of per-job success/failure: the batch itself
+    # was accepted and processed.  Per-job errors are in each task's "error"
+    # field; callers must inspect the response body, not just the status code.
+    return jsonify({"tasks": results}), 202
 
 
 @app.get("/api/submit-jobs/tasks/<task_id>")

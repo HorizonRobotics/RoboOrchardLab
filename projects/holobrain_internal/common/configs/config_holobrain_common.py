@@ -73,7 +73,7 @@ config = dict(
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     num_vlm_layers=1,
     freeze_vlm=False,
-    checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors"
+    checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
 )
 
 

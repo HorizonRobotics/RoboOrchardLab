@@ -1372,7 +1372,7 @@ def test_submit_job_api_runs_submit_command(tmp_path: Path, monkeypatch):
             self.returncode = 0
             return self.returncode
 
-    def fake_popen(cmd, stdout, stderr, text, bufsize, env):
+    def fake_popen(cmd, stdout, stderr, text, bufsize, env, cwd=None):
         assert cmd[:3] == [
             "RoboOrchardJob-AIDISubmit",
             "submit_from_config",
@@ -1465,7 +1465,7 @@ def test_submit_job_api_returns_logs_on_nonzero_exit(
             self.returncode = 2
             return self.returncode
 
-    def fake_popen(cmd, stdout, stderr, text, bufsize, env):
+    def fake_popen(cmd, stdout, stderr, text, bufsize, env, cwd=None):
         assert cmd[3] == str(config_path)
         assert isinstance(env, dict)
         return FakeProcess()
@@ -1516,7 +1516,7 @@ def test_submit_job_api_returns_logs_when_command_cannot_start(
         json.dumps({"job_name": "demo"}, ensure_ascii=False), encoding="utf-8"
     )
 
-    def fake_popen(cmd, stdout, stderr, text, bufsize, env):
+    def fake_popen(cmd, stdout, stderr, text, bufsize, env, cwd=None):
         raise FileNotFoundError("RoboOrchardJob-AIDISubmit: command not found")
 
     monkeypatch.setattr(app_module.subprocess, "Popen", fake_popen)
@@ -1591,7 +1591,13 @@ def test_submit_job_task_api_exposes_running_logs(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         app_module.subprocess,
         "Popen",
-        lambda cmd, stdout, stderr, text, bufsize, env: FakeProcess(),
+        lambda cmd,
+        stdout,
+        stderr,
+        text,
+        bufsize,
+        env,
+        cwd=None: FakeProcess(),
     )
 
     client = app.test_client()
@@ -1658,7 +1664,7 @@ def test_submit_job_clears_proxy_env_when_enabled(tmp_path: Path, monkeypatch):
         def poll(self):
             return 0
 
-    def fake_popen(cmd, stdout, stderr, text, bufsize, env):
+    def fake_popen(cmd, stdout, stderr, text, bufsize, env, cwd=None):
         captured_env.update(env)
         return FakeProcess()
 

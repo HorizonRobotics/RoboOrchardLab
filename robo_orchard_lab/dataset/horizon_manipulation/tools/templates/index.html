@@ -497,8 +497,100 @@
         gap: 12px;
         flex-wrap: wrap;
         align-items: center;
+        margin-bottom: 6px;
+      }
+      .split-mode-row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        font-size: 13px;
+        color: var(--muted);
         margin-bottom: 14px;
       }
+      .split-mode-row label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--text);
+        cursor: pointer;
+      }
+      .batch-job-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .batch-job-item {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #f8fafc;
+        font-size: 13px;
+        overflow: hidden;
+      }
+      .batch-job-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .batch-job-header:hover { background: #f1f5f9; }
+      .batch-job-header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .batch-job-toggle {
+        font-size: 10px;
+        color: var(--muted);
+        transition: transform 0.15s;
+        display: inline-block;
+      }
+      .batch-job-toggle.open { transform: rotate(90deg); }
+      .batch-job-detail {
+        display: none;
+        border-top: 1px solid var(--line);
+        padding: 10px 14px;
+      }
+      .batch-job-detail.open { display: block; }
+      .batch-job-detail-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 4px;
+        margin-top: 10px;
+      }
+      .batch-job-detail-label:first-child { margin-top: 0; }
+      .batch-job-detail pre {
+        font-size: 11px;
+        background: #f1f5f9;
+        border-radius: 6px;
+        padding: 8px;
+        max-height: 180px;
+        overflow-y: auto;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin: 0;
+      }
+      .batch-job-status {
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #e5e7eb;
+        white-space: nowrap;
+      }
+      .batch-job-status.running { background: #dbeafe; color: #1d4ed8; }
+      .batch-job-status.submitted { background: #d1fae5; color: #065f46; }
+      .batch-job-status.failed { background: #fee2e2; color: #991b1b; }
       .pagination {
         display: flex;
         align-items: center;
@@ -582,6 +674,24 @@
             <button type="button" class="button-secondary" onclick="prepareSubmitJob('pack')">Regenerate Packaging Config</button>
             <button id="confirm-submit-button" type="button" onclick="confirmSubmitJob()">Confirm Submit</button>
           </div>
+        </div>
+      </div>
+    </div>
+    <div id="batch-submit-overlay" class="overlay" aria-hidden="true">
+      <div class="overlay-card submit-overlay-card">
+        <h3 class="overlay-title">Batch Submit Jobs</h3>
+        <div class="submit-overlay-body">
+          <p id="batch-submit-message" class="overlay-text">The following jobs will be submitted. Review the list, then click "Submit All".</p>
+          <div class="overlay-meta" style="margin-bottom:12px;">
+            <span id="batch-submit-source-tag" class="tag">Type: -</span>
+            <span id="batch-submit-split-tag" class="tag">Split by: -</span>
+            <span id="batch-submit-status-tag" class="tag">Not Submitted</span>
+          </div>
+          <ul id="batch-job-list" class="batch-job-list"></ul>
+        </div>
+        <div class="overlay-actions space-between">
+          <button type="button" class="button-secondary" onclick="closeBatchSubmitOverlay()">Cancel</button>
+          <button id="confirm-batch-submit-button" type="button" onclick="confirmBatchSubmit()">Submit All</button>
         </div>
       </div>
     </div>
@@ -731,6 +841,10 @@
           <button type="button" onclick="prepareSubmitJob('pack')">Submit Packaging Job</button>
           <a class="button-secondary" href="/api/export-paths?data_root={{ summary.filters.data_root | urlencode }}&user_name={{ summary.filters.user_name | urlencode }}&task_name={{ summary.filters.task_name | urlencode }}&date_prefix={{ summary.filters.date_prefix | urlencode }}&embodiment={{ summary.filters.embodiment | urlencode }}">Export Paths</a>
           <span class="tag" id="selected-episodes-tag">Will submit the current search result: {{ summary.total_episodes }} episodes</span>
+        </div>
+        <div class="split-mode-row">
+          <label><input type="radio" name="split_mode" value="none" checked> Single job</label>
+          <label><input type="radio" name="split_mode" value="split"> Split jobs <span style="color:var(--muted)">(one per user / task / embodiment)</span></label>
         </div>
         {% if summary.pagination.total_pages > 1 %}
         <div class="pagination">
@@ -1470,6 +1584,13 @@ ${data.message}` : "",
         ].filter(Boolean);
       }
 
+      let batchSubmitJobs = [];
+      let batchTaskIds = [];
+      let batchJobStatuses = [];
+      let batchPollTimer = null;
+      let batchPollCancelled = false;
+      const BATCH_JOB_STATUS_CLASS = { pending: "", running: "running", submitted: "submitted", failed: "failed" };
+
       async function prepareSubmitJob(source) {
         const currentCount = getCurrentFilteredEpisodeCount();
         if (!currentCount) {
@@ -1486,36 +1607,250 @@ ${data.message}` : "",
           return;
         }
 
-        const embodimentKeys = Object.keys(summaryTotals.by_embodiment || {});
-        if (embodimentKeys.length > 1) {
-          showToast(`Cannot submit: data contains multiple embodiments (${embodimentKeys.join(", ")}). Please filter to a single embodiment first.`);
-          return;
+        const splitModeInput = document.querySelector('input[name="split_mode"]:checked');
+        const isSplit = splitModeInput ? splitModeInput.value === "split" : false;
+
+        // Multi-embodiment guard only applies to single-job mode.
+        if (!isSplit) {
+          const embodimentKeys = Object.keys(summaryTotals.by_embodiment || {});
+          if (embodimentKeys.length > 1) {
+            showToast(`Cannot submit: data contains multiple embodiments (${embodimentKeys.join(", ")}). Please filter to a single embodiment or use "Split jobs" mode.`);
+            return;
+          }
         }
 
         const dataRoot = document.getElementById("data_root").value.trim() || "{{ summary.base_path }}";
+        const body = {
+          source,
+          data_root: dataRoot,
+          filters: {
+            user_name: userName,
+            task_name: taskName,
+            embodiment,
+            date_prefix: datePrefix,
+          },
+        };
+        if (isSplit) {
+          body.split = true;
+        }
         try {
           const response = await fetch("/api/submit-jobs/prepare", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              source,
-              data_root: dataRoot,
-              filters: {
-                user_name: userName,
-                task_name: taskName,
-                embodiment,
-                date_prefix: datePrefix,
-              },
-            })
+            body: JSON.stringify(body),
           });
           const data = await response.json();
           if (!response.ok) {
             showToast(data.description || data.message || "Failed to initialize submit_config");
             return;
           }
-          openSubmitOverlay(data.config_id, source, currentCount, JSON.stringify(data.config, null, 4));
+          if (isSplit) {
+            openBatchSubmitOverlay(source, data.jobs);
+          } else {
+            openSubmitOverlay(data.config_id, source, currentCount, JSON.stringify(data.config, null, 4));
+          }
         } catch (error) {
           showToast("Failed to initialize submit_config. Please try again later");
+        }
+      }
+
+      function openBatchSubmitOverlay(source, jobs) {
+        batchSubmitJobs = jobs || [];
+        batchTaskIds = new Array(batchSubmitJobs.length).fill(null);
+        batchJobStatuses = new Array(batchSubmitJobs.length).fill("pending");
+        batchPollCancelled = false;
+        stopBatchPolling();
+        document.getElementById("batch-submit-source-tag").textContent =
+          `Type: ${source === "check" ? "Checking" : "Packaging"}`;
+        document.getElementById("batch-submit-split-tag").textContent =
+          `Split by: user / task / embodiment`;
+        document.getElementById("batch-submit-status-tag").textContent = "Not Submitted";
+        document.getElementById("batch-submit-message").textContent =
+          `${batchSubmitJobs.length} job(s) will be submitted. Review the list, then click "Submit All".`;
+        const confirmBtn = document.getElementById("confirm-batch-submit-button");
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Submit All";
+        const listEl = document.getElementById("batch-job-list");
+        listEl.innerHTML = batchSubmitJobs.map((job, i) => {
+          const jobName = escapeHtml(job.config && job.config.job_name ? job.config.job_name : job.group_value);
+          const configText = escapeHtml(JSON.stringify(job.config, null, 2));
+          return `
+          <li class="batch-job-item" id="batch-job-item-${i}">
+            <div class="batch-job-header" onclick="toggleBatchJobDetail(${i})">
+              <div>
+                <strong>${jobName}</strong>
+                <div style="color:var(--muted);font-size:12px;margin-top:2px;">
+                  ${escapeHtml(job.group_value)} &bull; ${job.episode_count} episode(s)
+                </div>
+              </div>
+              <div class="batch-job-header-right">
+                <span class="batch-job-status" id="batch-job-status-${i}">Pending</span>
+                <span class="batch-job-toggle" id="batch-job-toggle-${i}">&#9654;</span>
+              </div>
+            </div>
+            <div class="batch-job-detail" id="batch-job-detail-${i}">
+              <div class="batch-job-detail-label">Config</div>
+              <pre id="batch-job-config-${i}">${configText}</pre>
+              <div class="batch-job-detail-label">Log</div>
+              <pre id="batch-job-log-${i}">Waiting for submission...</pre>
+            </div>
+          </li>`;
+        }).join("");
+        document.getElementById("batch-submit-overlay").classList.add("show");
+      }
+
+      function toggleBatchJobDetail(i) {
+        const detail = document.getElementById(`batch-job-detail-${i}`);
+        const toggle = document.getElementById(`batch-job-toggle-${i}`);
+        if (!detail || !toggle) return;
+        const opening = !detail.classList.contains("open");
+        detail.classList.toggle("open", opening);
+        toggle.classList.toggle("open", opening);
+      }
+
+      function closeBatchSubmitOverlay() {
+        // Set batchPollCancelled before clearing state. Any in-flight pollBatchTasks
+        // call checks this flag after its Promise.all resolves (before touching the
+        // DOM), so resetting the arrays here is safe — the guard runs first.
+        batchPollCancelled = true;
+        stopBatchPolling();
+        document.getElementById("batch-submit-overlay").classList.remove("show");
+        batchSubmitJobs = [];
+        batchTaskIds = [];
+        batchJobStatuses = [];
+      }
+
+      async function confirmBatchSubmit() {
+        if (!batchSubmitJobs.length) return;
+        const confirmBtn = document.getElementById("confirm-batch-submit-button");
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = "Submitting...";
+        document.getElementById("batch-submit-status-tag").textContent = "Submitting";
+        document.getElementById("batch-submit-message").textContent =
+          "Jobs are being submitted. Progress is shown below.";
+        // On retry, skip jobs already successfully submitted.
+        const pending = batchSubmitJobs
+          .map((job, i) => ({ job, i }))
+          .filter(({ i }) => batchJobStatuses[i] !== "submitted");
+        if (!pending.length) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = "Submit All";
+          return;
+        }
+        const payload = pending.map(({ job }) => ({ config_id: job.config_id }));
+        try {
+          const response = await fetch("/api/submit-jobs/batch-submit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobs: payload }),
+          });
+          const data = await response.json();
+          if (batchPollCancelled) return;
+          if (!response.ok) {
+            document.getElementById("batch-submit-status-tag").textContent = "Failed";
+            showToast(data.description || "Batch submission failed");
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = "Retry";
+            return;
+          }
+          if (data.tasks.length !== pending.length) {
+            console.error(
+              `batch-submit: expected ${pending.length} task entries, got ${data.tasks.length}`
+            );
+            document.getElementById("batch-submit-status-tag").textContent = "Failed";
+            showToast("Unexpected server response; please retry.");
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = "Retry";
+            return;
+          }
+          // Map response back to original indices.
+          data.tasks.forEach((t, ri) => {
+            const origIdx = pending[ri].i;
+            batchTaskIds[origIdx] = (t.task && t.task.task_id) ? t.task.task_id : null;
+            if (t.error) {
+              batchJobStatuses[origIdx] = "failed";
+              const statusEl = document.getElementById(`batch-job-status-${origIdx}`);
+              if (statusEl) { statusEl.textContent = "Failed"; statusEl.className = "batch-job-status failed"; }
+              const logEl = document.getElementById(`batch-job-log-${origIdx}`);
+              if (logEl) logEl.textContent = t.error;
+            } else {
+              // Reset to pending so pollBatchTasks will pick it up on retry.
+              batchJobStatuses[origIdx] = "pending";
+              const statusEl = document.getElementById(`batch-job-status-${origIdx}`);
+              if (statusEl) { statusEl.textContent = "Pending"; statusEl.className = "batch-job-status"; }
+            }
+          });
+          pollBatchTasks();
+        } catch (error) {
+          if (batchPollCancelled) return;
+          document.getElementById("batch-submit-status-tag").textContent = "Failed";
+          showToast("Batch submission failed. Please try again later.");
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = "Retry";
+        }
+      }
+
+      function stopBatchPolling() {
+        if (batchPollTimer) {
+          clearTimeout(batchPollTimer);
+          batchPollTimer = null;
+        }
+      }
+
+      async function pollBatchTasks() {
+        if (!batchTaskIds.length) return;
+        const fetches = batchTaskIds.map((taskId, i) => {
+          // Skip: null taskId (failed at submit time), or already in a terminal state.
+          if (!taskId || batchJobStatuses[i] === "submitted" || batchJobStatuses[i] === "failed") {
+            return Promise.resolve({ index: i, skip: true });
+          }
+          return fetch(`/api/submit-jobs/tasks/${taskId}`)
+            .then(r => r.json().then(d => ({ index: i, data: d, ok: r.ok, skip: false })))
+            .catch(() => ({ index: i, data: null, ok: false, skip: false }));
+        });
+        const results = await Promise.all(fetches);
+        // Overlay may have been closed while awaiting; abort all DOM mutations.
+        if (batchPollCancelled) return;
+        let anyRunning = false;
+        results.forEach(({ index, data, ok, skip }) => {
+          if (skip) return;
+          const statusEl = document.getElementById(`batch-job-status-${index}`);
+          if (!statusEl) return;
+          if (!ok || !data) {
+            statusEl.textContent = "Error";
+            statusEl.className = "batch-job-status failed";
+            batchJobStatuses[index] = "failed";
+            return;
+          }
+          const status = data.status || "pending";
+          statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+          statusEl.className = `batch-job-status ${BATCH_JOB_STATUS_CLASS[status] || ""}`;
+          batchJobStatuses[index] = status;
+          const logEl = document.getElementById(`batch-job-log-${index}`);
+          if (logEl) {
+            const log = [data.stdout, data.stderr].filter(Boolean).join("\n").trim();
+            logEl.textContent = log || `(${status})`;
+          }
+          if (status === "pending" || status === "running") anyRunning = true;
+        });
+        if (anyRunning) {
+          batchPollTimer = setTimeout(pollBatchTasks, 1000);
+          return;
+        }
+        // Use batchJobStatuses as source of truth (covers both poll failures and initial submit failures).
+        const failed = batchJobStatuses.filter(s => s === "failed").length;
+        const submitted = batchJobStatuses.filter(s => s === "submitted").length;
+        const statusTag = document.getElementById("batch-submit-status-tag");
+        const confirmBtn = document.getElementById("confirm-batch-submit-button");
+        if (failed === 0) {
+          statusTag.textContent = "All Submitted";
+          confirmBtn.textContent = "Done";
+          showToast(`All ${submitted} job(s) submitted successfully`);
+        } else {
+          statusTag.textContent = `${failed} Failed`;
+          showToast(`${submitted} submitted, ${failed} failed`);
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = "Retry";
         }
       }
 
