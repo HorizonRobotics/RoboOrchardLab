@@ -23,10 +23,10 @@ import numpy as np
 import torch
 from robo_orchard_core.utils.config import load_config_class
 
-from robo_orchard_lab.inference.processor import (
+from robo_orchard_lab.processing.io_processor import (
     ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 from robo_orchard_lab.utils.path import in_cwd
@@ -160,7 +160,7 @@ class Struct2Dict:
         return input_data
 
 
-class HoloBrainProcessor(ProcessorMixin):
+class HoloBrainProcessor(ModelIOProcessor):
     cfg: "HoloBrainProcessorCfg"  # for type hint
 
     def __init__(self, cfg: "HoloBrainProcessorCfg"):
@@ -228,7 +228,7 @@ class HoloBrainProcessor(ProcessorMixin):
         return processor
 
 
-class HoloBrainProcessorCfg(ProcessorMixinCfg[HoloBrainProcessor]):
+class HoloBrainProcessorCfg(ModelIOProcessorCfg[HoloBrainProcessor]):
     class_type: ClassType_co[HoloBrainProcessor] = HoloBrainProcessor
     load_image: bool = True
     load_depth: bool = True

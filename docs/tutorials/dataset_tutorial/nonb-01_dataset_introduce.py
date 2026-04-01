@@ -156,5 +156,3 @@ This design provides:
 
 4. **Full Visualization Fidelity**: Seamlessly export any episode back to `MCAP <https://mcap.dev/>`__ for debugging in `Foxglove <https://docs.foxglove.dev/>`__, preserving the rich experience you see above.
 """
-
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'

@@ -23,19 +23,37 @@ __all__ = ["gen_index"]
 
 
 def gen_index(
-    jinja_template_path: str, gallery_dirs_dict: dict[str, Iterable[str]]
+    jinja_template_path: str,
+    gallery_dirs_dict: dict[str, Iterable[str]],
+    *,
+    index_file: str | None = None,
+    include_readme: bool = True,
+    readme_path: str = "readme.md",
+    getting_started_doc: str | None = "getting_started/index",
+    overview_doc: str | None = "overview/index",
+    autoapi_index: str | None = "autoapi/index",
+    title: str = "Contents",
 ):
     template_loader = jinja2.FileSystemLoader(
         searchpath=os.path.dirname(jinja_template_path)
     )
     template_env = jinja2.Environment(loader=template_loader)
     template = template_env.get_template(os.path.basename(jinja_template_path))
-    index_file = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "index.rst",
-    )
+    if index_file is None:
+        index_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "index.rst",
+        )
 
-    render_data = {"gallery_toctree": ""}
+    render_data = {
+        "autoapi_index": autoapi_index,
+        "gallery_toctree": "",
+        "getting_started_doc": getting_started_doc,
+        "include_readme": include_readme,
+        "overview_doc": overview_doc,
+        "readme_path": readme_path,
+        "title": title,
+    }
 
     for _, gallery_dirs in gallery_dirs_dict.items():
         gallery_toctree = "\n    ".join(
@@ -54,5 +72,6 @@ def gen_index(
 """
         )
 
+    os.makedirs(os.path.dirname(index_file), exist_ok=True)
     with open(index_file, "w") as f:
         f.write(template.render(render_data))

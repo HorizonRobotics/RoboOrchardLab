@@ -1,5 +1,5 @@
 ---
-description: Load these baseline instructions for any task in this repository.
+description: Load these baseline instructions only for tasks that touch this repository's files, workflows, or behavior.
 ---
 
 # Project Instructions

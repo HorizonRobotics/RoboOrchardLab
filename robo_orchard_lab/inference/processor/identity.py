@@ -14,42 +14,54 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from __future__ import annotations
+
+from typing_extensions import deprecated
+
 from robo_orchard_lab.inference.processor.mixin import (
-    ClassType_co,
     ProcessorMixin,
     ProcessorMixinCfg,
 )
+from robo_orchard_lab.processing.io_processor.identity import (
+    IdentityIOProcessor,
+    IdentityIOProcessorCfg,
+)
+
+__all__ = [
+    "IdentityProcessor",
+    "IdentityProcessorCfg",
+]
 
 
-class IdentityProcessor(ProcessorMixin):
-    """A processor that performs no operations.
+@deprecated(
+    "Use `robo_orchard_lab.processing.io_processor.identity."
+    "IdentityIOProcessor` instead.",
+    category=None,
+)
+class IdentityProcessor(IdentityIOProcessor):
+    """Backward-compatible facade for the historical identity processor.
 
-    This processor serves as a pass-through component, returning the data it
-    receives without any modification. It is useful as a default processor or
-    as a placeholder in pipelines where no pre-processing or post-processing
-    is required.
+    This deprecated class preserves the old ``IdentityProcessor`` import path
+    while delegating behavior to
+    :class:`robo_orchard_lab.processing.io_processor.identity.IdentityIOProcessor`.
+    It remains a pass-through processor for pipelines that require a processor
+    object but no transformation.
     """
 
-    cfg: "IdentityProcessorCfg"  # for type hint
-
-    def __init__(self, cfg: "IdentityProcessorCfg"):
-        super().__init__(cfg)
-
-    def pre_process(self, data):
-        """Returns the input data without modification.
-
-        Args:
-            data: The raw input data.
-
-        Returns:
-            The same input data, unchanged.
-        """
-        return data
-
-    def post_process(self, model_outputs, _):
-        """Returns the model outputs without modification."""
-        return model_outputs
+    __add__ = ProcessorMixin.__add__
 
 
-class IdentityProcessorCfg(ProcessorMixinCfg[IdentityProcessor]):
-    class_type: ClassType_co[IdentityProcessor] = IdentityProcessor
+@deprecated(
+    "Use `robo_orchard_lab.processing.io_processor.identity."
+    "IdentityIOProcessorCfg` instead.",
+    category=None,
+)
+class IdentityProcessorCfg(IdentityIOProcessorCfg):
+    """Backward-compatible config for :class:`IdentityProcessor`.
+
+    This deprecated config preserves the legacy serialized config path for the
+    identity processor while reusing the canonical implementation.
+    """
+
+    class_type: type[IdentityProcessor] = IdentityProcessor
+    __add__ = ProcessorMixinCfg.__add__

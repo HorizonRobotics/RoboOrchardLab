@@ -20,12 +20,12 @@ from typing import Dict, List, Optional, Union
 import fsspec
 from PIL import Image as PILImage
 
-from robo_orchard_lab.inference.processor import (
-    ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
-)
 from robo_orchard_lab.models.monodream.utils.constants import Image
+from robo_orchard_lab.processing.io_processor import (
+    ClassType_co,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
+)
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 
 __all__ = ["MonoDreamProcessor", "MonoDreamProcessorCfg"]
@@ -81,7 +81,7 @@ class PathListToData:
         return input_data
 
 
-class MonoDreamProcessor(ProcessorMixin):
+class MonoDreamProcessor(ModelIOProcessor):
     """Processor for the MonoDream navigation model.
 
     Converts image paths + instruction into a multimodal list input format,
@@ -153,7 +153,7 @@ class MonoDreamProcessor(ProcessorMixin):
         return MonoDreamOutput(text=text)
 
 
-class MonoDreamProcessorCfg(ProcessorMixinCfg[MonoDreamProcessor]):
+class MonoDreamProcessorCfg(ModelIOProcessorCfg[MonoDreamProcessor]):
     """Configuration for MonoDreamProcessor."""
 
     class_type: ClassType_co[MonoDreamProcessor] = MonoDreamProcessor

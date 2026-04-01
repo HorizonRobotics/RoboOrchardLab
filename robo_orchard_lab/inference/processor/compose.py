@@ -14,52 +14,104 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from robo_orchard_lab.inference.processor.mixin import (
-    ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
-    ProcessorMixinCfgType_co,
+from __future__ import annotations
+
+from typing_extensions import deprecated
+
+from robo_orchard_lab.processing.io_processor.base import (
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
+)
+from robo_orchard_lab.processing.io_processor.compose import (
+    ComposedIOProcessor,
+    ComposedIOProcessorCfg,
 )
 
+__all__ = [
+    "ComposeProcessor",
+    "ComposeProcessorCfg",
+]
 
-class ComposeProcessor(ProcessorMixin):
-    """A processor that chains multiple processors together.
 
-    This processor acts as a container to apply a sequence of other processors
-    serially. It allows for building complex data processing pipelines from
-    smaller, modular components.
+@deprecated(
+    "Use `robo_orchard_lab.processing.io_processor.compose."
+    "ComposedIOProcessor` instead.",
+    category=None,
+)
+class ComposeProcessor(ComposedIOProcessor):
+    """Backward-compatible facade for the historical composed processor.
+
+    This deprecated class preserves the legacy
+    ``robo_orchard_lab.inference.processor.ComposeProcessor`` import path while
+    delegating behavior to
+    :class:`robo_orchard_lab.processing.io_processor.compose.ComposedIOProcessor`.
+
+    It still represents an ordered processor chain whose ``pre_process``
+    methods run from left to right and whose ``post_process`` methods run in
+    reverse order.
     """
 
-    cfg: "ComposeProcessorCfg"  # for type hint
+    def __add__(
+        self, other: ModelIOProcessor | ComposedIOProcessor
+    ) -> ComposeProcessor:
+        """Build a legacy composed processor by appending ``other``.
 
-    def __init__(self, cfg: "ComposeProcessorCfg"):
-        super().__init__(cfg)
-        self.processors: list[ProcessorMixin] = [
-            cfg_i() for cfg_i in self.cfg.processors
-        ]
-
-    def pre_process(self, data):
-        """Applies the `pre_process` method of each processor in sequence.
-
-        The output of one processor becomes the input to the next.
+        This preserves the historical ``ComposeProcessor`` return type while
+        keeping the runtime behavior aligned with the legacy processor chain.
 
         Args:
-            data: The initial raw input data.
+            other (ModelIOProcessor | ComposedIOProcessor): Processor to
+                append to the legacy chain.
 
         Returns:
-            The data after being transformed by all processors in the sequence.
+            ComposeProcessor: A new legacy composed processor instance.
         """
-        for ts in self.processors:
-            data = ts.pre_process(data)
-        return data
+        if not isinstance(other, ModelIOProcessor):
+            raise TypeError(
+                "Can only concatenate processor objects that implement "
+                "ModelIOProcessor."
+            )
 
-    def post_process(self, model_outputs, model_input):
-        # Apply post-processing in reverse order of pre-processing
-        for ts in reversed(self.processors):
-            model_outputs = ts.post_process(model_outputs, model_input)
-        return model_outputs
+        new_processor = ComposeProcessor.__new__(ComposeProcessor)
+        new_processor.cfg = self.cfg.model_copy(deep=False)
+        new_processor.processors = list(self.processors)
+        ComposedIOProcessor.__iadd__(new_processor, other)
+        return new_processor
 
 
-class ComposeProcessorCfg(ProcessorMixinCfg[ComposeProcessor]):
-    class_type: ClassType_co[ComposeProcessor] = ComposeProcessor
-    processors: list[ProcessorMixinCfgType_co]  # type: ignore
+@deprecated(
+    "Use `robo_orchard_lab.processing.io_processor.compose."
+    "ComposedIOProcessorCfg` instead.",
+    category=None,
+)
+class ComposeProcessorCfg(ComposedIOProcessorCfg):
+    """Backward-compatible config for :class:`ComposeProcessor`.
+
+    This deprecated config preserves legacy serialized config paths for
+    ordered processor chains and remains compatible with the historical
+    ``processors`` field semantics.
+    """
+
+    class_type: type[ComposeProcessor] = ComposeProcessor
+
+    def __add__(
+        self, other: ModelIOProcessorCfg | ComposedIOProcessorCfg
+    ) -> ComposeProcessorCfg:
+        """Build a legacy composed processor config by appending ``other``.
+
+        Args:
+            other (ModelIOProcessorCfg | ComposedIOProcessorCfg): Processor
+                config to append to the legacy chain.
+
+        Returns:
+            ComposeProcessorCfg: A new legacy composed processor config.
+        """
+        if not isinstance(other, ModelIOProcessorCfg):
+            raise TypeError(
+                "Can only concatenate processor config objects that "
+                "implement ModelIOProcessorCfg."
+            )
+
+        new_cfg = self.model_copy(deep=False)
+        ComposedIOProcessorCfg.__iadd__(new_cfg, other)
+        return new_cfg

@@ -20,10 +20,10 @@ from typing import Dict, List, Optional, Union
 import fsspec
 from PIL import Image as PILImage
 
-from robo_orchard_lab.inference.processor import (
+from robo_orchard_lab.processing.io_processor import (
     ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 
@@ -75,7 +75,7 @@ class PathListToData:
         return input_data
 
 
-class ProgressModelProcessor(ProcessorMixin):
+class ProgressModelProcessor(ModelIOProcessor):
     """Processor for the ProgressModel navigation model.
 
     Converts image paths into a multimodal list input format,
@@ -127,7 +127,7 @@ class ProgressModelProcessor(ProcessorMixin):
         return ProgressModelOutput(text=text)
 
 
-class ProgressModelProcessorCfg(ProcessorMixinCfg[ProgressModelProcessor]):
+class ProgressModelProcessorCfg(ModelIOProcessorCfg[ProgressModelProcessor]):
     """Configuration for ProgressModelProcessor."""
 
     class_type: ClassType_co[ProgressModelProcessor] = ProgressModelProcessor

@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__))))
 import re
 from collections import OrderedDict
 
+import doc_gen  # type: ignore
 from doc_gen import gen_index, patch_autoapi  # type: ignore
 from pydantic import BaseModel
 from recommonmark.parser import CommonMarkParser
@@ -37,6 +38,8 @@ from recommonmark.transform import AutoStructify
 import robo_orchard_lab
 
 CUR_DIR = os.path.abspath(os.path.dirname(__file__))
+BUILD_CONTEXT = doc_gen.build_context_from_env(CUR_DIR)
+AUTOAPI_ENABLED = not BUILD_CONTEXT.is_debug_tutorial
 
 with_comment = os.environ.get("DOC_WITH_COMMENT", "0") == "1"
 # -- Project information -----------------------------------------------------
@@ -87,6 +90,9 @@ extensions = [
     "nbsphinx",
 ]
 
+if not AUTOAPI_ENABLED:
+    extensions.remove("autoapi.extension")
+
 autodoc_mock_imports = []
 
 html_show_sourcelink = True
@@ -115,8 +121,14 @@ autodoc_default_options = {
 }
 
 # autoapi configuration
-autoapi_dirs = ["../robo_orchard_lab"]
-autoapi_root = "autoapi"
+autoapi_dirs = (
+    [os.path.relpath(BUILD_CONTEXT.package_root, CUR_DIR)]
+    if AUTOAPI_ENABLED
+    else []
+)
+autoapi_root = BUILD_CONTEXT.autoapi_root
+autoapi_add_toctree_entry = AUTOAPI_ENABLED
+autoapi_generate_api_docs = AUTOAPI_ENABLED
 autoapi_keep_files = True
 autoapi_type = "python"
 autoapi_template_dir = "_templates/autoapi"
@@ -125,6 +137,7 @@ autoapi_ignore = [
     "*/setup.py",
     "*robo_orchard_lab/dataset/experimental",
 ]
+autoapi_ignore.extend(doc_gen.build_targeted_autoapi_ignore(BUILD_CONTEXT))
 autoapi_python_use_implicit_namespaces = True
 autoapi_options = [
     "members",
@@ -153,36 +166,38 @@ def autoapi_skip_member(app):
 if with_comment:
     extensions.append("sphinx_comments")
 
-gallery_dict = OrderedDict()
-# accelerate building docs
-if os.environ.get("ROBO_ORCHARD_NO_TUTORIALS", "0") != "1":
-    gallery_dict["dataset_tutorial"] = [
-        {"path": "tutorials/dataset_tutorial/"}
-    ]
-    gallery_dict["trainer_tutorial"] = [
-        {"path": "tutorials/trainer_tutorial/"}
-    ]
-    gallery_dict["model_zoo_tutorial"] = [
-        {"path": "tutorials/model_zoo_tutorial/"}
-    ]
+gallery_dict = doc_gen.build_gallery_entries(BUILD_CONTEXT)
 
-build_gallery_dict = OrderedDict()
+render_gallery_dict = OrderedDict()
+index_gallery_dict = OrderedDict()
 examples_dirs = []
 gallery_dirs = []
 
 for key, value in gallery_dict.items():
-    if key not in build_gallery_dict:
-        build_gallery_dict[key] = []
+    if key not in render_gallery_dict:
+        render_gallery_dict[key] = []
+    if key not in index_gallery_dict:
+        index_gallery_dict[key] = []
 
     for v in value:
         gallery_type = v.get("gallery_type", "sphinx_gallery")
         gallery_path = v["path"]
+        gallery_output_path = v.get("output_path", "build/" + gallery_path)
+        gallery_index_path = gallery_output_path
+        if BUILD_CONTEXT.is_debug_tutorial:
+            gallery_index_path = os.path.relpath(
+                os.path.join(CUR_DIR, gallery_output_path),
+                BUILD_CONTEXT.debug_root,
+            )
+
         if gallery_type == "sphinx_gallery":
-            build_gallery_dict[key].append("build/" + gallery_path)
+            render_gallery_dict[key].append(gallery_output_path)
+            index_gallery_dict[key].append(gallery_index_path)
             examples_dirs.append(gallery_path)
-            gallery_dirs.append("build/" + gallery_path)
+            gallery_dirs.append(gallery_output_path)
         else:
-            build_gallery_dict[key].append(gallery_path)
+            render_gallery_dict[key].append(gallery_output_path)
+            index_gallery_dict[key].append(gallery_index_path)
 
 
 # This is processed by Jinja2 and inserted before each notebook
@@ -206,7 +221,7 @@ sphinx_gallery_conf = {
     "examples_dirs": examples_dirs,
     # path where to save gallery generated examples
     "gallery_dirs": gallery_dirs,
-    "filename_pattern": ".py",
+    "filename_pattern": doc_gen.build_gallery_filename_pattern(BUILD_CONTEXT),
     # "filename_pattern": r"^(?!.*ignore_exec\.py).*$",
     # "ignore_pattern": r"ignore_exec.py",
     # "example_extensions": {".py", ".rst"},
@@ -222,7 +237,7 @@ sphinx_gallery_conf = {
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path .
-exclude_patterns = ["**/nonb**.ipynb", "tutorials/**/*.rst"]
+exclude_patterns = doc_gen.build_exclude_patterns(BUILD_CONTEXT)
 
 
 suppress_warnings = [
@@ -233,6 +248,11 @@ suppress_warnings = [
     # Emitted if resolving references to objects in an imported module failed.
     "autoapi.python_import_resolution",
 ]
+if BUILD_CONTEXT.is_debug_tutorial:
+    # Tutorial debug builds intentionally skip API page generation, so keep
+    # internal Python cross-reference misses from failing the fast path.
+    suppress_warnings.append("ref.python")
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
@@ -274,7 +294,7 @@ source_parsers = {".md": CommonMarkParser}
 source_suffix = [".rst", ".md"]
 
 # The master toctree document.
-master_doc = "index"
+master_doc = BUILD_CONTEXT.master_doc
 
 # The language for content autogenerated by Sphinx. Refer to documentation
 # for a list of supported languages.
@@ -464,12 +484,36 @@ def setup(app):
     app.add_transform(AutoStructify)
     app.add_config_value("recommonmark_config", {}, True)
     patch_autodoc(app)
-    autoapi_skip_member(app)
-    # patch autoapi to support customize docstring
-    patch_autoapi(app)
+    if AUTOAPI_ENABLED:
+        autoapi_skip_member(app)
+        # patch autoapi to support customize docstring
+        patch_autoapi(app)
 
     gen_index(
-        jinja_template_path="index.jinja", gallery_dirs_dict=build_gallery_dict
+        jinja_template_path="index.jinja",
+        gallery_dirs_dict=index_gallery_dict,
+        index_file=(
+            BUILD_CONTEXT.debug_index_file
+            if BUILD_CONTEXT.is_debug_build
+            else None
+        ),
+        include_readme=not BUILD_CONTEXT.is_debug_build,
+        getting_started_doc=(
+            None if BUILD_CONTEXT.is_debug_build else "getting_started/index"
+        ),
+        overview_doc=(
+            None if BUILD_CONTEXT.is_debug_build else "overview/index"
+        ),
+        autoapi_index=(
+            None if BUILD_CONTEXT.is_debug_tutorial else "autoapi/index"
+        ),
+        title=(
+            "Debug API Contents"
+            if BUILD_CONTEXT.is_debug_api
+            else "Debug Tutorial Contents"
+            if BUILD_CONTEXT.is_debug_tutorial
+            else "Contents"
+        ),
     )
     copy_files = [
         (

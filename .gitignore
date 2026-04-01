@@ -4,7 +4,9 @@ test_logs_worker_master.log
 ## python
 *__git_hash__.py
 FULL_VERSION
+**/.agents/tmp/
 VERSION_POSTFIX
+.venv/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
@@ -14,7 +16,6 @@ version.py
 ## docs
 docs/sg_execution_times.rst
 docs/index.rst
-docs/readme.md
 docs/autoapi/
 docs/tutorials/dataset_tutorial/data1
 docs/tutorials/dataset_tutorial/data2

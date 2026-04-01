@@ -24,8 +24,6 @@ State-of-the-Art (SOTA) perception models provided by the
 **RoboOrchardLab**.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
-
 # %%
 # BIP3D: Bridging 2D Images and 3D Perception for Embodied Intelligence
 # ---------------------------------------------------------------------------

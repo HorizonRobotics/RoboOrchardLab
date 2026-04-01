@@ -14,12 +14,17 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 import copy
-from typing import Dict
+import importlib
+import threading
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, cast
 
 import pytest
 import torch
 import torch.nn as nn
 
+import robo_orchard_lab.inference.processor as legacy_processor_module
 from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.inference import (
     ClassType_co,
@@ -28,12 +33,24 @@ from robo_orchard_lab.inference import (
     InferencePipelineMixin,
 )
 from robo_orchard_lab.inference.processor import (
+    ClassType_co as LegacyProcessorClassType_co,
+    ComposeProcessor,
+    ComposeProcessorCfg,
     ProcessorMixin,
     ProcessorMixinCfg,
 )
 from robo_orchard_lab.models.mixin import (
     ModelMixin,
     TorchModuleCfg,
+)
+from robo_orchard_lab.pipeline.inference import (
+    InferencePipeline as RuntimeInferencePipeline,
+    InferencePipelineCfg as RuntimeInferencePipelineCfg,
+)
+from robo_orchard_lab.processing.io_processor import (
+    ComposedIOProcessor,
+    ComposedIOProcessorCfg,
+    ModelIOProcessor,
 )
 from robo_orchard_lab.utils.path import DirectoryNotEmptyError
 
@@ -84,6 +101,60 @@ class DummyProcessorCfg(ProcessorMixinCfg[DummyProcessor]):
     """Config for DummyProcessor."""
 
     class_type: ClassType_co[DummyProcessor] = DummyProcessor
+
+
+class AddProcessor(ProcessorMixin):
+    """A processor that adds constants in pre- and post-processing."""
+
+    cfg: "AddProcessorCfg"
+
+    def pre_process(self, data: InputDict) -> InputDict:
+        data = data.copy()
+        data["input_data"] = data["input_data"] + self.cfg.pre_add
+        return data
+
+    def post_process(self, model_outputs: OutputDict, batch) -> OutputDict:
+        del batch
+        model_outputs = model_outputs.copy()
+        model_outputs["output_data"] = (
+            model_outputs["output_data"] + self.cfg.post_add
+        )
+        return model_outputs
+
+
+class AddProcessorCfg(ProcessorMixinCfg[AddProcessor]):
+    """Config for AddProcessor."""
+
+    class_type: ClassType_co[AddProcessor] = AddProcessor
+    pre_add: float = 0.0
+    post_add: float = 0.0
+
+
+class MultiplyProcessor(ProcessorMixin):
+    """A processor that scales tensors in pre- and post-processing."""
+
+    cfg: "MultiplyProcessorCfg"
+
+    def pre_process(self, data: InputDict) -> InputDict:
+        data = data.copy()
+        data["input_data"] = data["input_data"] * self.cfg.pre_scale
+        return data
+
+    def post_process(self, model_outputs: OutputDict, batch) -> OutputDict:
+        del batch
+        model_outputs = model_outputs.copy()
+        model_outputs["output_data"] = (
+            model_outputs["output_data"] * self.cfg.post_scale
+        )
+        return model_outputs
+
+
+class MultiplyProcessorCfg(ProcessorMixinCfg[MultiplyProcessor]):
+    """Config for MultiplyProcessor."""
+
+    class_type: ClassType_co[MultiplyProcessor] = MultiplyProcessor
+    pre_scale: float = 1.0
+    post_scale: float = 1.0
 
 
 class MyTestPipeline(InferencePipeline[InputDict, OutputDict]):
@@ -252,6 +323,217 @@ def test_pipeline_call_dataset_like(test_pipeline: MyTestPipeline):
     for o, e_o in zip(output, expected_final_output, strict=True):
         assert "output_data" in o
         assert torch.allclose(o["output_data"], e_o)
+
+
+def test_processor_cfg_add_and_iadd():
+    add_cfg = AddProcessorCfg(pre_add=1.0, post_add=10.0)
+    scale_cfg = MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0)
+
+    combined_cfg = add_cfg + scale_cfg
+    assert isinstance(combined_cfg, ComposeProcessorCfg)
+    assert len(combined_cfg.processors) == 2
+    assert combined_cfg[0].class_type is AddProcessor
+    assert combined_cfg[1].class_type is MultiplyProcessor
+
+    extended_cfg = combined_cfg + AddProcessorCfg(pre_add=5.0, post_add=7.0)
+    assert len(combined_cfg.processors) == 2
+    assert len(extended_cfg.processors) == 3
+
+    prepended_cfg = AddProcessorCfg(pre_add=8.0, post_add=9.0) + combined_cfg
+    assert isinstance(prepended_cfg, ComposeProcessorCfg)
+    assert len(prepended_cfg.processors) == 3
+    assert cast(AddProcessorCfg, prepended_cfg[0]).pre_add == 8.0
+    assert cast(AddProcessorCfg, prepended_cfg[1]).pre_add == 1.0
+    assert cast(MultiplyProcessorCfg, prepended_cfg[2]).pre_scale == 2.0
+
+    combined_cfg += AddProcessorCfg(pre_add=4.0, post_add=6.0)
+    assert len(combined_cfg.processors) == 3
+    assert isinstance(combined_cfg(), ComposeProcessor)
+
+
+def test_legacy_processor_cfg_accepts_canonical_composed_cfg():
+    legacy_cfg = AddProcessorCfg(
+        pre_add=1.0,
+        post_add=10.0,
+    ) + MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0)
+    canonical_cfg = ComposedIOProcessorCfg(
+        processors=[AddProcessorCfg(pre_add=5.0, post_add=7.0)]
+    )
+
+    mixed_cfg = legacy_cfg + canonical_cfg
+
+    assert isinstance(mixed_cfg, ComposeProcessorCfg)
+    assert len(legacy_cfg.processors) == 2
+    assert len(mixed_cfg.processors) == 3
+    assert cast(AddProcessorCfg, mixed_cfg[2]).pre_add == 5.0
+
+
+def test_runtime_imports_are_compatible():
+    assert LegacyProcessorClassType_co is ClassType_co
+    assert issubclass(InferencePipeline, RuntimeInferencePipeline)
+    assert issubclass(InferencePipelineCfg, RuntimeInferencePipelineCfg)
+    assert issubclass(ProcessorMixin, ModelIOProcessor)
+    assert issubclass(ComposeProcessor, ComposedIOProcessor)
+    assert issubclass(ComposeProcessorCfg, ComposedIOProcessorCfg)
+    with pytest.warns(DeprecationWarning):
+        reloaded_legacy_processor_module = importlib.reload(
+            legacy_processor_module
+        )
+        assert (
+            reloaded_legacy_processor_module.ComposeProcessor
+            is ComposeProcessor
+        )
+        assert reloaded_legacy_processor_module.ClassType_co is ClassType_co
+    assert not hasattr(legacy_processor_module, "ModelIOProcessor")
+    assert not hasattr(legacy_processor_module, "IOProcessorMixin")
+    assert not hasattr(legacy_processor_module, "ComposedIOProcessor")
+
+
+def test_lazy_package_imports_are_stable_under_concurrent_access():
+    import robo_orchard_lab
+
+    top_level_barrier = threading.Barrier(8)
+
+    def load_pipeline(_):
+        top_level_barrier.wait()
+        return robo_orchard_lab.pipeline
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        pipeline_results = list(executor.map(load_pipeline, range(8)))
+
+    assert all(module is pipeline_results[0] for module in pipeline_results)
+    assert pipeline_results[0].__name__ == "robo_orchard_lab.pipeline"
+
+    pipeline_package = pipeline_results[0]
+    training_barrier = threading.Barrier(8)
+
+    def load_training(_):
+        training_barrier.wait()
+        return pipeline_package.training
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        training_results = list(executor.map(load_training, range(8)))
+
+    assert all(module is training_results[0] for module in training_results)
+    assert training_results[0].__name__ == "robo_orchard_lab.pipeline.training"
+
+
+def test_canonical_imports_stay_quiet_under_strict_deprecation_filter():
+    import robo_orchard_lab
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        pipeline_package = robo_orchard_lab.pipeline
+        training_package = pipeline_package.training
+        inference_package = importlib.import_module(
+            "robo_orchard_lab.pipeline.inference"
+        )
+
+    assert pipeline_package.__name__ == "robo_orchard_lab.pipeline"
+    assert training_package.__name__ == "robo_orchard_lab.pipeline.training"
+    assert inference_package.__name__ == "robo_orchard_lab.pipeline.inference"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "expected_message"),
+    [
+        pytest.param(
+            "robo_orchard_lab.inference",
+            "`robo_orchard_lab.inference` is deprecated. Use "
+            "`robo_orchard_lab.pipeline.inference` and "
+            "`robo_orchard_lab.processing.io_processor` instead.",
+            id="legacy-inference-package",
+        ),
+        pytest.param(
+            "robo_orchard_lab.inference.processor",
+            "`robo_orchard_lab.inference.processor` is deprecated. Use "
+            "`robo_orchard_lab.processing.io_processor` instead.",
+            id="legacy-inference-processor-package",
+        ),
+        pytest.param(
+            "robo_orchard_lab.pipeline.batch_processor",
+            "`robo_orchard_lab.pipeline.batch_processor` is deprecated. Use "
+            "`robo_orchard_lab.processing.step_processor` instead.",
+            id="legacy-batch-processor-package",
+        ),
+    ],
+)
+def test_deprecated_package_reload_emits_single_warning(
+    module_name: str,
+    expected_message: str,
+):
+    module = importlib.import_module(module_name)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        reloaded_module = importlib.reload(module)
+
+    assert reloaded_module is module
+    assert [str(item.message) for item in caught] == [expected_message]
+
+
+def test_processor_add_and_iadd():
+    add_processor = AddProcessor(AddProcessorCfg(pre_add=1.0, post_add=10.0))
+    scale_processor = MultiplyProcessor(
+        MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0)
+    )
+
+    combined = add_processor + scale_processor
+    assert isinstance(combined, ComposeProcessor)
+    assert len(combined.processors) == 2
+    assert combined[0] is add_processor
+    assert combined[1] is scale_processor
+
+    prepended = (
+        AddProcessor(AddProcessorCfg(pre_add=5.0, post_add=7.0)) + combined
+    )
+    assert isinstance(prepended, ComposeProcessor)
+    assert len(prepended.processors) == 3
+    assert cast(AddProcessor, prepended[0]).cfg.pre_add == 5.0
+    assert prepended[1] is add_processor
+    assert prepended[2] is scale_processor
+
+    pre_processed = combined.pre_process({"input_data": torch.tensor([2.0])})
+    assert torch.equal(pre_processed["input_data"], torch.tensor([6.0]))
+
+    prepended_processed = prepended.pre_process(
+        {"input_data": torch.tensor([2.0])}
+    )
+    assert torch.equal(prepended_processed["input_data"], torch.tensor([16.0]))
+
+    post_processed = combined.post_process(
+        {"output_data": torch.tensor([4.0])},
+        model_input=None,
+    )
+    assert torch.equal(post_processed["output_data"], torch.tensor([22.0]))
+
+    extended = combined + AddProcessor(
+        AddProcessorCfg(pre_add=5.0, post_add=7.0)
+    )
+    assert len(combined.processors) == 2
+    assert len(extended.processors) == 3
+
+    combined += AddProcessor(AddProcessorCfg(pre_add=4.0, post_add=6.0))
+    assert len(combined.processors) == 3
+
+    pre_processed = combined.pre_process({"input_data": torch.tensor([2.0])})
+    assert torch.equal(pre_processed["input_data"], torch.tensor([10.0]))
+
+
+def test_legacy_processor_accepts_canonical_composed_processor():
+    legacy_composed = AddProcessor(
+        AddProcessorCfg(pre_add=1.0, post_add=10.0)
+    ) + MultiplyProcessor(MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0))
+    canonical_composed = ComposedIOProcessorCfg(
+        processors=[AddProcessorCfg(pre_add=5.0, post_add=7.0)]
+    )()
+
+    mixed = legacy_composed + canonical_composed
+
+    assert isinstance(mixed, ComposeProcessor)
+    assert len(legacy_composed.processors) == 2
+    assert len(mixed.processors) == 3
+    assert isinstance(mixed[2], AddProcessor)
 
 
 def test_pipeline_save_and_load(test_pipeline: MyTestPipeline, tmp_path):

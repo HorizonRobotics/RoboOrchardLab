@@ -37,7 +37,6 @@ specific core data types (like :py:class:`~robo_orchard_lab.dataset.datatypes.jo
 that we use. These are defined in our `core data types tutorial <https://horizonrobotics.github.io/robot_lab/robo_orchard/core/master/build/gallery/tutorials/datatypes/index.html>`__.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
 
 # %%
 # Prerequisite: Download the Sample Dataset

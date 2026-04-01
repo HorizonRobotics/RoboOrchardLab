@@ -19,10 +19,10 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import torch
 
-from robo_orchard_lab.inference.processor import (
+from robo_orchard_lab.processing.io_processor import (
     ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 
@@ -140,7 +140,7 @@ class Struct2Dict:
         return input_data
 
 
-class SEMProcessor(ProcessorMixin):
+class SEMProcessor(ModelIOProcessor):
     cfg: "SEMProcessorCfg"  # for type hint
 
     def __init__(self, cfg: "SEMProcessorCfg"):
@@ -172,7 +172,7 @@ class SEMProcessor(ProcessorMixin):
         return MultiArmManipulationOutput(action=action)
 
 
-class SEMProcessorCfg(ProcessorMixinCfg[SEMProcessor]):
+class SEMProcessorCfg(ModelIOProcessorCfg[SEMProcessor]):
     class_type: ClassType_co[SEMProcessor] = SEMProcessor
     load_image: bool = True
     load_depth: bool = True

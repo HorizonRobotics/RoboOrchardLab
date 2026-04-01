@@ -14,6 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from robo_orchard_lab.pipeline.batch_processor.simple import (
-    SimpleBatchProcessor,
+from robo_orchard_lab.utils.deprecation import warn_deprecated_package
+
+from .simple import SimpleBatchProcessor
+
+__all__ = ["SimpleBatchProcessor"]
+
+warn_deprecated_package(
+    __name__,
+    "`robo_orchard_lab.pipeline.batch_processor` is deprecated. "
+    "Use `robo_orchard_lab.processing.step_processor` instead.",
 )

@@ -23,26 +23,27 @@ This tutorial demonstrates how to build, save, and load an end-to-end
 inference pipeline.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
-
 # %%
 # Core Concepts
 # ---------------------------------------------------------
 # The Inference API builds on the Model Zoo API (:py:class:`~robo_orchard_lab.models.torch_model.TorchModelMixin`)
 # and adds components for data processing. The key classes are:
 #
-# 1. :py:class:`~robo_orchard_lab.inference.processor.mixin.ProcessorMixin`: The base class for defining
+# 1. :py:class:`~robo_orchard_lab.processing.io_processor.ModelIOProcessor`: The base class for defining
 #    data pre-processing (e.g., from NumPy to Tensor) and post-processing
-#    (e.g., from Tensor to NumPy).
+#    (e.g., from Tensor to NumPy). In the standard pipeline flow,
+#    ``pre_process`` runs on one raw sample at a time before collation,
+#    while ``post_process`` usually sees batched model outputs after
+#    collation and ``model.forward``.
 #
-# 2. :py:class:`~robo_orchard_lab.inference.mixin.InferencePipelineMixin`: The base class for the
-#    inference pipeline. It holds the model and processor.
+# 2. :py:class:`~robo_orchard_lab.pipeline.inference.InferencePipelineMixin`: The base class for the
+#    inference pipeline. It holds the model and I/O processor.
 #
-# 3. :py:class:`~robo_orchard_lab.inference.basic.InferencePipeline`: A concrete implementation
+# 3. :py:class:`~robo_orchard_lab.pipeline.inference.InferencePipeline`: A concrete implementation
 #    of the pipeline that orchestrates ``pre_process``, ``collate_fn``,
 #    ``model.forward``, and ``post_process``.
 #
-# 4. :py:class:`~robo_orchard_lab.inference.basic.InferencePipelineCfg`: The configuration
+# 4. :py:class:`~robo_orchard_lab.pipeline.inference.InferencePipelineCfg`: The configuration
 #    class that defines the entire pipeline, including the nested model
 #    config, processor config, and collate function.
 #
@@ -62,23 +63,23 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from robo_orchard_lab.inference import (
+from robo_orchard_lab.models import (
+    ClassType_co,
+    TorchModelMixin,
+    TorchModuleCfg,
+)
+from robo_orchard_lab.pipeline.inference import (
     InferencePipelineCfg,
     InferencePipelineMixin,
 )
-from robo_orchard_lab.inference.processor import (
-    ProcessorMixin,
-    ProcessorMixinCfg,
-)
-from robo_orchard_lab.models import (
-    ClassType_co,
-    ModelMixin,
-    TorchModuleCfg,
+from robo_orchard_lab.processing.io_processor import (
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 
 
 # 1. Define the Model
-class SimpleNet(ModelMixin):
+class SimpleNet(TorchModelMixin):
     def __init__(self, cfg: "SimpleNetCfg"):
         super().__init__(cfg)
         self.fc = nn.Linear(cfg.input_size, cfg.output_size)
@@ -95,24 +96,24 @@ class SimpleNetCfg(TorchModuleCfg[SimpleNet]):
 
 
 # 2. Define the Processor
-class SimpleProcessor(ProcessorMixin):
+class SimpleProcessor(ModelIOProcessor):
     def __init__(self, cfg: "SimpleProcessorCfg"):
         super().__init__(cfg)
         self.scale = cfg.scale_factor
 
     def pre_process(self, data: np.ndarray) -> Dict[str, torch.Tensor]:
-        """Convert raw NumPy array to a tensor dictionary."""
+        """Convert one raw NumPy sample to a tensor dictionary."""
         tensor_data = torch.from_numpy(data).float() * self.scale
         return {"data": tensor_data}
 
     def post_process(
         self, model_outputs: torch.Tensor, model_input: Any = None
     ) -> np.ndarray:
-        """Convert output tensor back to a NumPy array."""
+        """Convert the usually-batched output tensor back to a NumPy array."""
         return model_outputs.cpu().detach().numpy()
 
 
-class SimpleProcessorCfg(ProcessorMixinCfg[SimpleProcessor]):
+class SimpleProcessorCfg(ModelIOProcessorCfg[SimpleProcessor]):
     class_type: ClassType_co[SimpleProcessor] = SimpleProcessor
     scale_factor: float = 1.0
 
@@ -132,7 +133,7 @@ print("Model, Processor, and Collate Function defined.")
 # Step 2: Define the Pipeline Configuration
 # ---------------------------------------------------------
 # Now we assemble all components into a single
-# :py:class:`~robo_orchard_lab.inference.pipeline.InferencePipelineCfg`.
+# :py:class:`~robo_orchard_lab.pipeline.inference.InferencePipelineCfg`.
 #
 # We use :py:class:`~robo_orchard_core.utils.config.ConfigInstanceOf`
 # to nest the model and processor configurations.
@@ -162,7 +163,7 @@ print("Pipeline configuration created.")
 # Instantiating the config will create the ``InferencePipeline``, which
 # in turn creates the ``SimpleNet`` and ``SimpleProcessor`` instances.
 #
-# The :py:meth:`~robo_orchard_lab.inference.mixin.InferencePipelineMixin.save`
+# The :py:meth:`~robo_orchard_lab.pipeline.inference.InferencePipelineMixin.save_pipeline`
 # method will save:
 #
 # 1.  The pipeline config (``inference.config.json``).
@@ -188,7 +189,7 @@ print(subprocess.check_output(["tree", output_dir]).decode())
 # %%
 # Step 4: Load and Run the Pipeline
 # ---------------------------------------------------------
-# We use :py:meth:`~robo_orchard_lab.inference.mixin.InferencePipelineMixin.load`
+# We use :py:meth:`~robo_orchard_lab.pipeline.inference.InferencePipelineMixin.load_pipeline`
 # to load the entire pipeline.
 #
 # This single call reconstructs the pipeline, model, and processor,
@@ -207,6 +208,8 @@ raw_data = np.arange(10, dtype=np.float32)
 
 # The pipeline handles:
 # pre_process -> collate_fn -> model.forward -> post_process
+# Because ``collate_fn`` is configured, ``post_process`` still receives a
+# size-1 batch here, so the output keeps a batch dimension.
 output = loaded_pipeline(raw_data)
 
 print(f"\nRaw input data:\n{raw_data}")

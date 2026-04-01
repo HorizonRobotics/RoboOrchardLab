@@ -14,6 +14,16 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""Deprecated compatibility access to legacy model I/O processors.
+
+Historically this package hosted the processor abstractions used by the legacy
+inference runtime. The canonical implementations now live under
+``robo_orchard_lab.processing.io_processor`` while this package preserves the
+old import surface during migration.
+"""
+
+from robo_orchard_lab.utils.deprecation import warn_deprecated_package
+
 from .compose import ComposeProcessor, ComposeProcessorCfg
 from .identity import IdentityProcessor, IdentityProcessorCfg
 from .mixin import (
@@ -22,4 +32,22 @@ from .mixin import (
     ProcessorMixinCfg,
     ProcessorMixinCfgType_co,
     ProcessorMixinType_co,
+)
+
+__all__ = [
+    "ClassType_co",
+    "ComposeProcessor",
+    "ComposeProcessorCfg",
+    "IdentityProcessor",
+    "IdentityProcessorCfg",
+    "ProcessorMixin",
+    "ProcessorMixinType_co",
+    "ProcessorMixinCfg",
+    "ProcessorMixinCfgType_co",
+]
+
+warn_deprecated_package(
+    __name__,
+    "`robo_orchard_lab.inference.processor` is deprecated. "
+    "Use `robo_orchard_lab.processing.io_processor` instead.",
 )

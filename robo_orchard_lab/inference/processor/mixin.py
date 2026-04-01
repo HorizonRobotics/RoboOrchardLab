@@ -14,16 +14,23 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import abc
-from typing import Any, TypeVar
+from __future__ import annotations
+from typing import TYPE_CHECKING, TypeVar
 
-from robo_orchard_core.utils.config import (
-    ClassConfig,
-    ClassInitFromConfigMixin,
-    ClassType_co,  # noqa: F401
+from typing_extensions import deprecated
+
+from robo_orchard_lab.processing.io_processor.base import (
+    ClassType_co,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 
-from robo_orchard_lab.utils.state import State, StateSaveLoadMixin
+if TYPE_CHECKING:
+    from robo_orchard_lab.inference.processor.compose import (
+        ComposeProcessor,
+        ComposeProcessorCfg,
+    )
+
 
 __all__ = [
     "ClassType_co",
@@ -34,78 +41,58 @@ __all__ = [
 ]
 
 
-class ProcessorMixin(
-    ClassInitFromConfigMixin, StateSaveLoadMixin, metaclass=abc.ABCMeta
-):
-    """An abstract base class for data processing modules.
+@deprecated(
+    "Use `robo_orchard_lab.processing.io_processor.ModelIOProcessor` instead.",
+    category=None,
+)
+class ProcessorMixin(ModelIOProcessor):
+    """Backward-compatible facade for the historical data processor base class.
 
-    This class defines a standard interface for data processors, which are
-    responsible for encapsulating the pre-processing and post-processing logic
-    required for a model. Subclasses must implement the `pre_process` method.
+    This deprecated class preserves the public semantics of
+    ``robo_orchard_lab.inference.processor.mixin.ProcessorMixin`` while
+    delegating the canonical implementation to
+    :class:`robo_orchard_lab.processing.io_processor.ModelIOProcessor`.
 
-    The primary role of a processor is to convert raw, user-provided data into
-    a format suitable for model consumption (pre-processing) and to convert the
-    model's raw output into a user-friendly, understandable format
-    (post-processing).
+    A processor still encapsulates the pre-processing and post-processing logic
+    required around a model. Subclasses implement ``pre_process`` to convert
+    raw inputs into model-ready data and may override ``post_process`` to turn
+    raw model outputs into a user-friendly representation.
     """
 
-    def __init__(self, cfg: "ProcessorMixinCfg"):
-        self._setup(cfg)
+    def __add__(self, other: ModelIOProcessor | ComposeProcessor):
+        """Build a legacy composed processor by appending ``other``.
 
-    def _setup(self, cfg: "ProcessorMixinCfg") -> None:
-        self.cfg = cfg
-
-    @abc.abstractmethod
-    def pre_process(self, data) -> Any:
-        """Transforms raw data into a model-ready format.
-
-        Subclasses must implement this method to handle the conversion of
-        user-provided input into the specific format expected by the model.
+        This preserves the historical ``ProcessorMixin`` composition behavior
+        and returns a ``ComposeProcessor`` facade rather than the canonical
+        ``ComposedIOProcessor`` type.
 
         Args:
-            data: The raw input data.
+            other (ModelIOProcessor | ComposeProcessor): Processor to append.
 
         Returns:
-            The processed data, ready to be collated into a batch.
+            ComposeProcessor: A new legacy composed processor instance.
         """
-        pass
+        if not isinstance(other, ModelIOProcessor):
+            raise TypeError(
+                "Can only concatenate processor objects that implement "
+                "ModelIOProcessor."
+            )
 
-    def post_process(self, model_outputs, model_input: Any = None):
-        """Transforms model output into a user-friendly format.
+        from robo_orchard_lab.inference.processor.compose import (
+            ComposeProcessor,
+            ComposeProcessorCfg,
+        )
 
-        This method can be overridden by subclasses to convert the raw tensor
-        outputs from the model into a more structured or interpretable format,
-        such as dictionaries with meaningful keys, text, or image objects.
+        new_processor = ComposeProcessor.__new__(ComposeProcessor)
+        if isinstance(self, ComposeProcessor):
+            new_processor.cfg = self.cfg.model_copy(deep=False)
+            new_processor.processors = list(self.processors)
+        else:
+            new_processor.cfg = ComposeProcessorCfg(processors=[self.cfg])
+            new_processor.processors = [self]
 
-        By default, it performs an identity mapping, returning the model
-        outputs as is.
-
-        Args:
-            model_outputs: The raw output from the model's forward pass.
-            model_input: The transformed batch as model input. For some
-                processors, this may be needed for context during
-                post-processing.
-
-        Returns:
-            The post-processed, user-friendly output.
-        """
-
-        return model_outputs
-
-    def _get_state(self) -> State:
-        """Get the state of the object for saving."""
-        # pull out cfg from state for better clarity
-        ret = super()._get_state()
-        ret.config = ret.state.pop("cfg", None)
-        return ret
-
-    def _set_state(self, state: State) -> None:
-        """Set the state of the object from the unpickled state."""
-        # push cfg back to state for consistency
-        state.state["cfg"] = state.config
-        state.config = None
-        super()._set_state(state)
-        self._setup(self.cfg)
+        new_processor += other
+        return new_processor
 
 
 ProcessorMixinType_co = TypeVar(
@@ -115,16 +102,46 @@ ProcessorMixinType_co = TypeVar(
 )
 
 
-class ProcessorMixinCfg(ClassConfig[ProcessorMixinType_co]):
-    """Base configuration class for a `ProcessorMixin`.
+@deprecated(
+    "Use `robo_orchard_lab.processing.io_processor.ModelIOProcessorCfg` "
+    "instead.",
+    category=None,
+)
+class ProcessorMixinCfg(ModelIOProcessorCfg[ProcessorMixinType_co]):
+    """Backward-compatible facade for the historical processor config base.
 
-    This Pydantic-based class is used to configure and instantiate a
-    corresponding `ProcessorMixin` subclass. It leverages `ClassConfig` to
-    dynamically create the processor instance specified by the `class_type`
-    field.
+    This deprecated config preserves the legacy serialized config path for
+    processor configurations while delegating the canonical implementation to
+    :class:`robo_orchard_lab.processing.io_processor.ModelIOProcessorCfg`.
     """
 
-    pass
+    def __add__(self, other: ModelIOProcessorCfg | ComposeProcessorCfg):
+        """Build a legacy composed processor config by appending ``other``.
+
+        Args:
+            other (ModelIOProcessorCfg | ComposeProcessorCfg): Processor
+                config to append.
+
+        Returns:
+            ComposeProcessorCfg: A new legacy composed processor config.
+        """
+        if not isinstance(other, ModelIOProcessorCfg):
+            raise TypeError(
+                "Can only concatenate processor config objects that "
+                "implement ModelIOProcessorCfg."
+            )
+
+        from robo_orchard_lab.inference.processor.compose import (
+            ComposeProcessorCfg,
+        )
+
+        if isinstance(self, ComposeProcessorCfg):
+            new_cfg = self.model_copy(deep=False)
+        else:
+            new_cfg = ComposeProcessorCfg(processors=[self])
+
+        new_cfg += other
+        return new_cfg
 
 
 ProcessorMixinCfgType_co = TypeVar(

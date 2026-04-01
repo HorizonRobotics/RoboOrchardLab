@@ -15,4 +15,12 @@
 # permissions and limitations under the License.
 
 from .autoapi_ext import patch_autoapi
+from .build_context import (
+    DocsBuildContext,
+    build_context_from_env,
+    build_exclude_patterns,
+    build_gallery_entries,
+    build_gallery_filename_pattern,
+    build_targeted_autoapi_ignore,
+)
 from .index import *

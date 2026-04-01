@@ -20,8 +20,6 @@
 ==========================================================
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
-
 # %%
 # Core concepts
 # ---------------------------------------------------------
@@ -54,13 +52,13 @@ import torch.nn as nn
 
 from robo_orchard_lab.models import (
     ClassType_co,
-    ModelMixin,
+    TorchModelMixin,
     TorchModuleCfg,
 )
 
 
-# 1. Define the model class, inheriting from ModelMixin
-class SimpleNet(ModelMixin):
+# 1. Define the model class, inheriting from TorchModelMixin
+class SimpleNet(TorchModelMixin):
     def __init__(self, cfg: "SimpleNetCfg"):
         # It's crucial to call super().__init__ and pass the cfg
         super().__init__(cfg)
@@ -128,5 +126,5 @@ print(subprocess.check_output(["tree", output_dir]).decode())
 # method automatically reads ``model.config.json`` to build the model architecture and then loads the weights from ``model.safetensors``.
 #
 
-loaded_model = ModelMixin.load_model(output_dir)
+loaded_model = TorchModelMixin.load_model(output_dir)
 print("Model loaded:", loaded_model)

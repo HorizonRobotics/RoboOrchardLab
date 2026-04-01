@@ -14,8 +14,9 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import importlib
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 import pytest
 import torch
@@ -28,6 +29,8 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchmetrics import Metric
 
+import robo_orchard_lab.pipeline as pipeline_module
+import robo_orchard_lab.pipeline.batch_processor as legacy_batch_processor
 from robo_orchard_lab.dataset.robot import (
     DatasetItem,
     DictIterableDataset,
@@ -36,13 +39,24 @@ from robo_orchard_lab.dataset.robot.dataset_ex import (
     DataLoader as RODataLoader,
 )
 from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
-from robo_orchard_lab.pipeline.hook_based_trainer import HookBasedTrainer
+from robo_orchard_lab.pipeline.batch_processor.simple import (
+    BatchProcessorFromCallable,
+    DeprecatedError as BatchProcessorDeprecatedError,
+)
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
     PipelineHookArgs,
     PipelineHooks,
 )
-from robo_orchard_lab.pipeline.trainer import SimpleTrainer
+from robo_orchard_lab.pipeline.training.hook_based_trainer import (
+    HookBasedTrainer,
+)
+from robo_orchard_lab.pipeline.training.trainer import SimpleTrainer
+from robo_orchard_lab.processing.io_processor import (
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
+)
+from robo_orchard_lab.processing.step_processor import SimpleStepProcessor
 
 
 @dataclass
@@ -198,6 +212,94 @@ class DummyBatchProcessor(SimpleBatchProcessor):
         return outputs, loss
 
 
+class AddTensorIOProcessor(ModelIOProcessor):
+    cfg: "AddTensorIOProcessorCfg"
+
+    def pre_process(self, data: torch.Tensor) -> torch.Tensor:
+        return data + self.cfg.pre_add
+
+    def post_process(
+        self,
+        model_outputs: torch.Tensor,
+        model_input: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del model_input
+        return model_outputs + self.cfg.post_add
+
+
+class AddTensorIOProcessorCfg(ModelIOProcessorCfg[AddTensorIOProcessor]):
+    class_type: ClassType[AddTensorIOProcessor] = AddTensorIOProcessor
+    pre_add: float = 0.0
+    post_add: float = 0.0
+
+
+class FailingPreProcessIOProcessor(ModelIOProcessor):
+    cfg: "FailingPreProcessIOProcessorCfg"
+
+    def __init__(self, cfg: "FailingPreProcessIOProcessorCfg"):
+        super().__init__(cfg)
+        self.pre_process_calls = 0
+        self.post_process_calls = 0
+
+    def pre_process(self, data):
+        del data
+        self.pre_process_calls += 1
+        raise RuntimeError("pre_process failed")
+
+    def post_process(self, model_outputs, model_input=None):
+        del model_outputs, model_input
+        self.post_process_calls += 1
+        return None
+
+
+class FailingPreProcessIOProcessorCfg(
+    ModelIOProcessorCfg[FailingPreProcessIOProcessor]
+):
+    class_type: ClassType[FailingPreProcessIOProcessor] = (
+        FailingPreProcessIOProcessor
+    )
+
+
+class RecordingBoundaryIOProcessor(ModelIOProcessor):
+    cfg: "RecordingBoundaryIOProcessorCfg"
+
+    def __init__(self, cfg: "RecordingBoundaryIOProcessorCfg"):
+        super().__init__(cfg)
+        self.pre_inputs: list[object] = []
+        self.post_inputs: list[object] = []
+        self.post_outputs: list[object] = []
+
+    def pre_process(self, data):
+        self.pre_inputs.append(data)
+        return data
+
+    def post_process(self, model_outputs, model_input=None):
+        self.post_outputs.append(model_outputs)
+        self.post_inputs.append(model_input)
+        return {
+            "model_outputs": model_outputs,
+            "model_input": model_input,
+        }
+
+
+class RecordingBoundaryIOProcessorCfg(
+    ModelIOProcessorCfg[RecordingBoundaryIOProcessor]
+):
+    class_type: ClassType[RecordingBoundaryIOProcessor] = (
+        RecordingBoundaryIOProcessor
+    )
+
+
+class ForwardOnlyStepProcessor(SimpleStepProcessor):
+    def __init__(self, **kwargs):
+        super().__init__(need_backward=False, **kwargs)
+        self.forward_batches: list[torch.Tensor] = []
+
+    def forward(self, model, batch):
+        self.forward_batches.append(batch.clone())
+        return model(batch), None
+
+
 class TensorDataset(torch.utils.data.Dataset):
     """A simple dataset that returns tensors."""
 
@@ -233,6 +335,240 @@ class ArrayDatasetItem(DatasetItem[ArrayDataset]):
 
     def _create_dataset(self) -> ArrayDataset:
         return ArrayDataset(self.data)
+
+
+def test_simple_step_processor_with_io_processor():
+    io_processor = AddTensorIOProcessor(
+        AddTensorIOProcessorCfg(pre_add=1.0, post_add=3.0)
+    )
+    step_processor = ForwardOnlyStepProcessor(
+        io_processor=io_processor,
+        apply_post_process=True,
+    )
+    hook_args = PipelineHookArgs(
+        accelerator=Accelerator(device_placement=True),
+        batch=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda batch: batch * 2,
+    )
+
+    expected_model_input = torch.tensor([[2.0, 3.0]], dtype=torch.float32)
+    expected_outputs = torch.tensor([[7.0, 9.0]], dtype=torch.float32)
+
+    assert len(step_processor.forward_batches) == 1
+    assert torch.equal(step_processor.forward_batches[0], expected_model_input)
+    assert isinstance(hook_args.batch, torch.Tensor)
+    assert isinstance(hook_args.model_outputs, torch.Tensor)
+    assert torch.equal(hook_args.batch, torch.tensor([[1.0, 2.0]]))
+    assert torch.equal(hook_args.model_outputs, expected_outputs)
+    assert hook_args.reduce_loss is None
+
+
+def test_simple_step_processor_pre_process_error_keeps_hook_args_clean():
+    io_processor = FailingPreProcessIOProcessor(
+        FailingPreProcessIOProcessorCfg()
+    )
+    forward_state = {"calls": 0}
+
+    def forward_fn(model, batch):
+        del model, batch
+        forward_state["calls"] += 1
+        return None, None
+
+    step_processor = SimpleStepProcessor.from_callable(
+        forward_fn,
+        need_backward=False,
+        io_processor=io_processor,
+        apply_post_process=True,
+    )
+    original_batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+    hook_args = PipelineHookArgs(
+        accelerator=Accelerator(device_placement=True),
+        batch=original_batch.clone(),
+    )
+
+    with pytest.raises(RuntimeError, match="pre_process failed"):
+        step_processor(
+            pipeline_hooks=PipelineHooks(),
+            on_batch_hook_args=hook_args,
+            model=lambda batch: batch,
+        )
+
+    assert io_processor.pre_process_calls == 1
+    assert io_processor.post_process_calls == 0
+    assert forward_state["calls"] == 0
+    assert isinstance(hook_args.batch, torch.Tensor)
+    assert torch.equal(hook_args.batch, original_batch)
+    assert hook_args.model_outputs is None
+    assert hook_args.reduce_loss is None
+
+
+@pytest.mark.parametrize(
+    ("batch", "is_tensor"),
+    [
+        pytest.param(None, False, id="none-batch"),
+        pytest.param(
+            torch.empty((0, 2), dtype=torch.float32),
+            True,
+            id="empty-tensor-batch",
+        ),
+    ],
+)
+def test_simple_step_processor_post_process_handles_boundary_batches(
+    batch,
+    is_tensor: bool,
+):
+    io_processor = RecordingBoundaryIOProcessor(
+        RecordingBoundaryIOProcessorCfg()
+    )
+    step_processor = SimpleStepProcessor.from_callable(
+        lambda model, model_batch: (model(model_batch), None),
+        need_backward=False,
+        io_processor=io_processor,
+        apply_post_process=True,
+    )
+    hook_args = PipelineHookArgs(
+        accelerator=Accelerator(device_placement=True),
+        batch=batch,
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda model_batch: model_batch,
+    )
+
+    assert len(io_processor.pre_inputs) == 1
+    assert len(io_processor.post_inputs) == 1
+    assert len(io_processor.post_outputs) == 1
+    assert isinstance(hook_args.model_outputs, dict)
+    model_outputs = cast(dict[str, object], hook_args.model_outputs)
+    if is_tensor:
+        assert isinstance(io_processor.pre_inputs[0], torch.Tensor)
+        assert isinstance(io_processor.post_inputs[0], torch.Tensor)
+        assert isinstance(io_processor.post_outputs[0], torch.Tensor)
+        assert torch.equal(io_processor.pre_inputs[0], batch)
+        assert torch.equal(io_processor.post_inputs[0], batch)
+        assert torch.equal(io_processor.post_outputs[0], batch)
+        assert isinstance(model_outputs["model_input"], torch.Tensor)
+        assert isinstance(model_outputs["model_outputs"], torch.Tensor)
+        assert torch.equal(model_outputs["model_input"], batch)
+        assert torch.equal(model_outputs["model_outputs"], batch)
+    else:
+        assert io_processor.pre_inputs[0] is None
+        assert io_processor.post_inputs[0] is None
+        assert io_processor.post_outputs[0] is None
+        assert model_outputs["model_input"] is None
+        assert model_outputs["model_outputs"] is None
+    assert hook_args.reduce_loss is None
+
+
+def test_simple_step_processor_reduces_loss_in_multi_process_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    accelerator = Accelerator(device_placement=True)
+    monkeypatch.setattr(accelerator.state, "num_processes", 2)
+    reduce_calls: list[tuple[torch.Tensor, str]] = []
+
+    def fake_reduce(loss: torch.Tensor, reduction: str = "mean"):
+        reduce_calls.append((loss.clone(), reduction))
+        return loss / 2
+
+    monkeypatch.setattr(accelerator, "reduce", fake_reduce)
+
+    step_processor = SimpleStepProcessor.from_callable(
+        lambda model, batch: (model(batch), torch.tensor(4.0)),
+        need_backward=False,
+        io_processor=AddTensorIOProcessor(
+            AddTensorIOProcessorCfg(pre_add=1.0, post_add=3.0)
+        ),
+        apply_post_process=True,
+    )
+    hook_args = PipelineHookArgs(
+        accelerator=accelerator,
+        batch=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda batch: batch * 2,
+    )
+
+    assert len(reduce_calls) == 1
+    assert reduce_calls[0][1] == "mean"
+    assert torch.equal(reduce_calls[0][0], torch.tensor(4.0))
+    assert isinstance(hook_args.model_outputs, torch.Tensor)
+    assert hook_args.reduce_loss is not None
+    assert torch.equal(
+        hook_args.model_outputs,
+        torch.tensor([[7.0, 9.0]], dtype=torch.float32),
+    )
+    assert torch.equal(hook_args.reduce_loss, torch.tensor(2.0))
+
+
+def test_legacy_batch_processor_facade_only_exports_legacy_names():
+    with pytest.warns(DeprecationWarning):
+        reloaded_legacy_batch_processor = importlib.reload(
+            legacy_batch_processor
+        )
+        assert (
+            reloaded_legacy_batch_processor.SimpleBatchProcessor
+            is SimpleBatchProcessor
+        )
+    assert not hasattr(legacy_batch_processor, "SimpleStepProcessor")
+    assert not hasattr(legacy_batch_processor, "BatchStepProcessorMixin")
+
+
+def test_legacy_batch_processor_from_callable_preserves_facade_type():
+    processor = SimpleBatchProcessor.from_callable(
+        lambda model, batch: (batch, None),
+        need_backward=False,
+    )
+
+    assert isinstance(processor, BatchProcessorFromCallable)
+
+
+def test_legacy_batch_processor_transforms_still_raise_deprecated_error():
+    with pytest.raises(BatchProcessorDeprecatedError):
+        DummyBatchProcessor(transforms=[])
+
+    with pytest.raises(BatchProcessorDeprecatedError):
+        BatchProcessorFromCallable(
+            lambda model, batch: (batch, None),
+            need_backward=False,
+            transforms=[],
+        )
+
+    with pytest.raises(BatchProcessorDeprecatedError):
+        SimpleBatchProcessor.from_callable(
+            lambda model, batch: (batch, None),
+            need_backward=False,
+            transforms=[],
+        )
+
+
+def test_legacy_trainer_facades_export_runtime_types():
+    with pytest.warns(DeprecationWarning):
+        legacy_hook_based_trainer = importlib.import_module(
+            "robo_orchard_lab.pipeline.hook_based_trainer"
+        )
+        legacy_hook_based_trainer = importlib.reload(legacy_hook_based_trainer)
+
+    with pytest.warns(DeprecationWarning):
+        legacy_trainer_module = importlib.import_module(
+            "robo_orchard_lab.pipeline.trainer"
+        )
+        legacy_trainer_module = importlib.reload(legacy_trainer_module)
+
+    assert legacy_hook_based_trainer.HookBasedTrainer is HookBasedTrainer
+    assert legacy_trainer_module.SimpleTrainer is SimpleTrainer
+    assert pipeline_module.HookBasedTrainer is HookBasedTrainer
+    assert pipeline_module.SimpleTrainer is SimpleTrainer
 
 
 # the fixture scope should be function, not session!

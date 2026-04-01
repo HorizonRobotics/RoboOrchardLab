@@ -14,6 +14,34 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from . import batch_processor, hooks
-from .hook_based_trainer import HookBasedTrainer
-from .trainer import SimpleTrainer
+from __future__ import annotations
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from . import batch_processor, hooks, inference, training
+    from .training.hook_based_trainer import HookBasedTrainer
+    from .training.trainer import SimpleTrainer
+
+__all__ = [
+    "batch_processor",
+    "hooks",
+    "inference",
+    "training",
+    "HookBasedTrainer",
+    "SimpleTrainer",
+]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"batch_processor", "hooks", "inference", "training"}:
+        return importlib.import_module(f"{__name__}.{name}")
+    if name == "HookBasedTrainer":
+        from .training.hook_based_trainer import HookBasedTrainer
+
+        return HookBasedTrainer
+    if name == "SimpleTrainer":
+        from .training.trainer import SimpleTrainer
+
+        return SimpleTrainer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

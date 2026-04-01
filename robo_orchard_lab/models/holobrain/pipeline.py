@@ -21,10 +21,6 @@ from robo_orchard_core.utils.config import (
     ConfigInstanceOf,
 )
 
-from robo_orchard_lab.inference.basic import (
-    InferencePipeline,
-    InferencePipelineCfg,
-)
 from robo_orchard_lab.models.holobrain.processor import (
     HoloBrainProcessor,
     HoloBrainProcessorCfg,
@@ -32,6 +28,10 @@ from robo_orchard_lab.models.holobrain.processor import (
     MultiArmManipulationOutput,
 )
 from robo_orchard_lab.models.mixin import TorchModelMixin
+from robo_orchard_lab.pipeline.inference.basic import (
+    InferencePipeline,
+    InferencePipelineCfg,
+)
 
 
 class HoloBrainInferencePipeline(InferencePipeline):

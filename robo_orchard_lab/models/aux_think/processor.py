@@ -20,10 +20,10 @@ from typing import Dict, List, Optional, Union
 import fsspec
 from PIL import Image
 
-from robo_orchard_lab.inference.processor import (
+from robo_orchard_lab.processing.io_processor import (
     ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 from robo_orchard_lab.utils.build import DelayInitDictType, build
 
@@ -76,7 +76,7 @@ class PathListToData:
         return input_data
 
 
-class AuxThinkProcessor(ProcessorMixin):
+class AuxThinkProcessor(ModelIOProcessor):
     """Processor for the AuxThink navigation model.
 
     Converts image paths + instruction into a multimodal list input format,
@@ -148,7 +148,7 @@ class AuxThinkProcessor(ProcessorMixin):
         return AuxThinkOutput(text=text)
 
 
-class AuxThinkProcessorCfg(ProcessorMixinCfg[AuxThinkProcessor]):
+class AuxThinkProcessorCfg(ModelIOProcessorCfg[AuxThinkProcessor]):
     """Configuration for AuxThinkProcessor."""
 
     class_type: ClassType_co[AuxThinkProcessor] = AuxThinkProcessor

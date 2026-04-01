@@ -66,6 +66,17 @@ dist-build: version
 doc:
 	make -C docs html
 
+# Debug a small AutoAPI docs subset without running the full docs build.
+# Example: make doc-debug-api API_TARGETS="robo_orchard_lab/version.py"
+doc-debug-api:
+	make -C docs debug-api API_TARGETS="$(API_TARGETS)"
+
+# Debug one or more tutorial gallery scripts without running the full docs
+# build. Example:
+# make doc-debug-tutorial TUTORIAL_TARGETS="tutorials/model_zoo_tutorial/nonb-02_inference_api.py"
+doc-debug-tutorial:
+	make -C docs debug-tutorial TUTORIAL_TARGETS="$(TUTORIAL_TARGETS)"
+
 doc-clean:
 	make -C docs clean
 

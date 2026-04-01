@@ -297,7 +297,7 @@ lr_scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
 # Orchestrating the Training
 # ---------------------------------------------------------
 #
-# :py:class:`~robo_orchard_lab.pipeline.hook_based_trainer.HookBasedTrainer` is the heart of your training loop.
+# :py:class:`~robo_orchard_lab.pipeline.training.hook_based_trainer.HookBasedTrainer` is the heart of your training loop.
 # It takes all necessary PyTorch components (model, dataloader, optimizer, scheduler) and crucially,
 # the accelerator and a batch_processor. The hooks list allows for powerful customization, which we have explored before.
 #

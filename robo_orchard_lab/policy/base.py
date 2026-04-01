@@ -27,7 +27,7 @@ from robo_orchard_core.policy.base import (
 )
 from robo_orchard_core.utils.config import ClassType_co, ConfigInstanceOf
 
-from robo_orchard_lab.inference.mixin import (
+from robo_orchard_lab.pipeline.inference.mixin import (
     InferencePipelineMixin,
     InferencePipelineMixinCfg,
 )
@@ -86,9 +86,10 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
             of the environment. Defaults to None.
         action_space (gym.Space | None, optional): The action space of
             the environment. Defaults to None.
-        pipeline (InferencePipelineMixin| None, optional): The inference
-            pipeline to use. If None, it will be created from the
-            configuration. If provided,  Defaults to None.
+        pipeline (robo_orchard_lab.pipeline.inference.mixin.
+            InferencePipelineMixin | None, optional): The inference pipeline
+            to use. If None, it will be created from the configuration. If
+            provided, Defaults to None.
     """
 
     cfg: InferencePipelinePolicyCfg

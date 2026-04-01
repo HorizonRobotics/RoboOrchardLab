@@ -14,15 +14,51 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from . import (
-    dataset,
-    distributed,
-    inference,
-    models,
-    pipeline,
-    utils,
-)
+from __future__ import annotations
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from . import (
+        dataset,
+        distributed,
+        inference,
+        models,
+        pipeline,
+        processing,
+        utils,
+    )
+
 from .version import __full_version__, __git_hash__, __version__
+
+__all__ = [
+    "__full_version__",
+    "__git_hash__",
+    "__version__",
+    "dataset",
+    "distributed",
+    "inference",
+    "models",
+    "pipeline",
+    "processing",
+    "utils",
+]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "dataset",
+        "distributed",
+        "inference",
+        "models",
+        "pipeline",
+        "processing",
+        "utils",
+    }:
+        # Keep package-level access intact without eagerly importing deprecated
+        # compatibility modules during unrelated submodule imports.
+        return importlib.import_module(f"{__name__}.{name}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _set_env():

@@ -24,8 +24,6 @@ State-of-the-Art (SOTA) manipulation models provided by the
 **RoboOrchardLab**.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
-
 # %%
 # FineGrasp: Towards Robust Grasping for Delicate Objects
 # ---------------------------------------------------------------------------
@@ -38,9 +36,9 @@ State-of-the-Art (SOTA) manipulation models provided by the
 # .. code-block:: python
 #
 #   import torch
-#   from robo_orchard_lab.models import ModelMixin
+#   from robo_orchard_lab.models import TorchModelMixin
 #
-#   model: torch.nn.Module = ModelMixin.load_model("hf://HorizonRobotics/FineGrasp/finegrasp_pipeline")
+#   model: torch.nn.Module = TorchModelMixin.load_model("hf://HorizonRobotics/FineGrasp/finegrasp_pipeline")
 #
 #
 # Inference Pipeline
@@ -49,9 +47,9 @@ State-of-the-Art (SOTA) manipulation models provided by the
 # .. code-block:: python
 #
 #   from robo_orchard_lab.models.finegrasp.processor import GraspInput
-#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 #
-#   pipeline = InferencePipelineMixin.load("hf://HorizonRobotics/FineGrasp/finegrasp_pipeline")
+#   pipeline = InferencePipelineMixin.load_pipeline("hf://HorizonRobotics/FineGrasp/finegrasp_pipeline")
 #   pipeline.to("cuda")
 #   pipeline.model.eval()
 #

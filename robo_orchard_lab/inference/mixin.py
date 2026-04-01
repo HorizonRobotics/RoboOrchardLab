@@ -13,331 +13,59 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+
 from __future__ import annotations
 import abc
-import logging
-import os
-from typing import Generic, Literal
+from typing import Generic
 
-import torch
-from robo_orchard_core.utils.config import ClassConfig, ClassType_co, load_from
-from typing_extensions import TypeVar
+from typing_extensions import TypeVar, deprecated
 
-from robo_orchard_lab.models.mixin import TorchModelMixin, TorchModuleCfg
-from robo_orchard_lab.utils.huggingface import (
-    auto_add_repo_type,
-    download_hf_resource,
+from robo_orchard_lab.pipeline.inference.mixin import (
+    ClassType_co,
+    InferencePipelineMixin as _InferencePipelineMixin,
+    InferencePipelineMixinCfg as _InferencePipelineMixinCfg,
+    InputType,
+    OutputType,
 )
-from robo_orchard_lab.utils.path import (
-    DirectoryNotEmptyError,
-    abspath,
-    in_cwd,
-    is_empty_directory,
-)
-from robo_orchard_lab.utils.state import State, StateSaveLoadMixin
 
 __all__ = [
     "ClassType_co",
     "InferencePipelineMixin",
     "InferencePipelineMixinCfg",
+    "InputType",
+    "OutputType",
 ]
-
-logger = logging.getLogger(__name__)
-
-InputType = TypeVar("InputType")
-OutputType = TypeVar("OutputType")
-
-
-class InferencePipelineMixin(
-    StateSaveLoadMixin, Generic[InputType, OutputType], metaclass=abc.ABCMeta
-):
-    """An abstract base class for end-to-end inference pipelines.
-
-    This generic mixin provides a common framework for orchestrating the
-    inference process. It is responsible for holding the model and its
-    configuration, but delegates the specific inference logic to its
-    subclasses. It standardizes methods for saving and loading the entire
-    pipeline state (model and configuration).
-
-    Subclasses should be specialized with `InputType` and `OutputType` and must
-    implement the `__call__` method to define the core task-specific logic.
-
-    Template Args:
-        InputType: The type of the input data to the pipeline.
-        OutputType: The type of the output data from the pipeline.
-
-    """
-
-    InitFromConfig: bool = True
-
-    model: TorchModelMixin
-    """The underlying model used in the pipeline"""
-    cfg: InferencePipelineMixinCfg
-    """The configuration for the pipeline"""
-
-    def __init__(
-        self,
-        cfg: InferencePipelineMixinCfg,
-        model: TorchModelMixin | None = None,
-    ):
-        """Initializes the inference pipeline with the given configuration.
-
-        This constructor sets up the model based on the provided configuration,
-        or creating an inference pipeline using an already instantiated model.
-        It is useful when the model has been created or loaded separately and
-        needs to be integrated into a pipeline.
-
-        Note:
-            If the provided configuration contains a model configuration that
-            differs from that of the given model instance, a warning is logged
-            and the model instance's configuration is used. If so, the model
-            configuration in `cfg` is also asigned to that of the model
-            instance to ensure consistency.
-
-        Args:
-            cfg (InferencePipelineMixinCfg): The configuration for the
-                inference pipeline, including the model configuration.
-            model (TorchModelMixin | None): An optional instance of the model
-                to be used in the pipeline. If None, the model will be
-                instantiated from the configuration.
-        """
-        if model is None:
-            if cfg.model_cfg is None:
-                raise ValueError("The model configuration is missing.")
-            model = cfg.model_cfg()
-        else:
-            if (cfg.model_cfg is not None) and cfg.model_cfg != model.cfg:
-                raise ValueError(
-                    "The provided model configuration in the pipeline "
-                    "differs from the configuration of the given model "
-                    "instance. You should set cfg.model_cfg to None when "
-                    "model is provided."
-                )
-            if cfg.model_cfg is None:
-                cfg.model_cfg = model.cfg
-        assert model is not None
-        self._setup(cfg=cfg, model=model)
-
-    def _setup(self, cfg: InferencePipelineMixinCfg, model: TorchModelMixin):
-        """Configures the pipeline with the given parameters.
-
-        This method sets the internal configuration and model of the pipeline.
-        It is useful for scenarios where the pipeline needs to be reconfigured
-        after initialization.
-
-        Subclasses can override this method to implement additional setup
-        logic specific to their requirements.
-
-        Args:
-            cfg (InferencePipelineMixinCfg): The new configuration for the
-                inference pipeline.
-            model (TorchModelMixin): The new model to be used in the pipeline.
-        """
-
-        self.cfg = cfg
-        self.model = model
-
-    def to(self, device: str | torch.device):
-        """Moves the underlying model to the specified device.
-
-        Args:
-            device (str): The target device to move the model to.
-        """
-        self.model.to(device)
-
-    @property
-    def device(self) -> torch.device:
-        """The device where the model's parameters are located."""
-        return self.model.device
-
-    @abc.abstractmethod
-    def __call__(self, data: InputType) -> OutputType:
-        """Executes the end-to-end inference for a single data point.
-
-        This method defines the core logic of the inference pipeline and must be
-        implemented by subclasses.
-
-        Args:
-            data (InputType): The raw input data for the pipeline, matching the
-                `InputType` generic specification.
-
-        Returns:
-            OutputType: The final, processed result, matching the `OutputType`
-                generic specification.
-        """  # noqa: E501
-        pass
-
-    def save_pipeline(
-        self,
-        directory: str,
-        inference_prefix: str = "inference",
-        model_prefix: str = "model",
-        required_empty: bool = True,
-    ):
-        """Saves the full pipeline (model and config) to a directory.
-
-        This method saves the model's weights and configuration by calling its
-        `save_model` method, and also saves the pipeline's own configuration
-        file.
-
-        Args:
-            directory (str): The target directory to save the pipeline to.
-            inference_prefix (str): The prefix for the pipeline's config file.
-                Defaults to "inference".
-            model_prefix (str): The prefix for the model files, passed to the
-                model's save method. Defaults to "model".
-            required_empty (bool): If True, raises an error if the target
-                directory is not empty. Defaults to True.
-        """
-        os.makedirs(directory, exist_ok=True)
-        if required_empty and not is_empty_directory(directory):
-            raise DirectoryNotEmptyError(f"{directory} is not empty!")
-
-        self.model.save_model(
-            directory=directory,
-            model_prefix=model_prefix,
-            required_empty=False,
-        )
-        with open(
-            os.path.join(directory, f"{inference_prefix}.config.json"), "w"
-        ) as fh:
-            cfg_copy = self.cfg.model_copy()
-            cfg_copy.model_cfg = None  # Avoid redundancy of model config
-            fh.write(cfg_copy.model_dump_json(indent=4))
-
-    @staticmethod
-    def load_pipeline(
-        directory: str,
-        inference_prefix: str = "inference",
-        load_weights: bool = True,
-        device: str | None = "cpu",
-        strict: bool = True,
-        device_map: str | dict[str, int | str | torch.device] | None = None,
-        model_prefix: str = "model",
-        load_impl: Literal["native", "accelerate"] = "accelerate",
-    ):
-        """Loads a pipeline from a directory or a Hugging Face Hub repository.
-
-        This method supports loading from a local path or a Hugging Face Hub
-        repository. For Hub models, a URI format is used:
-        ``hf://[<token>@][model/]<repo_id>[/<path>][@<revision>]``
-
-        .. code-block:: text
-
-            Public model: `hf://HorizonRobotics/Aux-Think`
-
-            Public model directory: `hf://HorizonRobotics/FineGrasp/finegrasp_pipeline`
-
-            Private model: `hf://your-name/private-repo`
-
-        This factory method dynamically instantiates the correct pipeline class
-        based on the `class_type` specified in the saved configuration file.
-        It first loads the model and then uses the configuration to create the
-        appropriate pipeline instance.
-
-        Args:
-            directory (str): The local directory or Hugging Face Hub repo ID
-                (prefixed with "hf://") to load from.
-            inference_prefix (str, optional): The prefix of the pipeline's
-                config file. Defaults to "inference".
-            load_weights (bool, optional): Whether to load the model weights.
-                If False, the model will be initialized randomly. Defaults to
-                True.
-            strict (bool, optional): Whether to strictly enforce that the keys in the
-                model's state_dict match. Defaults to True.
-            device (str | None, optional): The device to map the model to. If
-                None, the model will be loaded to the same device as it was
-                saved from. Defaults to "cpu".
-            device_map (str | dict[str, int | str | torch.device] | None, optional):
-                The device map to use when loading the model. This is only used
-                if `device` is None. Defaults to None.
-            model_prefix (str, optional): The prefix of the model files. Defaults to "model".
-
-        Returns:
-            An initialized instance of the specific pipeline subclass defined
-            in the configuration.
-        """  # noqa: E501
-        if directory.startswith("hf://"):
-            directory = download_hf_resource(auto_add_repo_type(directory))
-
-        directory = abspath(directory)
-
-        with in_cwd(directory):
-            cfg = load_from(
-                f"{inference_prefix}.config.json",
-                ensure_type=InferencePipelineMixinCfg,
-            )
-            cfg.update_model_cfg(f"{model_prefix}.config.json")
-            if cfg.model_cfg is None:
-                raise ValueError("The model configuration is missing.")
-            pipeline: InferencePipelineMixin = cfg.class_type(cfg=cfg)  # type: ignore
-            if load_weights:
-                pipeline.model.load_weights(
-                    directory=directory,
-                    model_prefix=model_prefix,
-                    strict=strict,
-                    device=device,
-                    device_map=device_map,
-                    load_impl=load_impl,
-                )
-
-        return pipeline
-
-    def reset(self) -> None:
-        """Reset the internal state of the pipeline, if applicable.
-
-        This method can be overridden by subclasses that maintain internal
-        state (e.g., RNNs or stateful processors). The default implementation
-        does nothing.
-        """
-        pass
-
-    def _get_state(self) -> State:
-        """Get the state of the object for saving."""
-        # pull out cfg from state for better clarity
-        ret = super()._get_state()
-        ret.config = ret.state.pop("cfg", None)
-        return ret
-
-    def _set_state(self, state: State) -> None:
-        """Set the state of the object from the unpickled state."""
-        # push cfg back to state for consistency
-        state.state["cfg"] = state.config
-        state.config = None
-        super()._set_state(state)
-        # after set state, ensure that the pipeline have been setup correctly
-        self._setup(cfg=self.cfg, model=self.model)
-
 
 InferencePipelineMixinType_co = TypeVar(
     "InferencePipelineMixinType_co",
-    bound=InferencePipelineMixin,
+    bound=_InferencePipelineMixin,
     covariant=True,
 )
 
 
-class InferencePipelineMixinCfg(ClassConfig[InferencePipelineMixinType_co]):
-    """Configuration class for an inference pipeline.
+@deprecated(
+    "Use `robo_orchard_lab.pipeline.inference.mixin.InferencePipelineMixin` "
+    "instead.",
+    category=None,
+)
+class InferencePipelineMixin(
+    _InferencePipelineMixin[InputType, OutputType],
+    Generic[InputType, OutputType],
+    metaclass=abc.ABCMeta,
+):
+    """Deprecated compatibility wrapper for the moved inference mixin."""
 
-    This class uses Pydantic for data validation and stores the configuration
-    for the pipeline, including the specific pipeline class to instantiate and
-    its associated components.
-    """
+    pass
 
-    model_cfg: TorchModuleCfg | None = None
-    """The configuration for the model used in the pipeline."""
 
-    def update_model_cfg(self, model_cfg_path: str):
-        """Update model configuration from a file."""
-        if self.model_cfg is not None and os.path.exists(model_cfg_path):
-            logger.warning(
-                f"Both the pipeline config and {model_cfg_path} "
-                "contain a model configuration. The latter will be used."
-            )
-            self.model_cfg = load_from(
-                model_cfg_path, ensure_type=TorchModuleCfg
-            )
-        if self.model_cfg is None:
-            self.model_cfg = load_from(
-                model_cfg_path, ensure_type=TorchModuleCfg
-            )
+@deprecated(
+    "Use `robo_orchard_lab.pipeline.inference.mixin."
+    "InferencePipelineMixinCfg` instead.",
+    category=None,
+)
+class InferencePipelineMixinCfg(
+    _InferencePipelineMixinCfg[InferencePipelineMixinType_co]
+):
+    """Deprecated compatibility wrapper for the moved mixin config."""
+
+    pass

@@ -43,7 +43,6 @@ We will cover:
     to load and inspect the dataset we just created.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
 
 # %%
 # Core Concepts and Architecture

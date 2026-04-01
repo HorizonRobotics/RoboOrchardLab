@@ -11,13 +11,11 @@ Repository skills live in `.agents/skills/`.
 
 ## Read First
 
-- Always read `.agents/instructions/default.instructions.md`.
-- Also read these when relevant:
-  - `.agents/instructions/python.instructions.md`
-  - `.agents/instructions/test.instructions.md`
-  - `.agents/instructions/workflow.instructions.md`
-  - `.agents/instructions/git.instructions.md`
-  - `.agents/instructions/environment.instructions.md`
+- Read `.agents/instructions/default.instructions.md` only when the task
+  touches this repository's files, workflows, or behavior.
+- When editing `AGENTS.md`, `.agents/instructions/`, or `.agents/skills/`,
+  also read `.agents/instructions/guidance-authoring.instructions.md`.
+- Use `Quick Routing` below to load topic-specific instruction files when relevant.
 
 ### Quick Routing
 
@@ -26,6 +24,8 @@ Repository skills live in `.agents/skills/`.
 - Validation scope and developer workflow decisions: `.agents/instructions/workflow.instructions.md`
 - Commit messages, branches, merge requests, or pull requests: `.agents/instructions/git.instructions.md`
 - Environment, runtime, hardware, or external-service constraints: `.agents/instructions/environment.instructions.md`
+- Fresh environment bootstrap or local setup: `.agents/instructions/prepare_env.instructions.md`
+- `AGENTS.md`, `.agents/instructions/`, or `.agents/skills/` authoring and refactors: `.agents/instructions/guidance-authoring.instructions.md`
 
 ## Skills
 

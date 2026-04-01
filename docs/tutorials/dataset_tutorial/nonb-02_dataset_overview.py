@@ -91,5 +91,3 @@ small ``meta_db.duckdb`` file first, without ever touching the massive ``Arrow``
 For example, you can use a SQL query to find "all episodes from robot_uuid_1 that completed the task_uuid_0 and lasted longer than 10 seconds."
 This query runs almost instantly. The result gives you the exact episode_index values you need, allowing you to load only the specific data required for training from the ``data-*.arrow`` files.
 """
-
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'

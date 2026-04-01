@@ -1,23 +1,31 @@
-.. include:: readme.md
+{% if include_readme %}
+.. include:: {{ readme_path }}
    :parser: myst_parser.sphinx_
+{% endif %}
 
 
-Contents
--------------------
+{{ title }}
+{{ "-" * title|length }}
 
+{% if getting_started_doc %}
 .. toctree::
     :maxdepth: 3
 
-    getting_started/index
+    {{ getting_started_doc }}
+{% endif %}
 
+{% if overview_doc %}
 .. toctree::
     :maxdepth: 3
 
-    overview/index
+    {{ overview_doc }}
+{% endif %}
 
 {{gallery_toctree}}
 
+{% if autoapi_index %}
 .. toctree::
     :maxdepth: 3
 
-    autoapi/index
+    {{ autoapi_index }}
+{% endif %}

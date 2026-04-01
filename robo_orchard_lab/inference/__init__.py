@@ -14,14 +14,63 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-"""Inference pipeline components and utilities.
+"""Deprecated compatibility access to inference pipeline components.
 
-The inference pipeline focuses on the data processing and model
-inference parts, and can be used in various scenarios. The inference
-pipeline is a more generic concept than policy, which is
-used to interact with the environment.
+Historically this package hosted the data processing and model inference parts
+of the runtime stack. The canonical implementations now live under
+``robo_orchard_lab.pipeline.inference`` and
+``robo_orchard_lab.processing.io_processor``, while this package preserves the
+legacy import surface during the migration window.
 """
 
-from . import processor
-from .basic import *
-from .mixin import *
+from __future__ import annotations
+import importlib
+from typing import TYPE_CHECKING, Any
+
+from robo_orchard_lab.utils.deprecation import warn_deprecated_package
+
+from .basic import InferencePipeline, InferencePipelineCfg
+from .mixin import (
+    ClassType_co,
+    InferencePipelineMixin,
+    InferencePipelineMixinCfg,
+    InputType,
+    OutputType,
+)
+
+__all__ = [
+    "ClassType_co",
+    "InputType",
+    "OutputType",
+    "InferencePipeline",
+    "InferencePipelineCfg",
+    "InferencePipelineMixin",
+    "InferencePipelineMixinCfg",
+    "processor",
+]
+
+if TYPE_CHECKING:
+    from . import processor
+warn_deprecated_package(
+    __name__,
+    "`robo_orchard_lab.inference` is deprecated. "
+    "Use `robo_orchard_lab.pipeline.inference` and "
+    "`robo_orchard_lab.processing.io_processor` instead.",
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily resolve deprecated attributes from the legacy package.
+
+    Args:
+        name (str): Attribute requested from the deprecated package.
+
+    Returns:
+        Any: Lazily imported legacy attribute.
+
+    Raises:
+        AttributeError: If ``name`` is not a supported legacy attribute.
+    """
+    if name == "processor":
+        return importlib.import_module(f"{__name__}.processor")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

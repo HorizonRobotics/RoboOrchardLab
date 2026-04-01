@@ -14,43 +14,29 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from abc import ABC, abstractmethod
-from typing import Callable
+from typing_extensions import deprecated
 
-from robo_orchard_lab.pipeline.hooks.mixin import (
-    PipelineHookArgs,
-    PipelineHooks,
-)
+from robo_orchard_lab.processing.step_processor import BatchStepProcessorMixin
 
 __all__ = ["BatchProcessorMixin"]
 
 
-class BatchProcessorMixin(ABC):
-    """A processor for handling batches in a training or inference pipeline."""
+@deprecated(
+    "Use `robo_orchard_lab.processing.step_processor."
+    "BatchStepProcessorMixin` instead.",
+    category=None,
+)
+class BatchProcessorMixin(BatchStepProcessorMixin):
+    """Backward-compatible facade for the historical batch processor mixin.
 
-    @abstractmethod
-    def __call__(
-        self,
-        pipeline_hooks: PipelineHooks,
-        on_batch_hook_args: PipelineHookArgs,
-        model: Callable,
-    ) -> None:
-        """Executes the batch processing pipeline.
+    This deprecated class preserves the legacy
+    ``robo_orchard_lab.pipeline.batch_processor.mixin.BatchProcessorMixin``
+    import path while delegating to
+    :class:`robo_orchard_lab.processing.step_processor.BatchStepProcessorMixin`.
 
-        The processed outputs and loss (if applicable) are stored in the
-        `on_batch_hook_args` workspace.
+    The interface still represents one batch step that receives pipeline
+    hooks, mutable batch hook arguments, and a model callable, then publishes
+    outputs and reduced loss back into the hook workspace.
+    """
 
-        Args:
-            pipeline_hooks (PipelineHooks): The pipeline hooks to be triggered
-                during batch processing.
-            on_batch_hook_args (PipelineHookArgs): The workspace for the
-                on_batch hook. It should contain the following
-                attributes:
-                  - accelerator: The Accelerator instance.
-                  - batch: The batch of data to be processed.
-                After the call, it will contain:
-                  - reduce_loss: The computed loss.
-                  - model_outputs: The model outputs.
-            model (Callable): The model function or callable.
-        """
-        pass
+    pass

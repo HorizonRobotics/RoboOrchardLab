@@ -24,8 +24,6 @@ State-of-the-Art (SOTA) navigation models provided by the
 **RoboOrchardLab**.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
-
 # %%
 # Aux-Think: Exploring Reasoning Strategies for Data-Efficient Vision-Language Navigation
 # --------------------------------------------------------------------------------------------
@@ -48,7 +46,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 # .. code-block:: python
 #
 #   import torch
-#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 #   from robo_orchard_lab.models.aux_think.processor import AuxThinkInput
 #
 #   # -----------------------------
@@ -114,7 +112,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 # .. code-block:: python
 #
 #   import torch
-#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 #   from robo_orchard_lab.models.monodream.processor import MonoDreamInput
 #
 #   # -----------------------------
@@ -183,7 +181,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 # .. code-block:: python
 #
 #   import torch
-#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 #   from robo_orchard_lab.models.progress_think.action_processor import ActionModelInput
 #   from robo_orchard_lab.models.progress_think.progress_processor import ProgressModelInput
 #

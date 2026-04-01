@@ -41,7 +41,6 @@ Here, we demonstrate how the **RoboOrchard Dataset** handles this:
     with other dataset formats.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
 
 # %%
 # Setup and Imports

@@ -24,14 +24,14 @@ import torch
 from graspnetAPI.graspnet_eval import GraspGroup
 from PIL import Image
 
-from robo_orchard_lab.inference.processor import (
-    ClassType_co,
-    ProcessorMixin,
-    ProcessorMixinCfg,
-)
 from robo_orchard_lab.models.finegrasp.utils import (
     ModelFreeCollisionDetector,
     pred_decode,
+)
+from robo_orchard_lab.processing.io_processor import (
+    ClassType_co,
+    ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 from robo_orchard_lab.utils import depth_to_range_image, seed_everything
 
@@ -157,7 +157,7 @@ class GraspOutput:
     grasp_poses: GraspGroup
 
 
-class FineGraspProcessor(ProcessorMixin):
+class FineGraspProcessor(ModelIOProcessor):
     cfg: "FineGraspProcessorCfg"  # for type hint
 
     def __init__(self, cfg: "FineGraspProcessorCfg"):
@@ -303,7 +303,7 @@ class FineGraspProcessor(ProcessorMixin):
         return GraspOutput(grasp_poses=gg)
 
 
-class FineGraspProcessorCfg(ProcessorMixinCfg[FineGraspProcessor]):
+class FineGraspProcessorCfg(ModelIOProcessorCfg[FineGraspProcessor]):
     """Configuration for FineGraspProcessor.
 
     Args:

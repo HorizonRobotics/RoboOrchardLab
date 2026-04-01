@@ -35,7 +35,6 @@ The solution is to use :py:meth:`~robo_orchard_lab.dataset.robot.dataset.RODatas
 complex sample into a simple dictionary of tensors before it gets batched.
 """
 
-# sphinx_gallery_thumbnail_path = '_static/images/sphx_glr_install_thumb.png'
 
 # %%
 # Setup and Imports

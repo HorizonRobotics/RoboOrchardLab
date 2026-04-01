@@ -14,265 +14,119 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import logging
-from abc import abstractmethod
-from typing import (
-    Any,
-    Callable,
-    Optional,
-    Sequence,
-    Tuple,
-    overload,
-)
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 import torch
-from accelerate import Accelerator
 from typing_extensions import deprecated
 
-from robo_orchard_lab.pipeline.batch_processor.mixin import BatchProcessorMixin
-from robo_orchard_lab.pipeline.hooks.mixin import (
-    ModelOutput,
-    ModelOutputHasLossKeys,
-    PipelineHookArgs,
-    PipelineHooks,
+from robo_orchard_lab.processing.io_processor import ModelIOProcessor
+from robo_orchard_lab.processing.step_processor.pipeline_step import (
+    DeprecatedError,
+    LossNotProvidedError,
+    SimpleStepProcessor,
+    StepProcessorFromCallable,
+)
+
+forward_fn_type = Callable[[Callable, Any], Tuple[Any, Optional[torch.Tensor]]]
+
+_TRANSFORMS_UNSUPPORTED_MESSAGE = (
+    "transforms is not supported anymore. "
+    "If you want to transform the input batch, "
+    "please implement it in the forward function or "
+    "in the data pipeline."
 )
 
 __all__ = [
+    "DeprecatedError",
     "LossNotProvidedError",
     "SimpleBatchProcessor",
     "BatchProcessorFromCallable",
 ]
 
 
-class DeprecatedError(Exception):
-    pass
+@deprecated(
+    "Use `robo_orchard_lab.processing.step_processor.pipeline_step."
+    "SimpleStepProcessor` instead.",
+    category=None,
+)
+class SimpleBatchProcessor(SimpleStepProcessor):
+    """Backward-compatible facade for the historical simple batch processor.
 
+    This deprecated class preserves the old
+    ``robo_orchard_lab.pipeline.batch_processor.simple.SimpleBatchProcessor``
+    import path while delegating to
+    :class:`robo_orchard_lab.processing.step_processor.pipeline_step.SimpleStepProcessor`.
 
-logger = logging.getLogger(__name__)
-
-
-forward_fn_type = Callable[[Callable, Any], Tuple[Any, Optional[torch.Tensor]]]
-
-
-class LossNotProvidedError(Exception):
-    pass
-
-
-class SimpleBatchProcessor(BatchProcessorMixin):
-    """A processor for handling batches in a training or inference pipeline."""
-
-    @overload
-    def __init__(self, need_backward: bool = True): ...
-
-    @overload
-    @deprecated(
-        "transforms is not supported anymore. "
-        "If you want to transform the input batch, "
-        "please implement it in the forward function or "
-        "in the data pipeline."
-    )
-    def __init__(
-        self,
-        need_backward: bool = True,
-        transforms: Optional[Callable | Sequence[Callable]] = None,
-    ): ...
+    The underlying implementation still supports the familiar lifecycle of
+    batch execution: optional pre-processing via an I/O processor, forward
+    execution, optional post-processing, loss reduction, and optional backward
+    propagation.
+    """
 
     def __init__(
         self,
         need_backward: bool = True,
         transforms: Optional[Callable | Sequence[Callable]] = None,
+        *,
+        io_processor: ModelIOProcessor | None = None,
+        apply_post_process: bool = False,
     ) -> None:
-        """Initializes the batch processor.
-
-        Args:
-            need_backward (bool): Whether backward computation is needed.
-                If True, the loss should be provided during the forward pass.
-
-        """
-
         if transforms is not None:
-            raise DeprecatedError(
-                "transforms is not supported anymore. "
-                "If you want to transform the input batch, "
-                "please implement it in the forward function or "
-                "in the data pipeline."
-            )
+            raise DeprecatedError(_TRANSFORMS_UNSUPPORTED_MESSAGE)
 
-        self.need_backward = need_backward
-
-        self._is_prepared = False
-        self.accelerator: Optional[Accelerator] = None
+        super().__init__(
+            need_backward=need_backward,
+            io_processor=io_processor,
+            apply_post_process=apply_post_process,
+        )
 
     @staticmethod
     def from_callable(
         forward_fn: forward_fn_type,
         need_backward: bool = True,
         transforms: Optional[Callable | Sequence[Callable]] = None,
-    ):
-        """Creates a SimpleBatchProcessor instance from a callable.
-
-        Args:
-            forward_fn (Callable): The forward function to be used for
-                processing batches.
-            need_backward (bool): Whether backward computation is needed.
-                If True, the loss should be provided during the forward pass.
-            transforms (Optional[Callable | Sequence[Callable]]): A callable
-                or a sequence of callables for transforming the batch.
-
-        Returns:
-            SimpleBatchProcessor: An instance of SimpleBatchProcessor.
-        """
+        *,
+        io_processor: ModelIOProcessor | None = None,
+        apply_post_process: bool = False,
+    ) -> "BatchProcessorFromCallable":
         return BatchProcessorFromCallable(
             forward_fn=forward_fn,
             need_backward=need_backward,
             transforms=transforms,
+            io_processor=io_processor,
+            apply_post_process=apply_post_process,
         )
 
-    def _initialize(self, accelerator: Accelerator) -> None:
-        if self._is_prepared:
-            return
 
-        for key, obj in vars(self).items():
-            if isinstance(obj, torch.nn.Module):
-                new_obj = accelerator.prepare(obj)
-                setattr(self, key, new_obj)
+@deprecated(
+    "Use `robo_orchard_lab.processing.step_processor.pipeline_step."
+    "StepProcessorFromCallable` instead.",
+    category=None,
+)
+class BatchProcessorFromCallable(StepProcessorFromCallable):
+    """Backward-compatible facade for the callable-backed batch processor.
 
-        self._is_prepared = True
-
-    @abstractmethod
-    def forward(
-        self,
-        model: Callable,
-        batch: Any,
-    ) -> Tuple[ModelOutput | ModelOutputHasLossKeys, Optional[torch.Tensor]]:
-        """Defines the forward pass logic for the model.
-
-        This method handles the execution of the forward pass, processing
-        the input batch and computing the outputs of the model. It also
-        optionally computes a loss tensor if required for training.
-
-        Args:
-            model (Callable): The model to be used for inference or training.
-                It should be a callable object (e.g., a PyTorch `nn.Module`
-                or a function).
-            batch (Any): The input batch data. This can be a tuple, dictionary,
-                or other structure, depending on the data pipeline's format.
-
-        Returns:
-            Tuple[ModelOutput | ModelOutputHasLossKeys, Optional[torch.Tensor]]:
-                - The first element is the model's outputs. It can be any type
-                  that the model produces, usually dict or a custom ModelOutput
-                  class that has `loss_keys` method if it contains multiple
-                  losses.
-                - The second element is an optional loss tensor. This
-                  is used during training when backward computation is required.
-                  If loss is not applicable (e.g., during inference), this value
-                  can be `None`.
-
-        Notes:
-            - In most cases, the `accelerator` will already ensure that both
-              the model and the batch data are moved to the appropriate device
-              before the forward pass.
-            - However, if additional operations or modifications are performed
-              on the batch data or model within this method, it is the
-              responsibility of the implementation to confirm they remain on
-              the correct device.
-            - The returned loss tensor should already be reduced (e.g., mean or
-              sum over batch elements) to facilitate the backward pass.
-            - This method does not handle backpropagation; it focuses solely
-              on the forward pass.
-            - The transformation of the input batch, if needed, should already
-              be handled prior to this method via the `self.transform` pipeline.
-        """  # noqa: E501
-        pass
-
-    def __call__(
-        self,
-        pipeline_hooks: PipelineHooks,
-        on_batch_hook_args: PipelineHookArgs,
-        model: Callable,
-    ) -> None:
-        self._initialize(accelerator=on_batch_hook_args.accelerator)
-        batch = on_batch_hook_args.batch
-        with pipeline_hooks.begin(
-            "on_model_forward",
-            arg=on_batch_hook_args.copy_with_updates(batch=batch),
-        ) as on_forward_hook_args:
-            self.accelerator = on_forward_hook_args.accelerator
-            outputs, loss = self.forward(model=model, batch=batch)
-            on_forward_hook_args.model_outputs = outputs
-            reduce_loss: torch.Tensor | None = loss
-            if self.accelerator.num_processes > 1 and loss is not None:
-                reduce_loss = self.accelerator.reduce(loss, reduction="mean")  # type: ignore
-
-            on_forward_hook_args.reduce_loss = reduce_loss
-
-        if self.need_backward:
-            if loss is None:
-                raise LossNotProvidedError()
-
-            with pipeline_hooks.begin(
-                "on_model_backward",
-                arg=on_batch_hook_args.copy_with_updates(
-                    batch=batch,
-                    model_outputs=outputs,
-                    reduce_loss=reduce_loss,
-                ),
-            ) as on_backward_hook_args:
-                on_backward_hook_args.accelerator.backward(loss)
-
-            # all reduce to get the average loss
-
-        on_batch_hook_args.model_outputs = outputs
-        on_batch_hook_args.reduce_loss = reduce_loss
-
-
-class BatchProcessorFromCallable(
-    SimpleBatchProcessor,
-):
-    """A processor for handling batches in a training or inference pipeline.
-
-    This class is designed to be used as a callable object, allowing it to
-    be easily integrated into various training or inference pipelines.
-    It provides a flexible interface for processing batches of data and
-    performing model inference or training.
+    This deprecated class preserves the old
+    ``BatchProcessorFromCallable`` import path while delegating to
+    :class:`robo_orchard_lab.processing.step_processor.pipeline_step.StepProcessorFromCallable`.
+    It remains the lightweight adapter for using a plain
+    ``(model, batch) -> (outputs, loss)`` callable as a batch processor.
     """
 
-    @overload
-    def __init__(self, forward_fn: forward_fn_type): ...
-
-    @overload
-    @deprecated(
-        "transforms is not supported anymore. "
-        "If you want to transform the input batch, "
-        "please implement it in the forward function or "
-        "in the data pipeline."
-    )
     def __init__(
         self,
         forward_fn: forward_fn_type,
         need_backward: bool = True,
         transforms: Optional[Callable | Sequence[Callable]] = None,
-    ): ...
-
-    def __init__(
-        self,
-        forward_fn: forward_fn_type,
-        need_backward: bool = True,
-        transforms: Optional[Callable | Sequence[Callable]] = None,
+        *,
+        io_processor: ModelIOProcessor | None = None,
+        apply_post_process: bool = False,
     ) -> None:
+        super().__init__(
+            forward_fn=forward_fn,
+            need_backward=need_backward,
+            io_processor=io_processor,
+            apply_post_process=apply_post_process,
+        )
         if transforms is not None:
-            super().__init__(
-                need_backward=need_backward, transforms=transforms
-            )
-        else:
-            super().__init__(need_backward=need_backward)
-
-        self._forward_fn = forward_fn
-
-    def forward(
-        self,
-        model: Callable,
-        batch: Any,
-    ) -> Tuple[Any, Optional[torch.Tensor]]:
-        return self._forward_fn(model, batch)
+            raise DeprecatedError(_TRANSFORMS_UNSUPPORTED_MESSAGE)
