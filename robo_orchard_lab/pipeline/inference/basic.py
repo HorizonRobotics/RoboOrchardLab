@@ -22,6 +22,7 @@ from typing import (
     Iterable,
     TypeAlias,
     TypeVar,
+    cast,
     overload,
 )
 
@@ -211,29 +212,74 @@ class InferencePipeline(
         Returns:
             OutputType: The final, post-processed batch result.
         """
+        model_input = self._build_model_input(batch, is_batch=True)
+        return self._model_forward_with_processor(model_input)
+
+    def _build_model_input(
+        self,
+        data: InputType | Iterable[InputType],
+        *,
+        is_batch: bool,
+    ) -> Any:
+        """Prepare model inputs with optional processor pre-processing.
+
+        Args:
+            data (InputType | Iterable[InputType]): Raw input sample or raw
+                input batch.
+            is_batch (bool): Whether ``data`` is a batch of raw samples.
+
+        Returns:
+            Any: Model-ready input after optional pre-processing and
+                collation.
+        """
+        if is_batch:
+            batch_inputs = list(cast(Iterable[InputType], data))
+            if self.processor is not None:
+                batch_data = [
+                    self.processor.pre_process(sample)
+                    for sample in batch_inputs
+                ]
+            else:
+                batch_data = batch_inputs
+
+            if self.collate_fn is None:
+                warnings.warn(
+                    "No collate function is specified in the pipeline "
+                    "config for batch inference. Using default collate "
+                    "function `collate_batch_dict`, which assumes each "
+                    "data sample is a dictionary."
+                )
+                return collate_batch_dict(batch_data)  # type: ignore[arg-type]
+
+            return self.collate_fn(batch_data)
+
+        model_input = (
+            self.processor.pre_process(data) if self.processor else data
+        )
         if self.collate_fn is None:
-            warnings.warn(
-                "No collate function is specified in the pipeline config for "
-                "batch inference. Using default collate function "
-                "`collate_batch_dict`, which assumes each data sample is "
-                "a dictionary."
-            )
-            collate_fn = collate_batch_dict
-        else:
-            collate_fn = self.collate_fn
+            return model_input
+        return self.collate_fn([model_input])
 
-        if self.processor is not None:
-            batch_data = [self.processor.pre_process(data) for data in batch]
-        else:
-            batch_data = list(batch)
+    def _model_forward_with_processor(
+        self,
+        data: Any,
+    ) -> OutputType:
+        """Run model forward and optional processor post-processing.
 
-        batch = collate_fn(batch_data)  # type: ignore
-        model_outputs = self._model_forward(batch)
+        Subclasses may override this method to customize the final inference
+        stage while reusing the default input preparation performed by
+        :meth:`_build_model_input`.
+
+        Args:
+            data (Any): Model-ready input, already collated when needed.
+
+        Returns:
+            OutputType: Final inference output after optional post-process.
+        """
+        model_outputs = self._model_forward(data)
         if self.processor is not None:
-            outputs = self.processor.post_process(model_outputs, batch)
-        else:
-            outputs = model_outputs
-        return outputs
+            return self.processor.post_process(model_outputs, data)
+        return model_outputs
 
     def _inference_single(self, data: InputType) -> OutputType:
         """Executes the standard end-to-end inference workflow for one sample.
@@ -253,19 +299,8 @@ class InferencePipeline(
         Returns:
             OutputType: The final, post-processed result.
         """
-        if self.processor is not None:
-            data = self.processor.pre_process(data)
-        if self.collate_fn is not None:
-            batch = self.collate_fn([data])
-        else:
-            batch = data  # type: ignore
-        model_outputs = self._model_forward(batch)
-        if self.processor is not None:
-            outputs = self.processor.post_process(model_outputs, batch)
-        else:
-            outputs = model_outputs
-
-        return outputs
+        model_input = self._build_model_input(data, is_batch=False)
+        return self._model_forward_with_processor(model_input)
 
     def _model_forward(self, data: Any) -> Any:
         """Perform the model's forward pass.

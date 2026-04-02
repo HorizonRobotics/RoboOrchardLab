@@ -41,6 +41,7 @@ from robo_orchard_lab.inference.processor import (
 )
 from robo_orchard_lab.models.mixin import (
     ModelMixin,
+    TorchModelMixin,
     TorchModuleCfg,
 )
 from robo_orchard_lab.pipeline.inference import (
@@ -170,6 +171,37 @@ class MyTestPipelineCfg(InferencePipelineCfg[MyTestPipeline]):
     processor: DummyProcessorCfg = DummyProcessorCfg()
 
 
+class HookedRuntimeInferencePipeline(
+    RuntimeInferencePipeline[InputDict, OutputDict]
+):
+    """Runtime pipeline that records hook calls."""
+
+    forwarded_inputs: list[object]
+
+    def __init__(
+        self,
+        cfg: "HookedRuntimeInferencePipelineCfg",
+        model: TorchModelMixin | None = None,
+    ):
+        self.forwarded_inputs = []
+        super().__init__(cfg=cfg, model=model)
+
+    def _model_forward_with_processor(self, data: object) -> OutputDict:
+        self.forwarded_inputs.append(copy.deepcopy(data))
+        return super()._model_forward_with_processor(data)
+
+
+class HookedRuntimeInferencePipelineCfg(
+    RuntimeInferencePipelineCfg[HookedRuntimeInferencePipeline]
+):
+    """Config for HookedRuntimeInferencePipeline."""
+
+    class_type: ClassType_co[HookedRuntimeInferencePipeline] = (
+        HookedRuntimeInferencePipeline
+    )
+    processor: DummyProcessorCfg = DummyProcessorCfg()
+
+
 # ---- 2. Pytest Fixtures ----
 # Fixtures provide a fixed baseline upon which tests can reliably
 # and repeatedly execute.
@@ -256,6 +288,58 @@ def test_pipeline_call_with_collator(with_collator: bool):
     if with_collator:
         expected_final_output = expected_final_output.unsqueeze(0)
         assert output["output_data"].shape == expected_final_output.shape
+
+
+@pytest.mark.parametrize("with_collator", [True, False])
+def test_runtime_pipeline_model_forward_with_processor_hook_single(
+    with_collator: bool,
+):
+    pipeline = HookedRuntimeInferencePipeline(
+        cfg=HookedRuntimeInferencePipelineCfg(
+            model_cfg=DummyModelCfg(),
+            batch_size=1,
+            collate_fn=collate_batch_dict if with_collator else None,
+        )
+    )
+    raw_input = {"input_data": torch.randn(1, 10)}
+    original_data = raw_input["input_data"].clone()
+
+    pipeline(raw_input)
+
+    assert len(pipeline.forwarded_inputs) == 1
+    forwarded_input = cast(
+        dict[str, torch.Tensor], pipeline.forwarded_inputs[0]
+    )
+    assert set(forwarded_input.keys()) == set(raw_input.keys())
+    expected_input = original_data + 1
+    if with_collator:
+        expected_input = expected_input.unsqueeze(0)
+    assert torch.equal(forwarded_input["input_data"], expected_input)
+
+
+def test_runtime_pipeline_model_forward_with_processor_hook_batch():
+    pipeline = HookedRuntimeInferencePipeline(
+        cfg=HookedRuntimeInferencePipelineCfg(
+            model_cfg=DummyModelCfg(),
+            batch_size=2,
+        )
+    )
+    raw_input = [{"input_data": torch.randn(1, 10)} for _ in range(3)]
+    original_batches = [item["input_data"].clone() for item in raw_input]
+
+    list(pipeline(raw_input))
+
+    assert len(pipeline.forwarded_inputs) == 2
+    first_batch = cast(dict[str, torch.Tensor], pipeline.forwarded_inputs[0])
+    second_batch = cast(dict[str, torch.Tensor], pipeline.forwarded_inputs[1])
+    assert torch.equal(
+        first_batch["input_data"],
+        torch.stack([original_batches[0] + 1, original_batches[1] + 1], dim=0),
+    )
+    assert torch.equal(
+        second_batch["input_data"],
+        torch.stack([original_batches[2] + 1], dim=0),
+    )
 
 
 @pytest.mark.parametrize("batch_size", [1, 2, 3])
