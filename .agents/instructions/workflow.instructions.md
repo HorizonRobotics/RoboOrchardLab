@@ -23,7 +23,7 @@ description: Load these instructions when planning complex repository work, vali
 
 - For complex, cross-cutting, or high-uncertainty tasks, follow this minimal loop: design, develop, confirm, distill, then clean up.
 - When the `feature-dev` skill applies, treat it as the detailed implementation of the design, develop, and confirm portions of this loop. The repository-level distill and clean-up requirements still apply after that skill's development flow completes.
-- Before implementation, write a temporary design note in a disposable repository-local scratch path such as `.agents/temp/designs/`; keep it uncommitted by default.
+- Before implementation, write a temporary design note in a disposable repository-local scratch path such as `.agents/scratch/designs/`; keep it uncommitted by default.
 - Capture the problem, constraints, chosen approach, validation plan, and explicit non-goals in that temporary design note.
 - Skip the temporary design note for small, local, or mechanical changes when the implementation path is already obvious.
 - After implementation, run the smallest useful validation and confirm the result against the user's request before treating the task as complete.
