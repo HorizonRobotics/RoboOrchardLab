@@ -1,5 +1,5 @@
 ---
-description: Load these instructions when creating, editing, or reorganizing AGENTS.md files, .agents/instructions/*.md files, or .agents/skills/* guidance in this repository.
+description: Load these instructions when creating, editing, or reorganizing AGENTS.md files, .agents/instructions/*.md files, .agents/references/* assets, or .agents/skills/* guidance in this repository.
 ---
 
 # Guidance Authoring Instructions
@@ -7,7 +7,7 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 ## Guidance Model
 
 - Treat this repository as an independent guidance root.
-- Keep local `AGENTS.md`, `.agents/instructions/`, and `.agents/skills/`
+- Keep local `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, and `.agents/skills/`
   self-contained; do not rely on any containing workspace or parent
   repository to make the wording complete.
 - When borrowing a rule from another repository, rewrite it so it remains
@@ -19,7 +19,7 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - Keep detailed behavior rules in `.agents/instructions/` or
   `.agents/skills/`, not in `AGENTS.md`.
 - Keep `Quick Routing` limited to topics owned by this repository.
-- If `AGENTS.md` says a local `.agents/instructions/` or `.agents/skills/`
+- If `AGENTS.md` says a local `.agents/instructions/`, `.agents/references/`, or `.agents/skills/`
   tree exists, make sure the referenced paths actually exist.
 - Keep `source of truth` and `independent repository` wording consistent
   with the no-parent-fallback model.
@@ -48,6 +48,11 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - If multiple local skills overlap, make the intended routing clear in
   `AGENTS.md`.
 
+## Reference Files
+
+- Use `.agents/references/*` for stable, agent-facing terminology, naming guidance, checklists, and short decision summaries.
+- Keep reference files concise and specific enough that `AGENTS.md` or a skill can link to them directly.
+
 ## Temporary Design Drafts And Retrospectives
 
 - Temporary design drafts and one-off task retrospectives are not shared agent guidance.
@@ -58,7 +63,7 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 ## Consistency Checks
 
 - After editing guidance, read the affected `AGENTS.md`, instruction files,
-  and skill references together to check for duplicate rules,
+  reference files, and skill references together to check for duplicate rules,
   contradictory precedence, and mismatched scope.
 - Verify that every referenced file path exists and that every listed local
   tree actually exists.

@@ -11,6 +11,17 @@ description: Load these instructions when modifying Python source files, tests, 
 - Keep new logic focused; avoid abstraction added only for style.
 - Do not silently swallow exceptions. If catching one, keep enough context to debug it.
 
+## Spatial Transform And Matrix Naming
+
+- Use explicit source/target naming for poses, transforms, and spatial matrices.
+- Prefer `a_to_b`, `a_to_b_tf`, `a_to_b_mat`, and `BatchFrameTransform(child=A, parent=B)`.
+- Treat `a_to_b`, `a_to_b_tf`, `a_to_b_mat`, `a2b`, and `BatchFrameTransform(child=A, parent=B)` as the same direction semantics.
+- `a2b` may remain for historical compatibility, but new code should prefer `a_to_b`.
+- Do not introduce `A|B`, `T_ab`, `T_a_b`, or `Tab` as the primary naming style.
+- Keep legacy names such as `T_world2cam`, `world2cam`, and `cam2world` only when external data, third-party APIs, or existing public interfaces require them, and add a nearby mapping comment to the preferred form.
+- For non-frame spatial matrices, still use explicit semantic names such as `cam_intrinsic_mat`, `world_to_img_proj_mat`, `base_jacobian_mat`, or `pose_cov_mat`.
+- For external-library code, third-party APIs, protocol fields, dataset schemas, or compatibility layers, follow the external convention at the boundary instead of force-renaming it to the repository convention. Add an explicit local mapping when bridging between the external convention and repository-owned code.
+
 ## Typing
 
 - Preserve or add type annotations when touching function signatures or return values.

@@ -11,6 +11,8 @@ description: Load these baseline instructions only for tasks that touch this rep
 - Read the relevant code, call sites, and tests before editing.
 - Exclude vendored or external-code directories from default code search unless the task explicitly targets them or requires cross-repository comparison.
 - Keep comments and docstrings aligned with the implementation.
+- For poses, frame transforms, and spatial matrices, prefer explicit direction-bearing names such as `a_to_b`, `a_to_b_tf`, `a_to_b_mat`, or `BatchFrameTransform(child=A, parent=B)`. In this repository, `BatchFrameTransform(child=A, parent=B)` and `a_to_b` share the same direction semantics. Do not assume compact forms such as `A|B`, `T_ab`, `T_a_b`, or `Tab` are acceptable default repository style without an explicit local mapping.
+- Treat the repository convention above as the default for code owned by this repository. For external libraries, third-party APIs, protocol fields, dataset schemas, or compatibility layers, follow the external convention at the boundary and add an explicit local mapping before translating to repository-preferred names.
 - Prefer concise, minimally fragmented helper functions. Merge nearby
 	single-purpose helpers when it keeps the main flow clear, and avoid
 	introducing extra helpers unless they improve readability or reuse.

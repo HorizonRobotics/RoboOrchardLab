@@ -1,6 +1,7 @@
 # AGENTS.md
 
 Repository instructions live in `.agents/instructions/`.
+Repository references live in `.agents/references/`.
 Repository skills live in `.agents/skills/`.
 
 ## Guidance Scope and Precedence
@@ -13,9 +14,9 @@ Repository skills live in `.agents/skills/`.
 
 - Read `.agents/instructions/default.instructions.md` only when the task
   touches this repository's files, workflows, or behavior.
-- When editing `AGENTS.md`, `.agents/instructions/`, or `.agents/skills/`,
+- When editing `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, or `.agents/skills/`,
   also read `.agents/instructions/guidance-authoring.instructions.md`.
-- Use `Quick Routing` below to load topic-specific instruction files when relevant.
+- Use `Quick Routing` below to load topic-specific instruction or reference files when relevant.
 
 ### Quick Routing
 
@@ -25,7 +26,8 @@ Repository skills live in `.agents/skills/`.
 - Commit messages, branches, merge requests, or pull requests: `.agents/instructions/git.instructions.md`
 - Environment, runtime, hardware, or external-service constraints: `.agents/instructions/environment.instructions.md`
 - Fresh environment bootstrap or local setup: `.agents/instructions/prepare_env.instructions.md`
-- `AGENTS.md`, `.agents/instructions/`, or `.agents/skills/` authoring and refactors: `.agents/instructions/guidance-authoring.instructions.md`
+- Spatial transform, pose, or matrix naming: `.agents/references/spatial-transform-and-matrix-naming-guideline.md`
+- `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, or `.agents/skills/` authoring and refactors: `.agents/instructions/guidance-authoring.instructions.md`
 
 ## Skills
 
@@ -42,6 +44,7 @@ Repository skills live in `.agents/skills/`.
 ## Repository Notes
 
 - Treat `.agents/instructions/` as the source of truth for agent guidance.
+- Treat `.agents/references/` as the source of truth for stable agent-facing reference guidance.
 - Treat `.agents/skills/` as the source of truth for task-specific skill workflows.
 - Keep this file as a pointer; do not copy instruction content here.
 - Use `Makefile` and `pyproject.toml` as the workflow and tool-config sources of truth when applicable.
