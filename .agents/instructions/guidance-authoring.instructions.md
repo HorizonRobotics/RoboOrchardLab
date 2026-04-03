@@ -51,7 +51,7 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 ## Temporary Design Drafts And Retrospectives
 
 - Temporary design drafts and one-off task retrospectives are not shared agent guidance.
-- Keep in-progress design notes in a disposable scratch path such as `.agents/tmp/designs/` while the task is active, then delete them after confirmation.
+- Keep in-progress design notes in a disposable scratch path such as `.agents/temp/designs/` while the task is active, then delete them after confirmation.
 - Promote stable project-facing knowledge into `docs/`, package docs, or another established design-doc location for this repository.
 - Distill stable agent-facing lessons into local instructions or other intentional local shared agent assets as appropriate, not raw scratch notes.
 
