@@ -130,7 +130,7 @@ class SEMPolicy:
 def encode_obs(observation, data_transforms, instruction):
     images = []
     depths = []
-    world_to_cam_mats = []
+    t_world2cam = []
     intrinsics = []
     joint_state = []
     for _, camera_data in observation["observation"].items():
@@ -139,7 +139,7 @@ def encode_obs(observation, data_transforms, instruction):
 
         _ext = np.eye(4, dtype=np.float32)
         _ext[:3] = camera_data["extrinsic_cv"]
-        world_to_cam_mats.append(_ext)
+        t_world2cam.append(_ext)
 
         _int = np.eye(4, dtype=np.float32)
         _int[:3, :3] = camera_data["intrinsic_cv"]
@@ -155,8 +155,8 @@ def encode_obs(observation, data_transforms, instruction):
 
     joint_state.append(joint_action)
 
-    world_to_cam_mats = np.stack(world_to_cam_mats, dtype=np.float32)
-    default_base_to_world_mat = np.array(
+    t_world2cam = np.stack(t_world2cam, dtype=np.float32)
+    default_t_base2world = np.array(
         [
             [0, -1, 0, 0],
             [1, 0, 0, -0.65],
@@ -171,8 +171,8 @@ def encode_obs(observation, data_transforms, instruction):
         depths=np.stack(depths),
         joint_state=np.stack(copy.deepcopy(joint_state), dtype=np.float32),
         intrinsic=np.stack(intrinsics, dtype=np.float32),
-        T_world2cam=world_to_cam_mats,
-        T_base2world=default_base_to_world_mat,
+        T_world2cam=t_world2cam,
+        T_base2world=default_t_base2world,
         text=instruction,
         step_index=len(joint_state) - 1,
     )

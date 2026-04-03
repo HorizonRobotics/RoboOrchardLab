@@ -21,9 +21,7 @@ import numpy as np
 
 class PosePostProcess:
     def __init__(self, camera_info: dict):
-        # External Robotwin boundary field: the source extrinsic is provided
-        # in the world-to-camera convention.
-        self.world_to_camera_mat = camera_info["extrinsic"]
+        self.camera_extrinsic = camera_info["extrinsic"]
         camera_instrinsics = camera_info["intrinsic"]
         self.fx, self.fy = camera_instrinsics["fx"], camera_instrinsics["fy"]
         self.cx, self.cy = camera_instrinsics["cx"], camera_instrinsics["cy"]
@@ -66,8 +64,9 @@ class PosePostProcess:
         """
         grasp_poses_world_homo = []
         for grasp_pose_img in grasp_poses_img:
-            camera_to_world_mat = np.linalg.inv(self.world_to_camera_mat)
-            grasp_pose_world_homo = camera_to_world_mat @ grasp_pose_img
+            grasp_pose_world_homo = (
+                np.linalg.inv(self.camera_extrinsic) @ grasp_pose_img
+            )  # get from robotwin, which is world2cam
             grasp_poses_world_homo.append(grasp_pose_world_homo)
         return grasp_poses_world_homo
 
@@ -124,10 +123,11 @@ class PosePostProcess:
         grounding_points = np.stack([points_x, points_y, points_z], axis=-1)
         grounding_points_img = grounding_points[mask].astype(np.float32)
 
-        camera_to_world_mat = np.linalg.inv(self.world_to_camera_mat)
+        cam2world = np.linalg.inv(
+            self.camera_extrinsic
+        )  # get from robotwin, which is world2cam
         grounding_points_world = (
-            grounding_points_img @ camera_to_world_mat[:3, :3].T
-            + camera_to_world_mat[:3, 3]
+            grounding_points_img @ cam2world[:3, :3].T + cam2world[:3, 3]
         )
 
         return grounding_points_world

@@ -138,7 +138,7 @@ class ArrowDataParse:
 
     def get_extrinsic(self, data):
         """Parse camera extrinsic matrices from the data."""
-        world_to_cam_mats = []
+        T_world2cam = []  # noqa: N806
         for cam_name in self.cam_names:
             frame_id = data[cam_name].frame_id
             cam_extrinsic = data[cam_name].pose
@@ -150,10 +150,10 @@ class ArrowDataParse:
             extrinsic = np.linalg.inv(
                 data[cam_name].pose.as_Transform3D_M().get_matrix()[0].numpy()
             )
-            world_to_cam_mats.append(extrinsic)
+            T_world2cam.append(extrinsic)
 
-        # Compatibility field kept for downstream transforms.
-        return {"T_world2cam": np.stack(world_to_cam_mats).astype(np.float64)}
+        T_world2cam = np.stack(T_world2cam).astype(np.float64)  # noqa: N806
+        return {"T_world2cam": T_world2cam}
 
     def __call__(self, data):
         data.update(self.get_instruction(data))

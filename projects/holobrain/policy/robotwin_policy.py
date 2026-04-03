@@ -102,13 +102,13 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
 
         images = {}
         depths = {}
-        world_to_cam_mats = {}
+        t_world2cam = {}
         intrinsic = {}
         for cam_name, camera_data in obs["observation"].items():
             images[cam_name] = [camera_data["rgb"]]
             depths[cam_name] = [camera_data["depth"] / 1000]
 
-            world_to_cam_mats[cam_name] = self._to_homogeneous_matrix(
+            t_world2cam[cam_name] = self._to_homogeneous_matrix(
                 camera_data["extrinsic_cv"],
                 valid_shapes=((3, 4),),
                 name="observation[*].extrinsic_cv",
@@ -138,7 +138,7 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
             image=images,
             depth=depths,
             intrinsic=intrinsic,
-            t_world2cam=world_to_cam_mats,
+            t_world2cam=t_world2cam,
             history_joint_state=[joint_action["vector"]],
             instruction=instruction,
         )
@@ -156,7 +156,7 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
         return np.asarray(value)
 
     @classmethod
-    def _camera_pose_to_world_to_cam_mat(cls, pose: Any) -> np.ndarray:
+    def _camera_pose_to_world2cam(cls, pose: Any) -> np.ndarray:
         if pose is None:
             raise ValueError(
                 "Unsupported formatted RoboTwin observation: "
@@ -219,7 +219,7 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
 
         images = {}
         depths = {}
-        world_to_cam_mats = {}
+        t_world2cam = {}
         intrinsic = {}
         for cam_name, camera_modalities in cameras.items():
             rgb = camera_modalities.get("rgb")
@@ -231,10 +231,8 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
                     f"camera `{cam_name}` is missing both rgb and depth."
                 )
 
-            world_to_cam_mats[cam_name] = (
-                self._camera_pose_to_world_to_cam_mat(
-                    getattr(cam_data, "pose", None)
-                )
+            t_world2cam[cam_name] = self._camera_pose_to_world2cam(
+                getattr(cam_data, "pose", None)
             )
             intrinsic_matrix = self._to_numpy(cam_data.intrinsic_matrices)
             if intrinsic_matrix.ndim == 3:
@@ -267,7 +265,7 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
             image=images or None,
             depth=depths or None,
             intrinsic=intrinsic,
-            t_world2cam=world_to_cam_mats,
+            t_world2cam=t_world2cam,
             history_joint_state=[joint_state],
             instruction=instruction,
         )
