@@ -32,6 +32,9 @@ description: Load these instructions when modifying Python source files, tests, 
 - Follow the style of nearby code, including imports, naming, file layout, and docstring conventions.
 - Add comments only when they provide non-obvious context.
 - For local control-flow or data-shape decisions that are easy to misread, add a short adjacent comment at the decision point rather than relying only on a function-level docstring.
+- For coordinate-frame transforms, matrix transforms, inversions, or
+  convention-bridging code, add a short adjacent comment when the direction
+  of the transform or the frame handoff is not obvious from the code alone.
 - Prefer code-near comments for one-off shape normalization, batch unwrapping, side-channel filtering, compatibility branches, or similar logic whose intent is not obvious from names alone.
 - For key interface functions, public dataset/model/pipeline entrypoints, and helper functions whose behavior or parameters are not immediately obvious from the signature alone, add or update docstrings instead of leaving the interface undocumented.
 - Follow the project's existing Google-style docstring format with `Args:` and `Returns:` when documenting functions.
