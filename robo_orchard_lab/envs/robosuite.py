@@ -28,7 +28,7 @@ from robo_orchard_core.utils.math import (
 from robosuite.environments.robot_env import RobotEnv
 from robosuite.utils.binding_utils import MjSim
 from robosuite.utils.camera_utils import (
-    get_camera_extrinsic_matrix as get_camera_pose,
+    get_camera_extrinsic_matrix,
     get_camera_intrinsic_matrix,
     get_real_depth_map,
 )
@@ -70,9 +70,9 @@ def get_camera_info(env: RobotEnv, camera_name: str) -> BatchCameraInfo:
             camera_width=widths,
         )
     ).unsqueeze(0)
-    cam_pose = Transform3D_M(
+    camera_in_world = Transform3D_M(
         matrix=torch.from_numpy(
-            get_camera_pose(
+            get_camera_extrinsic_matrix(
                 sim,
                 camera_name=camera_name,
             )
@@ -84,8 +84,8 @@ def get_camera_info(env: RobotEnv, camera_name: str) -> BatchCameraInfo:
         frame_id=camera_name,
         intrinsic_matrices=intrinsic_matrix_torch,
         pose=BatchFrameTransform(
-            xyz=cam_pose.get_translation(),
-            quat=cam_pose.get_rotation_quaternion(normalize=True),
+            xyz=camera_in_world.get_translation(),
+            quat=camera_in_world.get_rotation_quaternion(normalize=True),
             parent_frame_id="world",
             child_frame_id=camera_name,
         ),

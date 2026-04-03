@@ -218,7 +218,7 @@ class LiberoEnv(EnvBase):
 
         This is the default action type for LiberoEnv, but users can also
         choose to use the target end-effector pose as action by setting
-        `use_action_type` to "osc_delta_pose" in the config.
+        `use_action_type` to "orchard_osc_target_eef" in the config.
         In that case, the action should be a 7-dimensional vector representing
         the target end-effector pose (x, y, z, q_w, q_x, q_y, q_z) in world
         frame, followed by gripper command.
@@ -261,8 +261,7 @@ class LiberoEnv(EnvBase):
             "types are supported."
         )
 
-        # handle osc_delta_pose action type: convert the target
-        # pose to osc delta pose
+        # Convert the target pose to the OSC delta action expected by Libero.
         if action.shape[-1] != 8:
             raise ValueError(
                 "For 'orchard_osc_target_eef' action type, "

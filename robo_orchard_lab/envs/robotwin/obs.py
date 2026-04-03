@@ -108,7 +108,9 @@ def get_camera_data(
     - "rgb": (H, W, 3) np.ndarray, optional
     - "depth": (H, W) np.ndarray, optional
     - "intrinsic_cv": (3, 3) np.ndarray
-    - "extrinsic_cv": (4, 4) np.ndarray, world to camera
+    - "extrinsic_cv": (4, 4) np.ndarray, camera extrinsic in the OpenCV
+      convention. The matrix encodes the camera pose in the world frame
+      after inversion.
 
     Args:
         cam (dict): Camera data in dict format.
@@ -119,15 +121,17 @@ def get_camera_data(
             The keys can be "rgb" and/or "depth", depending on the input.
 
     """
-    world2cam = torch.eye(4).reshape(1, 4, 4)
-    world2cam[0, :3, :] = torch.from_numpy(cam["extrinsic_cv"])
-    cam2world = Transform3D_M(matrix=world2cam).inverse()
+    # `extrinsic_cv` follows the external OpenCV camera extrinsic
+    # convention. Invert it here to build the camera pose in world.
+    world_to_camera_mat = torch.eye(4).reshape(1, 4, 4)
+    world_to_camera_mat[0, :3, :] = torch.from_numpy(cam["extrinsic_cv"])
+    camera_in_world = Transform3D_M(matrix=world_to_camera_mat).inverse()
     assert check_valid_rotation_matrix(
-        cam2world.get_matrix()[:, :3, :3], tol=1e-5
-    ), "Invalid cam2world rotation matrix"
+        camera_in_world.get_matrix()[:, :3, :3], tol=1e-5
+    ), "Invalid camera_in_world rotation matrix"
     cam_tf = BatchFrameTransform(
-        xyz=cam2world.get_translation(),
-        quat=cam2world.get_rotation_quaternion(),
+        xyz=camera_in_world.get_translation(),
+        quat=camera_in_world.get_rotation_quaternion(),
         parent_frame_id="world",
         child_frame_id=camera_name,
     )

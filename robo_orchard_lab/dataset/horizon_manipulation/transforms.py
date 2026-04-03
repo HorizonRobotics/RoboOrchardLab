@@ -49,6 +49,8 @@ class MoveEgoToCam:
             cam_idx = data["cam_names"].index(self.cam_idx)
         else:
             cam_idx = self.cam_idx
+        # Keep the external camera extrinsic naming at the boundary, then
+        # bridge it into the repository transform chain here.
         data["T_base2ego"] = data["T_world2cam"][cam_idx] @ data.get(
             "T_base2world", np.eye(4)
         )
@@ -685,6 +687,8 @@ class GetProjectionMat:
 
     def __call__(self, data):
         intrinsic = data["intrinsic"]
+        # These matrices are imported from external dataset boundaries, so
+        # keep their field names intact and compose them explicitly here.
         if self.target_coordinate == "world":
             projection_mat = intrinsic @ data["T_world2cam"]
             embodiedment_mat = data["T_base2world"]

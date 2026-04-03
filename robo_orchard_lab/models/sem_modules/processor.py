@@ -51,16 +51,24 @@ class MultiArmManipulationInput:
     parameter matrices."""
 
     t_world2cam: dict[str, TENSOR_TYPE] | None = None
-    """A dictionary mapping camera names to their world-to-camera
-    transformation matrices (e.g., extrinsic parameters)."""
+    """External camera extrinsics kept in the dataset boundary's
+    world-to-camera convention.
+
+    The processor forwards them as ``T_world2cam`` for downstream
+    consumers.
+    """
 
     t_robot2world: TENSOR_TYPE | None = None
-    """The transformation from the robot's base frame to the
-    world coordinate frame."""
+    """The robot base pose expressed in the world frame.
+
+    This boundary field is kept as-is for downstream compatibility.
+    """
 
     t_robot2ego: TENSOR_TYPE | None = None
-    """The transformation from the robot's base frame to an
-    egocentric frame, if applicable."""
+    """The robot base pose expressed in an egocentric frame.
+
+    This boundary field is kept as-is for downstream compatibility.
+    """
 
     history_joint_state: list[TENSOR_TYPE] | None = None
     """A list of past joint states, representing the
