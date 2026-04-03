@@ -177,7 +177,8 @@ with open(f"{output_path}/processor.json")), "w") as fh:
     fh.write(processor.cfg.model_dump_json(indent=4))
 ```
 
-For the preprocessing of real-world deployment, the camera extrinsic parameters `T_world2cam` cannot be obtained directly.
+For the preprocessing of real-world deployment, the camera extrinsic
+compatibility field `T_world2cam` cannot be obtained directly.
 We provide a preprocessing function that calculates the extrinsic parameters online through calibration.
 The processor can be exported as follow:
 

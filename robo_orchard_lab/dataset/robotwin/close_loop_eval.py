@@ -44,7 +44,7 @@ def class_decorator(task_name):
 def deploy_data_process(dataset, obs, task_name, joint_state=None):
     images = []
     depths = []
-    T_world2cam = []  # noqa: N806
+    world_to_cam_mats = []
     intrinsic = []
     for camera_data in obs["observation"].values():
         if dataset.load_image:
@@ -54,16 +54,17 @@ def deploy_data_process(dataset, obs, task_name, joint_state=None):
 
         _tmp = np.eye(4)
         _tmp[:3] = camera_data["extrinsic_cv"]
-        T_world2cam.append(_tmp)
+        world_to_cam_mats.append(_tmp)
 
         _tmp = np.eye(4)
         _tmp[:3, :3] = camera_data["intrinsic_cv"]
         intrinsic.append(_tmp)
 
     joint_state.append(obs["joint_action"]["vector"])
+    # Compatibility fields expected by the downstream Robotwin transforms.
     data = dict(
         intrinsic=np.stack(intrinsic),
-        T_world2cam=np.stack(T_world2cam),
+        T_world2cam=np.stack(world_to_cam_mats),
         T_base2world=copy.deepcopy(dataset.T_base2world),
         step_index=len(joint_state) - 1,
         joint_state=np.stack(joint_state),

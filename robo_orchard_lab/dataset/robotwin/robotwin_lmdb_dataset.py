@@ -167,7 +167,9 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         else:
             cam_names = self.meta_lmdbs[lmdb_index][f"{uuid}/camera_names"]
 
-        _T_world2cam = self.meta_lmdbs[lmdb_index][f"{uuid}/extrinsic"]  # noqa: N806
+        world_to_cam_by_cam_name = self.meta_lmdbs[lmdb_index][
+            f"{uuid}/extrinsic"
+        ]
         _intrinsic = self.meta_lmdbs[lmdb_index][f"{uuid}/intrinsic"]
 
         if self.load_image:
@@ -175,7 +177,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         if self.load_depth:
             depths = []
 
-        T_world2cam = []  # noqa: N806
+        world_to_cam_mats = []
         intrinsic = []
         for cam_name in cam_names:
             if self.load_image:
@@ -202,11 +204,11 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
                 depths.append(depth)
 
             _tmp = np.eye(4)
-            if _T_world2cam[cam_name].ndim == 3:  # for dynamic camera
-                _tmp[:3] = _T_world2cam[cam_name][step_index][:3]
+            if world_to_cam_by_cam_name[cam_name].ndim == 3:  # dynamic camera
+                _tmp[:3] = world_to_cam_by_cam_name[cam_name][step_index][:3]
             else:  # ndim == 2, for fixed camera
-                _tmp[:3] = _T_world2cam[cam_name][:3]
-            T_world2cam.append(_tmp)
+                _tmp[:3] = world_to_cam_by_cam_name[cam_name][:3]
+            world_to_cam_mats.append(_tmp)
 
             _tmp = np.eye(4)
             _tmp[:3, :3] = _intrinsic[cam_name][:3, :3]
@@ -216,7 +218,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
             images = np.stack(images)
         if self.load_depth:
             depths = np.stack(depths)
-        T_world2cam = np.stack(T_world2cam)  # noqa: N806
+        T_world2cam = np.stack(world_to_cam_mats)  # noqa: N806
         intrinsic = np.stack(intrinsic)
 
         joint_state = self.meta_lmdbs[lmdb_index][
@@ -228,6 +230,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         if ee_state.ndim == 3:
             ee_state = ee_state.reshape(ee_state.shape[0], -1)
 
+        # Compatibility fields kept for downstream dataset and model code.
         data = dict(
             uuid=uuid,
             step_index=step_index,

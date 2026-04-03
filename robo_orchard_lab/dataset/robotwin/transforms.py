@@ -278,7 +278,7 @@ class ArrowDataParse:
 
     def get_extrinsic(self, data):
         """Parse camera extrinsic matrices from the data."""
-        T_world2cam = []  # noqa: N806
+        world_to_cam_mats = []
         for cam_name in self.cam_names:
             frame_id = data[cam_name].frame_id
             cam_extrinsic = data[cam_name].pose
@@ -292,10 +292,10 @@ class ArrowDataParse:
             extrinsic = np.linalg.inv(
                 data[cam_name].pose.as_Transform3D_M().get_matrix()[0].numpy()
             )
-            T_world2cam.append(extrinsic)
+            world_to_cam_mats.append(extrinsic)
 
-        T_world2cam = np.stack(T_world2cam).astype(np.float64)  # noqa: N806
-        return {"T_world2cam": T_world2cam}
+        # Compatibility field kept for downstream Robotwin transforms.
+        return {"T_world2cam": np.stack(world_to_cam_mats).astype(np.float64)}
 
     def __call__(self, data):
         data.update(self.get_instruction(data))
@@ -793,28 +793,28 @@ class CalibrationToExtrinsic(DualArmKinematics):
             data["hist_joint_state"][-1][None], return_matrix=True
         )[0]
         cam_names = data.get("cam_names", self.cam_names)
-        t_base2cam_list = []
+        base_to_cam_mats = []
         for cam in cam_names:
             calibration = torch.clone(calibrations[cam])
             if cam not in self.cam_ee_joint_indices:
-                t_base2cam = calibration
+                base_to_cam_mat = calibration
             else:
                 idx = self.cam_ee_joint_indices[cam]
-                t_ee2cam = calibration
-                t_ee2base = torch.eye(4)
-                t_ee2base = current_joint_pose[idx]
-                t_base2cam = t_ee2cam @ torch.linalg.inv(t_ee2base).to(
-                    t_ee2cam
-                )
-            t_base2cam_list.append(t_base2cam)
-        t_base2cam = torch.stack(t_base2cam_list)
+                ee_to_cam_mat = calibration
+                ee_to_base_mat = torch.eye(4)
+                ee_to_base_mat = current_joint_pose[idx]
+                base_to_cam_mat = ee_to_cam_mat @ torch.linalg.inv(
+                    ee_to_base_mat
+                ).to(ee_to_cam_mat)
+            base_to_cam_mats.append(base_to_cam_mat)
+        base_to_cam_mat = torch.stack(base_to_cam_mats)
         if "T_base2world" in data:
-            t_world2cam = torch.linalg.solve(
-                data["T_base2world"], t_base2cam, left=False
+            world_to_cam_mat = torch.linalg.solve(
+                data["T_base2world"], base_to_cam_mat, left=False
             )
         else:
-            t_world2cam = t_base2cam
-        data["T_world2cam"] = t_world2cam
+            world_to_cam_mat = base_to_cam_mat
+        data["T_world2cam"] = world_to_cam_mat
         return data
 
     def _pose_to_mat(self, pose):
