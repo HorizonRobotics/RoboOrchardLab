@@ -330,8 +330,25 @@ if __name__ == "__main__":
             "torch-geometric",
             "open3d",
         ],
+        "mapdream": [
+            "transformers",
+            "tokenizers",
+            "peft",
+            "markdown2[all]",
+            "scikit-learn>=1.2.2",
+            "opencv-python",
+            "uvicorn",
+            "fastapi",
+            "timm",
+            "ninja",
+            "tyro",
+            "loguru",
+            "hydra-core",
+            "deepspeed",
+            "easydict",
+        ],
         "all": [
-            "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp,progress_think]"
+            "robo_orchard_lab[bip3d,sem,mcap_datasets,aux_think,finegrasp,progress_think,mapdream]"
         ],
     }
     install_requires = wrap_github_dependency(install_requires)
