@@ -55,6 +55,8 @@ class Config(SettingConfig):
     model_dir: str = "models"
     """The directory of the model, including the model_config,
     ckpt and pipeline, you could get it from the scripts/export.py script."""
+    inference_prefix: str = "inference"
+    """The prefix of the inference pipeline config file."""
     port: int = 2000
     """The port of the server."""
     server_name: str = "holobrain"
@@ -76,7 +78,7 @@ except SystemExit as e:
 
 pipeline = HoloBrainInferencePipeline.load_pipeline(
     directory=args.model_dir,
-    inference_prefix="inference",
+    inference_prefix=args.inference_prefix,
     device="cuda",
     load_weights=True,
     load_impl="native",

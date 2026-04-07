@@ -56,6 +56,7 @@ from robo_orchard_lab.utils.env import set_env  # noqa: E402
 
 class Config(SettingConfig):
     model_dir: str
+    inference_prefix: str = "inference"
     model_prefix: str = "model"
     task_names: list[str] = list(SEM_TASKS_16)
     episode_num: int = 100
@@ -241,6 +242,7 @@ def run(cfg: Config) -> dict:
     if cfg.mode == "local":
         pipeline = HoloBrainInferencePipeline.load_pipeline(
             directory=cfg.model_dir,
+            inference_prefix=cfg.inference_prefix,
             device=resolved_device,
             load_weights=True,
             load_impl="native",
@@ -267,6 +269,7 @@ def run(cfg: Config) -> dict:
             raise ValueError("Ray evaluation requires gpu_ids to be set.")
         policy_or_cfg = HoloBrainRoboTwinPolicyCfg(
             model_dir=cfg.model_dir,
+            inference_prefix=cfg.inference_prefix,
             model_prefix=cfg.model_prefix,
             use_action_chunk_size=cfg.use_action_chunk_size,
         )

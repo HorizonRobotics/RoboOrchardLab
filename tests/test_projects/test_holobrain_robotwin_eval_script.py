@@ -351,6 +351,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             output_path = Path(tmpdir) / "metrics" / "robotwin_eval.json"
             cfg = module.Config(
                 model_dir="/tmp/model",
+                inference_prefix="robotwin2_0",
                 model_prefix="checkpoint",
                 task_names=["task_a"],
                 episode_num=1,
@@ -381,6 +382,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             self.assertEqual(metrics, fake_metrics)
             mock_load_pipeline.assert_called_once_with(
                 directory="/tmp/model",
+                inference_prefix="robotwin2_0",
                 device="cpu",
                 load_weights=True,
                 load_impl="native",
@@ -407,6 +409,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             output_path = Path(tmpdir) / "metrics" / "robotwin_eval.json"
             cfg = module.Config(
                 model_dir="/tmp/model",
+                inference_prefix="robotwin2_0",
                 model_prefix="checkpoint",
                 task_names=["task_a", "task_b"],
                 episode_num=2,
@@ -451,6 +454,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             self.assertEqual(metrics, fake_metrics)
             mock_policy_cfg_cls.assert_called_once_with(
                 model_dir="/tmp/model",
+                inference_prefix="robotwin2_0",
                 model_prefix="checkpoint",
                 use_action_chunk_size=32,
             )

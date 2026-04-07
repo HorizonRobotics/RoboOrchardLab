@@ -73,13 +73,13 @@ class _FakeFlaskApp:
         return _decorator
 
 
-def _load_script_module():
+def _load_script_module(inference_prefix: str = "inference"):
     fake_cli_module = types.ModuleType("robo_orchard_core.utils.cli")
     fake_cli_module.SettingConfig = _FakeSettingConfig
     fake_cli_module.pydantic_from_argparse = (
         lambda _config, _parser: types.SimpleNamespace(
             model_dir="/tmp/model",
-            inference_prefix="inference",
+            inference_prefix=inference_prefix,
             port=2000,
             server_name="holobrain",
             num_joints=7,
@@ -133,15 +133,15 @@ def _load_script_module():
 
 
 class InferenceServerScriptTest(unittest.TestCase):
-    def test_loads_pipeline_with_explicit_default_prefix(self):
+    def test_loads_pipeline_with_cli_inference_prefix(self):
         _FakePipeline.load_kwargs = None
 
-        _load_script_module()
+        _load_script_module(inference_prefix="robotwin2_0")
 
         self.assertIsNotNone(_FakePipeline.load_kwargs)
         self.assertEqual(
             _FakePipeline.load_kwargs["inference_prefix"],
-            "inference",
+            "robotwin2_0",
         )
         self.assertEqual(_FakePipeline.load_kwargs["directory"], "/tmp/model")
 

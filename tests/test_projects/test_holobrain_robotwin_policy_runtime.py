@@ -73,7 +73,7 @@ class RobotwinPolicyRuntimeTest(unittest.TestCase):
             "observation": {
                 "front_camera": {
                     "rgb": np.zeros((4, 4, 3), dtype=np.uint8),
-                    "depth": np.ones((4, 4), dtype=np.float32),
+                    "depth": np.full((4, 4), 1000.0, dtype=np.float32),
                     "extrinsic_cv": np.eye(4, dtype=np.float32),
                     "intrinsic_cv": np.eye(3, dtype=np.float32),
                 }
@@ -150,13 +150,24 @@ class RobotwinPolicyRuntimeTest(unittest.TestCase):
             "projects.holobrain.policy.robotwin_policy."
             "HoloBrainInferencePipeline.load_pipeline",
             return_value=loaded_pipeline,
-        ):
+        ) as mock_load_pipeline:
             policy = HoloBrainRoboTwinPolicy(
-                cfg=HoloBrainRoboTwinPolicyCfg(model_dir="/tmp/model"),
+                cfg=HoloBrainRoboTwinPolicyCfg(
+                    model_dir="/tmp/model",
+                    inference_prefix="robotwin2_0",
+                ),
             )
 
         self.assertIs(policy.pipeline, loaded_pipeline)
         self.assertEqual(eval_calls["count"], 1)
+        mock_load_pipeline.assert_called_once_with(
+            directory="/tmp/model",
+            inference_prefix="robotwin2_0",
+            device="cpu",
+            load_weights=True,
+            load_impl="native",
+            model_prefix="model",
+        )
 
 
 if __name__ == "__main__":

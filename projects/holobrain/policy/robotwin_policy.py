@@ -58,6 +58,7 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
         if pipeline is None and cfg.model_dir is not None:
             pipeline = HoloBrainInferencePipeline.load_pipeline(
                 directory=cfg.model_dir,
+                inference_prefix=cfg.inference_prefix,
                 device="cpu",
                 load_weights=cfg.load_weights,
                 load_impl=cfg.load_impl,
@@ -313,6 +314,9 @@ class HoloBrainRoboTwinPolicyCfg(InferencePipelinePolicyCfg):
 
     pipeline_cfg: ConfigInstanceOf[HoloBrainInferencePipelineCfg] | None = None
     """Configuration for the inference pipeline."""
+
+    inference_prefix: str = "inference"
+    """Prefix of the saved inference pipeline config files."""
 
     model_dir: str | None = None
     """Directory of the exported inference pipeline for lazy loading."""
