@@ -79,6 +79,13 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
             assert len(dataset_sample_weights) == len(
                 self.data_source.datasets
             )
+            for i, dataset in enumerate(self.data_source.datasets):
+                if len(dataset) == 0:
+                    dataset_sample_weights[i] = 0
+                    logger.warning(
+                        "Dataset %s has 0 samples, forcing sample weight to 0.",  # noqa: E501
+                        getattr(dataset, "dataset_name", "unnamed"),
+                    )
             sum_weights = sum(dataset_sample_weights)
             dataset_sample_weights = [
                 x / sum_weights for x in dataset_sample_weights

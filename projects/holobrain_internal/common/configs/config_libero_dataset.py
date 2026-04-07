@@ -35,7 +35,6 @@ def build_transforms(config, mode):
         GetProjectionMat,
         ImageChannelFlip,
         ItemSelection,
-        MoveEgoToCam,
         Resize,
         ToTensor,
         UnsqueezeBatch,
@@ -45,7 +44,15 @@ def build_transforms(config, mode):
         TransformRobotState,
     )
 
-    t_base2ego = np.eye(4).tolist()
+    # Mean base->ego camera extrinsic across all training environments.
+    t_base2ego = np.array(
+        [
+            [-7.26818450e-08, 1.00000000e00, -1.52115266e-07, 2.92828043e-07],
+            [6.28266450e-01, -7.26818450e-08, -7.77998244e-01, 8.39064929e-01],
+            [-7.77998244e-01, -1.52115266e-07, -6.28266450e-01, 1.52412879e00],
+            [0.00000000e00, 0.00000000e00, 0.00000000e00, 1.00000000e00],
+        ]
+    ).tolist()
     t_base2world = np.eye(4).tolist()
     joint_mask = (False,)
     joint_scale_shift = ((0.5, 0.5),)
@@ -100,7 +107,6 @@ def build_transforms(config, mode):
     img_channel_flip = dict(type=ImageChannelFlip, output_channel=[2, 1, 0])
 
     to_tensor = dict(type=ToTensor)
-    ego_to_cam = dict(type=MoveEgoToCam, cam_idx="agentview")
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
@@ -146,7 +152,6 @@ def build_transforms(config, mode):
             resize,
             img_channel_flip,
             to_tensor,
-            ego_to_cam,
             projection_mat,
             transform_robot_state,
             convert_dtype,
@@ -180,7 +185,6 @@ def build_transforms(config, mode):
             resize,
             img_channel_flip,
             to_tensor,
-            ego_to_cam,
             projection_mat,
             transform_robot_state,
             convert_dtype,
@@ -215,7 +219,6 @@ def build_transforms(config, mode):
             resize,
             img_channel_flip,
             to_tensor,
-            ego_to_cam,
             projection_mat,
             convert_dtype,
             transform_robot_state,

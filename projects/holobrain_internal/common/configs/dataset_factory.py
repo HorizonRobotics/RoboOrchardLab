@@ -15,8 +15,11 @@
 # permissions and limitations under the License.
 
 
+import logging
 import threading
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 _REGISTRY_LOCK = threading.Lock()
 REGISTERED = False
@@ -99,6 +102,19 @@ def build_training_dataset(config, lazy_init=False):
         datasets=[datasets[name] for name in dataset_names]
     )
     if isinstance(config.get("dataset_sample_weights"), dict):
+        missing = [
+            name
+            for name in dataset_names
+            if name not in config["dataset_sample_weights"]
+        ]
+        if missing:
+            logger.warning(
+                "dataset_sample_weights is missing keys for the following "
+                "datasets: %s. Available keys: %s",
+                missing,
+                list(config["dataset_sample_weights"].keys()),
+            )
+            raise KeyError(f"dataset_sample_weights missing keys: {missing}")
         config["dataset_sample_weights"] = [
             config["dataset_sample_weights"][name] for name in dataset_names
         ]

@@ -58,6 +58,8 @@ class HoloBrainActionLoss(nn.Module):
         pred = model_outs["pred"]
         target = model_outs["target"]
         pred_mask = inputs.get("pred_mask")
+        if isinstance(pred_mask, torch.Tensor):
+            pred_mask = pred_mask.to(bool)
         output = {}
         output.update(
             self.robot_state_loss(

@@ -55,7 +55,7 @@ config = dict(
         "interna1_agile_split_aloha",
         # "interna1_genieg1",
         # "isaac_pick_place",
-        # "libero",
+        "libero",
         # "agibot_digit_challenge_task",
     ],
     # validation_datasets=["horizon_beijing"],
@@ -77,6 +77,40 @@ config = dict(
     freeze_vlm=False,
     checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
 )
+
+
+# config.update(
+#     pretrain=True,
+#     max_step=200000,
+#     num_workers=8,
+#     dataset_sample_weights=dict(
+#         robotwin1_0=0.8,
+#         robotwin2_0=3,
+#         robotwin2_0_ur5_wsg=1,
+#         robotwin2_0_arx_x5a=1,
+#         robotwin2_0_franka_panda=1,
+#         challenge=2,
+#         challenge_finetune=0.1,
+#         challenge_self_collect=0.15,
+#         horizon_beijing=8,
+#         horizon_beijing_piper_x=0.001,
+#         horizon_shanghai=8,
+#         agilex=12,
+#         agibot=10,
+#         droid=5,
+#         egodex=10,
+#         interna1_arx_lift2=10,
+#         interna1_agile_split_aloha=10,
+#         # interna1_genieg1,
+#         # isaac_pick_place,
+#         libero_goal=0.1,
+#         libero_object=0.1,
+#         libero_spatial=0.1,
+#         libero_10=0.2,
+#         # agibot_digit_challenge_task,
+#         behavior1k_manipulation=5,
+#     ),
+# )
 
 
 def build_model(config):
@@ -408,12 +442,18 @@ def build_optimizer(config, model):
             optim.lr_scheduler.LinearLR(
                 optimizer, start_factor=0.001, total_iters=500
             ),
-            optim.lr_scheduler.MultiStepLR(
-                optimizer,
-                milestones=[int(max_step * 0.9)],
-                gamma=0.1,
-            ),
         ]
+        + (
+            []
+            if config.get("pretrain", False)
+            else [
+                optim.lr_scheduler.MultiStepLR(
+                    optimizer,
+                    milestones=[int(max_step * 0.9)],
+                    gamma=0.1,
+                ),
+            ]
+        )
     )
     return optimizer, lr_scheduler
 
