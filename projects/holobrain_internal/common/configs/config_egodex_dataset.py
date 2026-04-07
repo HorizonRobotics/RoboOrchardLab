@@ -112,6 +112,7 @@ def build_transforms(config, mode):
                 "joint_mask",
                 "joint_relative_pos",
                 "noise_type",
+                "pred_mask",
             ]
         )
         transforms = [

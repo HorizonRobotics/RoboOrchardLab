@@ -261,7 +261,7 @@ def get_data_paths(dataset_name):
             "./data/horizon_shanghai/*-place_object_to_location-*",
         ]
     elif dataset_name == "agilex":
-        patterns = ["./data/agilex_collect/lmdb_dataset*"]
+        patterns = ["./data/agilex/lmdb/*"]
     elif dataset_name == "horizon_beijing_piper_x":
         patterns = ["./data/horizon_beijing/*-piper_x-*-*"]
     else:
