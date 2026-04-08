@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inspect Error Log</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5efe7;
+        --panel: rgba(255, 255, 255, 0.82);
+        --line: rgba(76, 58, 45, 0.14);
+        --text: #1f1712;
+        --muted: #6f655d;
+        --primary: #255f85;
+        --primary-soft: rgba(37, 95, 133, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "PingFang SC", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(37, 95, 133, 0.14), transparent 38%),
+          linear-gradient(180deg, #f8f3ed 0%, var(--bg) 100%);
+        color: var(--text);
+      }
+
+      .shell {
+        width: calc(100vw - 40px);
+        margin: 0 auto;
+        padding: 28px 0 36px;
+      }
+
+      .hero,
+      .error-block,
+      .empty-state {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: var(--panel);
+        box-shadow: 0 16px 40px rgba(31, 23, 18, 0.08);
+      }
+
+      .hero {
+        padding: 24px;
+        margin-bottom: 18px;
+      }
+
+      .eyebrow {
+        color: var(--primary);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+
+      h1 {
+        margin: 10px 0 12px;
+        font-size: 30px;
+      }
+
+      .sub {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .meta {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .log-list {
+        display: grid;
+        gap: 16px;
+      }
+
+      .error-block {
+        padding: 20px;
+        scroll-margin-top: 20px;
+      }
+
+      .error-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .error-anchor {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        text-decoration: none;
+        font-weight: 700;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      code {
+        font-size: 14px;
+        word-break: break-all;
+      }
+
+      .error-body {
+        margin: 0;
+        padding: 16px;
+        overflow-x: auto;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: #fffdfa;
+        line-height: 1.6;
+        white-space: pre;
+        word-break: break-word;
+      }
+
+      .empty-state {
+        padding: 28px;
+        text-align: center;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="eyebrow">Inspect Error Log</div>
+        <h1>错误摘要跳转页</h1>
+        <p class="sub">
+          这个页面是 <code>inspect_error_log.log</code> 的 HTML 视图。人工复核页里的系统简写
+          note 会直接跳到这里对应的错误 block。
+        </p>
+        <div class="meta">Generated At: __INSPECT_ERROR_LOG_GENERATED_AT__</div>
+      </section>
+
+      <section class="log-list">__INSPECT_ERROR_LOG_BLOCKS__</section>
+    </main>
+  </body>
+</html>

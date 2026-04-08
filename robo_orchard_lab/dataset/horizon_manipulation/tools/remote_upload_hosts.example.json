@@ -1,42 +1,35 @@
 {
   "defaults": {
     "remote_python": "python3",
-    "output_path": "/horizon-bucket/robot_lab/users/xuewu.lin/self-collected-data/raw_data",
-    "user_names": "user_a,user_b,user_c,user_d",
+    "output_path": "/horizon-bucket/robot_lab/users/<user>/agx_data",
+    "user_names": "user_a,user_b",
     "task_names": "task_a,task_b,task_c",
-    "date_prefix": "2026_03_18,2026_03_19,2026_03_20",
+    "date_prefix": "2026_03_25,2026_03_26",
     "num_workers": 32,
     "connect_timeout": 10,
     "token": "<aidi-token>"
   },
   "hosts": [
     {
-      "name": "beijing_1",
-      "host": "10.103.80.13",
-      "input_path": "/home/user/data/inference/",
+      "name": "gpu_server_1",
+      "host": "10.0.0.11",
+      "input_path": "/data/agx_data",
       "ssh_user": "user",
       "remote_venv_activate": "/home/user/workspace/venv/robot-env/bin/activate"
     },
     {
-      "name": "beijing_2",
-      "host": "10.103.80.10",
-      "input_path": "/home/user/data/inference/",
+      "name": "gpu_server_2",
+      "host": "10.0.0.12",
+      "input_path": "/data",
       "ssh_user": "user",
-      "remote_venv_activate": "/home/user/workspace/venv/robot-venv/bin/activate"
+      "remote_venv_activate": "/home/user/workspace/venv/robot-env/bin/activate"
     },
     {
-      "name": "beijing_3",
-      "host": "10.103.80.16",
-      "input_path": "/home/lenovo/data/inference/",
-      "ssh_user": "lenovo",
-      "remote_venv_activate": "/home/lenovo/workspace/venv/robot-venv/bin/activate"
-    },
-    {
-      "name": "beijing_piperx_1",
-      "host": "10.103.80.17",
-      "input_path": "/home/user/data/holobrain/",
+      "name": "robot_host_1",
+      "host": "10.0.0.21",
+      "input_path": "/home/user/data/holobrain",
       "ssh_user": "user",
-      "remote_venv_activate": "/home/user/workspace/venv/robot-venv/bin/activate"
+      "remote_venv_activate": "/home/user/workspace/venv/robot-env/bin/activate"
     }
   ]
 }

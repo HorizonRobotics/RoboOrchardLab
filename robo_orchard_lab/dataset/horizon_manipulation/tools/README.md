@@ -41,13 +41,66 @@ python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.mcap_checker \
     --user_names ${user_names} \
     --task_names ${task_names} \
     --date_prefix ${date_prefix} \
+    --inspect_config ${inspect_config_path} \
     --num_workers 10 \
+    [--enable_ffmpeg_log] \
     $@
+```
+
+For a Chinese guide focused on the current rule-based inspection pipeline, see [rule_based_check.md](rule_based_check.md).
+
+The checker always writes inspection reports:
+
+- `inspect_mcap_result.log`: merged list of all episodes with `PASS` / `ERROR` prefix
+- `inspect_full_log.log`: full inspection log
+- `inspect_error_log.log`: extracted error log summary
+- `inspect_error_log.html`: HTML view of `inspect_error_log.log` with anchor links for manual review jump
+- ffmpeg encoding logs are suppressed by default; add `--enable_ffmpeg_log` when you need ffmpeg console output for debugging
+
+When video export is enabled, the checker also writes:
+
+- per-episode rendered videos
+- `concat_videos.mp4`: concatenated review video
+- `manual_review.html`: standalone manual review page copied into the output directory
+- `manual_review_timeline.json`: concat timeline to mcap/video mapping used by the review page
+- `manual_review_failures.json`: persisted human review failures, pre-seeded with the same `ERROR` items shown in `inspect_mcap_result.log`
+
+### 3.1.1 Manual review page
+
+`manual_review.html` is generated only when video export is enabled. It is a standalone static page, so you can download the whole output directory or just open that HTML file directly.
+
+Behavior:
+
+- the page plays `concat_videos.mp4` through a relative path in the same output directory
+- the page shows the current `mcap_id` and single-video filename based on playback time
+- the right panel keeps the current segment metadata and review progress
+- the action buttons sit beneath the video player on the left
+- the failure table is prefilled with the same non-pass entries that appear as `ERROR` in `inspect_mcap_result.log`
+- clicking `不通过` adds the current mcap to the top failure table
+- clicking `撤销当前` removes the current mcap from the failure table
+- clicking a row in the failure table seeks the concat player back to slightly before that marked point for quick re-check
+- rule-seeded failures include a clickable short system note that opens `inspect_error_log.html` at the corresponding error block
+- the `Current Video` item on the right is a direct link to the current clip file
+- clicking `导出 JSON` downloads the latest `manual_review_failures.json`
+- clicking `复制 mcap_id` copies all failed `mcap_id` values one-per-line
+
+If you want to serve the same directory through a local HTTP endpoint, you can use the optional review server:
+
+```bash
+python3 -m robo_orchard_lab.dataset.horizon_manipulation.tools.manual_review_server \
+    --output_path ${check_output_path} \
+    --port 7000
+```
+
+Then open:
+
+```text
+http://127.0.0.1:7000/manual-review
 ```
 
 ## 3.2 Cluster run
 ```bash
-RoboOrchardJob-AIDISubmit submit_from_config --config robo_orchard_lab/dataset/horizon_manipulation/tools/submit_check.json  # example sumbit config
+RoboOrchardJob-AIDISubmit submit_from_config --config robo_orchard_lab/dataset/horizon_manipulation/tools/submit_check.json  # example submit config
 ```
 
 # ☁️ 4. Upload data to bucket
@@ -507,3 +560,18 @@ The UI polls task APIs to show real-time progress and status.
   - download a single episode as a zip package
 - `GET /api/download-status`
   - return packaging status and file count for one episode
+
+## 6.7 Cache behavior
+
+- On the first visit to a monitored path, the app scans the disk and creates a cache
+- If the monitored path has no cache yet, the first page load immediately shows the same scan progress overlay used by "Refresh Statistics" so users can see that the scan is in progress
+- On later page loads, searches, and filters, data is read from the cache by default instead of rescanning the entire directory tree
+- A rescan happens only when you click "Refresh Statistics" in the UI or pass `refresh=1` to the API
+- The cache is stored in both:
+  - in-process memory (to speed up the current service instance)
+  - the `.cache/` directory on disk (so it can be reused after a service restart)
+
+## 6.8 Automatic refresh
+
+- The service automatically refreshes caches for all previously accessed monitored paths every day at **2:00 AM**
+- Only paths already present in the cache are refreshed; it does not proactively scan new paths that have never been accessed

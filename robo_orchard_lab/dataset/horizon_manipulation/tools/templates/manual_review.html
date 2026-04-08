@@ -1,0 +1,1148 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manual Review</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f1eb;
+        --card: #fffdf8;
+        --text: #1d1a17;
+        --muted: #706861;
+        --line: rgba(53, 45, 36, 0.12);
+        --primary: #1f4b44;
+        --primary-soft: rgba(31, 75, 68, 0.1);
+        --danger: #9f2d20;
+        --danger-soft: rgba(159, 45, 32, 0.1);
+        --warning: #a66300;
+        --warning-soft: rgba(166, 99, 0, 0.12);
+        --ok: #2f6a39;
+        --ok-soft: rgba(47, 106, 57, 0.12);
+        --shadow: 0 18px 40px rgba(22, 18, 14, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(31, 75, 68, 0.12), transparent 30%),
+          radial-gradient(circle at top right, rgba(166, 99, 0, 0.1), transparent 24%),
+          var(--bg);
+        color: var(--text);
+      }
+
+      .shell {
+        max-width: 1520px;
+        margin: 0 auto;
+        padding: 28px 24px 40px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
+        gap: 18px;
+        margin-bottom: 20px;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        box-shadow: var(--shadow);
+      }
+
+      .hero-main {
+        padding: 28px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 18px 0 10px;
+        font-size: clamp(32px, 4vw, 52px);
+        line-height: 0.98;
+        letter-spacing: -0.03em;
+      }
+
+      .sub {
+        margin: 0;
+        max-width: 760px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .hero-meta {
+        display: grid;
+        gap: 14px;
+        padding: 24px;
+      }
+
+      .meta-row {
+        display: grid;
+        gap: 6px;
+      }
+
+      .meta-label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .meta-value {
+        font-size: 15px;
+        word-break: break-all;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        width: fit-content;
+        padding: 10px 14px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .status-pill[data-state="idle"] {
+        background: rgba(90, 83, 75, 0.1);
+        color: #5a534b;
+      }
+
+      .status-pill[data-state="saving"] {
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+
+      .status-pill[data-state="saved"] {
+        background: var(--ok-soft);
+        color: var(--ok);
+      }
+
+      .status-pill[data-state="error"] {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      .layout {
+        display: grid;
+        gap: 20px;
+      }
+
+      .table-card,
+      .review-card {
+        overflow: hidden;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 22px 24px 0;
+        flex-wrap: wrap;
+      }
+
+      .section-title {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: -0.02em;
+      }
+
+      .section-sub {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .table-wrap {
+        padding: 18px 24px 26px;
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 760px;
+      }
+
+      th,
+      td {
+        padding: 14px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      tbody tr[data-active="true"] {
+        background: rgba(31, 75, 68, 0.06);
+      }
+
+      tbody tr[data-clickable="true"] {
+        cursor: pointer;
+      }
+
+      tbody tr[data-clickable="true"]:hover {
+        background: rgba(31, 75, 68, 0.1);
+      }
+
+      .video-jump-btn {
+        max-width: 280px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--primary);
+        font: inherit;
+        font-weight: 700;
+        text-align: left;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        box-shadow: none;
+      }
+
+      .video-jump-btn:hover {
+        transform: none;
+        color: #163a35;
+      }
+
+      .empty-state {
+        padding: 56px 24px 64px;
+        color: var(--muted);
+        text-align: center;
+        font-size: 15px;
+      }
+
+      .review-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.8fr) minmax(300px, 0.9fr);
+        gap: 0;
+      }
+
+      .player-panel {
+        padding: 24px;
+        border-right: 1px solid var(--line);
+      }
+
+      .player-shell {
+        background: #14110f;
+        border-radius: 18px;
+        padding: 14px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+
+      video {
+        width: 100%;
+        display: block;
+        border-radius: 12px;
+        background: #000;
+        max-height: 72vh;
+      }
+
+      .side-panel {
+        display: grid;
+        gap: 16px;
+        padding: 24px;
+      }
+
+      .side-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.56);
+      }
+
+      .field-list {
+        display: grid;
+        gap: 14px;
+      }
+
+      .field-item {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field-item span:first-child {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .field-item span:last-child,
+      .field-item a {
+        font-size: 15px;
+        word-break: break-word;
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .field-item a:hover {
+        color: var(--primary);
+      }
+
+      .current-video-link {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        max-width: 100%;
+        padding: 10px 12px;
+        border: 1px solid rgba(37, 95, 133, 0.22);
+        border-radius: 12px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        font-weight: 700;
+        box-shadow: 0 8px 18px rgba(37, 95, 133, 0.12);
+      }
+
+      .current-video-link[data-available="false"] {
+        color: var(--muted);
+        background: #f1ebe4;
+        border-color: var(--line);
+        box-shadow: none;
+        pointer-events: none;
+      }
+
+      .current-video-hint {
+        color: var(--primary);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .action-row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .primary-action-row {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .primary-action-row button {
+        width: 100%;
+        min-width: 0;
+        text-align: center;
+      }
+
+      .progress-chip {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 14px;
+        padding: 13px 18px;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .primary-btn {
+        background: var(--danger);
+        color: white;
+        box-shadow: 0 10px 22px rgba(159, 45, 32, 0.24);
+      }
+
+      .secondary-btn {
+        background: #e8e1d7;
+        color: #3d342d;
+      }
+
+      .note-label {
+        display: block;
+        margin-bottom: 10px;
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 120px;
+        resize: vertical;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        font: inherit;
+        background: #fff;
+        color: var(--text);
+      }
+
+      .helper {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .failure-note {
+        display: grid;
+        gap: 6px;
+      }
+
+      .failure-note-summary-link,
+      .failure-note-summary-static {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        max-width: 100%;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .failure-note-summary-link {
+        background: var(--primary-soft);
+        color: var(--primary);
+        text-decoration: none;
+      }
+
+      .failure-note-summary-link:hover {
+        text-decoration: underline;
+      }
+
+      .failure-note-summary-static {
+        background: #e8e1d7;
+        color: #3d342d;
+      }
+
+      .failure-note-user {
+        color: var(--text);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .failure-note-empty {
+        color: var(--muted);
+      }
+
+      @media (max-width: 1120px) {
+        .hero,
+        .review-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .player-panel {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+      }
+
+      @media (max-width: 720px) {
+        .shell {
+          padding: 18px 14px 28px;
+        }
+
+        .primary-action-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .hero-main,
+        .hero-meta,
+        .player-panel,
+        .side-panel {
+          padding: 18px;
+        }
+
+        .table-wrap {
+          padding: 14px 18px 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <div class="hero-main card">
+          <div class="eyebrow">Manual Review</div>
+          <h1>Concat 回放 + 人工失败标记</h1>
+          <p class="sub">
+            通过 concat 视频回看整批数据，页面会实时识别当前片段对应的
+            <code>mcap_id</code>。点击“不通过”即可把当前片段加入上方失败表格，
+            本地状态会自动缓存到浏览器，完成后可手动导出
+            <code>manual_review_failures.json</code>。
+          </p>
+        </div>
+        <aside class="hero-meta card">
+          <div class="meta-row">
+            <div class="meta-label">Concat Video</div>
+            <div class="meta-value" id="concat-video-name">加载中...</div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-label">Segments</div>
+            <div class="meta-value" id="segment-count">0</div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-label">Failed Mcaps</div>
+            <div class="meta-value" id="failure-count">0</div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-label">Save Status</div>
+            <div class="status-pill" data-state="idle" id="save-status">
+              等待初始化
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <div class="layout">
+        <section class="table-card card">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">失败表格</h2>
+              <div class="section-sub">
+                会先预填 inspect 结果里的 ERROR 项；同一个 mcap 只保留一条记录。
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="failure-table">
+              <thead>
+                <tr>
+                  <th>mcap_id</th>
+                  <th>mark_time_sec</th>
+                  <th>note</th>
+                </tr>
+              </thead>
+              <tbody id="failure-table-body"></tbody>
+            </table>
+            <div class="empty-state" id="failure-empty">
+              当前没有待复查的不通过 mcap。
+            </div>
+          </div>
+        </section>
+
+        <section class="review-card card">
+          <div class="review-grid">
+            <div class="player-panel">
+              <div class="section-head" style="padding: 0 0 18px;">
+                <div>
+                  <h2 class="section-title">Concat 回放</h2>
+                  <div class="section-sub">
+                    播放器时间轴会自动映射到当前片段。
+                  </div>
+                </div>
+              </div>
+              <div class="player-shell">
+                <video
+                  id="concat-player"
+                  controls
+                  preload="metadata"
+                ></video>
+              </div>
+              <div class="side-card" style="margin-top: 18px;">
+                <div
+                  class="action-row primary-action-row"
+                  style="flex-wrap: nowrap;"
+                >
+                  <button class="primary-btn" id="mark-fail-btn" disabled>
+                    不通过
+                  </button>
+                  <button class="secondary-btn" id="undo-btn" disabled>
+                    撤销当前
+                  </button>
+                  <button class="secondary-btn" id="export-json-btn">
+                    导出 JSON
+                  </button>
+                  <button class="secondary-btn" id="copy-mcap-ids-btn">
+                    复制 mcap_id
+                  </button>
+                </div>
+                <div class="helper">
+                  <div>
+                    “不通过”会把当前片段对应的 <code>mcap_id</code> 加入失败表格。
+                  </div>
+                  <div>
+                    “撤销当前”会将当前片段对应的记录移除。
+                  </div>
+                  <div>
+                    修改完成后点击 <code>导出 JSON</code> 下载最新的
+                    <code>manual_review_failures.json</code>。
+                  </div>
+                  <div>
+                    或点击 <code>复制 mcap_id</code> 一次性复制所有失败项。
+                  </div>
+                  <div>
+                    点击失败表格行可以回跳到对应片段。
+                  </div>
+                  <div>
+                    点击系统简写 note 可以跳到 <code>inspect_error_log</code> 对应报错。
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <aside class="side-panel">
+              <div class="side-card">
+                <div class="field-list">
+                  <div class="field-item">
+                    <span>Current Time</span>
+                    <span id="current-time">0.00</span>
+                  </div>
+                  <div class="field-item">
+                    <span>Current Mcap</span>
+                    <span id="current-mcap-id">未命中片段</span>
+                  </div>
+                  <div class="field-item">
+                    <span>Current Video</span>
+                    <a
+                      id="current-video-link"
+                      class="current-video-link"
+                      href="#"
+                      target="_blank"
+                      rel="noreferrer"
+                      data-available="false"
+                    >
+                      暂无
+                    </a>
+                    <span class="current-video-hint">点击打开当前片段视频</span>
+                  </div>
+                  <div class="field-item">
+                    <span>Current Range</span>
+                    <span id="current-range">-</span>
+                  </div>
+                  <div class="field-item">
+                    <span>Review Progress</span>
+                    <span class="progress-chip" id="current-progress">0 / 0</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="side-card">
+                <label class="note-label" for="note-input">Note</label>
+                <textarea
+                  id="note-input"
+                  placeholder="先把当前片段标记为不通过，再填写备注。"
+                  disabled
+                ></textarea>
+                <div class="helper" id="note-helper">
+                  当前片段尚未被标记为不通过。
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const EPSILON = 0.05;
+      const REVIEW_REWIND_SECONDS = 1.5;
+      const MANUAL_REVIEW_BOOTSTRAP = __MANUAL_REVIEW_BOOTSTRAP__;
+      const LOCAL_STORAGE_KEY =
+        MANUAL_REVIEW_BOOTSTRAP.storage_key || "manualReviewFailures";
+
+      const state = {
+        timeline: MANUAL_REVIEW_BOOTSTRAP.timeline,
+        currentSegment: null,
+        failures: new Map(),
+        saveTimer: null,
+        isLoading: true,
+      };
+      const seededFailureMeta = new Map(
+        (MANUAL_REVIEW_BOOTSTRAP.failures?.items ?? []).map((item) => [
+          item.mcap_id,
+          {
+            note_summary: item.note_summary ?? "",
+            error_log_anchor: item.error_log_anchor ?? "",
+          },
+        ])
+      );
+
+      const elements = {
+        player: document.getElementById("concat-player"),
+        concatVideoName: document.getElementById("concat-video-name"),
+        segmentCount: document.getElementById("segment-count"),
+        failureCount: document.getElementById("failure-count"),
+        saveStatus: document.getElementById("save-status"),
+        currentTime: document.getElementById("current-time"),
+        currentMcapId: document.getElementById("current-mcap-id"),
+        currentVideoLink: document.getElementById("current-video-link"),
+        currentRange: document.getElementById("current-range"),
+        currentProgress: document.getElementById("current-progress"),
+        tableBody: document.getElementById("failure-table-body"),
+        empty: document.getElementById("failure-empty"),
+        markFailBtn: document.getElementById("mark-fail-btn"),
+        undoBtn: document.getElementById("undo-btn"),
+        exportJsonBtn: document.getElementById("export-json-btn"),
+        copyMcapIdsBtn: document.getElementById("copy-mcap-ids-btn"),
+        noteInput: document.getElementById("note-input"),
+        noteHelper: document.getElementById("note-helper"),
+      };
+
+      function setSaveStatus(message, mode = "idle") {
+        elements.saveStatus.textContent = message;
+        elements.saveStatus.dataset.state = mode;
+      }
+
+      function formatSeconds(value) {
+        if (typeof value !== "number" || Number.isNaN(value)) {
+          return "-";
+        }
+        return value.toFixed(2);
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function getSeededFailureMeta(mcapId) {
+        return seededFailureMeta.get(mcapId) ?? null;
+      }
+
+      function shortenVideoFileLabel(value, maxLength = 30) {
+        const raw = String(value ?? "");
+        const parts = raw.split("/");
+        const baseName = parts[parts.length - 1] || raw;
+        if (baseName.length <= maxLength) {
+          return baseName;
+        }
+        const headLength = Math.max(12, Math.floor((maxLength - 3) / 2));
+        const tailLength = Math.max(8, maxLength - 3 - headLength);
+        return (
+          baseName.slice(0, headLength) +
+          "..." +
+          baseName.slice(-tailLength)
+        );
+      }
+
+      function renderFailureNoteCell(item) {
+        const noteSummary = String(item.note_summary ?? "").trim();
+        const errorLogAnchor = String(item.error_log_anchor ?? "").trim();
+        const userNote = String(item.note ?? "").trim();
+        const parts = ['<div class="failure-note">'];
+
+        if (noteSummary) {
+          if (errorLogAnchor) {
+            parts.push(
+              `<a class="failure-note-summary-link" href="inspect_error_log.html#${escapeHtml(errorLogAnchor)}" target="_blank" rel="noreferrer">${escapeHtml(noteSummary)}</a>`
+            );
+          } else {
+            parts.push(
+              `<span class="failure-note-summary-static">${escapeHtml(noteSummary)}</span>`
+            );
+          }
+        }
+
+        if (userNote) {
+          parts.push(
+            `<div class="failure-note-user">${escapeHtml(userNote)}</div>`
+          );
+        }
+
+        if (!noteSummary && !userNote) {
+          parts.push('<span class="failure-note-empty">-</span>');
+        }
+
+        parts.push("</div>");
+        return parts.join("");
+      }
+
+      function getCurrentFailuresPayload() {
+        const items = getOrderedFailureItems();
+        return {
+          concat_video: state.timeline?.concat_video ?? "concat_videos.mp4",
+          updated_at: new Date().toISOString(),
+          items,
+        };
+      }
+
+      function getOrderedFailureItems() {
+        return Array.from(state.failures.values()).sort(
+          (left, right) => left.mark_time_sec - right.mark_time_sec
+        );
+      }
+
+      function updateCounters() {
+        elements.failureCount.textContent = String(state.failures.size);
+      }
+
+      function getCurrentSegmentIndex() {
+        if (!state.currentSegment) {
+          return -1;
+        }
+        return (
+          state.timeline?.segments?.findIndex(
+            (segment) => segment.mcap_id === state.currentSegment.mcap_id
+          ) ?? -1
+        );
+      }
+
+      function updateReviewProgress() {
+        const total = state.timeline?.segments?.length ?? 0;
+        const currentIndex = getCurrentSegmentIndex();
+        elements.currentProgress.textContent =
+          currentIndex >= 0 ? `${currentIndex + 1} / ${total}` : `0 / ${total}`;
+      }
+
+      function renderTable() {
+        const items = getOrderedFailureItems();
+        elements.tableBody.innerHTML = "";
+        elements.empty.style.display = items.length ? "none" : "block";
+
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          row.dataset.clickable = "true";
+          row.dataset.active =
+            state.currentSegment?.mcap_id === item.mcap_id ? "true" : "false";
+          row.innerHTML = `
+            <td>${escapeHtml(item.mcap_id)}</td>
+            <td>${escapeHtml(formatSeconds(item.mark_time_sec))}</td>
+            <td>${renderFailureNoteCell(item)}</td>
+          `;
+          row.querySelectorAll(".failure-note-summary-link").forEach((link) => {
+            link.addEventListener("click", (event) => {
+              event.stopPropagation();
+            });
+          });
+          row.addEventListener("click", () => {
+            jumpToFailureItem(item);
+          });
+          elements.tableBody.appendChild(row);
+        });
+
+        updateCounters();
+      }
+
+      function getFailureForCurrentSegment() {
+        if (!state.currentSegment) {
+          return null;
+        }
+        return state.failures.get(state.currentSegment.mcap_id) ?? null;
+      }
+
+      function syncNoteEditor() {
+        const failure = getFailureForCurrentSegment();
+        if (!state.currentSegment || !failure) {
+          elements.noteInput.value = "";
+          elements.noteInput.disabled = true;
+          elements.noteHelper.textContent = "当前片段尚未被标记为不通过。";
+          return;
+        }
+        elements.noteInput.disabled = false;
+        if (document.activeElement !== elements.noteInput) {
+          elements.noteInput.value = failure.note ?? "";
+        }
+        elements.noteHelper.textContent = "修改备注后请导出最新 JSON。";
+      }
+
+      function syncCurrentSegment(segment) {
+        state.currentSegment = segment;
+        const currentTime = elements.player.currentTime || 0;
+        elements.currentTime.textContent = formatSeconds(currentTime);
+
+        if (!segment) {
+          elements.currentMcapId.textContent = "未命中片段";
+          elements.currentVideoLink.textContent = "暂无";
+          elements.currentVideoLink.removeAttribute("href");
+          elements.currentVideoLink.removeAttribute("title");
+          elements.currentVideoLink.dataset.available = "false";
+          elements.currentRange.textContent = "-";
+          elements.markFailBtn.disabled = true;
+          elements.undoBtn.disabled = true;
+          updateReviewProgress();
+          syncNoteEditor();
+          renderTable();
+          return;
+        }
+
+        elements.currentMcapId.textContent = segment.mcap_id;
+        elements.currentVideoLink.textContent = shortenVideoFileLabel(segment.video_file);
+        elements.currentVideoLink.href = encodeURI(segment.video_file);
+        elements.currentVideoLink.title = segment.video_file;
+        elements.currentVideoLink.dataset.available = "true";
+        elements.currentRange.textContent =
+          `${formatSeconds(segment.start_sec)} - ${formatSeconds(segment.end_sec)}`;
+        elements.markFailBtn.disabled = false;
+        elements.undoBtn.disabled = !state.failures.has(segment.mcap_id);
+        updateReviewProgress();
+        syncNoteEditor();
+        renderTable();
+      }
+
+      function findCurrentSegment(currentTime) {
+        const segments = state.timeline?.segments ?? [];
+        let matchedSegment = null;
+        for (const segment of segments) {
+          const isInRange =
+            currentTime + EPSILON >= segment.start_sec &&
+            currentTime <= segment.end_sec + EPSILON;
+          // Rounded concat boundaries can overlap under EPSILON. Prefer the
+          // later segment so an exact seek to the next clip does not snap back.
+          if (isInRange) {
+            matchedSegment = segment;
+          }
+        }
+        return matchedSegment;
+      }
+
+      function findSegmentByMcapId(mcapId) {
+        return (
+          state.timeline?.segments?.find(
+            (segment) => segment.mcap_id === mcapId
+          ) ?? null
+        );
+      }
+
+      function jumpToFailureItem(item) {
+        const segment = findSegmentByMcapId(item.mcap_id);
+        if (!segment) {
+          setSaveStatus("未找到该 mcap 对应的回放片段", "error");
+          return;
+        }
+        const targetTime = Math.max(
+          segment.start_sec,
+          item.mark_time_sec - REVIEW_REWIND_SECONDS,
+          0
+        );
+        elements.player.pause();
+        elements.player.currentTime = targetTime;
+        syncCurrentSegment(segment);
+        setSaveStatus(
+          `已跳转到 ${item.mcap_id} 附近进行复查`,
+          "saved"
+        );
+      }
+
+      function persistFailures() {
+        const payload = getCurrentFailuresPayload();
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+        setSaveStatus("已更新本地页面状态，请导出 JSON", "saved");
+      }
+
+      function exportFailuresJson() {
+        const payload = getCurrentFailuresPayload();
+        const blob = new Blob(
+          [JSON.stringify(payload, null, 2) + "\n"],
+          { type: "application/json" }
+        );
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = "manual_review_failures.json";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(objectUrl);
+        persistFailures();
+        setSaveStatus("已导出 manual_review_failures.json", "saved");
+      }
+
+      function fallbackCopyText(text) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-1000px";
+        textarea.style.left = "-1000px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+        const ok = document.execCommand("copy");
+        textarea.remove();
+        if (!ok) {
+          throw new Error("fallback copy failed");
+        }
+      }
+
+      async function copyFailureMcapIds() {
+        const text = getOrderedFailureItems()
+          .map((item) => item.mcap_id)
+          .join("\n");
+        if (!text) {
+          setSaveStatus("当前没有失败 mcap_id 可复制", "idle");
+          return;
+        }
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            fallbackCopyText(text);
+          }
+          setSaveStatus(
+            `已复制 ${getOrderedFailureItems().length} 条 mcap_id`,
+            "saved"
+          );
+        } catch (error) {
+          console.error(error);
+          try {
+            fallbackCopyText(text);
+            setSaveStatus(
+              `已复制 ${getOrderedFailureItems().length} 条 mcap_id`,
+              "saved"
+            );
+          } catch (fallbackError) {
+            console.error(fallbackError);
+            setSaveStatus("复制 mcap_id 失败", "error");
+          }
+        }
+      }
+
+      function scheduleSave() {
+        if (state.saveTimer !== null) {
+          clearTimeout(state.saveTimer);
+        }
+        state.saveTimer = window.setTimeout(() => {
+          state.saveTimer = null;
+          persistFailures();
+        }, 180);
+      }
+
+      function markCurrentFailure() {
+        if (!state.currentSegment) {
+          return;
+        }
+        if (!state.failures.has(state.currentSegment.mcap_id)) {
+          const seededMeta = getSeededFailureMeta(state.currentSegment.mcap_id);
+          state.failures.set(state.currentSegment.mcap_id, {
+            mcap_id: state.currentSegment.mcap_id,
+            mcap_path: state.currentSegment.mcap_path,
+            video_file: state.currentSegment.video_file,
+            mark_time_sec: Number(elements.player.currentTime || 0),
+            note_summary: seededMeta?.note_summary ?? "",
+            error_log_anchor: seededMeta?.error_log_anchor ?? "",
+            note: "",
+          });
+        }
+        syncCurrentSegment(state.currentSegment);
+        scheduleSave();
+      }
+
+      function undoCurrentFailure() {
+        if (!state.currentSegment) {
+          return;
+        }
+        state.failures.delete(state.currentSegment.mcap_id);
+        syncCurrentSegment(state.currentSegment);
+        scheduleSave();
+      }
+
+      function restoreFailures(payload) {
+        state.failures.clear();
+        (payload?.items ?? []).forEach((item) => {
+          if (!item?.mcap_id) {
+            return;
+          }
+          const seededMeta = getSeededFailureMeta(item.mcap_id);
+          state.failures.set(item.mcap_id, {
+            ...item,
+            note_summary:
+              item.note_summary ?? seededMeta?.note_summary ?? "",
+            error_log_anchor:
+              item.error_log_anchor ?? seededMeta?.error_log_anchor ?? "",
+          });
+        });
+        updateCounters();
+      }
+
+      function initialize() {
+        setSaveStatus("初始化中...", "saving");
+        const cached = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (cached) {
+          try {
+            restoreFailures(JSON.parse(cached));
+            setSaveStatus("已恢复浏览器本地缓存", "saved");
+          } catch (error) {
+            console.error(error);
+            restoreFailures(MANUAL_REVIEW_BOOTSTRAP.failures);
+            setSaveStatus("本地缓存解析失败，已回退到初始数据", "error");
+          }
+        } else {
+          restoreFailures(MANUAL_REVIEW_BOOTSTRAP.failures);
+          setSaveStatus("页面已就绪，请导出 JSON 保存结果", "idle");
+        }
+
+        const concatVideo = state.timeline?.concat_video ?? "concat_videos.mp4";
+        elements.concatVideoName.textContent = concatVideo;
+        elements.segmentCount.textContent = String(
+          state.timeline?.segments?.length ?? 0
+        );
+        elements.player.src = encodeURI(concatVideo);
+        elements.player.addEventListener("timeupdate", () => {
+          syncCurrentSegment(findCurrentSegment(elements.player.currentTime || 0));
+        });
+        elements.player.addEventListener("loadedmetadata", () => {
+          syncCurrentSegment(findCurrentSegment(elements.player.currentTime || 0));
+        });
+        elements.markFailBtn.addEventListener("click", markCurrentFailure);
+        elements.undoBtn.addEventListener("click", undoCurrentFailure);
+        elements.exportJsonBtn.addEventListener("click", exportFailuresJson);
+        elements.copyMcapIdsBtn.addEventListener("click", copyFailureMcapIds);
+        elements.noteInput.addEventListener("input", () => {
+          const failure = getFailureForCurrentSegment();
+          if (!failure) {
+            return;
+          }
+          failure.note = elements.noteInput.value;
+          renderTable();
+          scheduleSave();
+        });
+
+        state.isLoading = false;
+        syncCurrentSegment(findCurrentSegment(0));
+      }
+
+      initialize();
+    </script>
+  </body>
+</html>

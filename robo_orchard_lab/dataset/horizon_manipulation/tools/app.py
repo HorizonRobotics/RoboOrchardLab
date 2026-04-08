@@ -98,6 +98,8 @@ def get_env_value(name: str, default: str) -> str:
 
 def get_env_path(name: str, default: Path) -> Path:
     raw_value = get_env_value(name, str(default)).strip()
+    if not raw_value:
+        return default
     path = Path(raw_value)
     if path.is_absolute():
         return path
