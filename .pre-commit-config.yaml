@@ -67,4 +67,4 @@ repos:
         language: python
         files: \.(py|pyi|proto|c|cc|cpp|cxx|cu|h|hpp)$
         types: [file]
-        exclude: (?x)(^3rdparty/|^docs/|^scm/)
+        exclude: (?x)(^3rdparty/|^docs/)

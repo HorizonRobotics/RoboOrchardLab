@@ -45,13 +45,21 @@ BLOCK_COMMENT_SUFFIXES = {
     ".proto",
 }
 CODING_RE = re.compile(r"#.*coding[:=][ \t]*[-\w.]+")
+HASH_COPYRIGHT_LINE = (
+    rf"# Copyright \(c\) {COPYRIGHT_YEARS_PATTERN} "
+    r"Horizon Robotics\. All Rights Reserved\."
+)
+BLOCK_COPYRIGHT_LINE = (
+    rf" \* Copyright \(c\) {COPYRIGHT_YEARS_PATTERN} "
+    r"Horizon Robotics\. All Rights Reserved\."
+)
 
 
 def _build_hash_header_re() -> re.Pattern[str]:
     lines = [
         r"# Project RoboOrchard",
         r"#",
-        rf"# Copyright \(c\) {COPYRIGHT_YEARS_PATTERN} Horizon Robotics\. All Rights Reserved\.",
+        HASH_COPYRIGHT_LINE,
         r"#",
     ]
     lines.extend(
@@ -65,7 +73,7 @@ def _build_block_header_re() -> re.Pattern[str]:
         r"/\*",
         r" \* Project RoboOrchard",
         r" \*",
-        rf" \* Copyright \(c\) {COPYRIGHT_YEARS_PATTERN} Horizon Robotics\. All Rights Reserved\.",
+        BLOCK_COPYRIGHT_LINE,
         r" \*",
     ]
     lines.extend(
@@ -142,12 +150,13 @@ def main():
     for filepath in files_to_check:
         if not check_file_header(filepath):
             colored_filepath = f"{Colors.RED}{filepath}{Colors.ENDC}"
+            error_message = (
+                f"{colored_filepath}: Missing or incorrect license header."
+                " Expected the standard RoboOrchard Apache 2.0 header at"
+                " the top of the file."
+            )
             print(
-                (
-                    f"{colored_filepath}: Missing or incorrect license header. "
-                    "Expected the standard RoboOrchard Apache 2.0 header at "
-                    "the top of the file."
-                ),
+                error_message,
                 file=sys.stderr,
             )
             final_exit_code = 1
