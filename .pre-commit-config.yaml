@@ -62,8 +62,9 @@ repos:
   - repo: local
     hooks:
       - id: check-license-header
-        name: Check Python file license header
+        name: Check source file license header
         entry: python3 scm/qac/check_license_header.py
         language: python
-        types: [python]
+        files: \.(py|pyi|proto|c|cc|cpp|cxx|cu|h|hpp)$
+        types: [file]
         exclude: (?x)(^3rdparty/|^docs/|^scm/)

@@ -9,6 +9,8 @@ description: Load these baseline instructions only for tasks that touch this rep
 - Reply in the same language as the user unless asked otherwise.
 - Prefer choosing the language used for internal reasoning and planning based on what fits the task best instead of forcing a single language.
 - Read the relevant code, call sites, and tests before editing.
+- For every newly created repository-owned source file, add the standard RoboOrchard Apache 2.0 license header at the top of the file using the comment style of that language.
+- Follow `.agents/references/license-header-guideline.md` for the canonical templates, default year rendering, placement, and checker alignment.
 - Exclude vendored or external-code directories from default code search unless the task explicitly targets them or requires cross-repository comparison.
 - Keep comments and docstrings aligned with the implementation.
 - For poses, frame transforms, and spatial matrices, prefer explicit direction-bearing names such as `a_to_b`, `a_to_b_tf`, `a_to_b_mat`, or `BatchFrameTransform(child=A, parent=B)`. In this repository, `BatchFrameTransform(child=A, parent=B)` and `a_to_b` share the same direction semantics. Do not assume compact forms such as `A|B`, `T_ab`, `T_a_b`, or `Tab` are acceptable default repository style without an explicit local mapping.

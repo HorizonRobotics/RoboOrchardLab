@@ -21,6 +21,7 @@ Repository skills live in `.agents/skills/`.
 ### Quick Routing
 
 - Python implementation changes: `.agents/instructions/python.instructions.md`
+- License header requirements and template: `.agents/references/license-header-guideline.md`
 - Test creation, updates, or validation: `.agents/instructions/test.instructions.md`
 - Validation scope and developer workflow decisions: `.agents/instructions/workflow.instructions.md`
 - Commit messages, branches, merge requests, or pull requests: `.agents/instructions/git.instructions.md`
