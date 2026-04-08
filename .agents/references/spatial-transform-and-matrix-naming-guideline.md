@@ -41,6 +41,22 @@ Matrix and composition conventions for repository-owned transform types:
 - `A.compose(B, C)` stores the same transform as `C @ B @ A`.
 - `B @ A` is equivalent to `A.compose(B)`, so `@` follows matrix multiplication order and applies the right operand first.
 
+TF-like interface contracts for repository-owned APIs:
+- Apply this at API boundaries, not everywhere. Public APIs, boundary
+	adapters, and non-obvious frame-bearing interfaces should document their
+	frame contract; purely generic helpers do not need to repeat it when the
+	frame semantics are already obvious from the local context.
+- For transform inputs and outputs, state the relevant expected or returned
+	`parent_frame_id` and `child_frame_id`.
+- For graph-like inputs or outputs, state the required root frame and the
+	specific edge, path, or static edge contract that callers rely on.
+- If an API changes frame ownership across the boundary, for example from
+	`world -> eef` input to `control -> eef` output, state that handoff
+	explicitly.
+- If wrapper fields such as `current_pose`, `target_pose`, `camera_pose`, or
+	`tf_world` hide the concrete frames, document the frame contract at that
+	field or API boundary.
+
 Example:
 ```python
 # `T_world2cam` is equivalent to `world_to_cam_mat`.

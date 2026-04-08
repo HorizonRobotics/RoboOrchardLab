@@ -26,6 +26,7 @@ description: Load these instructions when creating, updating, or validating test
 
 ## Validation
 
+- Before running `python`, `pytest`, or `ruff`, load `.agents/instructions/environment.instructions.md`.
 - Run the narrowest relevant `pytest` target for the changed test or module first.
 - When running repository tests, disable `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` unless the task explicitly requires proxy access.
 - Run `ruff check` on modified test files.

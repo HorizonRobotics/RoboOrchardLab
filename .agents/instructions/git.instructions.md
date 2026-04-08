@@ -15,7 +15,8 @@ description: Load these instructions when working with git history, commit messa
 - Keep the first line exactly in the title format above, and use the body for details.
 - The commit message body should use the same section structure as the default GitLab merge request description: `Summary`, `Why`, `Impact`, `Validation`, `Risks / Notes`.
 - Prefer writing the commit body so it can be reused directly, or with minimal edits, as the GitLab merge request description.
-- Keep `Validation` safe to share: do not include personal usernames, home-directory absolute paths, machine-specific local paths, access tokens, or other personal environment details when a generic command or redacted path conveys the same evidence.
+- Apply the public-artifact rule from `default.instructions.md` to commit
+  messages.
 - Use this default commit message template unless told otherwise:
 
   ```md
@@ -76,7 +77,8 @@ description: Load these instructions when working with git history, commit messa
 - Keep each section concise and factual.
 - For `Impact`, cover user-visible behavior, API/CLI/config impact, and workflow or internal maintenance impact when relevant.
 - Prefer explicit `none` / `not applicable` markers over leaving expected bullets ambiguous.
-- Keep `Validation` and other MR description sections free of personal environment details such as `/home/users/<name>/...`; prefer generic or redacted paths when the exact local path is not essential.
+- Apply the public-artifact rule from `default.instructions.md` to merge
+  request descriptions.
 - Keep the merge request title to a single line, and preserve the multiline section structure in the description.
 - If creating a GitLab merge request with `glab`, enable `--remove-source-branch` by default unless told otherwise.
 - Do not flatten line breaks or section structure just to fit push options or other transport shortcuts; use a method that keeps the final MR text intact.
@@ -87,4 +89,6 @@ description: Load these instructions when working with git history, commit messa
 - Compare against the target branch; use `master` by default unless told otherwise.
 - Base the squash commit message and pull request description on the full branch diff, not only the latest commit.
 - Require squash on merge unless explicitly instructed otherwise.
+- Apply the public-artifact rule from `default.instructions.md` to pull
+  request descriptions.
 - Keep the pull request title to a single line, and preserve the multiline section structure in the description.

@@ -35,6 +35,14 @@ description: Load these instructions when modifying Python source files, tests, 
 - For coordinate-frame transforms, matrix transforms, inversions, or
   convention-bridging code, add a short adjacent comment when the direction
   of the transform or the frame handoff is not obvious from the code alone.
+- For public APIs, boundary helpers, or non-obvious interfaces that accept
+  or return TF-like structures such as `BatchFrameTransform`,
+  `BatchFrameTransformGraph`, camera-pose wrappers, or other frame-bearing
+  pose containers, document the frame contract explicitly in the docstring.
+- For those TF-like interface values, state the relevant
+  `parent_frame_id` and `child_frame_id`. For graph-like values, document
+  only the root frame and the specific edge, path, or static edge contract
+  that callers rely on.
 - Prefer code-near comments for one-off shape normalization, batch unwrapping, side-channel filtering, compatibility branches, or similar logic whose intent is not obvious from names alone.
 - For key interface functions, public dataset/model/pipeline entrypoints, and helper functions whose behavior or parameters are not immediately obvious from the signature alone, add or update docstrings instead of leaving the interface undocumented.
 - Follow the project's existing Google-style docstring format with `Args:` and `Returns:` when documenting functions.

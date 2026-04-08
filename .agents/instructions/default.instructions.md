@@ -13,6 +13,11 @@ description: Load these baseline instructions only for tasks that touch this rep
 - Follow `.agents/references/license-header-guideline.md` for the canonical templates, default year rendering, placement, and checker alignment.
 - Exclude vendored or external-code directories from default code search unless the task explicitly targets them or requires cross-repository comparison.
 - Keep comments and docstrings aligned with the implementation.
+- This repository is published externally. In public-facing artifacts such as
+	docs, READMEs, examples, commit messages, and MR or PR descriptions, use
+	repository-relative paths or redacted placeholders instead of personal
+	local absolute paths, and do not include company-internal or other
+	non-public links.
 - For poses, frame transforms, and spatial matrices, prefer explicit direction-bearing names such as `a_to_b`, `a_to_b_tf`, `a_to_b_mat`, or `BatchFrameTransform(child=A, parent=B)`. In this repository, `BatchFrameTransform(child=A, parent=B)` and `a_to_b` share the same direction semantics. Do not assume compact forms such as `A|B`, `T_ab`, `T_a_b`, or `Tab` are acceptable default repository style without an explicit local mapping.
 - Treat the repository convention above as the default for code owned by this repository. For external libraries, third-party APIs, protocol fields, dataset schemas, or compatibility layers, follow the external convention at the boundary and add an explicit local mapping before translating to repository-preferred names.
 - Prefer concise, minimally fragmented helper functions. Merge nearby
