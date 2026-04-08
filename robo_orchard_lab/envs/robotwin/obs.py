@@ -72,25 +72,23 @@ def get_observation_cams(obs: dict) -> dict:
         }
 
     Each camera data dict follows the same format as described
-    in `convert_camera_data`.
+    in `get_camera_data`.
+
+    Example output structure::
+
+        {
+            "camera_name_1": {
+                "rgb": BatchCameraData,
+                "depth": BatchCameraData,
+            },
+            "camera_name_2": {
+                "rgb": BatchCameraData,
+            },
+            ...
+        }
 
     Returns:
-        dict: A dictionary where keys are camera names and values
-            are the converted camera data in BatchCameraData format.
-            For example:
-
-            .. code-block:: text
-
-                {
-                    "camera_name_1": {
-                        "rgb": BatchCameraData,
-                        "depth": BatchCameraData,
-                    },
-                    "camera_name_2": {
-                        "rgb": BatchCameraData,
-                    },
-                    ...
-                }
+        dict: Mapping from camera name to converted BatchCameraData entries.
 
     """
     ret = {}
@@ -104,21 +102,21 @@ def get_camera_data(
 ) -> dict[str, BatchCameraData]:
     """Convert camera data from dict to BatchCameraData.
 
-    This function assumes the input camera dict has the following keys
-    - "rgb": (H, W, 3) np.ndarray, optional
-    - "depth": (H, W) np.ndarray, optional
-    - "intrinsic_cv": (3, 3) np.ndarray
-    - "extrinsic_cv": (4, 4) np.ndarray, camera extrinsic in the OpenCV
-      convention. The matrix encodes the camera pose in the world frame
-      after inversion.
+        This function assumes the input camera dict has the following keys:
+
+        - ``rgb``: ``(H, W, 3)`` np.ndarray, optional.
+        - ``depth``: ``(H, W)`` np.ndarray, optional.
+        - ``intrinsic_cv``: ``(3, 3)`` np.ndarray.
+        - ``extrinsic_cv``: ``(4, 4)`` np.ndarray camera extrinsic matrix.
+            Uses the OpenCV convention. It encodes the camera pose in the
+            world frame after inversion.
 
     Args:
         cam (dict): Camera data in dict format.
         camera_name (str): Name of the camera.
 
     Returns:
-        dict[str, BatchCameraData]: Converted camera data.
-            The keys can be "rgb" and/or "depth", depending on the input.
+        dict[str, BatchCameraData]: Converted camera data keyed by stream type.
 
     """
     # `extrinsic_cv` follows the external OpenCV camera extrinsic
