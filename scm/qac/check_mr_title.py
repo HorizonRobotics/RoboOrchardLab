@@ -18,7 +18,8 @@ import os
 import re
 
 rule = (
-    "^(feat|fix|bugfix|docs|style|refactor|perf|test|chore|scm)\(.*\): [A-Z].*"  # noqa
+    r"^(feat|fix|bugfix|docs|style|refactor|perf|test|chore|scm)"
+    r"\(.*\): [A-Z].*"
 )
 
 error_hint = """
@@ -34,7 +35,7 @@ Examples:
 feat(api): Implement new authentication module
 
 Validation Checklist:
-1. Valid type? (feat|fix|bugfix|docs|style|perf|refactor|test|chore)
+1. Valid type? (feat|fix|bugfix|docs|style|perf|refactor|test|chore|scm)
 2. Description starts with capital letter
 3. Colon has spaces on both sides
 4. Contains non-ASCII characters
