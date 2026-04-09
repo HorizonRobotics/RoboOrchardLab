@@ -33,6 +33,7 @@ from robo_orchard_lab.dataset.robot import (
     DatasetItem,
     IterableDatasetMixin,
     IterableWithLenDataset,
+    ShardConfig,
     ShuffleConfig,
 )
 from robo_orchard_lab.dataset.robot.dataset_ex import (
@@ -412,6 +413,35 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
         assert dataloader.dataset.batch_loader_kwargs.drop_last is False
         assert len(list(dataloader)) == len(dataloader)
 
+    def test_use_dataset_side_batching_aligns_user_collate_fn(
+        self, dummy_array_dataset: Dataset
+    ):
+        dataset = IterableWithLenDataset(dummy_array_dataset)
+        collate_inputs: list[list[int]] = []
+
+        def collate_fn(batch: list[int]) -> dict[str, Any]:
+            batch_list = list(batch)
+            collate_inputs.append(batch_list)
+            return {"values": batch_list, "size": len(batch_list)}
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=4,
+            drop_last=True,
+            num_workers=0,
+            collate_fn=collate_fn,
+            use_dataset_side_batching=True,
+        )
+
+        assert list(dataloader) == [
+            {"values": [0, 1, 2, 3], "size": 4},
+            {"values": [4, 5, 6, 7], "size": 4},
+        ]
+        assert collate_inputs == [
+            [0, 1, 2, 3],
+            [4, 5, 6, 7],
+        ]
+
     def test_iterable_with_len_accepts_dataloader_shuffle_true(
         self, dummy_array_dataset: Dataset
     ):
@@ -484,6 +514,23 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
         sharded_dataset = dataset.shard(num_shards=3, index=1)
 
         assert list(sharded_dataset) == [4, 5, 6]
+
+    def test_iterable_with_len_shard_preserves_shard_kwargs(
+        self, dummy_array_dataset: ArrayDataset
+    ):
+        dataset = IterableWithLenDataset(
+            dummy_array_dataset,
+            shard_kwargs=ShardConfig(
+                contiguous=False,
+                shard_strategy="pad_last",
+            ),
+        )
+
+        sharded_dataset = dataset.shard(num_shards=3, index=1)
+
+        assert list(sharded_dataset) == [1, 4, 7]
+        assert sharded_dataset.shard_kwargs.contiguous is False
+        assert sharded_dataset.shard_kwargs.shard_strategy == "pad_last"
 
 
 class TestDictIterableDataset(TestIterableDatasetMixin):

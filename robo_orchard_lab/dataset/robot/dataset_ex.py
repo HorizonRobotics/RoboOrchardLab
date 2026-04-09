@@ -196,11 +196,21 @@ def _wrap_with_prefetch_if_needed(
 class DataLoader(TorchDataLoader):
     """A thin wrapper around PyTorch ``DataLoader``.
 
+    For iterable datasets this loader can operate with two batching layers:
+
+    1. The ordinary outer ``TorchDataLoader`` batching layer.
+    2. A dataset-side batching layer driven by ``batch_loader_kwargs``.
+
     For iterable datasets that already yield batches through
     ``batch_loader_kwargs``, this loader clones the input dataset, aligns the
     dataset-side batch settings with the caller-provided dataloader batch
     arguments, and then configures the outer ``TorchDataLoader`` to forward one
     already-formed batch at a time.
+
+    In that self-batched mode the outer loader may expose ``batch_size == 1``
+    because it is only transporting one ready-made batch per iteration. The
+    effective sample batch size is tracked separately and is the value used by
+    ``__len__`` and the iterable dataset batch-count helpers.
 
     When ``use_dataset_side_batching`` is True and the input dataset is a
     supported iterable dataset without ``batch_loader_kwargs``, this loader
@@ -315,6 +325,12 @@ class DataLoader(TorchDataLoader):
         super().__init__(**dataloader_kwargs)
 
     def __len__(self) -> int:
+        """Return the batch count using the effective batching layer.
+
+        For iterable datasets this may differ from the outer dataloader's
+        visible ``batch_size`` because dataset-side batching normalizes the
+        outer loader to forward one already-built batch at a time.
+        """
         if isinstance(self.dataset, IterableDatasetMixin):
             return self.dataset.get_total_batch_num(
                 num_workers=self.num_workers,
@@ -341,6 +357,12 @@ class DataLoader(TorchDataLoader):
         dataloader_kwargs: dict[str, Any],
         use_dataset_side_batching: bool,
     ) -> tuple[IterableDatasetMixin, bool, BatchLoaderConfig | None]:
+        """Clone iterable datasets when loader-local state must diverge.
+
+        The clone keeps caller-owned dataset objects immutable while this
+        dataloader rewrites shuffle or dataset-side batching configuration for
+        its own execution.
+        """
         uses_dataset_batch_loader = _should_use_dataset_batch_loader(
             dataset=dataset,
             use_dataset_side_batching=use_dataset_side_batching,
@@ -404,6 +426,12 @@ class DataLoader(TorchDataLoader):
         dataset: IterableDatasetMixin,
         dataloader_kwargs: dict[str, Any],
     ) -> BatchLoaderConfig:
+        """Merge dataset batch defaults with explicit dataloader arguments.
+
+        ``batch_size``, ``collate_fn`` and ``drop_last`` from the caller win
+        over the dataset defaults so the cloned dataset behaves as if those
+        arguments had been supplied at dataset construction time.
+        """
         dataset_batch_loader_kwargs = dataset.batch_loader_kwargs
         aligned_batch_loader_kwargs = (
             BatchLoaderConfig(**dataset_batch_loader_kwargs.to_dict())
@@ -424,6 +452,12 @@ class DataLoader(TorchDataLoader):
         dataset: IterableDatasetMixin,
         dataloader_shuffle: bool | ShuffleConfig | None,
     ) -> ShuffleConfig:
+        """Translate dataloader shuffle requests into dataset shuffle state.
+
+        A boolean request only replaces the ``shuffle`` flag. A full
+        ``ShuffleConfig`` replaces the whole configuration so the caller can
+        override chunking and prefetch-related settings as well.
+        """
         if isinstance(dataset, IterableWithLenDataset):
             dataset_shuffle = dataset._shuffle_config
         elif isinstance(dataset, DictIterableDataset):
@@ -452,6 +486,10 @@ class DataLoader(TorchDataLoader):
         In this mode the dataset itself already yields complete batches. The
         outer ``TorchDataLoader`` should therefore only transport one dataset
         item at a time and unwrap it, instead of trying to batch samples again.
+
+        Any user ``collate_fn`` has already been aligned into the dataset-side
+        ``batch_loader_kwargs``. The outer loader only needs to unwrap the
+        single item it receives from the dataset.
         """
         dataloader_kwargs["batch_size"] = 1
         dataloader_kwargs["collate_fn"] = partial(_collate_self_batched_item)
@@ -704,6 +742,19 @@ class IterableWithLenDataset(
         indices should be compatible with the sharding strategy used in
         the DataLoader.
 
+          At runtime this wrapper has two distinct iteration modes:
+
+          1. If ``batch_loader_kwargs`` is None, it yields individual samples by
+              resolving indices from ``indice_sampler``. In this mode outer
+              PyTorch worker sharding is applied directly to the sampler.
+          2. If ``batch_loader_kwargs`` is set, it builds an inner
+              single-process dataloader over the current dataset view and lets
+              that inner loader form ready-made batches. The outer loader then
+              only forwards those ready-made batches.
+
+          ``__iter__`` wraps either mode with optional prefetch buffering when
+          sample-level iteration is active.
+
     Args:
         dataset (DatasetType): The underlying dataset to wrap.
         indices (IndiceTable | None): An optional IndiceTable to specify which
@@ -833,6 +884,11 @@ class IterableWithLenDataset(
             num_shards (int): The total number of shards to create.
             index (int): The ID of the shard to return. Must be in the
                 range [0, num_shards - 1].
+
+        Returns:
+            IterableWithLenDataset[DatasetType]: A new dataset view with the
+                same shuffle and batching configuration, but restricted to the
+                selected shard of indices.
         """
         shard_sampler = self.indice_sampler.shard(
             num_shards=num_shards,
@@ -842,6 +898,7 @@ class IterableWithLenDataset(
         return IterableWithLenDataset(
             dataset=self.dataset,
             indices=shard_sampler.table,
+            shard_kwargs=self.shard_kwargs,
             shuffle=self._shuffle_config,
             generator=shard_sampler.generator,
             batch_loader_kwargs=self.batch_loader_kwargs,
@@ -861,11 +918,15 @@ class IterableWithLenDataset(
         )
 
     def iter(self):
-        """Iterate over the dataset and yield data samples.
+        """Iterate over the current dataset view.
 
-        This method does not handle sharding for multiple workers.
-        The sharding will be handled in the `__iter__` method, which will call
-        this method to get the data samples for the current shard.
+        This method does not apply outer PyTorch worker sharding by itself;
+        ``__iter__`` chooses the worker-local view first and then delegates
+        here.
+
+        Returns:
+            Iterator[Any]: Either individual samples or ready-made batches,
+                depending on whether ``batch_loader_kwargs`` is configured.
 
         """
         if self.batch_loader_kwargs is None:
@@ -881,12 +942,25 @@ class IterableWithLenDataset(
         yield from self._create_inner_batch_loader()
 
     def _iter_indices(self, indice_iter: Iterable[int]) -> Iterator[Any]:
+        """Yield samples for the provided indices.
+
+        When the wrapped dataset implements ``__getitems__``, this helper uses
+        small index batches to amortize indexing overhead while still exposing
+        a sample-by-sample iterator to callers.
+        """
         yield from _batched_iterator_with_indices(
             self.dataset,
             indice_iter,
         )
 
     def _create_inner_batch_loader(self) -> TorchDataLoader:
+        """Build the inner dataloader used for dataset-side batching.
+
+        The inner loader always uses ``num_workers=0``. Worker/process sharding
+        has already been decided by the surrounding ``IterableWithLenDataset``
+        instance, so spawning another worker pool here would duplicate that
+        logic and make nested batching much harder to reason about.
+        """
         assert self.batch_loader_kwargs is not None
         # create a DataLoader with 0 worker to load batches of data,
         # and the sharding will be handled by the DataLoader's worker
@@ -909,6 +983,11 @@ class IterableWithLenDataset(
 
         This method is designed to be compatible with PyTorch's DataLoader with
         multiple workers.
+
+        In plain sample mode, worker sharding happens here by slicing the
+        sampler per worker. In dataset-side batching mode, the method skips
+        that extra branch and delegates to ``iter()``, which rebuilds batches
+        from the already worker-local dataset view.
         """
         if (
             self.batch_loader_kwargs is not None
@@ -930,6 +1009,12 @@ class IterableWithLenDataset(
         )
 
     def __iter__(self):
+        """Return the public iterator, optionally wrapped with prefetching.
+
+        Prefetch buffering is only added when iteration is still sample-level.
+        Once dataset-side batching is active, the inner batching layer remains
+        the single source of batch construction.
+        """
         yield from _wrap_with_prefetch_if_needed(
             self._torch_iter(),
             shuffle_config=self._shuffle_config,

@@ -15,13 +15,32 @@
 # permissions and limitations under the License.
 
 import time
+from typing import Any, Iterator, cast
 from unittest.mock import MagicMock
 
 import pytest
 import torch
+from accelerate.data_loader import IterableDatasetShard
+from torch.utils.data import Dataset
 
+from robo_orchard_lab.dataset.robot import (
+    BatchLoaderConfig,
+    DataLoader,
+    IterableWithLenDataset,
+)
 from robo_orchard_lab.pipeline.hooks import StatsMonitorConfig
 from robo_orchard_lab.pipeline.hooks.mixin import PipelineHookArgs
+
+
+class ArrayDataset(Dataset):
+    def __init__(self, data: list[int]):
+        self.data = data
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, idx: int) -> int:
+        return self.data[idx]
 
 
 @pytest.fixture(scope="function")
@@ -36,15 +55,15 @@ def mock_accelerator():
 @pytest.fixture(scope="function")
 def mock_dataloader():
     """Fixture to create a mock DataLoader."""
-    dataloader = MagicMock()
-    dataloader.batch_size = 32
-    dataloader.__len__.return_value = 100
-    return dataloader
+    return torch.utils.data.DataLoader(
+        ArrayDataset(list(range(3200))),
+        batch_size=32,
+    )
 
 
 @pytest.fixture(scope="function")
 def mock_hook_args(mock_accelerator, mock_dataloader):
-    """Fixture to create mock HookArgs."""
+    """Fixture to create hook args backed by a real dataloader."""
     optimizer = torch.optim.Adam(
         params=[
             {"params": torch.nn.Parameter(torch.randn(10)), "lr": 0.01},
@@ -63,8 +82,8 @@ def mock_hook_args(mock_accelerator, mock_dataloader):
         start_epoch=0,
         max_step=1000,
         max_epoch=10,
-        optimizer=optimizer,
-        model_outputs={},
+        optimizer=cast(Any, optimizer),
+        model_outputs=None,
         reduce_loss=torch.tensor(0.0),
     )
 
@@ -87,6 +106,132 @@ def test_estimate_data_stats(mock_accelerator, mock_dataloader):
     assert monitor.batch_size == 32
     assert monitor.total_batch_size == 32 * 4
     assert monitor.steps_per_epoch == 100
+
+
+def test_estimate_data_stats_uses_dataset_side_batch_size(
+    mock_accelerator,
+):
+    """Dataset-side batching should override outer DataLoader metadata."""
+    dataset = IterableWithLenDataset(ArrayDataset(list(range(16))))
+    dataloader = DataLoader(
+        dataset,
+        batch_size=8,
+        num_workers=0,
+        use_dataset_side_batching=True,
+    )
+
+    assert dataloader.batch_size == 1
+
+    monitor = StatsMonitorConfig()()
+    monitor._estimate_data_stats(mock_accelerator, dataloader)
+
+    assert monitor.batch_size == 8
+    assert monitor.total_batch_size == 8 * 4
+    assert monitor.steps_per_epoch == 2
+
+
+def test_estimate_data_stats_prefers_dataset_side_batch_size_for_shard(
+    mock_accelerator,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Prepared shard wrappers should not trust the outer shard batch size."""
+
+    class FakeDataLoaderShard:
+        def __init__(self, dataset, total_batch_size: int, batch_size: int):
+            self.dataset = dataset
+            self.total_batch_size = total_batch_size
+            self.batch_size = batch_size
+
+        def __len__(self) -> int:
+            return 7
+
+        def __iter__(self) -> Iterator[int]:
+            return iter(())
+
+    monkeypatch.setattr(
+        "robo_orchard_lab.pipeline.hooks.stats.DataLoaderShard",
+        FakeDataLoaderShard,
+    )
+
+    dataset = IterableWithLenDataset(
+        ArrayDataset(list(range(32))),
+        batch_loader_kwargs=BatchLoaderConfig(batch_size=8, drop_last=False),
+    )
+    sharded_dataset = IterableDatasetShard(
+        dataset,
+        batch_size=1,
+        drop_last=False,
+        num_processes=4,
+        process_index=0,
+        split_batches=False,
+    )
+    dataloader = FakeDataLoaderShard(
+        dataset=sharded_dataset,
+        total_batch_size=4,
+        batch_size=1,
+    )
+
+    monitor = StatsMonitorConfig()()
+    monitor._estimate_data_stats(mock_accelerator, dataloader)
+
+    assert monitor.batch_size == 8
+    assert monitor.total_batch_size == 8 * 4
+    assert monitor.steps_per_epoch == 7
+
+
+def test_estimate_data_stats_rejects_multi_prepared_dataloader(
+    mock_accelerator,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """StatsMonitor should reject iterable dataloaders prepared twice."""
+
+    class FakeDataLoaderShard:
+        def __init__(self, dataset, total_batch_size: int, batch_size: int):
+            self.dataset = dataset
+            self.total_batch_size = total_batch_size
+            self.batch_size = batch_size
+
+        def __len__(self) -> int:
+            return 7
+
+        def __iter__(self) -> Iterator[int]:
+            return iter(())
+
+    monkeypatch.setattr(
+        "robo_orchard_lab.pipeline.hooks.stats.DataLoaderShard",
+        FakeDataLoaderShard,
+    )
+
+    dataset = IterableWithLenDataset(
+        ArrayDataset(list(range(32))),
+        batch_loader_kwargs=BatchLoaderConfig(batch_size=8, drop_last=False),
+    )
+    prepared_once_dataset = IterableDatasetShard(
+        dataset,
+        batch_size=1,
+        drop_last=False,
+        num_processes=4,
+        process_index=0,
+        split_batches=False,
+    )
+    prepared_twice_dataset = IterableDatasetShard(
+        prepared_once_dataset,
+        batch_size=1,
+        drop_last=False,
+        num_processes=4,
+        process_index=0,
+        split_batches=False,
+    )
+    dataloader = FakeDataLoaderShard(
+        dataset=prepared_twice_dataset,
+        total_batch_size=4,
+        batch_size=1,
+    )
+
+    monitor = StatsMonitorConfig()()
+
+    with pytest.raises(ValueError, match="prepared more than once"):
+        monitor._estimate_data_stats(mock_accelerator, dataloader)
 
 
 def test_estimate_remaining_time():

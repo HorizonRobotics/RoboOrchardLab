@@ -21,8 +21,14 @@ from collections import deque
 from typing import Iterable, Optional
 
 from accelerate import Accelerator
-from accelerate.data_loader import DataLoaderShard
+from accelerate.data_loader import (
+    DataLoaderDispatcher,
+    DataLoaderShard,
+    IterableDatasetShard,
+)
+from torch.utils.data import DataLoader as TorchDataLoader
 
+from robo_orchard_lab.dataset.robot.dataset_ex import IterableDatasetMixin
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
     PipelineHookArgs,
@@ -34,6 +40,49 @@ __all__ = ["StatsMonitor", "StatsMonitorConfig"]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _get_dataset_batch_size(dataset: object) -> int | None:
+    if isinstance(dataset, IterableDatasetMixin):
+        if dataset.batch_loader_kwargs is None:
+            return None
+        return dataset.batch_loader_kwargs.batch_size
+
+    if isinstance(dataset, IterableDatasetShard):
+        inner_dataset = dataset.dataset
+        if isinstance(inner_dataset, IterableDatasetShard):
+            raise ValueError(
+                "Detected a dataloader that was prepared more than once. "
+                "Call accelerator.prepare(...) only once for each "
+                "dataloader."
+            )
+        return _get_dataset_batch_size(inner_dataset)
+
+    return None
+
+
+def _get_dataset_side_batch_size(dataloader: Iterable | None) -> int | None:
+    """Infer the per-process batch size from dataset-side batching metadata.
+
+    Some iterable datasets batch samples internally via
+    ``batch_loader_kwargs``. In that mode the outer dataloader intentionally
+    forwards one already-formed batch at a time, so its exposed
+    ``batch_size`` becomes ``1`` and can no longer be treated as the true
+    sample batch size.
+    """
+    if dataloader is None:
+        return None
+
+    if isinstance(dataloader, DataLoaderShard):
+        return _get_dataset_batch_size(dataloader.dataset)
+
+    if isinstance(dataloader, DataLoaderDispatcher):
+        return _get_dataset_batch_size(dataloader.dataset)
+
+    if isinstance(dataloader, TorchDataLoader):
+        return _get_dataset_batch_size(dataloader.dataset)
+
+    return None
 
 
 class StatsMonitor(PipelineHooks):
@@ -135,7 +184,15 @@ class StatsMonitor(PipelineHooks):
         if self._data_stats_estimated:
             return
 
+        dataset_side_batch_size = _get_dataset_side_batch_size(dataloader)
+
         if self.batch_size is not None:
+            self.total_batch_size = self.batch_size * accelerator.num_processes
+        elif dataset_side_batch_size is not None:
+            # Dataset-side batching is the source of truth here. The outer
+            # dataloader may report ``batch_size=1`` because it only forwards
+            # one ready-made batch per iteration.
+            self.batch_size = dataset_side_batch_size
             self.total_batch_size = self.batch_size * accelerator.num_processes
         else:
             if isinstance(dataloader, DataLoaderShard):
@@ -143,8 +200,13 @@ class StatsMonitor(PipelineHooks):
                 self.batch_size = int(
                     dataloader.total_batch_size / accelerator.num_processes
                 )
-            elif hasattr(dataloader, "batch_size"):
-                self.batch_size = dataloader.batch_size  # type: ignore
+            elif isinstance(dataloader, DataLoaderDispatcher):
+                self.batch_size = dataloader.batch_size
+                self.total_batch_size = (
+                    self.batch_size * accelerator.num_processes
+                )
+            elif isinstance(dataloader, TorchDataLoader):
+                self.batch_size = dataloader.batch_size
                 self.total_batch_size = (
                     self.batch_size * accelerator.num_processes
                 )
