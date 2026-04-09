@@ -17,6 +17,9 @@ description: Load these instructions when working with git history, commit messa
 - Prefer writing the commit body so it can be reused directly, or with minimal edits, as the GitLab merge request description.
 - Apply the public-artifact rule from `default.instructions.md` to commit
   messages.
+- In public-facing commit text, keep `Validation` commands repository-relative
+  or generic, and strip local paths, machine-specific interpreter locations,
+  usernames embedded in paths, proxy wrappers, and internal-only URLs.
 - Use this default commit message template unless told otherwise:
 
   ```md
@@ -80,6 +83,9 @@ description: Load these instructions when working with git history, commit messa
 - Apply the public-artifact rule from `default.instructions.md` to merge
   request descriptions.
 - Keep the merge request title to a single line, and preserve the multiline section structure in the description.
+- If the MR description is auto-filled from commit text, review and scrub the
+  exact final title and description before sending, using the same public-artifact
+  checks as for commit text.
 - If creating a GitLab merge request with `glab`, enable `--remove-source-branch` by default unless told otherwise.
 - Do not flatten line breaks or section structure just to fit push options or other transport shortcuts; use a method that keeps the final MR text intact.
 
