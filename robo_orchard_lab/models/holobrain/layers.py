@@ -15,8 +15,10 @@
 # permissions and limitations under the License.
 
 import math
+from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.init import constant_, xavier_uniform_
 
@@ -75,13 +77,6 @@ class ScalarEmbedder(nn.Module):
         return t_emb
 
 
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
 class RotaryEmbedding(nn.Module):
     def __init__(
         self,
@@ -97,7 +92,7 @@ class RotaryEmbedding(nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.max_seq_len_cached = max_position_embeddings
         self.base = base
-        self.inv_freq = 1.0 / (
+        inv_freq = 1.0 / (
             self.base
             ** (
                 torch.arange(0, self.dim, 2, dtype=torch.int64)
@@ -106,24 +101,31 @@ class RotaryEmbedding(nn.Module):
                 / self.dim
             )
         )
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
         freqs = (
-            torch.arange(max_position_embeddings)[:, None].to(self.inv_freq)
-            @ self.inv_freq[None]
+            torch.arange(max_position_embeddings)[:, None].to(inv_freq)
+            @ inv_freq[None]
         )
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos = emb.cos()
-        self.sin = emb.sin()
+        self.register_buffer("cos", emb.cos(), persistent=False)
+        self.register_buffer("sin", emb.sin(), persistent=False)
 
     def forward(self, x, position_ids):
         # x: [bs,h,n,c] or [bs,n,c]
         # position_ids: [bs,n]
         position_ids = position_ids.to(torch.int32)
-        cos = self.cos.to(x)[position_ids]
-        sin = self.sin.to(x)[position_ids]
+        cos = self.cos[position_ids]
+        sin = self.sin[position_ids]
         while x.dim() > cos.dim():
             cos = cos.unsqueeze(1)
             sin = sin.unsqueeze(1)  # b 1 n c
-        x = (x * cos) + (rotate_half(x) * sin)
+        half = x.shape[-1] // 2
+        x1, x2 = x[..., :half], x[..., half:]
+        cos_h = cos[..., :half]
+        sin_h = sin[..., :half]
+        x = torch.cat(
+            [x1 * cos_h - x2 * sin_h, x2 * cos_h + x1 * sin_h], dim=-1
+        )
         return x
 
 
@@ -149,6 +151,8 @@ class RotaryAttention(nn.Module):
         self.position_encoder = RotaryEmbedding(
             head_dim, max_position_embeddings=max_position_embeddings
         )
+        self._kv_cache: Optional[tuple] = None
+        self._use_cache: bool = False
         self.init_weights()
 
     def init_weights(self):
@@ -159,6 +163,12 @@ class RotaryAttention(nn.Module):
             constant_(self.q_proj.bias, 0.0)
         if self.v_proj.bias is not None:
             constant_(self.v_proj.bias, 0.0)
+
+    def clear_cache(self):
+        self._kv_cache = None
+
+    def do_cache(self, enable: bool):
+        self._use_cache = enable
 
     def forward(
         self,
@@ -178,35 +188,46 @@ class RotaryAttention(nn.Module):
 
         B, N, C = query.shape  # noqa: N806
         M = key.shape[1]  # noqa: N806
-        q = self.q_proj(query)
-        k = self.k_proj(key)
-        if value is None:
-            value = key
-        v = self.v_proj(value)
 
-        q = q.reshape(B, N, self.num_heads, -1).permute(0, 2, 1, 3)  # b,h,n,c
-        k = k.reshape(B, M, self.num_heads, -1).permute(0, 2, 1, 3)
-        v = v.reshape(B, M, self.num_heads, -1).permute(0, 2, 1, 3)  # b,h,m,c
+        if self._use_cache and self._kv_cache is not None:
+            # Reuse cached K/V (img/text features are constant across
+            # all denoising timesteps).
+            k, v = self._kv_cache
+            q = self.q_proj(query)
+            q = q.reshape(B, N, self.num_heads, -1).permute(0, 2, 1, 3)
+            if query_pos is not None:
+                q = self.position_encoder(q, query_pos)
+        else:
+            q = self.q_proj(query)
+            k = self.k_proj(key)
+            if value is None:
+                value = key
+            v = self.v_proj(value)
+            q = q.reshape(B, N, self.num_heads, -1).permute(0, 2, 1, 3)
+            k = k.reshape(B, M, self.num_heads, -1).permute(0, 2, 1, 3)
+            v = v.reshape(B, M, self.num_heads, -1).permute(0, 2, 1, 3)
+            q, k = self.apply_position_encode(q, query_pos, k, key_pos)
+            if self._use_cache:
+                self._kv_cache = (k, v)
 
-        q, k = self.apply_position_encode(q, query_pos, k, key_pos)
-
-        attn = (q @ k.permute(0, 1, 3, 2)) * self.scale
-        # Equivalent Implementation
-        # attn = torch.einsum("bhnc,bhmc->bhnm", q, k) * self.scale
-
+        # Build additive float mask for SDPA (True → -inf)
+        float_mask = None
         if attn_mask is not None:
             if attn_mask.dim() == 3 and attn_mask.shape[0] == B:
                 attn_mask = attn_mask.unsqueeze(1)
-            attn = torch.where(attn_mask, float("-inf"), attn)
-
-        if key_padding_mask is not None:
-            attn = torch.where(
-                key_padding_mask[:, None, None], float("-inf"), attn
+            float_mask = q.new_zeros(B, 1, N, M).masked_fill(
+                attn_mask, float("-inf")
             )
+        if key_padding_mask is not None:
+            kpm = q.new_zeros(B, 1, 1, M).masked_fill(
+                key_padding_mask[:, None, None], float("-inf")
+            )
+            float_mask = float_mask + kpm if float_mask is not None else kpm
 
-        attn = attn.softmax(dim=-1).type_as(v)
-        x = (attn @ v).transpose(1, 2)
-        x = x.reshape(B, N, C)
+        x = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=float_mask, scale=self.scale
+        )
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = x + identity
         return x
@@ -318,6 +339,8 @@ class TemporalJointGraphAttention(nn.Module):
         self.temporal_position_encoder = RotaryEmbedding(
             head_dim, max_position_embeddings=max_position_embeddings
         )
+        self._joint_dist_cache: Optional[torch.Tensor] = None
+        self._use_cache: bool = False
         self.init_weights()
 
     def init_weights(self):
@@ -328,6 +351,12 @@ class TemporalJointGraphAttention(nn.Module):
             constant_(self.q_proj.bias, 0.0)
         if self.v_proj.bias is not None:
             constant_(self.v_proj.bias, 0.0)
+
+    def clear_cache(self):
+        self._joint_dist_cache = None
+
+    def do_cache(self, enable: bool):
+        self._use_cache = enable
 
     def forward(
         self,
@@ -362,15 +391,21 @@ class TemporalJointGraphAttention(nn.Module):
         q = self.temporal_position_encoder(q, temporal_pos_q)
         k = self.temporal_position_encoder(k, temporal_pos_k)
 
-        joint_distance = self.joint_pos_encoder(
-            joint_distance.flatten()
-        ).reshape(B, N, M, C)  # bs, n, m, c
-        joint_distance = joint_distance.unflatten(
-            -1, (self.num_heads, -1)
-        ).permute(0, 3, 1, 2, 4)  # bs, h, n, m, c
-        joint_distance = joint_distance.unsqueeze(3)  # bs, h, n,1, m, c
+        if self._use_cache and self._joint_dist_cache is not None:
+            joint_distance = self._joint_dist_cache
+        else:
+            joint_distance = self.joint_pos_encoder(
+                joint_distance.flatten()
+            ).reshape(B, N, M, C)  # bs, n, m, c
+            joint_distance = joint_distance.unflatten(
+                -1, (self.num_heads, -1)
+            ).permute(0, 3, 1, 2, 4)  # bs, h, n, m, c
+            joint_distance = joint_distance.unsqueeze(3)  # bs, h, n,1, m, c
+            if self._use_cache:
+                self._joint_dist_cache = joint_distance
         q = q.unsqueeze(4)  # bs, h, n, tq, 1, c
         q = q * joint_distance  # bs,h,n,tq,m,c
+
         attn = torch.einsum("bhnqmc,bhmkc->bhnqmk", q, k) * self.scale
 
         if temporal_attn_mask is not None:
@@ -426,10 +461,9 @@ class AdaRMSNorm(nn.RMSNorm):
             ada_scale_shift = ada_scale_shift[:, None]
         x = x * (1 + ada_scale_shift[..., 0]) + ada_scale_shift[..., 1]
         if self.zero:
-            gate_msa, shift_mlp, scale_mlp, gate_mlp = [
-                x.squeeze(dim=-1)
-                for x in ada_scale_shift[..., 2:].chunk(4, dim=-1)
-            ]
+            gate_msa, shift_mlp, scale_mlp, gate_mlp = ada_scale_shift[
+                ..., 2:
+            ].unbind(dim=-1)
         else:
             gate_msa = shift_mlp = scale_mlp = gate_mlp = None
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
@@ -484,12 +518,16 @@ class UpsampleHead(nn.Module):
     def forward(self, x):
         bs, num_joint, num_chunk, state_dims = x.shape
         x = x.flatten(0, 1)
+        # Keep channels-first (B*J, C, T) throughout the loop,
+        # only permute to channels-last when norm requires it.
+        x = x.permute(0, 2, 1)
         for i, layer in enumerate(self.upsamples):
             if i in self.norm_act_idx:
+                x = x.permute(0, 2, 1)
                 x = self.act_and_norm[i](x)
-            x = x.permute(0, 2, 1)
+                x = x.permute(0, 2, 1)
             x = self.convs[i](layer(x.unsqueeze(-1)).squeeze(-1))
-            x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1)
         x = x.unflatten(0, (bs, num_joint))
 
         if self.num_output_layers >= 1:

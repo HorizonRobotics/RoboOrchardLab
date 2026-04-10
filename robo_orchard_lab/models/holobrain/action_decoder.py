@@ -651,6 +651,7 @@ class HoloBrainActionDecoder(nn.Module):
                 device=img_feature.device,
             )
 
+            self._set_attn_cache(True, clear=True)
             for t in self.test_noise_scheduler.timesteps:
                 if not noise_type.endswith("pose"):
                     noisy_action = recompute(noisy_action, inputs)
@@ -689,6 +690,7 @@ class HoloBrainActionDecoder(nn.Module):
                         pred_mobile_traj, t, noisy_mobile_traj
                     )
 
+            self._set_attn_cache(False, clear=True)
             pred_actions = noisy_action
             pred_mobile_trajs = noisy_mobile_traj
             if self.num_test_traj is not None and self.num_test_traj > 1:
@@ -711,6 +713,59 @@ class HoloBrainActionDecoder(nn.Module):
                 "pred_actions": pred_actions,
                 "pred_mobile_trajs": pred_mobile_trajs,
             }
+
+    def enable_torch_compile(self, **compile_kwargs):
+        """Compile with :func:`torch.compile` for faster inference.
+
+        The default mode is ``"default"`` (inductor with operator fusion).
+        ``"reduce-overhead"`` (CUDA graphs) is **not** compatible with the
+        KV / joint-distance caches inside attention layers, because CUDA
+        graphs manage tensor memory across replays and cached tensors get
+        overwritten.
+
+        Example::
+
+            decoder = HoloBrainActionDecoder(...)
+            decoder.eval()
+            decoder.enable_torch_compile()  # default mode
+            decoder.enable_torch_compile(mode="max-autotune-no-cudagraphs")
+            # faster run
+
+        Args:
+            **compile_kwargs: Forwarded to :func:`torch.compile`.
+                Defaults to ``mode="default"`` if *mode* is not specified.
+        """
+        compile_kwargs.setdefault("mode", "default")
+        if compile_kwargs["mode"] not in (
+            "default",
+            "max-autotune-no-cudagraphs",
+        ):
+            raise NotImplementedError
+        self.forward_layers = torch.compile(  # type: ignore[method-assign]
+            self.forward_layers, **compile_kwargs
+        )
+        self.robot_encoder.forward = torch.compile(
+            self.robot_encoder.forward, **compile_kwargs
+        )
+
+    def _set_attn_cache(self, enable: bool, clear: bool = False):
+        """Toggle KV/joint-distance caching on attention layers.
+
+        Args:
+            enable: Passed to each layer's ``do_cache`` method.
+            clear: If True, also call ``clear_cache`` to release stored
+                tensors.
+        """
+        cacheable_ops = (
+            "img_cross_attn",
+            "text_cross_attn",
+            "temp_joint_attn",
+        )
+        for op, layer in zip(self.operation_order, self.layers, strict=True):
+            if op in cacheable_ops and layer is not None:
+                layer.do_cache(enable)
+                if clear:
+                    layer.clear_cache()
 
     def forward_layers(
         self,
