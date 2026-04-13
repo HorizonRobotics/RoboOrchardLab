@@ -14,13 +14,18 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import gc
 import multiprocessing as mp
 import os
 import threading
+import time
+import weakref
 from typing import Any, cast
 
 import pytest
 import torch
+from accelerate import Accelerator
+from accelerate.utils import DataLoaderConfiguration
 from robo_orchard_core.utils.config import ClassType
 from torch.utils.data import (
     Dataset,
@@ -38,10 +43,15 @@ from robo_orchard_lab.dataset.robot import (
 )
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE,
+    _PREFETCH_CLOSE_JOIN_TIMEOUT_SEC,
     DictIterableDataset,
+    _close_dataloader_iterator,
     _create_prefetch_iterator,
 )
 from robo_orchard_lab.dataset.sampler import ShardStrategy
+from robo_orchard_lab.utils.accelerate import (
+    configure_data_loader_for_accelerate,
+)
 
 
 class ArrayDataset(Dataset):
@@ -1074,6 +1084,151 @@ class TestCreatePrefetchIterator:
 
         assert self._count_prefetch_threads() == baseline_threads
 
+    def test_close_waits_for_short_inflight_prefetch_item(self):
+        tail_item_started = threading.Event()
+
+        def slow_tail_iter():
+            yield 0
+            yield 1
+            tail_item_started.set()
+            time.sleep(0.1)
+            yield 2
+
+        baseline_threads = self._count_prefetch_threads()
+        prefetch_iter = _create_prefetch_iterator(
+            iter(slow_tail_iter()),
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert next(prefetch_iter) == 0
+        assert tail_item_started.wait(timeout=1)
+
+        cast(Any, prefetch_iter).close()
+
+        assert self._count_prefetch_threads() == baseline_threads
+
+    def test_close_returns_when_inflight_prefetch_item_blocks(self):
+        tail_item_started = threading.Event()
+        allow_tail_item = threading.Event()
+
+        def blocked_tail_iter():
+            yield 0
+            yield 1
+            tail_item_started.set()
+            allow_tail_item.wait()
+            yield 2
+
+        baseline_threads = self._count_prefetch_threads()
+        prefetch_iter = _create_prefetch_iterator(
+            iter(blocked_tail_iter()),
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert next(prefetch_iter) == 0
+        assert tail_item_started.wait(timeout=1)
+
+        start = time.monotonic()
+        with pytest.warns(
+            UserWarning,
+            match="Prefetch producer thread did not exit within",
+        ):
+            cast(Any, prefetch_iter).close()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < _PREFETCH_CLOSE_JOIN_TIMEOUT_SEC + 0.5
+
+        allow_tail_item.set()
+        for _ in range(40):
+            if self._count_prefetch_threads() == baseline_threads:
+                break
+            threading.Event().wait(0.05)
+
+        assert self._count_prefetch_threads() == baseline_threads
+
+    def test_close_closes_nested_dataloader_prefetch_iterator(self):
+        baseline_threads = self._count_prefetch_threads()
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(16))),
+                ArrayDatasetItem(data=list(range(100, 116))),
+            ],
+            shuffle=ShuffleConfig(
+                shuffle=True,
+                chunk_size=4,
+                prefetch_factor=2,
+            ),
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=1,
+            num_workers=0,
+            shuffle=dataset._shuffle,
+        )
+        accelerator = Accelerator(
+            dataloader_config=DataLoaderConfiguration(
+                dispatch_batches=False,
+                split_batches=False,
+                even_batches=False,
+            )
+        )
+        configure_data_loader_for_accelerate(
+            accelerator=accelerator,
+            data_loader=dataloader,
+        )
+        dataloader = accelerator.prepare(dataloader)
+        baseline_ref_count = sum(
+            ref is not None
+            for ref in accelerator.gradient_state.dataloader_references
+        )
+
+        dataloader_iter = iter(dataloader)
+        next(dataloader_iter)
+
+        _close_dataloader_iterator(dataloader_iter)
+        assert accelerator.gradient_state.in_dataloader
+        assert (
+            sum(
+                ref is not None
+                for ref in accelerator.gradient_state.dataloader_references
+            )
+            > baseline_ref_count
+        )
+        accelerator.end_training()
+
+        for _ in range(40):
+            if self._count_prefetch_threads() == baseline_threads:
+                break
+            threading.Event().wait(0.05)
+
+        assert self._count_prefetch_threads() == baseline_threads
+
+    def test_close_keeps_persistent_workers_reusable(self):
+        num_workers = 1
+        dataloader = DataLoader(
+            ArrayDataset(data=list(range(16))),
+            batch_size=4,
+            num_workers=num_workers,
+            persistent_workers=True,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        iterator = iter(dataloader)
+        first_batch = cast(torch.Tensor, next(iterator))
+
+        _close_dataloader_iterator(cast(Any, iterator))
+
+        iterator = iter(dataloader)
+        second_batch = cast(torch.Tensor, next(iterator))
+
+        assert first_batch.tolist() == [0, 1, 2, 3]
+        assert second_batch.tolist() == [0, 1, 2, 3]
+
     def test_raises_producer_error_without_draining_ready_queue(self):
         # If the producer fails after the current window has been handed off,
         # the consumer should observe that failure on the next pull instead of
@@ -1103,3 +1258,217 @@ class TestCreatePrefetchIterator:
         assert failure_branch_reached.wait(timeout=1)
         with pytest.raises(RuntimeError, match="producer failed"):
             next(prefetch_iter)
+
+
+class TestDataLoaderEarlyBreakCleanup:
+    def _count_prefetch_threads(self) -> int:
+        return sum(
+            thread.name == "dataset-prefetch-producer"
+            for thread in threading.enumerate()
+        )
+
+    def _iterate_with_early_break(
+        self,
+        dataloader: DataLoader,
+        max_batches: int,
+    ) -> list[Any]:
+        dataloader_iter = iter(dataloader)
+        collected_batches = []
+        try:
+            for batch_idx, batch in enumerate(dataloader_iter):
+                collected_batches.append(batch)
+                if batch_idx + 1 >= max_batches:
+                    break
+        finally:
+            _close_dataloader_iterator(cast(Any, dataloader_iter))
+
+        return collected_batches
+
+    def _wait_for_prefetch_threads(self, expected_count: int) -> None:
+        for _ in range(40):
+            if self._count_prefetch_threads() == expected_count:
+                return
+            time.sleep(0.05)
+
+        assert self._count_prefetch_threads() == expected_count
+
+    def _active_child_count(self) -> int:
+        return len(mp.active_children())
+
+    def _wait_for_active_child_count(self, expected_count: int) -> None:
+        for _ in range(60):
+            if self._active_child_count() == expected_count:
+                return
+            time.sleep(0.05)
+
+        assert self._active_child_count() == expected_count
+
+    def _build_dataset(
+        self,
+        dataset_kind: str,
+    ) -> IterableDatasetMixin:
+        shuffle = ShuffleConfig(
+            shuffle=True,
+            chunk_size=4,
+            prefetch_factor=2,
+        )
+        if dataset_kind == "iterable":
+            return IterableWithLenDataset(
+                ArrayDataset(data=list(range(32))),
+                shuffle=shuffle,
+            )
+
+        return DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(6))),
+                ArrayDatasetItem(data=list(range(100, 106))),
+                ArrayDatasetItem(data=list(range(200, 206))),
+            ],
+            shuffle=shuffle,
+            max_dataset_concurrency=2,
+        )
+
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_dict_iterable_repeated_early_break_releases_dynamic_sub_iterators(
+        self,
+        monkeypatch,
+        use_dataset_side_batching: bool,
+    ):
+        tracked_state = {"created": 0, "finalized": 0}
+        live_generators = weakref.WeakSet()
+        original_iter = IterableWithLenDataset.__iter__
+
+        def mark_finalized() -> None:
+            tracked_state["finalized"] += 1
+
+        def tracked_iter(self):
+            generator = original_iter(self)
+            tracked_state["created"] += 1
+            live_generators.add(generator)
+            weakref.finalize(generator, mark_finalized)
+            return generator
+
+        monkeypatch.setattr(
+            IterableWithLenDataset,
+            "__iter__",
+            tracked_iter,
+        )
+
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(3))),
+                ArrayDatasetItem(data=list(range(100, 103))),
+                ArrayDatasetItem(data=list(range(200, 203))),
+            ],
+            shuffle=False,
+            max_dataset_concurrency=1,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=2 if use_dataset_side_batching else 1,
+            num_workers=0,
+            use_dataset_side_batching=use_dataset_side_batching,
+        )
+
+        for _ in range(5):
+            batches = self._iterate_with_early_break(
+                dataloader,
+                max_batches=4,
+            )
+            assert batches
+            gc.collect()
+            assert len(live_generators) == 0
+            assert tracked_state["finalized"] == tracked_state["created"]
+
+        assert tracked_state["created"] >= 10
+
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_repeated_early_break_keeps_historical_iterators_clean(
+        self,
+        use_dataset_side_batching: bool,
+    ):
+        baseline_threads = self._count_prefetch_threads()
+        shuffle = ShuffleConfig(
+            shuffle=True,
+            chunk_size=4,
+            prefetch_factor=2,
+        )
+        batch_size = 2 if use_dataset_side_batching else 1
+        dataset = IterableWithLenDataset(
+            ArrayDataset(data=list(range(32))),
+            shuffle=shuffle,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=0,
+            shuffle=shuffle,
+            use_dataset_side_batching=use_dataset_side_batching,
+        )
+
+        first_values = []
+        for _ in range(6):
+            batches = self._iterate_with_early_break(
+                dataloader,
+                max_batches=2,
+            )
+            assert batches
+            first_batch = batches[0]
+            if isinstance(first_batch, torch.Tensor):
+                first_values.append(first_batch.tolist())
+            else:
+                first_values.append(list(first_batch))
+            self._wait_for_prefetch_threads(baseline_threads)
+
+        assert len(first_values) == 6
+
+    @pytest.mark.parametrize("dataset_kind", ["iterable", "dict"])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    @pytest.mark.parametrize(
+        "num_workers,persistent_workers",
+        [
+            (0, False),
+            (1, False),
+            (1, True),
+            (2, False),
+            (2, True),
+        ],
+    )
+    def test_repeated_early_break_keeps_dataloader_reusable(
+        self,
+        dataset_kind: str,
+        use_dataset_side_batching: bool,
+        num_workers: int,
+        persistent_workers: bool,
+    ):
+        baseline_child_count = self._active_child_count()
+        dataloader_kwargs = {
+            "batch_size": 2 if use_dataset_side_batching else 1,
+            "num_workers": num_workers,
+            "use_dataset_side_batching": use_dataset_side_batching,
+        }
+        if num_workers > 0:
+            dataloader_kwargs["persistent_workers"] = persistent_workers
+            dataloader_kwargs["multiprocessing_context"] = (
+                _get_dataloader_multiprocessing_context(num_workers)
+            )
+
+        dataloader = DataLoader(
+            self._build_dataset(dataset_kind),
+            **dataloader_kwargs,
+        )
+        expected_cycle_child_count = baseline_child_count
+        if num_workers > 0 and persistent_workers:
+            expected_cycle_child_count += num_workers
+
+        for _ in range(4):
+            batches = self._iterate_with_early_break(
+                dataloader,
+                max_batches=2,
+            )
+            assert batches
+            self._wait_for_active_child_count(expected_cycle_child_count)
+
+        del dataloader
+        gc.collect()
+        self._wait_for_active_child_count(baseline_child_count)

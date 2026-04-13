@@ -652,6 +652,55 @@ def test_hook_based_trainer_prepares_iterable_dataloader_once(
     assert base_dataset.total_iterator_length == 8
 
 
+def test_hook_based_trainer_early_break_cleans_accelerate_dataloader_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    accelerator = Accelerator(
+        dataloader_config=DataLoaderConfiguration(
+            use_seedable_sampler=True,
+            dispatch_batches=False,
+            split_batches=False,
+            even_batches=False,
+        ),
+    )
+    monkeypatch.setattr(accelerator.state, "num_processes", 4)
+    monkeypatch.setattr(accelerator.state, "process_index", 0)
+    monkeypatch.setattr(accelerator.state, "local_process_index", 0)
+
+    dataset = DictIterableDataset(
+        [ArrayDatasetItem(data=list(range(32)))],
+    )
+    dataloader = RODataLoader(
+        dataset=dataset,
+        batch_size=4,
+        num_workers=0,
+    )
+    model = SimpleModel()
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+
+    trainer = HookBasedTrainer(
+        model=model,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        max_step=1,
+    )
+
+    trainer()
+
+    assert not accelerator.gradient_state.in_dataloader
+    assert (
+        sum(
+            ref is not None
+            for ref in accelerator.gradient_state.dataloader_references
+        )
+        == 0
+    )
+
+
 def test_training_loop(dummy_trainer: SimpleTrainer):
     """Test training loop execution."""
     # Spy on hook methods

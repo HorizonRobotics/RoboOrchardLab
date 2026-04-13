@@ -21,10 +21,12 @@ import threading
 import warnings
 from abc import ABCMeta, abstractmethod
 from functools import partial
+from types import GeneratorType
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -41,6 +43,11 @@ from torch.utils.data import (
     DataLoader as TorchDataLoader,
     Dataset as TorchDataset,
     IterableDataset as TorchIterableDataset,
+)
+from torch.utils.data._utils.fetch import _IterableDatasetFetcher
+from torch.utils.data.dataloader import (
+    _MultiProcessingDataLoaderIter,
+    _SingleProcessDataLoaderIter,
 )
 from typing_extensions import TypeVar
 
@@ -70,6 +77,7 @@ __all__ = [
 DatasetType = TypeVar("DatasetType", bound=TorchDataset)
 _TORCH_DATALOADER_INIT_SIGNATURE = inspect.signature(TorchDataLoader.__init__)
 _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE = 32
+_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC = 1.0
 
 
 class ShardConfig(Config):
@@ -1426,7 +1434,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
 
     def _prepare_dataset_for_iter(
         self,
-        cur_dataset_iters: list[tuple[int, Iterator]],
+        cur_dataset_iters: list[tuple[int, Generator[Any, None, None]]],
         remaining_dataset_indices: list[int],
     ) -> np.ndarray:
         """Prepare the dataset for iteration and return the sampling weights.
@@ -1464,7 +1472,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         return weights
 
     def __iter__(self):
-        cur_dataset_iters: list[tuple[int, Iterator]] = []
+        cur_dataset_iters: list[tuple[int, Generator[Any, None, None]]] = []
         dataset_indices = list(
             IndiceTableSampler(
                 len(self.dataset_items),
@@ -1511,14 +1519,14 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     yield item
                 except StopIteration:
                     cur_dataset_iters.pop(selected_idx)
-                    _close_iterator_if_possible(iter_dataset)
+                    iter_dataset.close()
                     weights = self._prepare_dataset_for_iter(
                         cur_dataset_iters=cur_dataset_iters,
                         remaining_dataset_indices=dataset_indices,
                     )
         finally:
             for _, iter_dataset in cur_dataset_iters:
-                _close_iterator_if_possible(iter_dataset)
+                iter_dataset.close()
 
 
 def _get_batch_num(batch_size: int, num_samples: int, drop_last: bool) -> int:
@@ -1722,22 +1730,70 @@ def _create_prefetch_iterator(
             # where the generator is closed early by the caller.
             consumer_closed = True
             condition.notify_all()
-        # Best-effort cleanup: if the producer is only blocked on the local
-        # condition, this join lets the background thread exit before
-        # we return.
-        producer_thread.join(timeout=1.0)
+        # Best-effort cleanup only: if the producer is blocked inside
+        # `source_iter`, it cannot observe `consumer_closed` yet. Keep close
+        # bounded so caller teardown does not hang forever on a stalled
+        # upstream iterator.
+        producer_thread.join(timeout=_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC)
+        if producer_thread.is_alive():
+            warnings.warn(
+                "Prefetch producer thread did not exit within "
+                f"{_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC:.1f}s during close(); "
+                "it will finish in the background when the upstream iterator "
+                "returns.",
+                UserWarning,
+            )
 
 
-def _close_iterator_if_possible(iterator: Iterator[Any]) -> None:
-    """Best-effort close for iterators that manage background resources."""
-    close_fn = getattr(iterator, "close", None)
-    if callable(close_fn):
-        close_fn()
+def _close_dataloader_iterator(
+    dataloader_iter: (
+        GeneratorType
+        | _SingleProcessDataLoaderIter
+        | _MultiProcessingDataLoaderIter
+    ),
+    _visited: set[int] | None = None,
+) -> None:
+    """Close a dataloader iterator and the nested iterator layers it owns."""
+
+    if _visited is None:
+        _visited = set()
+
+    iterator_id = id(dataloader_iter)
+    if iterator_id in _visited:
+        return
+    _visited.add(iterator_id)
+
+    if isinstance(dataloader_iter, GeneratorType):
+        generator_locals = inspect.getgeneratorlocals(dataloader_iter)
+        for nested_iter_name in ("dataloader_iter", "main_iterator"):
+            nested_dataloader_iter = generator_locals.get(nested_iter_name)
+            if isinstance(
+                nested_dataloader_iter,
+                (
+                    GeneratorType,
+                    _SingleProcessDataLoaderIter,
+                    _MultiProcessingDataLoaderIter,
+                ),
+            ):
+                _close_dataloader_iterator(nested_dataloader_iter, _visited)
+        dataloader_iter.close()
         return
 
-    shutdown_fn = getattr(iterator, "_shutdown_workers", None)
-    if callable(shutdown_fn):
-        shutdown_fn()
+    if isinstance(dataloader_iter, _SingleProcessDataLoaderIter):
+        if not isinstance(
+            dataloader_iter._dataset_fetcher, _IterableDatasetFetcher
+        ):
+            return
+        dataset_iter = dataloader_iter._dataset_fetcher.dataset_iter
+        if isinstance(dataset_iter, GeneratorType):
+            dataset_iter.close()
+        return
+
+    if (
+        isinstance(dataloader_iter, _MultiProcessingDataLoaderIter)
+        and not dataloader_iter._persistent_workers
+    ):
+        dataloader_iter._shutdown_workers()
 
 
 if not TYPE_CHECKING:

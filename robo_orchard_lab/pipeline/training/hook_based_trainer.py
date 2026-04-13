@@ -19,12 +19,16 @@ from typing import Any, Iterable
 
 import torch
 from accelerate import Accelerator
+from accelerate.data_loader import DataLoaderStateMixin
 from accelerate.logging import get_logger
 from accelerate.optimizer import AcceleratedOptimizer
 from accelerate.scheduler import AcceleratedScheduler
 from robo_orchard_core.utils.config import Config
 from torch.utils.data import DataLoader
 
+from robo_orchard_lab.dataset.robot.dataset_ex import (
+    _close_dataloader_iterator,
+)
 from robo_orchard_lab.models.torch_model import TorchModelMixin
 from robo_orchard_lab.pipeline.hooks.grad_clip import (
     GradientClippingHookConfig,
@@ -423,21 +427,33 @@ class HookBasedTrainer:
                 with self.hooks.begin(
                     "on_epoch", self._get_hook_args()
                 ) as on_epoch_hook_args:
-                    for _i, batch in enumerate(self.dataloader):
-                        with self.accelerator.accumulate(self.model):
-                            step(
-                                batch=batch,
-                                batch_processor=self.batch_processor,
+                    dataloader_iter = iter(self.dataloader)
+                    try:
+                        while True:
+                            try:
+                                batch = next(dataloader_iter)
+                            except StopIteration:
+                                break
+
+                            with self.accelerator.accumulate(self.model):
+                                step(
+                                    batch=batch,
+                                    batch_processor=self.batch_processor,
+                                )
+                            self.trainer_progress_state.update_step()
+                            self.trainer_progress_state.sync_pipeline_hook_arg(
+                                on_epoch_hook_args
                             )
-                        self.trainer_progress_state.update_step()
-                        self.trainer_progress_state.sync_pipeline_hook_arg(
-                            on_epoch_hook_args
-                        )
-                        if self.trainer_progress_state.is_training_end(
-                            max_step=self.max_step, max_epoch=self.max_epoch
-                        ):
-                            end_loop_flag = True
-                            break
+                            if self.trainer_progress_state.is_training_end(
+                                max_step=self.max_step,
+                                max_epoch=self.max_epoch,
+                            ):
+                                end_loop_flag = True
+                                break
+                    finally:
+                        _close_dataloader_iterator(dataloader_iter)
+                        if isinstance(self.dataloader, DataLoaderStateMixin):
+                            self.dataloader.end()
 
                 self.trainer_progress_state.update_epoch()
                 self.trainer_progress_state.sync_pipeline_hook_arg(

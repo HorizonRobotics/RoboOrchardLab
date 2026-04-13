@@ -44,9 +44,20 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 
 - Use `.agents/skills/*` for independent workflows or task playbooks, not
   for restating general instruction text.
+- Before adding or renaming a local skill or skill family, check for naming
+  collisions with globally available skills and existing local skills.
+- Prefer specific names for family roots instead of claiming a generic name
+  that may already belong to another visible skill surface.
 - Reference skills from `AGENTS.md` so discovery stays explicit.
 - If multiple local skills overlap, make the intended routing clear in
   `AGENTS.md`.
+- When a workflow needs multiple related entrypoints, prefer a skill family:
+  keep the family root focused on routing and applicability, keep reusable
+  workflow rules in family-local references, keep reusable report skeletons in
+  family-local templates or report templates, and keep concrete execution logic
+  inside the smallest applicable sub-skill.
+- Do not turn a family root into another heavy execution skill when
+  sub-skills already own the concrete workflows.
 
 ## Reference Files
 
@@ -65,6 +76,10 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - After editing guidance, read the affected `AGENTS.md`, instruction files,
   reference files, and skill references together to check for duplicate rules,
   contradictory precedence, and mismatched scope.
+- For guidance-only or skill-only changes, run a minimal static validation
+  pass: verify referenced paths exist, scan for stale routing or naming
+  residues, confirm inventory classification still matches asset type, and
+  check that new skill names do not collide with other visible skill surfaces.
 - Verify that every referenced file path exists and that every listed local
   tree actually exists.
 - Check that `Quick Routing`, `Read First`, and `Repository Notes` all
