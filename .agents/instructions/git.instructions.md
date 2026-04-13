@@ -8,6 +8,8 @@ description: Load these instructions when working with git history, commit messa
 
 - Commit message format: `<type>(<scope>): <Description>.`
 - Allowed types: `feat`, `fix`, `bugfix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `scm`.
+- For commit, MR, and PR titles that use this format, keep the description
+  capitalized: the first character after `: ` must be uppercase.
 - Keep the scope short and the full title line within 128 characters.
 - Commit messages should use a multiline body after a blank line.
 - Use body sections `Summary`, `Why`, `Impact`, `Validation`, and `Risks / Notes`.
@@ -40,6 +42,9 @@ description: Load these instructions when working with git history, commit messa
 
 - Base the title, description, and final squash commit on the full branch diff, not only the latest commit.
 - Compare against the target branch and keep the title to a single line.
+- For GitLab merge requests targeting `master`, keep the title compatible with
+  `scm/qac/check_mr_title.py`: `<type>(<scope>): <Description>` with an
+  uppercase first letter in the description.
 - Keep the description concise and preserve the multiline section structure used in commit bodies.
 - Use the review title as the first line of the final squash commit message unless told otherwise, and mirror the final squash body in the review description unless told otherwise.
 - Prefer explicit `none` / `not applicable` markers over ambiguous omissions.
