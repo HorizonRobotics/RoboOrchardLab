@@ -1481,37 +1481,44 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             remaining_dataset_indices=dataset_indices,
         )
 
-        while len(cur_dataset_iters) > 0:
-            # calulate the sampling weight for each dataset iterator based
-            # on the indices length of the corresponding dataset.
-            if self._shuffle.shuffle:
-                if isinstance(self._generator, np.random.Generator):
-                    selected_idx = self._generator.choice(
-                        len(cur_dataset_iters), p=weights, replace=False
-                    )
-                elif isinstance(self._generator, torch.Generator):
-                    selected_idx = int(
-                        torch.multinomial(
-                            torch.tensor(weights), 1, generator=self._generator
-                        ).item()
-                    )
+        try:
+            while len(cur_dataset_iters) > 0:
+                # calulate the sampling weight for each dataset iterator based
+                # on the indices length of the corresponding dataset.
+                if self._shuffle.shuffle:
+                    if isinstance(self._generator, np.random.Generator):
+                        selected_idx = self._generator.choice(
+                            len(cur_dataset_iters), p=weights, replace=False
+                        )
+                    elif isinstance(self._generator, torch.Generator):
+                        selected_idx = int(
+                            torch.multinomial(
+                                torch.tensor(weights),
+                                1,
+                                generator=self._generator,
+                            ).item()
+                        )
+                    else:
+                        raise ValueError(
+                            "Generator must be either a torch.Generator or a "
+                            "numpy.random.Generator."
+                        )
                 else:
-                    raise ValueError(
-                        "Generator must be either a torch.Generator or a "
-                        "numpy.random.Generator."
+                    selected_idx = 0
+                idx, iter_dataset = cur_dataset_iters[selected_idx]
+                try:
+                    item = next(iter_dataset)
+                    yield item
+                except StopIteration:
+                    cur_dataset_iters.pop(selected_idx)
+                    _close_iterator_if_possible(iter_dataset)
+                    weights = self._prepare_dataset_for_iter(
+                        cur_dataset_iters=cur_dataset_iters,
+                        remaining_dataset_indices=dataset_indices,
                     )
-            else:
-                selected_idx = 0
-            idx, iter_dataset = cur_dataset_iters[selected_idx]
-            try:
-                item = next(iter_dataset)
-                yield item
-            except StopIteration:
-                cur_dataset_iters.pop(selected_idx)
-                weights = self._prepare_dataset_for_iter(
-                    cur_dataset_iters=cur_dataset_iters,
-                    remaining_dataset_indices=dataset_indices,
-                )
+        finally:
+            for _, iter_dataset in cur_dataset_iters:
+                _close_iterator_if_possible(iter_dataset)
 
 
 def _get_batch_num(batch_size: int, num_samples: int, drop_last: bool) -> int:
@@ -1719,6 +1726,18 @@ def _create_prefetch_iterator(
         # condition, this join lets the background thread exit before
         # we return.
         producer_thread.join(timeout=1.0)
+
+
+def _close_iterator_if_possible(iterator: Iterator[Any]) -> None:
+    """Best-effort close for iterators that manage background resources."""
+    close_fn = getattr(iterator, "close", None)
+    if callable(close_fn):
+        close_fn()
+        return
+
+    shutdown_fn = getattr(iterator, "_shutdown_workers", None)
+    if callable(shutdown_fn):
+        shutdown_fn()
 
 
 if not TYPE_CHECKING:

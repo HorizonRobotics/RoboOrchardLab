@@ -41,6 +41,7 @@ from robo_orchard_lab.dataset.robot.dataset_ex import (
     DictIterableDataset,
     _create_prefetch_iterator,
 )
+from robo_orchard_lab.dataset.sampler import ShardStrategy
 
 
 class ArrayDataset(Dataset):
@@ -630,6 +631,58 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
                 item >= 100 for item in batch
             )
 
+    def test_close_closes_active_child_iterators(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+        monkeypatch,
+    ):
+        class _CloseTrackingIterator:
+            def __init__(self, items: list[int]) -> None:
+                self._items = iter(items)
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                return next(self._items)
+
+            def close(self) -> None:
+                self.closed = True
+
+        dataset = DictIterableDataset(dummy_dataset_items, shuffle=False)
+        dataset._total_indices_length = [2, 2]
+        child_iters = [
+            _CloseTrackingIterator([0, 1]),
+            _CloseTrackingIterator([100, 101]),
+        ]
+
+        def fake_prepare_dataset_for_iter(
+            cur_dataset_iters: list[tuple[int, Any]],
+            remaining_dataset_indices: list[int],
+        ) -> list[float]:
+            del remaining_dataset_indices
+            if not cur_dataset_iters:
+                cur_dataset_iters.extend(
+                    [(0, child_iters[0]), (1, child_iters[1])]
+                )
+            return [0.5, 0.5]
+
+        monkeypatch.setattr(
+            dataset,
+            "_prepare_dataset_for_iter",
+            fake_prepare_dataset_for_iter,
+        )
+
+        dataset_iter = iter(dataset)
+
+        assert next(dataset_iter) == 0
+
+        cast(Any, dataset_iter).close()
+
+        assert child_iters[0].closed is True
+        assert child_iters[1].closed is True
+
     def test_use_dataset_side_batching_aligns_batch_loader_kwargs(
         self, dummy_dataset_items: list[DatasetItem]
     ):
@@ -845,6 +898,64 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             2,
             2,
         ]
+
+    @staticmethod
+    def _collect_rank_local_dataset_trace(
+        rank: int,
+        shard_strategy: ShardStrategy,
+    ) -> tuple[list[str], list[int]]:
+        generator = torch.Generator()
+        generator.manual_seed(123)
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(21))),
+                ArrayDatasetItem(data=list(range(100, 105))),
+            ],
+            shuffle=True,
+            generator=generator,
+            shard_kwargs=ShardConfig(
+                contiguous=True,
+                shard_strategy=shard_strategy,
+            ),
+        ).shard(num_shards=2, index=rank)
+
+        trace = ["A" if item < 100 else "B" for item in dataset]
+        assert dataset._total_indices_length is not None
+        return trace, dataset._total_indices_length
+
+    def test_rank_local_schedule_can_diverge_without_even_shards(self):
+        # Multi-process iterable training relies on each rank observing the
+        # same per-dataset mixture weights. Without an even shard strategy,
+        # local shard lengths can differ and the rank-local dataset schedule
+        # will drift even when the same RNG seed is used.
+        rank0_trace, rank0_lengths = self._collect_rank_local_dataset_trace(
+            rank=0,
+            shard_strategy=None,
+        )
+        rank1_trace, rank1_lengths = self._collect_rank_local_dataset_trace(
+            rank=1,
+            shard_strategy=None,
+        )
+
+        assert rank0_lengths != rank1_lengths
+        assert rank0_trace != rank1_trace, (
+            "Expected the rank-local dataset schedule to diverge when "
+            "sharded lengths are uneven, but both ranks produced the same "
+            f"trace: {''.join(rank0_trace)}"
+        )
+
+    def test_rank_local_schedule_stays_aligned_with_pad_last(self):
+        rank0_trace, rank0_lengths = self._collect_rank_local_dataset_trace(
+            rank=0,
+            shard_strategy="pad_last",
+        )
+        rank1_trace, rank1_lengths = self._collect_rank_local_dataset_trace(
+            rank=1,
+            shard_strategy="pad_last",
+        )
+
+        assert rank0_lengths == rank1_lengths
+        assert rank0_trace == rank1_trace
 
 
 class TestCreatePrefetchIterator:
