@@ -1753,7 +1753,13 @@ def _close_dataloader_iterator(
     ),
     _visited: set[int] | None = None,
 ) -> None:
-    """Close a dataloader iterator and the nested iterator layers it owns."""
+    """Close a dataloader iterator and the nested iterator layers it owns.
+
+    This helper only tears down resources owned by the active iterator stack.
+    Prepared-wrapper lifecycle state such as `accelerate`'s
+    `DataLoaderStateMixin` must be ended separately by the owner that
+    prepared the dataloader.
+    """
 
     if _visited is None:
         _visited = set()
@@ -1785,7 +1791,9 @@ def _close_dataloader_iterator(
         ):
             return
         dataset_iter = dataloader_iter._dataset_fetcher.dataset_iter
-        if isinstance(dataset_iter, GeneratorType):
+        if isinstance(dataset_iter, GeneratorType) or (
+            hasattr(dataset_iter, "close") and callable(dataset_iter.close)
+        ):
             dataset_iter.close()
         return
 

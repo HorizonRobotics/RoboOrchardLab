@@ -217,6 +217,9 @@ def _iterate_with_early_break(dataloader: object, max_batches: int) -> int:
             if batch_idx + 1 >= max_batches:
                 break
     finally:
+        # This subprocess probe is limited to iterator-owned resource cleanup.
+        # Prepared-wrapper state such as Accelerate's DataLoaderStateMixin is
+        # intentionally left to the wrapper owner and is not asserted here.
         _close_dataloader_iterator(dataloader_iter)
 
     return batch_count

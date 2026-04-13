@@ -1149,7 +1149,9 @@ class TestCreatePrefetchIterator:
 
         assert self._count_prefetch_threads() == baseline_threads
 
-    def test_close_closes_nested_dataloader_prefetch_iterator(self):
+    def test_close_closes_nested_prefetch_iterator_but_not_wrapper_state(
+        self,
+    ):
         baseline_threads = self._count_prefetch_threads()
         dataset = DictIterableDataset(
             [
@@ -1189,6 +1191,8 @@ class TestCreatePrefetchIterator:
         next(dataloader_iter)
 
         _close_dataloader_iterator(dataloader_iter)
+        # `_close_dataloader_iterator()` only tears down iterator-owned
+        # resources. The prepared wrapper still owns Accelerate state cleanup.
         assert accelerator.gradient_state.in_dataloader
         assert (
             sum(
@@ -1197,7 +1201,15 @@ class TestCreatePrefetchIterator:
             )
             > baseline_ref_count
         )
-        accelerator.end_training()
+        dataloader.end()
+        assert not accelerator.gradient_state.in_dataloader
+        assert (
+            sum(
+                ref is not None
+                for ref in accelerator.gradient_state.dataloader_references
+            )
+            == baseline_ref_count
+        )
 
         for _ in range(40):
             if self._count_prefetch_threads() == baseline_threads:
@@ -1205,6 +1217,44 @@ class TestCreatePrefetchIterator:
             threading.Event().wait(0.05)
 
         assert self._count_prefetch_threads() == baseline_threads
+
+    def test_close_closes_single_process_closeable_dataset_iterator(self):
+        class _CloseTrackingIterator:
+            def __init__(self) -> None:
+                self._items = iter([0, 1, 2])
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                return next(self._items)
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _CloseTrackingDataset(TorchIterableDataset):
+            def __init__(self) -> None:
+                self.last_iter: Any | None = None
+
+            def __iter__(self):
+                self.last_iter = _CloseTrackingIterator()
+                return self.last_iter
+
+        dataset = _CloseTrackingDataset()
+        dataloader = DataLoader(
+            dataset,
+            batch_size=None,
+            num_workers=0,
+        )
+
+        dataloader_iter = iter(dataloader)
+
+        assert next(dataloader_iter) == 0
+
+        _close_dataloader_iterator(cast(Any, dataloader_iter))
+
+        assert cast(Any, dataset).last_iter.closed is True
 
     def test_close_keeps_persistent_workers_reusable(self):
         num_workers = 1

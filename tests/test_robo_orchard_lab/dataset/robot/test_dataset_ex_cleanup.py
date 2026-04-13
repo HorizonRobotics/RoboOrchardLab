@@ -186,7 +186,7 @@ class TestDataLoaderEarlyBreakCleanupSubprocess:
             (2, True),
         ],
     )
-    def test_prepared_repeated_early_break_exits_cleanly(
+    def test_prepared_repeated_early_break_releases_iterator_resources(
         self,
         tmp_path: Path,
         PROJECT_ROOT: str,

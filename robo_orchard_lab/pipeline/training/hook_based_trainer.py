@@ -452,6 +452,9 @@ class HookBasedTrainer:
                                 break
                     finally:
                         _close_dataloader_iterator(dataloader_iter)
+                        # Iterator teardown does not reset prepared-wrapper
+                        # state. The trainer owns the prepared dataloader
+                        # lifecycle, so it must end that wrapper explicitly.
                         if isinstance(self.dataloader, DataLoaderStateMixin):
                             self.dataloader.end()
 

@@ -1,7 +1,7 @@
 # Architecture Review Guideline
 
 Use this reference for stable cross-domain architecture review guidance in
-this workspace.
+this repository.
 
 This file captures the common review dimensions for module boundaries,
 abstraction quality, contract design, dependency direction, compatibility
