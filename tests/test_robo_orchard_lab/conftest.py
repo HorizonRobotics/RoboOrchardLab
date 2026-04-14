@@ -20,6 +20,33 @@ import warnings
 
 import pytest
 
+_ROBOSUITE_DEFAULT_LOG_PATH = "/tmp/robosuite.log"
+
+
+def _redirect_unwritable_robosuite_log() -> None:
+    if not os.path.exists(_ROBOSUITE_DEFAULT_LOG_PATH):
+        return
+    if os.access(_ROBOSUITE_DEFAULT_LOG_PATH, os.W_OK):
+        return
+
+    fallback_log_path = os.path.join(
+        tempfile.gettempdir(), f"robosuite-{os.getuid()}.log"
+    )
+    original_file_handler = logging.FileHandler
+
+    # robosuite hard-codes /tmp/robosuite.log during import; redirect only
+    # that path when a stale file owned by another user blocks writes.
+    class RedirectedRobosuiteFileHandler(original_file_handler):
+        def __init__(self, filename, *args, **kwargs):
+            if os.path.abspath(filename) == _ROBOSUITE_DEFAULT_LOG_PATH:
+                filename = fallback_log_path
+            super().__init__(filename, *args, **kwargs)
+
+    logging.FileHandler = RedirectedRobosuiteFileHandler
+
+
+_redirect_unwritable_robosuite_log()
+
 # import multiprocessing as mp
 # try:
 #     # Prefer 'fork' to avoid spawn/forkserver pickling/fd issues in tests

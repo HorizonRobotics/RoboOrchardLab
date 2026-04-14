@@ -14,4 +14,44 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from .env import *
+from __future__ import annotations
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .env import (
+        LiberoEnv,
+        LiberoEnvCfg,
+        LiberoEnvStepReturn,
+        LiberoEvalEnv,
+        LiberoEvalEnvCfg,
+        LiberoSuiteName,
+        get_libero_task,
+    )
+
+_ENV_EXPORTS = (
+    "get_libero_task",
+    "LiberoEnvStepReturn",
+    "LiberoEnv",
+    "LiberoEnvCfg",
+    "LiberoEvalEnv",
+    "LiberoEvalEnvCfg",
+    "LiberoSuiteName",
+)
+
+__all__ = (
+    "get_libero_task",
+    "LiberoEnvStepReturn",
+    "LiberoEnv",
+    "LiberoEnvCfg",
+    "LiberoEvalEnv",
+    "LiberoEvalEnvCfg",
+    "LiberoSuiteName",
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _ENV_EXPORTS:
+        module = importlib.import_module(f"{__name__}.env")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
