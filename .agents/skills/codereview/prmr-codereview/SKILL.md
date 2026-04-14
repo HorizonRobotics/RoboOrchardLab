@@ -11,9 +11,10 @@ final report, also read `../references/report-composition.md`.
 Do not use this skill for commit review, branch diff review, staged diff
 review, working tree review, or generic local code review. Use
 `../changeset-codereview/SKILL.md` for those. If the user explicitly wants
-architecture review of a PR/MR, pair this skill with
-`../architecture-review/SKILL.md` rather than turning every PR/MR review
-into a heavy architecture pass.
+architecture review of a PR/MR, pass that requirement into the delegated
+changeset review workflow rather than launching a separate architecture pass
+here. Keep this skill as the main report owner and summarize any paired
+review result in `Related review inputs`.
 
 **Agent assumptions (applies to all agents and subagents):**
 - All tools are functional and will work without error. Do not test tools or
@@ -25,6 +26,14 @@ into a heavy architecture pass.
   names: use a lightweight reviewer for simple PR/MR triage or file
   discovery, a general reviewer for balanced summaries, and the strongest
   available reviewer for issue validation when needed.
+- This workflow requires subagents. Do not silently collapse it into
+  a single-agent review. If delegation is unavailable or not yet
+  authorized, stop and ask the user for explicit delegation
+  permission before proceeding.
+- Treat each required subagent step from this skill and the delegated
+  `changeset-codereview` workflow as mandatory. Do not reduce the required
+  subagent count or merge distinct reviewer roles just to keep the flow
+  moving.
 
 To do this, follow these steps precisely:
 
@@ -44,7 +53,8 @@ To do this, follow these steps precisely:
 
 4. Load `../changeset-codereview/SKILL.md` and run its generic
    issue-discovery and validation workflow against the reviewed PR/MR diff.
-   Pass the PR/MR title and description to that workflow as review context.
+   Pass the PR/MR title, description, and any explicit architecture-review
+   request to that workflow as review context.
 
 5. Convert the validated findings into the PR/MR-specific report format in
    `REPORT_TEMPLATE.md`.
@@ -52,6 +62,8 @@ To do this, follow these steps precisely:
      `Related review inputs` summary for each paired skill. Keep those
      summaries concise and reference the paired report instead of copying its
      findings into the main findings sections.
+   - If the delegated changeset review produced a paired architecture input,
+     this summary is required; do not omit it from the final report.
 
    If `--comment` argument was NOT provided, stop here. Do not post any
    review comments.

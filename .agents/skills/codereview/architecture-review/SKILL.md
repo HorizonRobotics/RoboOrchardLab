@@ -22,6 +22,13 @@ opinions.
   names: use a lightweight reviewer for scope discovery, a general reviewer
   for structural summaries, and the strongest available reviewer for issue
   finding or validation.
+- This workflow requires subagents. Do not silently collapse it into
+  a single-agent review. If delegation is unavailable or not yet
+  authorized, stop and ask the user for explicit delegation
+  permission before proceeding.
+- The reviewer counts and validation pass described below are mandatory for
+  this workflow. Do not silently launch fewer subagents or merge distinct
+  reviewer roles into one agent.
 
 To do this, follow these steps precisely:
 

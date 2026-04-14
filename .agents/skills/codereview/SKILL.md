@@ -20,6 +20,14 @@ Then route to the smallest sub-skill that matches the target:
   where layering, contracts, compatibility surfaces, abstractions, or public
   API design are the main question.
 
+If the target is a PR/MR or local changeset and the user explicitly asks for
+architecture review in addition to ordinary review dimensions, keep
+`prmr-codereview` or `changeset-codereview` as the active skill. For PR/MR
+reviews, the delegated `changeset-codereview` workflow owns any paired
+`architecture-review/` launch. In both cases, the active skill owns the main
+report and must summarize the paired architecture results in `Related review
+inputs`.
+
 Do not use this family for:
 
 - routine implementation self-checks
@@ -29,3 +37,12 @@ Do not use this family for:
 
 Use the smallest review surface that satisfies the request. The heavier the
 workflow, the more explicit the user request should be.
+
+These heavy review workflows are delegation-required. If the active tool
+policy or current user authorization does not permit subagents for the chosen
+sub-skill, stop and ask for explicit delegation permission instead of
+silently collapsing the workflow into a single-agent review.
+When a codereview sub-skill specifies a number of subagents or distinct
+reviewer roles, treat that count and role split as the minimum required
+workflow shape. Do not silently launch fewer subagents, merge distinct review
+roles into one agent, or skip the validation pass.
