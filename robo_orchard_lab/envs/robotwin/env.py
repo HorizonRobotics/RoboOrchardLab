@@ -753,9 +753,13 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     Note that we only support RoboTwin2.0 for now.
     """
 
-    endpose: bool | None = None
-    """Whether to output endpose in observation. If None, use the value
-    in task configuration file."""
+    task_config_overrides: list[tuple[str, Any]] | None = None
+    """Final overrides applied to the resolved task config.
+
+    Each item is a `(path, value)` pair where `path` uses `/` to address
+    nested dictionary keys, for example `("data_type/rgb", True)`.
+    These overrides are applied after `_update_task_config()` finishes.
+    """
 
     def __post_init__(self):
         if self.task_config_path is None:
@@ -801,7 +805,8 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         In eval_mode, the seed is calculated as `100000 * (1 + seed)`.
 
         Args:
-            seed (int): The base seed.
+            seed (int | str): The base seed. The string value `"next"`
+                increments the current seed by 1.
 
         Returns:
             int: The actual seed used in RoboTwin.
@@ -820,8 +825,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         if seed >= EVAL_SEED_BASE and self.eval_mode is False:
             raise ValueError(
                 f"Seed {seed} is >= {EVAL_SEED_BASE} but eval_mode is "
-                "False. This may lead to unexpected behavior. "
-                "The recomputed seed will set to 0."
+                "False. This is reserved for RoboTwin evaluation mode."
             )
 
         return seed
@@ -843,16 +847,96 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         )
 
     def get_task_config(self) -> dict[str, Any]:
-        """Get the configuration for the task."""
+        """Return the resolved task configuration for `setup_demo()`.
+
+        The returned config combines the YAML template, derived RoboTwin
+        fields from `_update_task_config()`, and the final
+        `task_config_overrides` patches.
+        """
         assert self.task_config_path is not None
         with (
             open(self.task_config_path, "r", encoding="utf-8") as f,
         ):
             task_config = yaml.load(f.read(), Loader=yaml.FullLoader)
             ret = self._update_task_config(task_config)
+            self._apply_task_config_overrides(ret)
 
             ret["task_name"] = self.task_name
             return ret
+
+    def _apply_task_config_overrides(
+        self, task_config: dict[str, Any]
+    ) -> None:
+        """Apply final task-config overrides in place.
+
+        This helper treats each item in `task_config_overrides` as a patch to
+        the fully resolved task-config dictionary returned by
+        `_update_task_config()`.
+
+        Path rules:
+            - Each override is a `(path, value)` pair.
+            - `path` uses `/` as the separator for nested dictionary keys.
+            - Only dictionary traversal is supported; list indices are not.
+            - Every path segment must already exist in `task_config`.
+
+        Guard rails:
+            - Paths that correspond to env-managed fields or fields whose
+              values are derived earlier in `get_task_config()` are rejected.
+            - Invalid paths raise `ValueError`.
+            - Missing intermediate or leaf keys raise `KeyError`.
+
+        Args:
+            task_config (dict[str, Any]): The resolved task config to patch.
+        """
+        reserved_paths = {
+            "task_name",
+            "seed",
+            "now_ep_num",
+            "eval_mode",
+            "is_test",
+            "camera/head_camera_type",
+            "embodiment",
+        }
+        for path, value in self.task_config_overrides or []:
+            if path in reserved_paths:
+                raise ValueError(
+                    f"Task config override path {path!r} is not supported "
+                    "because it affects env-managed or derived fields."
+                )
+
+            keys = path.split("/")
+            if not path or any(key == "" for key in keys):
+                raise ValueError(
+                    f"Invalid task config override path {path!r}."
+                )
+
+            target: Any = task_config
+            for key in keys[:-1]:
+                if not isinstance(target, dict):
+                    raise KeyError(
+                        f"Task config override path {path!r} does not "
+                        f"resolve to a nested dict at {key!r}."
+                    )
+                if key not in target:
+                    raise KeyError(
+                        f"Task config override path {path!r} is missing "
+                        f"segment {key!r}."
+                    )
+                target = target[key]
+
+            if not isinstance(target, dict):
+                raise KeyError(
+                    f"Task config override path {path!r} does not resolve "
+                    "to a dict parent."
+                )
+
+            leaf_key = keys[-1]
+            if leaf_key not in target:
+                raise KeyError(
+                    f"Task config override path {path!r} is missing leaf "
+                    f"key {leaf_key!r}."
+                )
+            target[leaf_key] = value
 
     def _update_task_config(self, task_args: dict[str, Any]) -> dict[str, Any]:
         """Update the task configuration.
@@ -880,11 +964,6 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
         with open(self.camera_config_path, "r", encoding="utf-8") as f:
             camera_config = yaml.load(f.read(), Loader=yaml.FullLoader)
-
-        data_type = task_args["data_type"]
-        if self.endpose is not None and data_type["endpose"] != self.endpose:
-            logger.info(f"Overriding endpose in task config to {self.endpose}")
-            data_type["endpose"] = self.endpose
 
         head_camera_type = task_args["camera"]["head_camera_type"]
         task_args["head_camera_h"] = camera_config[head_camera_type]["h"]

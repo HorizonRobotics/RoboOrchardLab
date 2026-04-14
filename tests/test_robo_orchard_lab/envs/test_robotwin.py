@@ -45,6 +45,29 @@ class TestRoboTwinEnv:
         assert obs is not None
         assert "tf" in obs
 
+    def test_endpose_in_obs_when_enabled(self):
+        env = RoboTwinEnv(
+            RoboTwinEnvCfg(
+                task_name="place_object_basket",
+                check_expert=False,
+                seed=1,
+                check_task_init=False,  # for fast initialization
+                task_config_overrides=[("data_type/endpose", True)],
+            )
+        )
+        try:
+            obs, info = env.reset()
+            assert obs is not None
+            assert "endpose" in obs
+            endpose = obs["endpose"]
+            assert isinstance(endpose, dict)
+            assert np.asarray(endpose["left_endpose"]).size > 0
+            assert np.asarray(endpose["right_endpose"]).size > 0
+            assert endpose["left_gripper"] is not None
+            assert endpose["right_gripper"] is not None
+        finally:
+            env.close()
+
     def test_step(self, dummy_env_without_expert_check: RoboTwinEnv):
         # Note that not all env can step because of robotwin BUG!
         env = dummy_env_without_expert_check
