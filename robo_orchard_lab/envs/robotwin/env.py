@@ -27,17 +27,19 @@ from typing import TYPE_CHECKING, Any, Sequence, TypeAlias
 
 import gymnasium as gym
 import numpy as np
+import torch
 import yaml
 from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
-from robo_orchard_core.kinematics.chain import (
-    KinematicChain,
-)
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
 from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransform,
     BatchFrameTransformGraph,
+)
+from robo_orchard_lab.envs.robotwin.kinematics import (
+    RoboTwinEEF,
+    RoboTwinJointsToEEF,
 )
 from robo_orchard_lab.envs.robotwin.obs import (
     get_joints,
@@ -82,6 +84,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
         self._eval_chosen_instruction: str | None = None
+        self._joints_to_eef_transform: RoboTwinJointsToEEF | None = None
         self._video_ffmpeg: subprocess.Popen[bytes] | None = None
 
     def _check_and_update_seed(self):
@@ -364,6 +367,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         with in_robotwin_workspace():
             task_config = self.cfg.get_task_config()
             self._task.setup_demo(**task_config)  # type: ignore
+        self._assert_supported_robot_layout()
 
         self._eval_chosen_instruction = None
 
@@ -381,31 +385,109 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         self._start_video_recording(video_path=video_path, raw_obs=raw_obs)
         obs = self._format_obs(raw_obs) if return_obs else None
 
-        self._robot_urdf_chains = {
-            k: KinematicChain.from_content(v, format="urdf")
-            for k, v in self.get_robot_urdf().items()
-        }
+        self._joints_to_eef_transform = None
 
         return obs, self._get_info()
 
-    def _joints2ee_pose(self, joints: np.ndarray) -> dict[str, np.ndarray]:
-        """Convert joint positions to end-effector poses.
+    def _joints2ee_pose(self, joints: np.ndarray) -> RoboTwinEEF:
+        """Convert joint positions to world-frame end-effector transforms.
 
         Args:
             joints (np.ndarray): The joint positions of the robot.
 
         Returns:
-            dict[str, np.ndarray]: A dictionary mapping from robot side
-                ("left" or "right") to the end-effector pose as a
-                (4, 4) numpy array.
+            RoboTwinEEF: Left and right end-effector transforms in world
+                frame. ``left_eef.parent_frame_id`` and
+                ``right_eef.parent_frame_id`` are both ``"world"``.
 
         """
-        raise NotImplementedError("_joints2ee_pose not implemented yet.")
+        joints_np = np.asarray(joints, dtype=np.float32)
+        if joints_np.ndim == 1:
+            joints_np = joints_np[None, :]
+        if joints_np.ndim != 2 or joints_np.shape[0] != 1:
+            raise ValueError(
+                "Expected joints to have shape (D,) or (1, D), got "
+                f"{tuple(joints_np.shape)}."
+            )
+
+        left_joint_count = len(self._task.robot.left_arm_joints_name)
+        right_joint_count = len(self._task.robot.right_arm_joints_name)
+        total_arm_joint_count = left_joint_count + right_joint_count
+        joint_dim = joints_np.shape[-1]
+        if joint_dim == total_arm_joint_count + 2:
+            left_arm_joints = joints_np[:, :left_joint_count]
+            right_start = left_joint_count + 1
+        elif joint_dim == total_arm_joint_count:
+            left_arm_joints = joints_np[:, :left_joint_count]
+            right_start = left_joint_count
+        else:
+            raise ValueError(
+                "Expected RoboTwin joints to contain left/right arm joints "
+                "with optional gripper values, got shape "
+                f"{tuple(joints_np.shape)}."
+            )
+        right_arm_joints = joints_np[
+            :,
+            right_start : right_start + right_joint_count,
+        ]
+
+        return self._get_joints_to_eef_transform().transform(
+            left_arm_joints=torch.from_numpy(left_arm_joints),
+            right_arm_joints=torch.from_numpy(right_arm_joints),
+        )
+
+    def _get_joints_to_eef_transform(self) -> RoboTwinJointsToEEF:
+        if self._joints_to_eef_transform is not None:
+            return self._joints_to_eef_transform
+
+        urdf_map = self.get_robot_urdf()
+        urdf_content = urdf_map["left"]
+
+        robot_base_tf = self._get_tf().get_tf("world", "robot_base")
+        if not isinstance(robot_base_tf, BatchFrameTransform):
+            raise RuntimeError(
+                "Expected supported RoboTwin layouts to expose a single "
+                "world->robot_base BatchFrameTransform."
+            )
+
+        self._joints_to_eef_transform = RoboTwinJointsToEEF(
+            urdf_content=urdf_content,
+            robot_base_xyz=robot_base_tf.xyz[0].tolist(),
+            robot_base_quat=robot_base_tf.quat[0].tolist(),
+        )
+        return self._joints_to_eef_transform
 
     def _get_info(self) -> dict[str, Any]:
         info = {"seed": self.cfg.seed, "task": self.cfg.task_name}
         info.update(self._task.info)
         return info
+
+    def _assert_supported_robot_layout(self) -> None:
+        """Validate that the current RoboTwin robot layout is supported.
+
+        RoboTwinEnv currently supports only the combined dual-arm layout with
+        one shared robot base pose. Unsupported layouts are rejected at the
+        env boundary during ``reset()`` and by robot-structure helper methods.
+        """
+        if self._task.robot.is_dual_arm is False:
+            raise NotImplementedError(
+                "RoboTwinEnv currently only supports a combined dual-arm "
+                "robot layout. Separate left/right URDF layouts are not "
+                "supported."
+            )
+
+        left_base_tf = sapien_pose_to_orchard(
+            self._task.robot.left_entity_origion_pose
+        )
+        right_base_tf = sapien_pose_to_orchard(
+            self._task.robot.right_entity_origion_pose
+        )
+        if left_base_tf != right_base_tf:
+            raise NotImplementedError(
+                "RoboTwinEnv currently only supports a combined dual-arm "
+                "robot with a shared robot base. Separate left/right robot "
+                "base poses are not supported."
+            )
 
     def close(self, clear_cache: bool = True):
         """Close the environment."""
@@ -594,25 +676,19 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     def _get_tf(self) -> BatchFrameTransformGraph:
         """Get the frame transforms in the environment.
 
-        The transforms include the robot base transform(s).
+        For supported RoboTwin layouts this graph contains one static
+        ``world -> robot_base`` edge. ``reset()`` rejects layouts with
+        separate left/right robot bases before any observations are returned.
 
         Returns:
-            BatchFrameTransformGraph:
-                The robot base transform(s). If the robot is dual-arm and
-                use seperate urdf files, two base transforms corresponding to
-                left and right arms will be included. Otherwise, only one base
-                transform will be included.
+            BatchFrameTransformGraph: The static robot base transform graph.
         """
+        self._assert_supported_robot_layout()
         left_base_tf = sapien_pose_to_orchard(
             self._task.robot.left_entity_origion_pose
         )
-        right_base_tf = sapien_pose_to_orchard(
-            self._task.robot.right_entity_origion_pose
-        )
-        tf_list = []
-        static_list = []
-        if left_base_tf == right_base_tf:
-            tf_list.append(
+        return BatchFrameTransformGraph(
+            tf_list=[
                 BatchFrameTransform(
                     xyz=left_base_tf.xyz,
                     quat=left_base_tf.quat,
@@ -620,52 +696,25 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                     parent_frame_id="world",
                     child_frame_id="robot_base",
                 )
-            )
-            static_list.append(True)
-        else:
-            tf_list.append(
-                BatchFrameTransform(
-                    xyz=left_base_tf.xyz,
-                    quat=left_base_tf.quat,
-                    timestamps=left_base_tf.timestamps,
-                    parent_frame_id="world",
-                    child_frame_id="left_robot_base",
-                )
-            )
-            tf_list.append(
-                BatchFrameTransform(
-                    xyz=right_base_tf.xyz,
-                    quat=right_base_tf.quat,
-                    timestamps=right_base_tf.timestamps,
-                    parent_frame_id="world",
-                    child_frame_id="right_robot_base",
-                )
-            )
-            static_list.extend([True, True])
-        return BatchFrameTransformGraph(
-            tf_list=tf_list,
-            static_tf=static_list,
+            ],
+            static_tf=[True],
         )
 
-    def get_robot_urdf(self) -> dict[str, str]:
-        """Get the URDF file content of the robot(s) in the environment.
+    def get_robot_urdf(self) -> dict[str, bytes]:
+        """Get the supported combined dual-arm URDF content of the robot.
 
         Returns:
-            dict[str, str]: A dictionary mapping from robot side
-                ("left" or "right") to the URDF content.
+            dict[str, bytes]: A compatibility mapping containing the combined
+                dual-arm URDF content under the ``"left"`` key.
         """
-        urdf_contents = {}
+        self._assert_supported_robot_layout()
 
         assert self._task.robot.left_urdf_path is not None
         with in_robotwin_workspace():
             with open(self._task.robot.left_urdf_path, "rb") as f:
-                urdf_contents["left"] = f.read()
-            if self._task.robot.is_dual_arm is False:
-                assert self._task.robot.right_urdf_path is not None
-                with open(self._task.robot.right_urdf_path, "rb") as f:
-                    urdf_contents["right"] = f.read()
+                urdf_content = f.read()
 
-        return urdf_contents
+        return {"left": urdf_content}
 
 
 class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):

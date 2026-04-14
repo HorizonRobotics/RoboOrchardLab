@@ -14,4 +14,32 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from .env import *
+from __future__ import annotations
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .env import (
+        RoboTwinEnv,
+        RoboTwinEnvCfg,
+        RoboTwinEnvStepReturn,
+    )
+
+_ENV_EXPORTS = (
+    "RoboTwinEnv",
+    "RoboTwinEnvCfg",
+    "RoboTwinEnvStepReturn",
+)
+
+__all__ = _ENV_EXPORTS
+
+
+def __getattr__(name: str) -> Any:
+    if name in _ENV_EXPORTS:
+        module = importlib.import_module(f"{__name__}.env")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

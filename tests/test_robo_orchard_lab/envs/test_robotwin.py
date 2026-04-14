@@ -14,14 +14,58 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import torch
 
+from robo_orchard_lab.dataset.datatypes import BatchFrameTransform
 from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
+from robo_orchard_lab.envs.robotwin.kinematics import RoboTwinEEF
 
 pytestmark = pytest.mark.sim_env
+
+
+def _make_fake_sapien_pose(
+    xyz: tuple[float, float, float],
+    quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        get_p=lambda: np.asarray(xyz, dtype=np.float32),
+        get_q=lambda: np.asarray(quat, dtype=np.float32),
+    )
+
+
+def _make_reset_stub_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    robot: SimpleNamespace,
+) -> RoboTwinEnv:
+    env = RoboTwinEnv.__new__(RoboTwinEnv)
+    env.cfg = SimpleNamespace(
+        seed=1,
+        task_name="robotwin_dummy_task",
+        get_task_config=lambda: {},
+        calculate_seed=lambda seed: seed,
+    )
+    env._video_ffmpeg = None
+    env._check_and_update_seed = lambda: (
+        SimpleNamespace(
+            robot=robot,
+            setup_demo=lambda **kwargs: None,
+            get_obs=lambda: {},
+            info={},
+        ),
+        [],
+    )
+    monkeypatch.setattr(
+        "robo_orchard_lab.envs.robotwin.env.in_robotwin_workspace",
+        nullcontext,
+    )
+    return env
 
 
 @pytest.fixture()
@@ -39,6 +83,71 @@ def dummy_env_without_expert_check():
 
 
 class TestRoboTwinEnv:
+    def test_joints2ee_pose_uses_arm_joints_only(self, monkeypatch):
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._task = SimpleNamespace(
+            robot=SimpleNamespace(
+                left_arm_joints_name=["left_joint_0", "left_joint_1"],
+                right_arm_joints_name=["right_joint_0", "right_joint_1"],
+            )
+        )
+        captured: dict[str, torch.Tensor] = {}
+
+        class _FakeJointsToEEF:
+            def transform(
+                self,
+                left_arm_joints: torch.Tensor,
+                right_arm_joints: torch.Tensor,
+            ) -> RoboTwinEEF:
+                captured["left"] = left_arm_joints.clone()
+                captured["right"] = right_arm_joints.clone()
+                return RoboTwinEEF(
+                    left_eef=BatchFrameTransform(
+                        xyz=torch.tensor([[10.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="left_eef",
+                    ),
+                    right_eef=BatchFrameTransform(
+                        xyz=torch.tensor([[20.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="right_eef",
+                    ),
+                )
+
+        monkeypatch.setattr(
+            env,
+            "_get_joints_to_eef_transform",
+            lambda: _FakeJointsToEEF(),
+            raising=False,
+        )
+
+        eef_tfs = env._joints2ee_pose(
+            np.array([1.0, 2.0, 0.5, 3.0, 4.0, 0.75], dtype=np.float32)
+        )
+
+        assert torch.equal(
+            captured["left"],
+            torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+        )
+        assert torch.equal(
+            captured["right"],
+            torch.tensor([[3.0, 4.0]], dtype=torch.float32),
+        )
+        assert eef_tfs.left_eef.parent_frame_id == "world"
+        assert eef_tfs.right_eef.parent_frame_id == "world"
+        assert eef_tfs.left_eef.child_frame_id == "left_eef"
+        assert eef_tfs.right_eef.child_frame_id == "right_eef"
+        assert torch.equal(
+            eef_tfs.left_eef.xyz,
+            torch.tensor([[10.0, 0.0, 0.0]], dtype=torch.float32),
+        )
+        assert torch.equal(
+            eef_tfs.right_eef.xyz,
+            torch.tensor([[20.0, 0.0, 0.0]], dtype=torch.float32),
+        )
+
     def test_tf_in_obs(self, dummy_env_without_expert_check: RoboTwinEnv):
         env = dummy_env_without_expert_check
         obs, info = env.reset()
@@ -85,6 +194,46 @@ class TestRoboTwinEnv:
         urdf_dict = env.get_robot_urdf()
         assert urdf_dict is not None
         assert "left" in urdf_dict
+
+    def test_reset_rejects_separate_arm_layout(self, monkeypatch):
+        env = _make_reset_stub_env(
+            monkeypatch,
+            robot=SimpleNamespace(
+                is_dual_arm=False,
+                left_entity_origion_pose=_make_fake_sapien_pose(
+                    (0.0, 0.0, 0.0)
+                ),
+                right_entity_origion_pose=_make_fake_sapien_pose(
+                    (0.0, 0.0, 0.0)
+                ),
+            ),
+        )
+
+        with pytest.raises(
+            NotImplementedError,
+            match="combined dual-arm robot layout",
+        ):
+            env.reset(return_obs=False)
+
+    def test_reset_rejects_split_robot_bases(self, monkeypatch):
+        env = _make_reset_stub_env(
+            monkeypatch,
+            robot=SimpleNamespace(
+                is_dual_arm=True,
+                left_entity_origion_pose=_make_fake_sapien_pose(
+                    (0.0, 0.0, 0.0)
+                ),
+                right_entity_origion_pose=_make_fake_sapien_pose(
+                    (1.0, 0.0, 0.0)
+                ),
+            ),
+        )
+
+        with pytest.raises(
+            NotImplementedError,
+            match="shared robot base",
+        ):
+            env.reset(return_obs=False)
 
     def test_video_recording_lifecycle(self):
         env = RoboTwinEnv.__new__(RoboTwinEnv)
