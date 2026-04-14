@@ -78,20 +78,6 @@ def artifact_root_dir() -> str:
     return "eval_result"
 
 
-def episode_video_path(
-    task_name: str,
-    config_type: Literal["demo_clean", "demo_randomized"],
-    episode_idx: int,
-    seed: int,
-) -> str:
-    return os.path.join(
-        artifact_root_dir(),
-        task_name,
-        config_type,
-        f"episode_{episode_idx}_seed_{seed}.mp4",
-    )
-
-
 def episode_video_dir(
     task_name: str,
     config_type: Literal["demo_clean", "demo_randomized"],
@@ -162,14 +148,22 @@ def evaluate_tasks_locally(
             metrics=SuccessRateMetric(),
             device=device,
         )
-        for episode_idx in range(episode_num):
+        for episode_id in range(episode_num):
+            # TODO(@yiwei.jin): BUG: Local RoboTwin evaluation advances the
+            # requested seed from `episode_id` instead of chaining the actual
+            # resolved seed returned after `evaluate_episode()`. When
+            # RoboTwin bumps the seed during reset to recover from unstable
+            # env initialization, different `episode_id` values can end up
+            # evaluating the same actual seed, so the local path may repeat
+            # one episode while reporting different episode IDs.
             evaluator.evaluate_episode(
                 max_steps=1500,
                 env_reset_kwargs={
                     "clear_cache": True,
                     "return_obs": True,
-                    "seed": start_seed + episode_idx,
+                    "seed": start_seed + episode_id,
                     "task_name": task_name,
+                    "episode_id": episode_id,
                     "video_dir": (
                         episode_video_dir(
                             task_name=task_name,
@@ -178,7 +172,6 @@ def evaluate_tasks_locally(
                         if save_video
                         else None
                     ),
-                    "video_episode_idx": (episode_idx if save_video else None),
                 },
             )
             current_metrics = evaluator.get_metrics()

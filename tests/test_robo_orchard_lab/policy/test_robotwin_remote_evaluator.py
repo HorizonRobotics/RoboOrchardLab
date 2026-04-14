@@ -125,7 +125,7 @@ def test_task_info_counts_only_completed_episodes():
     assert next_item == RoboTwinTaskQueueItem(
         task_name="task_a",
         seed=2,
-        episode_idx=1,
+        episode_id=1,
     )
     assert info.complete_task_item(next_item, next_seed=3) is False
     assert info.tasks["task_a"].episode_count == 2
@@ -264,7 +264,7 @@ def test_robotwin_remote_evaluator_prints_task_start_and_final_summary():
     )
 
 
-def test_robotwin_remote_evaluator_passes_seed_video_path():
+def test_robotwin_remote_evaluator_passes_seed_episode_id():
     evaluator = RoboTwinRemoteEvaluator.__new__(RoboTwinRemoteEvaluator)
     evaluator.cfg = SimpleNamespace(
         config_type="demo_clean",
@@ -281,7 +281,7 @@ def test_robotwin_remote_evaluator_passes_seed_video_path():
         item=RoboTwinTaskQueueItem(
             task_name="task_a",
             seed=123,
-            episode_idx=4,
+            episode_id=4,
         ),
         result_queue=result_queue,
     )
@@ -290,9 +290,9 @@ def test_robotwin_remote_evaluator_passes_seed_video_path():
         {
             "seed": 123,
             "task_name": "task_a",
+            "episode_id": 4,
             "clear_cache": True,
             "return_obs": True,
             "video_dir": "/job_data/task_a/demo_clean",
-            "video_episode_idx": 4,
         }
     ]

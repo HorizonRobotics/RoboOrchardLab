@@ -268,24 +268,24 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             [
                 {
                     "clear_cache": True,
+                    "episode_id": 0,
                     "return_obs": True,
                     "seed": 400000,
                     "task_name": "task_b",
                     "video_dir": None,
-                    "video_episode_idx": None,
                 },
                 {
                     "clear_cache": True,
+                    "episode_id": 1,
                     "return_obs": True,
                     "seed": 400001,
                     "task_name": "task_b",
                     "video_dir": None,
-                    "video_episode_idx": None,
                 },
             ],
         )
 
-    def test_evaluate_tasks_locally_passes_video_path_when_enabled(self):
+    def test_evaluate_tasks_locally_passes_episode_id_when_enabled(self):
         module = _load_script_module()
 
         with (
@@ -322,6 +322,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
         assert _FakePolicyEvaluatorConfig.last_evaluator.reset_calls == [
             {
                 "clear_cache": True,
+                "episode_id": 0,
                 "return_obs": True,
                 "seed": 100000,
                 "task_name": "task_a",
@@ -330,7 +331,6 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                     "task_a",
                     "demo_clean",
                 ),
-                "video_episode_idx": 0,
             }
         ]
 

@@ -296,9 +296,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         task_name: str | None = None,
         clear_cache: bool = False,
         return_obs: bool = True,
-        video_path: str | None = None,
         video_dir: str | None = None,
-        video_episode_idx: int | None = None,
+        episode_id: int | None = None,
     ) -> tuple[RoboTwinObsType, dict]:
         """Reset the environment.
 
@@ -320,12 +319,24 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             seed (int | str | None, optional): The seed to reset the
                 environment. If None, the seed in the config will be used.
                 If "next", the seed will be incremented by 1.
-                Defaults to None.
+                Default is None.
             task_name (str | None, optional): The task name to reset the
                 environment. If None, the task name in the config will be used.
-                Defaults to None.
+                Default is None.
             clear_cache (bool, optional): Whether to clear the cache
-                when closing the environment. Defaults to False.
+                when closing the environment. Default is False.
+            return_obs (bool, optional): Whether to format and return the
+                initial observation. Default is True.
+            video_dir (str | None, optional): Directory where the env writes
+                the episode video using the fixed file-name convention
+                ``episode_{episode_id}_seed_{seed}.mp4``. The env controls the
+                file name and callers may only choose the output directory.
+                Default is None.
+            episode_id (int | None, optional): Episode identifier forwarded to
+                RoboTwin as ``now_ep_num``. When ``video_dir`` is set, this
+                value is also used in the generated video file name. If None,
+                the existing ``self.cfg.episode_id`` is reused. Default is
+                None.
 
         Returns:
             tuple[RoboTwinObsType, dict]:
@@ -342,6 +353,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         # calculate the actual seed
         if seed is not None:
             seed = self.cfg.calculate_seed(seed)
+        if episode_id is not None:
+            self.cfg.episode_id = episode_id
 
         seed_changes = seed is not None and seed != self.cfg.seed
         task_name_changes = (
@@ -371,18 +384,17 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
         self._eval_chosen_instruction = None
 
-        if (
-            video_path is None
-            and video_dir is not None
-            and video_episode_idx is not None
-        ):
-            video_path = os.path.join(
+        episode_video_path = None
+        if video_dir is not None:
+            episode_video_path = os.path.join(
                 video_dir,
-                f"episode_{video_episode_idx}_seed_{self.cfg.seed}.mp4",
+                f"episode_{self.cfg.episode_id}_seed_{self.cfg.seed}.mp4",
             )
 
         raw_obs = self._task.get_obs()
-        self._start_video_recording(video_path=video_path, raw_obs=raw_obs)
+        self._start_video_recording(
+            video_path=episode_video_path, raw_obs=raw_obs
+        )
         obs = self._format_obs(raw_obs) if return_obs else None
 
         self._joints_to_eef_transform = None
@@ -733,7 +745,12 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """
 
     episode_id: int = 0
-    """The episode ID for the environment, used for logging and tracking."""
+    """Episode identifier forwarded to RoboTwin as ``now_ep_num``.
+
+    The value may be updated per reset by passing ``episode_id`` to
+    ``RoboTwinEnv.reset()``. When episode video recording is enabled, the env
+    also uses this identifier in its fixed output file-name convention.
+    """
 
     action_type: Literal["qpos", "ee"] = "qpos"
     """The RoboTwin action representation to use in the environment.

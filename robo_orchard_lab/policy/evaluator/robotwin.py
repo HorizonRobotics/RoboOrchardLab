@@ -76,7 +76,7 @@ SEM_TASKS_16 = (
 class RoboTwinTaskQueueItem:
     task_name: str
     seed: int | None
-    episode_idx: int = 0
+    episode_id: int = 0
 
 
 @dataclass
@@ -136,7 +136,7 @@ class TaskInfo:
                     RoboTwinTaskQueueItem(
                         task_name=name,
                         seed=next_seed,
-                        episode_idx=item.episode_idx + 1,
+                        episode_id=item.episode_id + 1,
                     )
                 )
                 return True
@@ -387,7 +387,7 @@ class RoboTwinRemoteEvaluator:
                 RoboTwinTaskQueueItem(
                     task_name=task_name,
                     seed=self._robotwin_eval_start_seed,
-                    episode_idx=0,
+                    episode_id=0,
                 )
             )
         task_info = TaskInfo(
@@ -479,12 +479,12 @@ class RoboTwinRemoteEvaluator:
             env_reset_kwargs = {
                 "seed": item.seed,
                 "task_name": item.task_name,
+                "episode_id": item.episode_id,
                 "clear_cache": True,
                 "return_obs": True,
                 "video_dir": self._get_episode_video_dir(
                     task_name=item.task_name,
                 ),
-                "video_episode_idx": item.episode_idx,
             }
             metric_info = evaluator.evaluate_episode(
                 max_steps=1500,

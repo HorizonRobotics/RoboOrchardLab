@@ -16,6 +16,7 @@
 
 from contextlib import nullcontext
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -45,14 +46,15 @@ def _make_reset_stub_env(
     robot: SimpleNamespace,
 ) -> RoboTwinEnv:
     env = RoboTwinEnv.__new__(RoboTwinEnv)
-    env.cfg = SimpleNamespace(
+    cast(Any, env).cfg = SimpleNamespace(
         seed=1,
         task_name="robotwin_dummy_task",
+        episode_id=0,
         get_task_config=lambda: {},
         calculate_seed=lambda seed: seed,
     )
-    env._video_ffmpeg = None
-    env._check_and_update_seed = lambda: (
+    cast(Any, env)._video_ffmpeg = None
+    cast(Any, env)._check_and_update_seed = lambda: (
         SimpleNamespace(
             robot=robot,
             setup_demo=lambda **kwargs: None,
@@ -85,7 +87,7 @@ def dummy_env_without_expert_check():
 class TestRoboTwinEnv:
     def test_joints2ee_pose_uses_arm_joints_only(self, monkeypatch):
         env = RoboTwinEnv.__new__(RoboTwinEnv)
-        env._task = SimpleNamespace(
+        cast(Any, env)._task = SimpleNamespace(
             robot=SimpleNamespace(
                 left_arm_joints_name=["left_joint_0", "left_joint_1"],
                 right_arm_joints_name=["right_joint_0", "right_joint_1"],
@@ -234,6 +236,82 @@ class TestRoboTwinEnv:
             match="shared robot base",
         ):
             env.reset(return_obs=False)
+
+    def test_reset_updates_episode_id_and_builds_video_path(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        setup_calls: list[dict[str, object]] = []
+        task = SimpleNamespace(
+            robot=robot,
+            setup_demo=lambda **kwargs: setup_calls.append(kwargs),
+            get_obs=lambda: {},
+            info={},
+        )
+        cast(Any, env)._check_and_update_seed = lambda: (task, [])
+        env.cfg.get_task_config = lambda: {"now_ep_num": env.cfg.episode_id}
+
+        recorded: dict[str, object] = {}
+        monkeypatch.setattr(
+            env,
+            "_start_video_recording",
+            lambda video_path, raw_obs: recorded.update(
+                {"video_path": video_path, "raw_obs": raw_obs}
+            ),
+            raising=False,
+        )
+
+        obs, _ = env.reset(
+            return_obs=False,
+            video_dir="/tmp/task/demo_clean",
+            episode_id=7,
+        )
+
+        assert obs is None
+        assert env.cfg.episode_id == 7
+        assert setup_calls[-1]["now_ep_num"] == 7
+        assert recorded["video_path"] == (
+            "/tmp/task/demo_clean/episode_7_seed_1.mp4"
+        )
+
+    def test_reset_reuses_cfg_episode_id_for_video_dir(self, monkeypatch):
+        env = _make_reset_stub_env(
+            monkeypatch,
+            robot=SimpleNamespace(
+                is_dual_arm=True,
+                left_entity_origion_pose=_make_fake_sapien_pose(
+                    (0.0, 0.0, 0.0)
+                ),
+                right_entity_origion_pose=_make_fake_sapien_pose(
+                    (0.0, 0.0, 0.0)
+                ),
+            ),
+        )
+        env.cfg.episode_id = 3
+
+        recorded: dict[str, object] = {}
+        monkeypatch.setattr(
+            env,
+            "_start_video_recording",
+            lambda video_path, raw_obs: recorded.update(
+                {"video_path": video_path, "raw_obs": raw_obs}
+            ),
+            raising=False,
+        )
+
+        obs, _ = env.reset(
+            return_obs=False,
+            video_dir="/tmp/task/demo_clean",
+        )
+
+        assert obs is None
+        assert env.cfg.episode_id == 3
+        assert recorded["video_path"] == (
+            "/tmp/task/demo_clean/episode_3_seed_1.mp4"
+        )
 
     def test_video_recording_lifecycle(self):
         env = RoboTwinEnv.__new__(RoboTwinEnv)
