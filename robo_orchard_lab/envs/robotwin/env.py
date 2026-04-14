@@ -82,18 +82,19 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     robot base.
 
     Public interface:
-        - ``reset(...)``: create or recreate the RoboTwin task and return the
-          initial observation.
-        - ``step(action)``: execute one RoboTwin action and return
-          ``RoboTwinEnvStepReturn``.
-        - ``close(...)``: close the current RoboTwin task.
-        - ``unwrapped_env()``: return the underlying RoboTwin ``Base_Task``.
-        - ``get_robot_urdf()``: return the supported combined dual-arm URDF.
-        - ``current_seed`` / ``instructions`` / ``num_envs``: runtime
-          properties exposed by the wrapper.
 
-    Typical usage:
-        ```python
+    - ``reset(...)``: create or recreate the RoboTwin task and return the
+      initial observation.
+    - ``step(action)``: execute one RoboTwin action and return
+      ``RoboTwinEnvStepReturn``.
+    - ``close(...)``: close the current RoboTwin task.
+    - ``unwrapped_env()``: return the underlying RoboTwin ``Base_Task``.
+    - ``get_robot_urdf()``: return the supported combined dual-arm URDF.
+    - ``current_seed`` / ``instructions`` / ``num_envs``: runtime properties
+      exposed by the wrapper.
+
+    Typical usage::
+
         env = RoboTwinEnv(
             RoboTwinEnvCfg(
                 task_name="place_object_basket",
@@ -106,7 +107,6 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         action = np.zeros(14, dtype=np.float32)
         step_ret = env.step(action)
         env.close()
-        ```
 
     The example above uses ``action_type="qpos"``. See ``step()`` for the
     exact action layout for both ``"qpos"`` and ``"ee"`` modes.
