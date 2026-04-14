@@ -288,25 +288,25 @@ class InferencePipelineMixin(
         return pipeline
 
     def reset(self, **kwargs) -> None:
-        """Reset pipeline runtime state and accept pipeline-specific kwargs.
+        """Reset pipeline runtime state.
 
-        This hook mirrors the policy reset contract so pipeline-backed
-        policies can forward episode-local reset metadata directly to the
-        wrapped pipeline. Concrete pipelines may consume keyword arguments
-        defined by that pipeline.
+        This low-level mixin leaves reset semantics to concrete pipeline
+        implementations. Standard orchard pipelines inherit the default
+        no-op implementation from :class:`InferencePipeline`, while direct
+        subclasses of this mixin must choose whether reset should be a no-op
+        or should consume concrete episode-local metadata.
 
         Args:
-            kwargs: Concrete pipeline-specific reset arguments.
+            kwargs: Optional concrete pipeline-specific reset arguments.
 
         Raises:
-            TypeError: If keyword arguments are provided to the default
-                implementation, which does not consume any reset kwargs.
+            NotImplementedError: If the concrete pipeline does not provide a
+                reset implementation.
         """
-        if kwargs:
-            raise TypeError(
-                f"{type(self).__name__}.reset() does not accept reset kwargs. "
-                f"Got: {sorted(kwargs)}."
-            )
+        raise NotImplementedError(
+            f"{type(self).__name__}.reset() must be implemented by the "
+            "concrete pipeline class."
+        )
 
     def _get_state(self) -> State:
         """Get the state of the object for saving.

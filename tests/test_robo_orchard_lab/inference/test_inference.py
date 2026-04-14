@@ -202,6 +202,21 @@ class HookedRuntimeInferencePipelineCfg(
     processor: DummyProcessorCfg = DummyProcessorCfg()
 
 
+class DirectMixinPipeline(InferencePipelineMixin[InputDict, OutputDict]):
+    """Direct mixin subclass used to validate reset semantics."""
+
+    cfg: "DirectMixinPipelineCfg"
+
+    def __call__(self, data: InputDict) -> OutputDict:
+        return {"output_data": data["input_data"]}
+
+
+class DirectMixinPipelineCfg(InferencePipelineCfg[DirectMixinPipeline]):
+    """Config for DirectMixinPipeline."""
+
+    class_type: ClassType_co[DirectMixinPipeline] = DirectMixinPipeline
+
+
 # ---- 2. Pytest Fixtures ----
 # Fixtures provide a fixed baseline upon which tests can reliably
 # and repeatedly execute.
@@ -250,6 +265,15 @@ def test_pipeline_initialization(test_pipeline: MyTestPipeline):
     assert isinstance(test_pipeline.model, DummyModel)
     assert isinstance(test_pipeline.cfg, MyTestPipelineCfg)
     assert isinstance(test_pipeline.processor, DummyProcessor)
+
+
+def test_direct_mixin_pipeline_reset_requires_concrete_implementation():
+    pipeline = DirectMixinPipeline(
+        cfg=DirectMixinPipelineCfg(model_cfg=DummyModelCfg())
+    )
+
+    with pytest.raises(NotImplementedError, match="must be implemented"):
+        pipeline.reset(episode_id=1)
 
 
 @pytest.mark.parametrize("with_collator", [True, False])

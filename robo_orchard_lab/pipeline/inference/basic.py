@@ -138,6 +138,18 @@ class InferencePipeline(
             "collate_fn",
         ]
 
+    def reset(self, **kwargs) -> None:
+        """Reset standard inference-pipeline runtime state.
+
+        The default concrete pipeline keeps no episode-local mutable state,
+        so reset is a compatibility no-op. Subclasses may override this hook
+        when they cache per-episode data or consume reset metadata.
+
+        Args:
+            kwargs: Optional pipeline-specific reset arguments.
+        """
+        pass
+
     @overload
     def __call__(self, data: InputType) -> OutputType: ...
 

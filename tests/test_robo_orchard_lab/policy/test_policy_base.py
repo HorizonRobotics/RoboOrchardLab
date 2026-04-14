@@ -88,6 +88,17 @@ class DummyPipelineCfg(InferencePipelineCfg[DummyPipeline]):
     model_cfg: DummyModelCfg = DummyModelCfg()
 
 
+class DefaultResetPipeline(
+    InferencePipeline[dict[str, torch.Tensor], dict[str, torch.Tensor]]
+):
+    pass
+
+
+class DefaultResetPipelineCfg(InferencePipelineCfg[DefaultResetPipeline]):
+    class_type: ClassType[DefaultResetPipeline] = DefaultResetPipeline
+    model_cfg: DummyModelCfg = DummyModelCfg()
+
+
 def test_policy_mixin_to_requires_override():
     policy = PolicyWithoutTo(PolicyWithoutToCfg())
 
@@ -107,6 +118,18 @@ def test_inference_pipeline_policy_reset_forwards_kwargs():
     policy.reset(episode_id=1)
 
     assert policy.pipeline.last_reset_kwargs == {"episode_id": 1}
+
+
+def test_inference_pipeline_policy_reset_accepts_default_pipeline_hook():
+    policy = InferencePipelinePolicy(
+        InferencePipelinePolicyCfg(pipeline_cfg=DefaultResetPipelineCfg())
+    )
+
+    policy.reset(episode_id=1)
+
+    output = policy.act({"input_data": torch.ones(1, 1)})
+    assert "output_data" in output
+    assert output["output_data"].shape == (1, 1)
 
 
 def test_inference_pipeline_policy_to_delegates_to_pipeline(monkeypatch):
