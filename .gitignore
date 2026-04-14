@@ -181,4 +181,5 @@ compile_commands.json
 ## Compiled MATLAB
 *.mex*
 .claude/settings.local.json
+.codex
 .env
