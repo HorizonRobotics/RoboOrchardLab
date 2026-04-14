@@ -14,6 +14,15 @@ description: Load these baseline instructions only for tasks that touch this rep
 - Exclude vendored or external-code directories from default code search unless the task explicitly targets them or requires cross-repository comparison.
 - Treat `projects/` as repository-owned application-layer code. When tracing usage, call sites, integration flow, or end-to-end behavior, include `projects/` in default code search alongside `robo_orchard_lab/` unless the user explicitly limits the scope.
 - Keep comments and docstrings aligned with the implementation.
+- When changing public behavior or observable contracts, update the related
+  docstrings, comments, and examples in the same change.
+- Do not leave known docstring or comment drift behind after code changes.
+- For public wrapper or adapter classes, the class docstring should state the
+  main public methods or properties and include a minimal usage example when
+  that improves discoverability.
+- For public methods with structured inputs or outputs, document the required
+  order, shape, and key conventions when they are not obvious from the type
+  signature alone.
 - This repository is published externally. In public-facing artifacts such as
 	docs, READMEs, examples, commit messages, and MR or PR descriptions, use
 	repository-relative paths or redacted placeholders instead of personal

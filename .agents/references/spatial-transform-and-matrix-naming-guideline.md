@@ -57,6 +57,17 @@ TF-like interface contracts for repository-owned APIs:
 	`tf_world` hide the concrete frames, document the frame contract at that
 	field or API boundary.
 
+Additional frame-naming rules for adapters and wrappers:
+- Preserve runtime or external frame names at the boundary unless there is a
+  strong reason to translate them.
+- When adding a derived transform alongside a raw transform for the same
+  physical entity, keep the raw frame name unchanged and give the derived
+  frame an explicit source-bearing suffix such as `_from_joint`, `_from_fk`,
+  or `_from_obs`.
+- Prefer obtaining frame names from the runtime object or upstream schema
+  instead of hardcoding embodiment-specific external frame names in
+  repository-owned adapter code.
+
 Example:
 ```python
 # `T_world2cam` is equivalent to `world_to_cam_mat`.

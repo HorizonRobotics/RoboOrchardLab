@@ -11,6 +11,12 @@ description: Load these instructions when creating, updating, or validating test
 - Use real fixtures, datasets, models, and file paths when the test is intended to validate actual integration behavior.
 - Do not replace required real test inputs with fallback skip logic when the test is expected to prove correctness in the configured environment.
 - Use mocks or monkeypatch only when the test target is isolated assembly logic and real dependencies are not part of the behavior under test.
+- When a wrapper or adapter exposes both raw data and derived data for the
+  same contract, test both the assembly logic and at least one end-to-end
+  consistency path between the raw and derived representations.
+- For frame or transform adapters, prefer one narrow unit test that checks the
+  naming and graph assembly rules and one integration-style test that checks
+  numerical consistency against the real runtime source.
 
 ## Fixtures
 

@@ -15,6 +15,11 @@ description: Load these instructions when working with git history, commit messa
 - Use body sections `Summary`, `Why`, `Impact`, `Validation`, and `Risks / Notes`.
 - In `Impact`, cover user-visible behavior, API or config changes, and internal or workflow effects when relevant.
 - Prefer commit text that can be reused directly as the merge request or pull request description and final squash commit body.
+- When pending changes contain more than one coherent topic, prefer separate
+  commits grouped by topic.
+- If the grouping is ambiguous or the worktree contains changes that may be
+  unrelated to the current task, ask the user before choosing a commit split.
+- Do not silently bundle unrelated changes into a single commit.
 - Do not require local checkpoint commits to be squashed unless explicitly instructed.
 - Do not force-add ignored scratch files or temporary design notes such as `.agents/scratch/**` unless the user explicitly asks for a versioned snapshot. If the content should become durable project knowledge, move or distill it into a tracked location such as `docs/` instead.
 - Apply the public-artifact rule from `default.instructions.md` to commit
