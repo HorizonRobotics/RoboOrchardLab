@@ -110,7 +110,7 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
 
             t_world2cam[cam_name] = self._to_homogeneous_matrix(
                 camera_data["extrinsic_cv"],
-                valid_shapes=((3, 4),),
+                valid_shapes=((3, 4), (4, 4)),
                 name="observation[*].extrinsic_cv",
             )
 

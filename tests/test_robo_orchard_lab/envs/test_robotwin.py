@@ -23,7 +23,10 @@ import numpy as np
 import pytest
 import torch
 
-from robo_orchard_lab.dataset.datatypes import BatchFrameTransform
+from robo_orchard_lab.dataset.datatypes import (
+    BatchFrameTransform,
+    BatchFrameTransformGraph,
+)
 from robo_orchard_lab.envs.robotwin.env import (
     LEFT_EEF_FROM_JOINT_FRAME_ID,
     RIGHT_EEF_FROM_JOINT_FRAME_ID,
@@ -379,6 +382,148 @@ class TestRoboTwinEnv:
             match="shared robot base",
         ):
             env.reset(return_obs=False)
+
+    def test_reset_rebuilds_joint_to_eef_cache_before_first_obs(
+        self, monkeypatch
+    ):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            left_arm_joints_name=["left_joint_0", "left_joint_1"],
+            right_arm_joints_name=["right_joint_0", "right_joint_1"],
+            left_gripper_name={"base": "left_gripper"},
+            right_gripper_name={"base": "right_gripper"},
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        close_calls: list[bool] = []
+
+        cast(Any, env)._task = SimpleNamespace(
+            close_env=lambda clear_cache: close_calls.append(clear_cache),
+            render_freq=0,
+            robot=robot,
+            info={},
+        )
+
+        class _OldJointsToEEF:
+            def transform(
+                self,
+                left_arm_joints: torch.Tensor,
+                right_arm_joints: torch.Tensor,
+            ) -> RoboTwinEEF:
+                del left_arm_joints, right_arm_joints
+                return RoboTwinEEF(
+                    left_eef=BatchFrameTransform(
+                        xyz=torch.tensor([[10.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="left_eef",
+                    ),
+                    right_eef=BatchFrameTransform(
+                        xyz=torch.tensor([[20.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="right_eef",
+                    ),
+                )
+
+        class _NewJointsToEEF:
+            def transform(
+                self,
+                left_arm_joints: torch.Tensor,
+                right_arm_joints: torch.Tensor,
+            ) -> RoboTwinEEF:
+                del left_arm_joints, right_arm_joints
+                return RoboTwinEEF(
+                    left_eef=BatchFrameTransform(
+                        xyz=torch.tensor([[30.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="left_eef",
+                    ),
+                    right_eef=BatchFrameTransform(
+                        xyz=torch.tensor([[40.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="right_eef",
+                    ),
+                )
+
+        cast(Any, env)._joints_to_eef_transform = _OldJointsToEEF()
+
+        raw_obs = {
+            "joint_action": {
+                "vector": np.array(
+                    [1.0, 2.0, 0.5, 3.0, 4.0, 0.75],
+                    dtype=np.float32,
+                )
+            },
+            "observation": {},
+        }
+        new_task = SimpleNamespace(
+            robot=robot,
+            setup_demo=lambda **kwargs: None,
+            get_obs=lambda: raw_obs,
+            info={},
+            close_env=lambda clear_cache: None,
+            render_freq=0,
+        )
+        cast(Any, env)._check_and_update_seed = lambda: (new_task, [])
+
+        built = {"count": 0}
+
+        def _build_joints_to_eef(**kwargs) -> _NewJointsToEEF:
+            del kwargs
+            built["count"] += 1
+            return _NewJointsToEEF()
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.env.RoboTwinJointsToEEF",
+            _build_joints_to_eef,
+        )
+        monkeypatch.setattr(
+            env,
+            "get_robot_urdf",
+            lambda: {"left": b"<robot/>"},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            env,
+            "_get_tf",
+            lambda: BatchFrameTransformGraph(
+                tf_list=[
+                    BatchFrameTransform(
+                        xyz=torch.tensor([[0.0, 0.0, 0.0]]),
+                        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                        parent_frame_id="world",
+                        child_frame_id="robot_base",
+                    )
+                ],
+                static_tf=[True],
+            ),
+            raising=False,
+        )
+
+        obs, _ = env.reset(seed=2)
+
+        assert len(close_calls) == 1
+        assert built["count"] == 1
+        assert obs is not None
+        tf_graph = obs["tf"]
+        left_joint_tf = tf_graph.get_tf("world", LEFT_EEF_FROM_JOINT_FRAME_ID)
+        right_joint_tf = tf_graph.get_tf(
+            "world", RIGHT_EEF_FROM_JOINT_FRAME_ID
+        )
+        assert isinstance(left_joint_tf, BatchFrameTransform)
+        assert isinstance(right_joint_tf, BatchFrameTransform)
+        assert torch.equal(
+            left_joint_tf.xyz,
+            torch.tensor([[30.0, 0.0, 0.0]], dtype=torch.float32),
+        )
+        assert torch.equal(
+            right_joint_tf.xyz,
+            torch.tensor([[40.0, 0.0, 0.0]], dtype=torch.float32),
+        )
 
     def test_reset_updates_episode_id_and_builds_video_path(self, monkeypatch):
         robot = SimpleNamespace(

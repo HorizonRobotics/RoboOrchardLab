@@ -427,6 +427,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             task_config = self.cfg.get_task_config()
             self._task.setup_demo(**task_config)  # type: ignore
         self._assert_supported_robot_layout()
+        # Reset the FK helper before formatting the first observation so the
+        # returned post-reset EEF edges always reflect the current episode.
+        self._joints_to_eef_transform = None
 
         self._eval_chosen_instruction = None
 
@@ -442,8 +445,6 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             video_path=episode_video_path, raw_obs=raw_obs
         )
         obs = self._format_obs(raw_obs) if return_obs else None
-
-        self._joints_to_eef_transform = None
 
         return obs, self._get_info()
 
@@ -556,6 +557,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     def close(self, clear_cache: bool = True):
         """Close the environment."""
         self._stop_video_recording()
+        self._joints_to_eef_transform = None
         if hasattr(self, "_task") and self._task is not None:
             self._task.close_env(clear_cache=clear_cache)
             if self._task.render_freq > 0:

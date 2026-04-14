@@ -49,7 +49,12 @@ def resolve_libero_benchmark_root(
     if benchmark_root is not None:
         return Path(benchmark_root).expanduser().resolve()
 
-    spec = importlib.util.find_spec("libero.libero")
+    try:
+        spec = importlib.util.find_spec("libero.libero")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "libero.libero is not installed; cannot prepare LIBERO config."
+        ) from exc
     if spec is None or spec.origin is None:
         raise ModuleNotFoundError(
             "libero.libero is not installed; cannot prepare LIBERO config."

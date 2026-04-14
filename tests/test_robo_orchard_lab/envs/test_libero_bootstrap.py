@@ -21,19 +21,24 @@ from pathlib import Path
 import pytest
 import yaml
 
-if importlib.util.find_spec("libero") is None:
-    pytest.skip("libero is not installed", allow_module_level=True)
-
+from robo_orchard_lab.envs.libero import bootstrap
 from robo_orchard_lab.envs.libero.bootstrap import (
     build_libero_default_path_config,
     ensure_libero_config,
     get_libero_config_file,
+    resolve_libero_benchmark_root,
 )
 
 
 def test_ensure_libero_config_writes_default_paths(tmp_path: Path) -> None:
     config_root = tmp_path / "libero_config"
-    config_file = ensure_libero_config(config_root=config_root)
+    benchmark_root = tmp_path / "benchmark_root"
+    benchmark_root.mkdir()
+
+    config_file = ensure_libero_config(
+        config_root=config_root,
+        benchmark_root=benchmark_root,
+    )
 
     assert config_file == get_libero_config_file(config_root=config_root)
     assert config_file.exists()
@@ -41,4 +46,41 @@ def test_ensure_libero_config_writes_default_paths(tmp_path: Path) -> None:
     with open(config_file, "r", encoding="utf-8") as file_obj:
         config = yaml.safe_load(file_obj)
 
-    assert config == build_libero_default_path_config()
+    assert config == build_libero_default_path_config(
+        benchmark_root=benchmark_root
+    )
+
+
+def test_resolve_libero_benchmark_root_stabilizes_missing_package_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_parent_missing(name: str):
+        raise ModuleNotFoundError("No module named 'libero'")
+
+    monkeypatch.setattr(importlib.util, "find_spec", _raise_parent_missing)
+
+    with pytest.raises(
+        ModuleNotFoundError,
+        match=(
+            r"libero\.libero is not installed; cannot prepare LIBERO config\."
+        ),
+    ):
+        resolve_libero_benchmark_root()
+
+
+def test_resolve_libero_benchmark_root_rejects_missing_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap.importlib.util,
+        "find_spec",
+        lambda name: None,
+    )
+
+    with pytest.raises(
+        ModuleNotFoundError,
+        match=(
+            r"libero\.libero is not installed; cannot prepare LIBERO config\."
+        ),
+    ):
+        resolve_libero_benchmark_root()
