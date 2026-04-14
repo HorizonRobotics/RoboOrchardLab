@@ -12,6 +12,7 @@ description: Load these baseline instructions only for tasks that touch this rep
 - For every newly created repository-owned source file, add the standard RoboOrchard Apache 2.0 license header at the top of the file using the comment style of that language.
 - Follow `.agents/references/license-header-guideline.md` for the canonical templates, default year rendering, placement, and checker alignment.
 - Exclude vendored or external-code directories from default code search unless the task explicitly targets them or requires cross-repository comparison.
+- Treat `projects/` as repository-owned application-layer code. When tracing usage, call sites, integration flow, or end-to-end behavior, include `projects/` in default code search alongside `robo_orchard_lab/` unless the user explicitly limits the scope.
 - Keep comments and docstrings aligned with the implementation.
 - This repository is published externally. In public-facing artifacts such as
 	docs, READMEs, examples, commit messages, and MR or PR descriptions, use
