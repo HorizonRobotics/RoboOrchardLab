@@ -30,11 +30,11 @@ from robo_orchard_lab.models.holobrain.pipeline import (
 
 class _StubPipeline:
     def __init__(self):
-        self.cfg = HoloBrainInferencePipelineCfg(path="stub")
+        self.cfg = HoloBrainInferencePipelineCfg()
         self.model = type("Model", (), {"eval": lambda self: None})()
 
-    def reset(self):
-        pass
+    def reset(self, **kwargs):
+        del kwargs
 
 
 class _FakePoseMatrix:

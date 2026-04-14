@@ -44,7 +44,7 @@ class _StubPipeline:
     def __init__(self):
         self.calls = 0
         self.reset_calls = 0
-        self.cfg = HoloBrainInferencePipelineCfg(path="stub")
+        self.cfg = HoloBrainInferencePipelineCfg()
         self.model = type("Model", (), {"eval": lambda self: None})()
 
     def __call__(self, data):
@@ -61,7 +61,8 @@ class _StubPipeline:
             )
         )
 
-    def reset(self):
+    def reset(self, **kwargs):
+        del kwargs
         self.reset_calls += 1
 
 

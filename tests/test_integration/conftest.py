@@ -33,6 +33,6 @@ def PROJECT_ROOT() -> str:
     return project_root
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def ROBO_ORCHARD_TEST_WORKSPACE() -> str:
     return os.environ["ROBO_ORCHARD_TEST_WORKSPACE"]
