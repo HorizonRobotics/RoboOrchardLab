@@ -58,6 +58,9 @@ InstructionType: TypeAlias = Literal["seen", "unseen"]
 RoboTwinObsType: TypeAlias = dict[str, Any] | None
 __all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
 
+LEFT_EEF_FROM_JOINT_FRAME_ID = "left_eef_from_joint"
+RIGHT_EEF_FROM_JOINT_FRAME_ID = "right_eef_from_joint"
+
 
 @dataclass
 class RoboTwinEnvStepReturn(EnvStepReturn[RoboTwinObsType, bool]):
@@ -70,15 +73,43 @@ class RoboTwinEnvStepReturn(EnvStepReturn[RoboTwinObsType, bool]):
 
 
 class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
-    """RoboTwin environment.
+    """RoboTwin environment wrapped with the orchard env interface.
 
-    This class provides RoboTwin environment with robo_orchard_core interface.
-    To make it work, you need to install RoboTwin and set the `RoboTwin_PATH`
-    environment variable to the path of the RoboTwin package.
+    This class adapts RoboTwin tasks to the ``robo_orchard_core`` env API.
+    To use it, RoboTwin must be installed and the ``RoboTwin_PATH``
+    environment variable must point to the RoboTwin package. The current
+    wrapper supports only RoboTwin's combined dual-arm layout with one shared
+    robot base.
 
+    Public interface:
+        - ``reset(...)``: create or recreate the RoboTwin task and return the
+          initial observation.
+        - ``step(action)``: execute one RoboTwin action and return
+          ``RoboTwinEnvStepReturn``.
+        - ``close(...)``: close the current RoboTwin task.
+        - ``unwrapped_env()``: return the underlying RoboTwin ``Base_Task``.
+        - ``get_robot_urdf()``: return the supported combined dual-arm URDF.
+        - ``current_seed`` / ``instructions`` / ``num_envs``: runtime
+          properties exposed by the wrapper.
 
-    After initialization, you need to call `reset()` to create the environment.
+    Typical usage:
+        ```python
+        env = RoboTwinEnv(
+            RoboTwinEnvCfg(
+                task_name="place_object_basket",
+                check_expert=False,
+                check_task_init=False,
+                action_type="qpos",
+            )
+        )
+        obs, info = env.reset()
+        action = np.zeros(14, dtype=np.float32)
+        step_ret = env.step(action)
+        env.close()
+        ```
 
+    The example above uses ``action_type="qpos"``. See ``step()`` for the
+    exact action layout for both ``"qpos"`` and ``"ee"`` modes.
     """
 
     def __init__(self, cfg: RoboTwinEnvCfg):
@@ -235,10 +266,25 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         Args:
             action (list[float] | np.ndarray): The action to take in the
                 environment. The exact semantics depend on
-                `self.cfg.action_type`: `"qpos"` expects RoboTwin joint target
-                positions, while `"ee"` expects RoboTwin end-effector action
-                values. The action should be a 1-D array with length matching
-                the configured action type for the task.
+                `self.cfg.action_type`.
+
+                - If `self.cfg.action_type == "qpos"`, the action must be a
+                  1-D sequence in RoboTwin joint-control order:
+                  `[left_arm_joint_targets..., left_gripper,
+                  right_arm_joint_targets..., right_gripper]`.
+                  The arm-joint counts come from the current RoboTwin robot
+                  embodiment, so the expected total length is
+                  `len(left_arm_joints_name) + 1 +
+                  len(right_arm_joints_name) + 1`. The two gripper values use
+                  RoboTwin's normalized gripper convention.
+
+                - If `self.cfg.action_type == "ee"`, the action must be a
+                  1-D sequence in RoboTwin end-effector-control order:
+                  `[left_xyz(3), left_quat(4), left_gripper,
+                  right_xyz(3), right_quat(4), right_gripper]`,
+                  where each quaternion follows RoboTwin's
+                  `[qw, qx, qy, qz]` convention. For the currently supported
+                  combined dual-arm layout this means 16 values in total.
 
         Returns:
             RoboTwinEnvStepReturn: The step result after taking the action.
@@ -449,6 +495,12 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         )
 
     def _get_joints_to_eef_transform(self) -> RoboTwinJointsToEEF:
+        """Get the cached RoboTwin joint-to-EEF forward-kinematics helper.
+
+        The helper is built lazily from the supported combined dual-arm URDF
+        and the current ``world -> robot_base`` transform, then cached for the
+        rest of the episode.
+        """
         if self._joints_to_eef_transform is not None:
             return self._joints_to_eef_transform
 
@@ -529,8 +581,117 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         ret = self._task.get_obs()
         return self._format_obs(ret)
 
+    @staticmethod
+    def _pose_vector_to_tf(
+        pose_vector: Sequence[float] | np.ndarray,
+        *,
+        child_frame_id: str,
+    ) -> BatchFrameTransform:
+        """Convert a RoboTwin EE pose vector to a world-frame transform.
+
+        Args:
+            pose_vector (Sequence[float] | np.ndarray): RoboTwin EE pose in
+                ``[x, y, z, qw, qx, qy, qz]`` order.
+            child_frame_id (str): Child frame name for the returned transform.
+
+        Returns:
+            BatchFrameTransform: ``world -> child_frame_id`` transform.
+        """
+        pose_np = np.asarray(pose_vector, dtype=np.float32)
+        if pose_np.shape != (7,):
+            raise ValueError(
+                "Expected RoboTwin endpose to contain 7 values "
+                f"(xyz + quaternion), got shape {tuple(pose_np.shape)}."
+            )
+        return BatchFrameTransform(
+            xyz=torch.from_numpy(pose_np[:3]).unsqueeze(0),
+            quat=torch.from_numpy(pose_np[3:]).unsqueeze(0),
+            parent_frame_id="world",
+            child_frame_id=child_frame_id,
+        )
+
+    def _get_endpose_frame_ids(self) -> tuple[str, str]:
+        """Return RoboTwin's runtime end-effector frame names.
+
+        Raw ``ret["endpose"]`` values come from RoboTwin's EE pose helpers.
+        Reuse the corresponding EE child-link names reported by the runtime
+        robot object, namely ``self._task.robot.left_ee.child_link`` and
+        ``self._task.robot.right_ee.child_link``, instead of hardcoding
+        embodiment-specific frame IDs locally.
+        """
+        try:
+            return (
+                self._task.robot.left_ee.child_link.get_name(),
+                self._task.robot.right_ee.child_link.get_name(),
+            )
+        except AttributeError as exc:
+            raise RuntimeError(
+                "Failed to infer RoboTwin end-effector frame IDs from the "
+                "runtime robot object."
+            ) from exc
+
+    def _get_eef_tf_edges(
+        self, ret: dict[str, Any]
+    ) -> list[BatchFrameTransform]:
+        """Build extra world-frame EEF edges from RoboTwin observations.
+
+        When ``joint_action["vector"]`` is available, this method adds
+        joint-derived world-frame EEF transforms and renames their child
+        frames to ``left_eef_from_joint`` / ``right_eef_from_joint`` to avoid
+        colliding with RoboTwin's runtime EE frame names. When raw
+        ``ret["endpose"]`` is available, it adds another pair of world-frame
+        transforms that keep the runtime EE child-link names reported by the
+        RoboTwin robot object.
+        """
+        tf_edges: list[BatchFrameTransform] = []
+
+        joint_action = ret.get("joint_action")
+        if isinstance(joint_action, dict) and "vector" in joint_action:
+            joint_eef = self._joints2ee_pose(joint_action["vector"])
+            tf_edges.extend(
+                [
+                    joint_eef.left_eef.model_copy(
+                        update={"child_frame_id": LEFT_EEF_FROM_JOINT_FRAME_ID}
+                    ),
+                    joint_eef.right_eef.model_copy(
+                        update={
+                            "child_frame_id": RIGHT_EEF_FROM_JOINT_FRAME_ID
+                        }
+                    ),
+                ]
+            )
+
+        endpose = ret.get("endpose")
+        if isinstance(endpose, dict) and endpose:
+            left_endpose_frame_id, right_endpose_frame_id = (
+                self._get_endpose_frame_ids()
+            )
+            tf_edges.extend(
+                [
+                    self._pose_vector_to_tf(
+                        endpose["left_endpose"],
+                        child_frame_id=left_endpose_frame_id,
+                    ),
+                    self._pose_vector_to_tf(
+                        endpose["right_endpose"],
+                        child_frame_id=right_endpose_frame_id,
+                    ),
+                ]
+            )
+
+        return tf_edges
+
     def _format_obs(self, ret: dict[str, Any]) -> dict[str, Any]:
-        """Format raw RoboTwin observations into orchard-compatible ones."""
+        """Format raw RoboTwin observations into orchard-compatible ones.
+
+        The returned ``ret["tf"]`` graph always includes ``world ->
+        robot_base``. When raw joint targets or RoboTwin end poses are
+        available, it also includes additional world-frame end-effector edges:
+        the joint-derived edges use ``*_eef_from_joint`` child frame IDs,
+        while the raw RoboTwin end poses keep the runtime EE frame IDs
+        reported by the RoboTwin robot object.
+        """
+        eef_tf_edges = self._get_eef_tf_edges(ret)
         ret["instructions"] = self.instructions
         if self.cfg.format_datatypes:
             ret["joints"] = get_joints(
@@ -540,6 +701,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             ret["cameras"] = get_observation_cams(ret)
             ret.pop("observation")
         ret["tf"] = self._get_tf()
+        if eef_tf_edges:
+            ret["tf"].add_tf(eef_tf_edges)
         return ret
 
     @staticmethod

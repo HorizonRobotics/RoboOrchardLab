@@ -24,7 +24,12 @@ import pytest
 import torch
 
 from robo_orchard_lab.dataset.datatypes import BatchFrameTransform
-from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
+from robo_orchard_lab.envs.robotwin.env import (
+    LEFT_EEF_FROM_JOINT_FRAME_ID,
+    RIGHT_EEF_FROM_JOINT_FRAME_ID,
+    RoboTwinEnv,
+    RoboTwinEnvCfg,
+)
 from robo_orchard_lab.envs.robotwin.kinematics import RoboTwinEEF
 
 pytestmark = pytest.mark.sim_env
@@ -40,6 +45,12 @@ def _make_fake_sapien_pose(
     )
 
 
+def _make_fake_joint_with_child_link(name: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        child_link=SimpleNamespace(get_name=lambda: name),
+    )
+
+
 def _make_reset_stub_env(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -50,9 +61,12 @@ def _make_reset_stub_env(
         seed=1,
         task_name="robotwin_dummy_task",
         episode_id=0,
+        eval_mode=False,
+        format_datatypes=False,
         get_task_config=lambda: {},
         calculate_seed=lambda seed: seed,
     )
+    cast(Any, env)._instructions = None
     cast(Any, env)._video_ffmpeg = None
     cast(Any, env)._check_and_update_seed = lambda: (
         SimpleNamespace(
@@ -68,6 +82,21 @@ def _make_reset_stub_env(
         nullcontext,
     )
     return env
+
+
+def _assert_pose_close(
+    actual: BatchFrameTransform,
+    expected: BatchFrameTransform,
+    *,
+    atol: float = 1e-4,
+) -> None:
+    assert torch.allclose(actual.xyz, expected.xyz, atol=atol)
+    quat_alignment = torch.sum(actual.quat * expected.quat, dim=-1).abs()
+    assert torch.allclose(
+        quat_alignment,
+        torch.ones_like(quat_alignment),
+        atol=atol,
+    )
 
 
 @pytest.fixture()
@@ -156,6 +185,102 @@ class TestRoboTwinEnv:
         assert obs is not None
         assert "tf" in obs
 
+    def test_format_obs_adds_joint_and_endpose_tfs(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            left_ee=_make_fake_joint_with_child_link("left_real_eef"),
+            right_ee=_make_fake_joint_with_child_link("right_real_eef"),
+            left_arm_joints_name=["left_joint_0", "left_joint_1"],
+            right_arm_joints_name=["right_joint_0", "right_joint_1"],
+            left_gripper_name={"base": "left_gripper"},
+            right_gripper_name={"base": "right_gripper"},
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        cast(Any, env)._task = SimpleNamespace(robot=robot)
+        joint_eef = RoboTwinEEF(
+            left_eef=BatchFrameTransform(
+                xyz=torch.tensor([[10.0, 1.0, 2.0]]),
+                quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                parent_frame_id="world",
+                child_frame_id="left_eef",
+            ),
+            right_eef=BatchFrameTransform(
+                xyz=torch.tensor([[20.0, 3.0, 4.0]]),
+                quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+                parent_frame_id="world",
+                child_frame_id="right_eef",
+            ),
+        )
+        monkeypatch.setattr(
+            env,
+            "_joints2ee_pose",
+            lambda joints: joint_eef,
+            raising=False,
+        )
+
+        obs = env._format_obs(
+            {
+                "joint_action": {
+                    "vector": np.array(
+                        [1.0, 2.0, 0.5, 3.0, 4.0, 0.75],
+                        dtype=np.float32,
+                    )
+                },
+                "endpose": {
+                    "left_endpose": np.array(
+                        [0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0],
+                        dtype=np.float32,
+                    ),
+                    "left_gripper": 0.5,
+                    "right_endpose": np.array(
+                        [0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0],
+                        dtype=np.float32,
+                    ),
+                    "right_gripper": 0.75,
+                },
+                "observation": {},
+            }
+        )
+
+        tf_graph = obs["tf"]
+        left_endpose_frame_id, right_endpose_frame_id = (
+            env._get_endpose_frame_ids()
+        )
+        assert tf_graph.get_tf(
+            "world", LEFT_EEF_FROM_JOINT_FRAME_ID
+        ) == BatchFrameTransform(
+            xyz=torch.tensor([[10.0, 1.0, 2.0]]),
+            quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+            parent_frame_id="world",
+            child_frame_id=LEFT_EEF_FROM_JOINT_FRAME_ID,
+        )
+        assert tf_graph.get_tf(
+            "world", RIGHT_EEF_FROM_JOINT_FRAME_ID
+        ) == BatchFrameTransform(
+            xyz=torch.tensor([[20.0, 3.0, 4.0]]),
+            quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+            parent_frame_id="world",
+            child_frame_id=RIGHT_EEF_FROM_JOINT_FRAME_ID,
+        )
+        assert tf_graph.get_tf(
+            "world", left_endpose_frame_id
+        ) == BatchFrameTransform(
+            xyz=torch.tensor([[0.1, 0.2, 0.3]]),
+            quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+            parent_frame_id="world",
+            child_frame_id=left_endpose_frame_id,
+        )
+        assert tf_graph.get_tf(
+            "world", right_endpose_frame_id
+        ) == BatchFrameTransform(
+            xyz=torch.tensor([[0.4, 0.5, 0.6]]),
+            quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+            parent_frame_id="world",
+            child_frame_id=right_endpose_frame_id,
+        )
+
     def test_endpose_in_obs_when_enabled(self):
         env = RoboTwinEnv(
             RoboTwinEnvCfg(
@@ -176,6 +301,24 @@ class TestRoboTwinEnv:
             assert np.asarray(endpose["right_endpose"]).size > 0
             assert endpose["left_gripper"] is not None
             assert endpose["right_gripper"] is not None
+            tf_graph = obs["tf"]
+            left_endpose_frame_id, right_endpose_frame_id = (
+                env._get_endpose_frame_ids()
+            )
+            left_joint_tf = tf_graph.get_tf(
+                "world", LEFT_EEF_FROM_JOINT_FRAME_ID
+            )
+            right_joint_tf = tf_graph.get_tf(
+                "world", RIGHT_EEF_FROM_JOINT_FRAME_ID
+            )
+            left_endpose_tf = tf_graph.get_tf("world", left_endpose_frame_id)
+            right_endpose_tf = tf_graph.get_tf("world", right_endpose_frame_id)
+            assert isinstance(left_joint_tf, BatchFrameTransform)
+            assert isinstance(right_joint_tf, BatchFrameTransform)
+            assert isinstance(left_endpose_tf, BatchFrameTransform)
+            assert isinstance(right_endpose_tf, BatchFrameTransform)
+            _assert_pose_close(left_joint_tf, left_endpose_tf, atol=1e-3)
+            _assert_pose_close(right_joint_tf, right_endpose_tf, atol=1e-3)
         finally:
             env.close()
 

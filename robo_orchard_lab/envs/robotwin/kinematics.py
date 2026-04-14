@@ -43,8 +43,16 @@ def _normalize_urdf_content(
     urdf_content: str | bytes | bytearray | memoryview,
 ) -> str:
     if isinstance(urdf_content, str):
-        return urdf_content
-    return bytes(urdf_content).decode("utf-8")
+        urdf_str = urdf_content
+    else:
+        urdf_str = bytes(urdf_content).decode("utf-8")
+
+    stripped_urdf = urdf_str.lstrip()
+    if stripped_urdf.startswith("<?xml"):
+        declaration_end = stripped_urdf.find("?>")
+        if declaration_end != -1:
+            return stripped_urdf[declaration_end + 2 :].lstrip()
+    return urdf_str
 
 
 def _validate_vector(
