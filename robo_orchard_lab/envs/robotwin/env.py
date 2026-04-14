@@ -231,16 +231,18 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
         Args:
             action (list[float] | np.ndarray): The action to take in the
-                environment. Actually it is the joint positions of the
-                robot. The action should be 1-D array with length matching
-                the task.
+                environment. The exact semantics depend on
+                `self.cfg.action_type`: `"qpos"` expects RoboTwin joint target
+                positions, while `"ee"` expects RoboTwin end-effector action
+                values. The action should be a 1-D array with length matching
+                the configured action type for the task.
 
         Returns:
-            RoboTwinEnvStepReturn | None: The observation and environment
-                state after taking the action, or None if the episode
-                has ended.
-
-
+            RoboTwinEnvStepReturn: The step result after taking the action.
+                This function always returns a step result. Episode end is
+                reported via `terminated` and `truncated` instead of
+                returning None. `rewards` is a boolean indicating whether
+                the task has succeeded.
         """
         if isinstance(action, np.ndarray):
             if action.ndim != 1:
@@ -685,7 +687,11 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """The episode ID for the environment, used for logging and tracking."""
 
     action_type: Literal["qpos", "ee"] = "qpos"
-    """The type of action to use in the environment."""
+    """The RoboTwin action representation to use in the environment.
+
+    `"qpos"` uses joint target positions. `"ee"` uses RoboTwin's
+    end-effector action representation.
+    """
 
     check_expert: bool = False
     """Whether to check the expert trajectory for the task.
