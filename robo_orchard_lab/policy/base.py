@@ -42,7 +42,7 @@ __all__ = [
 
 
 class PolicyMixin(StateSaveLoadMixin, _PolicyMixin[OBSType, ACTType]):
-    """A base class for policies with state save/load capability."""
+    """Base policy contract with generic state save/load support."""
 
     def _get_state(self) -> State:
         """Get the state of the object for saving."""
@@ -59,12 +59,15 @@ class PolicyMixin(StateSaveLoadMixin, _PolicyMixin[OBSType, ACTType]):
         super()._set_state(state)
 
     def to(self, device: torch.device | str):
-        """Moves the pipeline to the specified device.
+        """Move the policy runtime state to the specified device.
 
         Args:
-            device (str): The target device to move the model to.
+            device (torch.device | str): The target device.
         """
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__}.to() must be implemented by concrete "
+            "policy classes."
+        )
 
 
 PolicyType = TypeVar("PolicyType", bound=PolicyMixin, covariant=True)
@@ -79,6 +82,14 @@ class PolicyConfig(_PolicyConfig[PolicyType]):
 
 class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
     """A policy that uses an inference pipeline to generate actions.
+
+    This adapter keeps both persistence surfaces exposed by the wrapped
+    pipeline stack:
+
+    - :class:`StateSaveLoadMixin` ``save`` / ``load`` snapshot the runtime
+      object state of the policy and its nested pipeline.
+    - ``pipeline.save_pipeline`` / ``pipeline.load_pipeline`` manage exported
+      inference artifacts such as model weights and config files.
 
     Args:
         cfg (InferencePipelinePolicyCfg): The configuration for the policy.
@@ -171,14 +182,20 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
         action = self.pipeline(obs)
         return action
 
-    def reset(self) -> None:
-        self.pipeline.reset()
-
-    def to(self, device: torch.device | str):
-        """Moves the pipeline to the specified device.
+    def reset(self, **kwargs) -> None:
+        """Reset policy runtime state and forward pipeline reset kwargs.
 
         Args:
-            device (str): The target device to move the model to.
+            kwargs: Keyword arguments consumed by the wrapped pipeline reset
+                hook or by concrete subclasses that extend this adapter.
+        """
+        self.pipeline.reset(**kwargs)
+
+    def to(self, device: torch.device | str):
+        """Move the wrapped pipeline to the specified device.
+
+        Args:
+            device (torch.device | str): The target device.
         """
         self.pipeline.to(device)
 

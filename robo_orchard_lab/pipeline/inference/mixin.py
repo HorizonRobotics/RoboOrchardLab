@@ -170,10 +170,12 @@ class InferencePipelineMixin(
         model_prefix: str = "model",
         required_empty: bool = True,
     ):
-        """Save the full pipeline state to a directory.
+        """Save deployment-oriented pipeline artifacts to a directory.
 
-        This method saves the model's weights and configuration by calling its
-        ``save_model`` method, and also writes the pipeline configuration file.
+        This interface writes the standard exported inference artifact layout:
+        model weights plus the pipeline configuration file. It complements, but
+        does not replace, the generic :class:`StateSaveLoadMixin` ``save`` /
+        ``load`` APIs, which snapshot the in-memory pipeline object state.
 
         Args:
             directory (str): Target directory for the saved pipeline.
@@ -211,11 +213,15 @@ class InferencePipelineMixin(
         model_prefix: str = "model",
         load_impl: Literal["native", "accelerate"] = "accelerate",
     ):
-        """Load a pipeline from a directory or a Hugging Face Hub repository.
+        """Load exported pipeline artifacts from disk or Hugging Face Hub.
 
         This method supports loading from a local path or a Hugging Face Hub
         repository. For Hub models, the supported URI format is
         ``hf://[<token>@][model/]<repo_id>[/<path>][@<revision>]``.
+
+        This is the inverse of :meth:`save_pipeline` for exported inference
+        artifacts. It is separate from the generic object-level
+        :class:`StateSaveLoadMixin` ``load`` API.
 
         Examples:
             >>> InferencePipelineMixin.load_pipeline(
@@ -281,13 +287,26 @@ class InferencePipelineMixin(
 
         return pipeline
 
-    def reset(self) -> None:
-        """Reset the internal state of the pipeline, if applicable.
+    def reset(self, **kwargs) -> None:
+        """Reset pipeline runtime state and accept pipeline-specific kwargs.
 
-        Subclasses can override this hook when they maintain internal caches or
-        mutable state across calls. The default implementation does nothing.
+        This hook mirrors the policy reset contract so pipeline-backed
+        policies can forward episode-local reset metadata directly to the
+        wrapped pipeline. Concrete pipelines may consume keyword arguments
+        defined by that pipeline.
+
+        Args:
+            kwargs: Concrete pipeline-specific reset arguments.
+
+        Raises:
+            TypeError: If keyword arguments are provided to the default
+                implementation, which does not consume any reset kwargs.
         """
-        pass
+        if kwargs:
+            raise TypeError(
+                f"{type(self).__name__}.reset() does not accept reset kwargs. "
+                f"Got: {sorted(kwargs)}."
+            )
 
     def _get_state(self) -> State:
         """Get the state of the object for saving.

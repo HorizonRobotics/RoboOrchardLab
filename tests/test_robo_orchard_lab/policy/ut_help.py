@@ -67,19 +67,24 @@ class DummyPolicy(PolicyMixin):
     cfg: DummyPolicyConfig
 
     data: torch.Tensor | None
+    last_reset_kwargs: dict[str, Any]
 
     def __init__(self, cfg: DummyPolicyConfig, *args, **kwargs) -> None:
         self.cfg = cfg
         self.data = None
+        self.last_reset_kwargs = {}
 
     def reset(self, **kwargs) -> None:
-        pass
+        self.last_reset_kwargs = dict(kwargs)
 
     def act(self, obs):
         # return obs with policy data
         ret = {"data": self.data}
         ret.update(obs)
         return ret
+
+    def to(self, device: torch.device | str):
+        del device
 
     def close(self) -> None:
         pass

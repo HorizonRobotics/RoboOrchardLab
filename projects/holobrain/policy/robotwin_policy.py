@@ -281,8 +281,8 @@ class HoloBrainRoboTwinPolicy(InferencePipelinePolicy):
             "`cameras`/`joints`."
         )
 
-    def reset(self):
-        self.pipeline.reset()
+    def reset(self, **kwargs):
+        super().reset(**kwargs)
         self._cached_action = None
 
     def act(self, obs: Union[RoboTwinEnvStepReturn, dict]):

@@ -33,6 +33,30 @@ from robo_orchard_lab.policy import (
 
 
 class TestPolicyEvaluator:
+    def test_evaluate_passes_reset_kwargs_to_policy(self) -> None:
+        env_cfg = DummyEnvConfig()
+        policy_cfg = DummyPolicyConfig()
+        metric_cfg = MetricDictConfig(
+            {
+                "success_rate": DummySuccessRateMetricConfig(),
+            }
+        )
+        evaluator = PolicyEvaluatorConfig()()
+        evaluator.setup(
+            env_cfg=env_cfg,
+            policy_or_cfg=policy_cfg,
+            metrics=metric_cfg(),
+        )
+
+        for _ in evaluator.make_episode_evaluation(
+            max_steps=1,
+            rollout_steps=1,
+            policy_reset_kwargs={"episode_id": 123},
+        ):
+            pass
+
+        assert evaluator.policy.last_reset_kwargs == {"episode_id": 123}
+
     @pytest.mark.parametrize("use_remote", [False, True])
     def test_evaluate_init(self, use_remote: bool) -> None:
         current_dir = os.path.dirname(os.path.abspath(__file__))
