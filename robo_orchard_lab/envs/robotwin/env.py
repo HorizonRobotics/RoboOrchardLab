@@ -1209,14 +1209,11 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             )
             task_args["dual_arm_embodied"] = True
         elif len(embodiment_type) == 3:
-            task_args["left_robot_file"] = get_embodiment_file(
-                embodiment_type[0]
+            raise NotImplementedError(
+                "RoboTwinEnv currently only supports a combined dual-arm "
+                "robot layout. Task configs that specify separate left/right "
+                "embodiments are not supported."
             )
-            task_args["right_robot_file"] = get_embodiment_file(
-                embodiment_type[1]
-            )
-            task_args["embodiment_dis"] = embodiment_type[2]
-            task_args["dual_arm_embodied"] = False
         else:
             raise RuntimeError("embodiment items should be 1 or 3")
 

@@ -149,13 +149,14 @@ def evaluate_tasks_locally(
             device=device,
         )
         for episode_id in range(episode_num):
-            # TODO(@yiwei.jin): BUG: Local RoboTwin evaluation advances the
-            # requested seed from `episode_id` instead of chaining the actual
-            # resolved seed returned after `evaluate_episode()`. When
-            # RoboTwin bumps the seed during reset to recover from unstable
-            # env initialization, different `episode_id` values can end up
-            # evaluating the same actual seed, so the local path may repeat
-            # one episode while reporting different episode IDs.
+            # TODO(@yiwei.jin): Known issue pending a dedicated follow-up fix.
+            # Local RoboTwin evaluation advances the requested seed from
+            # `episode_id` instead of chaining the actual resolved seed
+            # returned after `evaluate_episode()`. When RoboTwin bumps the
+            # seed during reset to recover from unstable env initialization,
+            # different `episode_id` values can end up evaluating the same
+            # actual seed, so the local path may repeat one episode while
+            # reporting different episode IDs.
             evaluator.evaluate_episode(
                 max_steps=1500,
                 env_reset_kwargs={

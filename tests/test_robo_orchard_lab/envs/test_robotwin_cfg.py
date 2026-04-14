@@ -134,3 +134,68 @@ class TestRoboTwinEnvCfg:
             reserved_cfg.get_task_config()
         with pytest.raises(KeyError, match="infrared"):
             missing_cfg.get_task_config()
+
+    def test_get_task_config_rejects_split_arm_embodiment_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        robotwin_root = tmp_path / "robotwin"
+        task_config_dir = robotwin_root / "task_config"
+        left_robot_dir = robotwin_root / "robots" / "left_arm"
+        right_robot_dir = robotwin_root / "robots" / "right_arm"
+        task_config_dir.mkdir(parents=True)
+        left_robot_dir.mkdir(parents=True)
+        right_robot_dir.mkdir(parents=True)
+
+        task_config_path = task_config_dir / "task.yml"
+        task_config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "data_type": {
+                        "rgb": False,
+                        "depth": True,
+                        "endpose": False,
+                    },
+                    "camera": {"head_camera_type": "default_head"},
+                    "embodiment": ["left_arm", "right_arm", "0.3"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        (task_config_dir / "_embodiment_config.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "left_arm": {"file_path": str(left_robot_dir)},
+                    "right_arm": {"file_path": str(right_robot_dir)},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (left_robot_dir / "config.yml").write_text(
+            "robot_name: left_arm\n", encoding="utf-8"
+        )
+        (right_robot_dir / "config.yml").write_text(
+            "robot_name: right_arm\n", encoding="utf-8"
+        )
+        (task_config_dir / "_camera_config.yml").write_text(
+            yaml.safe_dump({"default_head": {"h": 480, "w": 640}}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.env.config_robotwin_path",
+            lambda: str(robotwin_root),
+        )
+
+        cfg = RoboTwinEnvCfg(
+            task_name="place_object_basket",
+            check_expert=False,
+            check_task_init=False,
+            task_config_path=str(task_config_path),
+        )
+
+        with pytest.raises(
+            NotImplementedError,
+            match="combined dual-arm robot layout",
+        ):
+            cfg.get_task_config()
