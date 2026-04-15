@@ -186,8 +186,10 @@ class PiperMcapChecker:
         joint_lower_limits, joint_upper_limits = self.chain.get_joint_limits()
         lower = np.asarray(joint_lower_limits, dtype=np.float64)
         upper = np.asarray(joint_upper_limits, dtype=np.float64)
-        if len(joint_names) != 16 or lower.shape != (16,) or upper.shape != (
-            16,
+        if (
+            len(joint_names) != 16
+            or lower.shape != (16,)
+            or upper.shape != (16,)
         ):
             raise ValueError(
                 "Expected 16 non-fixed URDF joints to align with Piper "
@@ -599,8 +601,7 @@ class PiperMcapChecker:
 
         def _default_pose_series(step_count: int) -> list[list[float]]:
             return [
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-                for _ in range(step_count)
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] for _ in range(step_count)
             ]
 
         def _reshape_joint_component(
