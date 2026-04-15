@@ -36,10 +36,10 @@ from habitat.utils.visualizations import maps
 from tqdm import trange
 from VLN_CE.vlnce_baselines.config.default import get_config
 
-from robo_orchard_lab.inference import InferencePipelineMixin
 from robo_orchard_lab.models.monodream.processor import (
     MonoDreamInput,
 )
+from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 
 
 def main():

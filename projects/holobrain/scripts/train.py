@@ -46,13 +46,13 @@ from robo_orchard_lab.dataset.dataset_wrapper import (  # noqa: E402
     DistributedBatchFlagSampler,
 )
 from robo_orchard_lab.pipeline import SimpleTrainer  # noqa: E402
-from robo_orchard_lab.pipeline.batch_processor import (  # noqa: E402
-    SimpleBatchProcessor,
-)
 from robo_orchard_lab.pipeline.hooks import (  # noqa: E402
-    LossMovingAverageTrackerConfig,
+    LossTrackerConfig,
     SaveCheckpointConfig,
     StatsMonitorConfig,
+)
+from robo_orchard_lab.processing.step_processor import (  # noqa: E402
+    SimpleStepProcessor,
 )
 from robo_orchard_lab.utils import log_basic_config  # noqa: E402
 
@@ -61,7 +61,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 
 
-class MyBatchProcessor(SimpleBatchProcessor):
+class MyBatchProcessor(SimpleStepProcessor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -180,8 +180,9 @@ def main(args, accelerator):
             StatsMonitorConfig(
                 step_log_freq=config["step_log_freq"],
             ),
-            LossMovingAverageTrackerConfig(
-                step_log_freq=config["step_log_freq"]
+            LossTrackerConfig(
+                step_log_freq=config["step_log_freq"],
+                log_total_loss=True,
             ),
             SaveCheckpointConfig(
                 save_step_freq=config.get("save_step_freq"),

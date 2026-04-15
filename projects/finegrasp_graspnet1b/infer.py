@@ -18,7 +18,7 @@ import os
 
 from huggingface_hub import snapshot_download
 
-from robo_orchard_lab.inference import InferencePipelineMixin
+from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)

@@ -35,13 +35,13 @@ from habitat.utils.visualizations import maps
 from tqdm import trange
 from VLN_CE.vlnce_baselines.config.default import get_config
 
-from robo_orchard_lab.inference import InferencePipelineMixin
 from robo_orchard_lab.models.progress_think.action_processor import (
     ActionModelInput,
 )
 from robo_orchard_lab.models.progress_think.progress_processor import (
     ProgressModelInput,
 )
+from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 
 
 def main():

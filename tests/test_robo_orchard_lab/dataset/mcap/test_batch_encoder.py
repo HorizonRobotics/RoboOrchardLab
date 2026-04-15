@@ -14,8 +14,9 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-
+import importlib
 import os
+import warnings
 
 import fsspec
 import pytest
@@ -44,8 +45,8 @@ from robo_orchard_lab.dataset.experimental.mcap.batch_split import (
 from robo_orchard_lab.dataset.experimental.mcap.msg_decoder import (
     McapDecoderContext,
 )
-from robo_orchard_lab.dataset.experimental.mcap.msg_encoder import (
-    McapProtobufEncoder,
+from robo_orchard_lab.dataset.experimental.mcap.msg_encoder.encoder_ctx import (  # noqa: E501
+    FoxgloveEncoder,
 )
 from robo_orchard_lab.dataset.experimental.mcap.reader import (
     McapReader,
@@ -161,9 +162,71 @@ class TestBatchFromDataDict:
             assert k in decoded_msg, f"Key {k} not found in the result"
             print(f"{k}: {type(decoded_msg[k])}")
         from_data = McapBatchEncoders(encoder_configs)
+        formatted_batch = from_data.format_batch(decoded_msg)
 
-        msg_encoder_ctx = McapProtobufEncoder()
+        foxglove_encoded_batch = from_data(
+            decoded_msg, msg_encoder_ctx=FoxgloveEncoder(None)
+        )
+        assert set(foxglove_encoded_batch.keys()) == set(
+            formatted_batch.keys()
+        )
+        for topic, encoded_msgs in foxglove_encoded_batch.items():
+            assert topic in formatted_batch
+            assert len(encoded_msgs.messages) == len(formatted_batch[topic])
 
+    @pytest.mark.parametrize(
+        "decoder_configs, encoder_configs",
+        [
+            (
+                {
+                    "joints": McapBatch2BatchJointStateConfig(
+                        source_topic="/action/robot_state/joints"
+                    ),
+                    "camera_encoded": McapBatch2BatchCameraDataEncodedConfig(
+                        image_topic="/observation/cameras/wrist/left/image",
+                        tf_topic="/observation/cameras/wrist/left/tf",
+                        calib_topic="/observation/cameras/wrist/left/camera_calib",
+                    ),
+                    "ee_pose": McapBatch2BatchPoseConfig(
+                        source_topic="/action/robot_state/ee_pose"
+                    ),
+                },
+                {
+                    "joints": McapBatchFromBatchJointStateConfig(
+                        target_topic="/action/robot_state/joints"
+                    ),
+                    "camera_encoded": McapBatchFromBatchCameraDataEncodedConfig(  # noqa: E501
+                        image_topic="/observation/cameras/wrist/left/image",
+                        tf_topic="/observation/cameras/wrist/left/tf",
+                        calib_topic="/observation/cameras/wrist/left/camera_calib",
+                    ),
+                    "ee_pose": McapBatchFromBatchPoseConfig(
+                        target_topic="/action/robot_state/ee_pose"
+                    ),
+                },
+            )
+        ],
+    )
+    def test_deprecated_protobuf_encoder_round_trip_compatibility(
+        self,
+        example_msg_batch: McapMessageBatch,
+        decoder_configs: dict[str, McapBatchDecoderConfig],
+        encoder_configs: dict[str, McapBatchEncoderConfig],
+    ):
+        """Keep protobuf compatibility coverage."""
+        to_data = McapBatchDecoders(decoder_configs)
+        example_msg_batch.sort()
+        with McapDecoderContext() as msg_decoder_ctx:
+            decoded_msg = to_data(
+                example_msg_batch, msg_decoder_ctx=msg_decoder_ctx
+            )
+        from_data = McapBatchEncoders(encoder_configs)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            msg_encoder_ctx = importlib.import_module(
+                "robo_orchard_lab.dataset.experimental.mcap.msg_encoder"
+            ).McapProtobufEncoder()
         reconstructed_batch = McapMessageBatch(
             message_dict=from_data(
                 decoded_msg, msg_encoder_ctx=msg_encoder_ctx

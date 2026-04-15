@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import importlib
+import warnings
 from dataclasses import dataclass
 from typing import Optional, cast
 
@@ -27,21 +28,14 @@ from robo_orchard_core.utils.config import ClassType
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from torchmetrics import Metric
 
 import robo_orchard_lab.pipeline as pipeline_module
-import robo_orchard_lab.pipeline.batch_processor as legacy_batch_processor
 from robo_orchard_lab.dataset.robot import (
     DatasetItem,
     DictIterableDataset,
 )
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     DataLoader as RODataLoader,
-)
-from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
-from robo_orchard_lab.pipeline.batch_processor.simple import (
-    BatchProcessorFromCallable,
-    DeprecatedError as BatchProcessorDeprecatedError,
 )
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
@@ -51,12 +45,15 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
 from robo_orchard_lab.pipeline.training.hook_based_trainer import (
     HookBasedTrainer,
 )
-from robo_orchard_lab.pipeline.training.trainer import SimpleTrainer
 from robo_orchard_lab.processing.io_processor import (
     ModelIOProcessor,
     ModelIOProcessorCfg,
 )
-from robo_orchard_lab.processing.step_processor import SimpleStepProcessor
+from robo_orchard_lab.processing.step_processor import (
+    DeprecatedError as StepProcessorDeprecatedError,
+    SimpleStepProcessor,
+    StepProcessorFromCallable,
+)
 
 
 @dataclass
@@ -174,18 +171,6 @@ class DummyPipelineHook(PipelineHooks):
         assert self._on_step_end_state.epoch == self._on_step_begin_state.epoch
 
 
-class DummyMetric(Metric):
-    def __init__(self):
-        super().__init__()
-        self.value = 0
-
-    def update(self, preds, targets):
-        self.value += 1
-
-    def compute(self):
-        return self.value
-
-
 class SimpleModel(torch.nn.Module):
     """A simple neural network model for testing."""
 
@@ -197,7 +182,7 @@ class SimpleModel(torch.nn.Module):
         return self.linear(x)
 
 
-class DummyBatchProcessor(SimpleBatchProcessor):
+class DummyBatchProcessor(SimpleStepProcessor):
     """A simple batch processor for testing."""
 
     def forward(self, model: torch.nn.Module, batch: torch.Tensor):
@@ -512,40 +497,70 @@ def test_simple_step_processor_reduces_loss_in_multi_process_path(
 
 
 def test_legacy_batch_processor_facade_only_exports_legacy_names():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        legacy_batch_processor = importlib.import_module(
+            "robo_orchard_lab.pipeline.batch_processor"
+        )
     with pytest.warns(DeprecationWarning):
         reloaded_legacy_batch_processor = importlib.reload(
             legacy_batch_processor
         )
-        assert (
-            reloaded_legacy_batch_processor.SimpleBatchProcessor
-            is SimpleBatchProcessor
-        )
+    assert issubclass(
+        reloaded_legacy_batch_processor.SimpleBatchProcessor,
+        SimpleStepProcessor,
+    )
     assert not hasattr(legacy_batch_processor, "SimpleStepProcessor")
     assert not hasattr(legacy_batch_processor, "BatchStepProcessorMixin")
 
 
 def test_legacy_batch_processor_from_callable_preserves_facade_type():
-    processor = SimpleBatchProcessor.from_callable(
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        legacy_batch_processor = importlib.import_module(
+            "robo_orchard_lab.pipeline.batch_processor"
+        )
+        legacy_batch_processor_simple = importlib.import_module(
+            "robo_orchard_lab.pipeline.batch_processor.simple"
+        )
+
+    processor = legacy_batch_processor.SimpleBatchProcessor.from_callable(
         lambda model, batch: (batch, None),
         need_backward=False,
     )
 
-    assert isinstance(processor, BatchProcessorFromCallable)
+    assert isinstance(processor, StepProcessorFromCallable)
+    assert isinstance(
+        processor, legacy_batch_processor_simple.BatchProcessorFromCallable
+    )
 
 
 def test_legacy_batch_processor_transforms_still_raise_deprecated_error():
-    with pytest.raises(BatchProcessorDeprecatedError):
-        DummyBatchProcessor(transforms=[])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        legacy_batch_processor_simple = importlib.import_module(
+            "robo_orchard_lab.pipeline.batch_processor.simple"
+        )
 
-    with pytest.raises(BatchProcessorDeprecatedError):
-        BatchProcessorFromCallable(
+    class LegacyDummyBatchProcessor(
+        legacy_batch_processor_simple.SimpleBatchProcessor
+    ):
+        def forward(self, model, batch):
+            del model
+            return batch, None
+
+    with pytest.raises(StepProcessorDeprecatedError):
+        LegacyDummyBatchProcessor(transforms=[])
+
+    with pytest.raises(StepProcessorDeprecatedError):
+        legacy_batch_processor_simple.BatchProcessorFromCallable(
             lambda model, batch: (batch, None),
             need_backward=False,
             transforms=[],
         )
 
-    with pytest.raises(BatchProcessorDeprecatedError):
-        SimpleBatchProcessor.from_callable(
+    with pytest.raises(StepProcessorDeprecatedError):
+        legacy_batch_processor_simple.SimpleBatchProcessor.from_callable(
             lambda model, batch: (batch, None),
             need_backward=False,
             transforms=[],
@@ -553,6 +568,8 @@ def test_legacy_batch_processor_transforms_still_raise_deprecated_error():
 
 
 def test_legacy_trainer_facades_export_runtime_types():
+    from robo_orchard_lab.pipeline.training.trainer import SimpleTrainer
+
     with pytest.warns(DeprecationWarning):
         legacy_hook_based_trainer = importlib.import_module(
             "robo_orchard_lab.pipeline.hook_based_trainer"
@@ -574,7 +591,7 @@ def test_legacy_trainer_facades_export_runtime_types():
 # the fixture scope should be function, not session!
 @pytest.fixture(scope="function")
 def dummy_trainer():
-    """Fixture to create a dummy trainer with a real model and optimizer."""
+    """Fixture to create a canonical trainer."""
     model = SimpleModel()
     dataloader = DataLoader(
         TensorDataset(
@@ -587,7 +604,7 @@ def dummy_trainer():
     accelerator = Accelerator(device_placement=True)
     batch_processor = DummyBatchProcessor()
 
-    trainer = SimpleTrainer(
+    trainer = HookBasedTrainer(
         model=model,
         dataloader=dataloader,
         optimizer=optimizer,
@@ -701,7 +718,7 @@ def test_hook_based_trainer_early_break_cleans_accelerate_dataloader_state(
     )
 
 
-def test_training_loop(dummy_trainer: SimpleTrainer):
+def test_training_loop(dummy_trainer: HookBasedTrainer):
     """Test training loop execution."""
     # Spy on hook methods
 
@@ -733,13 +750,6 @@ def test_optimizer_and_scheduler(dummy_trainer):
 
     # Check that the learning rate scheduler updated the learning rate
     assert final_lr < initial_lr
-
-
-def test_metric_computation(dummy_trainer):
-    """Test metrics update and computation."""
-    dummy_trainer()
-    if dummy_trainer.metric is not None:
-        dummy_trainer.metric.compute()
 
 
 if __name__ == "__main__":

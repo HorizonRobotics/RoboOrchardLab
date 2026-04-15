@@ -32,11 +32,9 @@ import os
 from typing import Any, Optional, Tuple
 
 import torch
+from robo_orchard_core.utils.logging import LoggerManager
 
-from robo_orchard_lab.utils import log_basic_config
-
-log_basic_config(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = LoggerManager(level=logging.INFO).get_child(__name__)
 
 
 # %%
@@ -68,12 +66,12 @@ class DatasetConfig(SettingConfig):
 
     dummy_train_imgs: int = Field(
         description="Number of dummy training images.",
-        default=1024,
+        default=8,
     )
 
     dummy_val_imgs: int = Field(
         description="Number of dummy validation images.",
-        default=256,
+        default=4,
     )
 
     def __post_init__(self):
@@ -86,12 +84,12 @@ class DatasetConfig(SettingConfig):
         if self.pipeline_test:
             train_dataset = datasets.FakeData(
                 self.dummy_train_imgs,
-                (3, 224, 224),
+                (3, 64, 64),
                 1000,
                 transforms.ToTensor(),
             )
             val_dataset = datasets.FakeData(
-                self.dummy_val_imgs, (3, 224, 224), 1000, transforms.ToTensor()
+                self.dummy_val_imgs, (3, 64, 64), 1000, transforms.ToTensor()
             )
         else:
             assert self.data_root is not None
@@ -139,7 +137,7 @@ class DatasetConfig(SettingConfig):
 class TrainerConfig(SettingConfig):
     """Configuration for the trainer.
 
-    This is an example configuration for training a ResNet50 model
+    This is an example configuration for training a ResNet18 model
     on ImageNet. Only a few parameters are set here for demonstration
     purposes.
     """
@@ -171,7 +169,8 @@ class TrainerConfig(SettingConfig):
 
 cfg = TrainerConfig(
     dataset=DatasetConfig(pipeline_test=True),
-    max_epoch=5,
+    batch_size=2,
+    max_epoch=1,
     num_workers=0,
     workspace_root="./workspace/tutorial1/",
 )
@@ -204,12 +203,13 @@ from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 
 accelerator = Accelerator(
+    cpu=True,
     project_config=ProjectConfiguration(
         project_dir=cfg.workspace_root,
         logging_dir=os.path.join(cfg.workspace_root, "logs"),
         automatic_checkpoint_naming=True,
         total_limit=32,  # Max checkpoints to keep
-    )
+    ),
 )
 
 
@@ -217,7 +217,7 @@ accelerator = Accelerator(
 # Batch processor: Defining Per-Step Logic
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 # Instead of hard coding the forward pass and loss calculation within the trainer, we use a BatchProcessor.
-# MyBatchProcessor inherits from :py:class:`~robo_orchard_lab.pipeline.batch_processor.simple.SimpleBatchProcessor`.
+# MyBatchProcessor inherits from :py:class:`~robo_orchard_lab.processing.step_processor.pipeline_step.SimpleStepProcessor`.
 #
 # You define your loss function (here, CrossEntropyLoss) in ``__init__``.
 # ``forward`` contains the logic for a single step: getting model output and calculating loss.
@@ -227,10 +227,10 @@ accelerator = Accelerator(
 #   Accelerator handles moving the model and batch to the correct device before forward is called by the trainer.
 #
 
-from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
+from robo_orchard_lab.processing.step_processor import SimpleStepProcessor
 
 
-class MyBatchProcessor(SimpleBatchProcessor):
+class MyBatchProcessor(SimpleStepProcessor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.criterion = torch.nn.CrossEntropyLoss()  # Define your loss
@@ -288,7 +288,7 @@ train_dataloader = DataLoader(
     pin_memory=False,
 )
 
-model = models.resnet50()
+model = models.resnet18()
 
 optimizer = SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
 lr_scheduler = StepLR(optimizer, step_size=30, gamma=0.1)

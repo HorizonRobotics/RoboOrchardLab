@@ -28,18 +28,18 @@ from utils import load_checkpoint, load_config
 
 from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.pipeline import SimpleTrainer
-from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
 from robo_orchard_lab.pipeline.hooks import (
-    LossMovingAverageTrackerConfig,
+    LossTrackerConfig,
     SaveCheckpointConfig,
     StatsMonitorConfig,
 )
+from robo_orchard_lab.processing.step_processor import SimpleStepProcessor
 from robo_orchard_lab.utils import log_basic_config
 
 logger = logging.getLogger(__file__)
 
 
-class MyBatchProcessor(SimpleBatchProcessor):
+class MyBatchProcessor(SimpleStepProcessor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -106,8 +106,9 @@ def main(args, accelerator):
             StatsMonitorConfig(
                 step_log_freq=config["step_log_freq"],
             ),
-            LossMovingAverageTrackerConfig(
-                step_log_freq=config["step_log_freq"]
+            LossTrackerConfig(
+                step_log_freq=config["step_log_freq"],
+                log_total_loss=True,
             ),
             SaveCheckpointConfig(
                 save_step_freq=config.get("save_step_freq"),

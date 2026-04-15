@@ -254,7 +254,7 @@ State-of-the-Art (SOTA) navigation models provided by the
 # .. code-block:: python
 #
 #   import torch
-#   from robo_orchard_lab.inference import InferencePipelineMixin
+#   from robo_orchard_lab.pipeline.inference import InferencePipelineMixin
 #   from robo_orchard_lab.models.mapdream.action_processor import (
 #       ActionModelInput,
 #   )

@@ -23,35 +23,24 @@ from typing import Dict, cast
 import pytest
 import torch
 import torch.nn as nn
+from robo_orchard_core.utils.config import ClassType_co
 
-import robo_orchard_lab.inference.processor as legacy_processor_module
 from robo_orchard_lab.dataset.collates import collate_batch_dict
-from robo_orchard_lab.inference import (
-    ClassType_co,
-    InferencePipeline,
-    InferencePipelineCfg,
-    InferencePipelineMixin,
-)
-from robo_orchard_lab.inference.processor import (
-    ClassType_co as LegacyProcessorClassType_co,
-    ComposeProcessor,
-    ComposeProcessorCfg,
-    ProcessorMixin,
-    ProcessorMixinCfg,
-)
 from robo_orchard_lab.models.mixin import (
     ModelMixin,
     TorchModelMixin,
     TorchModuleCfg,
 )
 from robo_orchard_lab.pipeline.inference import (
-    InferencePipeline as RuntimeInferencePipeline,
-    InferencePipelineCfg as RuntimeInferencePipelineCfg,
+    InferencePipeline,
+    InferencePipelineCfg,
+    InferencePipelineMixin,
 )
 from robo_orchard_lab.processing.io_processor import (
     ComposedIOProcessor,
     ComposedIOProcessorCfg,
     ModelIOProcessor,
+    ModelIOProcessorCfg,
 )
 from robo_orchard_lab.utils.path import DirectoryNotEmptyError
 
@@ -84,7 +73,7 @@ class DummyModelCfg(TorchModuleCfg[DummyModel]):
     class_type: ClassType_co[DummyModel] = DummyModel
 
 
-class DummyProcessor(ProcessorMixin):
+class DummyProcessor(ModelIOProcessor):
     """A simple dummy processor for testing."""
 
     def pre_process(self, data: InputDict) -> InputDict:
@@ -98,13 +87,13 @@ class DummyProcessor(ProcessorMixin):
         return model_outputs
 
 
-class DummyProcessorCfg(ProcessorMixinCfg[DummyProcessor]):
+class DummyProcessorCfg(ModelIOProcessorCfg[DummyProcessor]):
     """Config for DummyProcessor."""
 
     class_type: ClassType_co[DummyProcessor] = DummyProcessor
 
 
-class AddProcessor(ProcessorMixin):
+class AddProcessor(ModelIOProcessor):
     """A processor that adds constants in pre- and post-processing."""
 
     cfg: "AddProcessorCfg"
@@ -123,7 +112,7 @@ class AddProcessor(ProcessorMixin):
         return model_outputs
 
 
-class AddProcessorCfg(ProcessorMixinCfg[AddProcessor]):
+class AddProcessorCfg(ModelIOProcessorCfg[AddProcessor]):
     """Config for AddProcessor."""
 
     class_type: ClassType_co[AddProcessor] = AddProcessor
@@ -131,7 +120,7 @@ class AddProcessorCfg(ProcessorMixinCfg[AddProcessor]):
     post_add: float = 0.0
 
 
-class MultiplyProcessor(ProcessorMixin):
+class MultiplyProcessor(ModelIOProcessor):
     """A processor that scales tensors in pre- and post-processing."""
 
     cfg: "MultiplyProcessorCfg"
@@ -150,7 +139,7 @@ class MultiplyProcessor(ProcessorMixin):
         return model_outputs
 
 
-class MultiplyProcessorCfg(ProcessorMixinCfg[MultiplyProcessor]):
+class MultiplyProcessorCfg(ModelIOProcessorCfg[MultiplyProcessor]):
     """Config for MultiplyProcessor."""
 
     class_type: ClassType_co[MultiplyProcessor] = MultiplyProcessor
@@ -171,9 +160,7 @@ class MyTestPipelineCfg(InferencePipelineCfg[MyTestPipeline]):
     processor: DummyProcessorCfg = DummyProcessorCfg()
 
 
-class HookedRuntimeInferencePipeline(
-    RuntimeInferencePipeline[InputDict, OutputDict]
-):
+class HookedRuntimeInferencePipeline(InferencePipeline[InputDict, OutputDict]):
     """Runtime pipeline that records hook calls."""
 
     forwarded_inputs: list[object]
@@ -192,7 +179,7 @@ class HookedRuntimeInferencePipeline(
 
 
 class HookedRuntimeInferencePipelineCfg(
-    RuntimeInferencePipelineCfg[HookedRuntimeInferencePipeline]
+    InferencePipelineCfg[HookedRuntimeInferencePipeline]
 ):
     """Config for HookedRuntimeInferencePipeline."""
 
@@ -438,7 +425,7 @@ def test_processor_cfg_add_and_iadd():
     scale_cfg = MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0)
 
     combined_cfg = add_cfg + scale_cfg
-    assert isinstance(combined_cfg, ComposeProcessorCfg)
+    assert isinstance(combined_cfg, ComposedIOProcessorCfg)
     assert len(combined_cfg.processors) == 2
     assert combined_cfg[0].class_type is AddProcessor
     assert combined_cfg[1].class_type is MultiplyProcessor
@@ -448,7 +435,7 @@ def test_processor_cfg_add_and_iadd():
     assert len(extended_cfg.processors) == 3
 
     prepended_cfg = AddProcessorCfg(pre_add=8.0, post_add=9.0) + combined_cfg
-    assert isinstance(prepended_cfg, ComposeProcessorCfg)
+    assert isinstance(prepended_cfg, ComposedIOProcessorCfg)
     assert len(prepended_cfg.processors) == 3
     assert cast(AddProcessorCfg, prepended_cfg[0]).pre_add == 8.0
     assert cast(AddProcessorCfg, prepended_cfg[1]).pre_add == 1.0
@@ -456,11 +443,11 @@ def test_processor_cfg_add_and_iadd():
 
     combined_cfg += AddProcessorCfg(pre_add=4.0, post_add=6.0)
     assert len(combined_cfg.processors) == 3
-    assert isinstance(combined_cfg(), ComposeProcessor)
+    assert isinstance(combined_cfg(), ComposedIOProcessor)
 
 
-def test_legacy_processor_cfg_accepts_canonical_composed_cfg():
-    legacy_cfg = AddProcessorCfg(
+def test_processor_cfg_accepts_canonical_composed_cfg():
+    cfg = AddProcessorCfg(
         pre_add=1.0,
         post_add=10.0,
     ) + MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0)
@@ -468,28 +455,47 @@ def test_legacy_processor_cfg_accepts_canonical_composed_cfg():
         processors=[AddProcessorCfg(pre_add=5.0, post_add=7.0)]
     )
 
-    mixed_cfg = legacy_cfg + canonical_cfg
+    mixed_cfg = cfg + canonical_cfg
 
-    assert isinstance(mixed_cfg, ComposeProcessorCfg)
-    assert len(legacy_cfg.processors) == 2
+    assert isinstance(mixed_cfg, ComposedIOProcessorCfg)
+    assert len(cfg.processors) == 2
     assert len(mixed_cfg.processors) == 3
     assert cast(AddProcessorCfg, mixed_cfg[2]).pre_add == 5.0
 
 
-def test_runtime_imports_are_compatible():
-    assert LegacyProcessorClassType_co is ClassType_co
-    assert issubclass(InferencePipeline, RuntimeInferencePipeline)
-    assert issubclass(InferencePipelineCfg, RuntimeInferencePipelineCfg)
-    assert issubclass(ProcessorMixin, ModelIOProcessor)
-    assert issubclass(ComposeProcessor, ComposedIOProcessor)
-    assert issubclass(ComposeProcessorCfg, ComposedIOProcessorCfg)
+def test_deprecated_runtime_imports_are_compatible():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        legacy_inference_module = importlib.import_module(
+            "robo_orchard_lab.inference"
+        )
+        legacy_processor_module = importlib.import_module(
+            "robo_orchard_lab.inference.processor"
+        )
+
+    assert legacy_inference_module.ClassType_co is ClassType_co
+    assert issubclass(
+        legacy_inference_module.InferencePipeline,
+        InferencePipeline,
+    )
+    assert issubclass(
+        legacy_inference_module.InferencePipelineCfg, InferencePipelineCfg
+    )
+    assert issubclass(legacy_processor_module.ProcessorMixin, ModelIOProcessor)
+    assert issubclass(
+        legacy_processor_module.ComposeProcessor, ComposedIOProcessor
+    )
+    assert issubclass(
+        legacy_processor_module.ComposeProcessorCfg,
+        ComposedIOProcessorCfg,
+    )
     with pytest.warns(DeprecationWarning):
         reloaded_legacy_processor_module = importlib.reload(
             legacy_processor_module
         )
         assert (
             reloaded_legacy_processor_module.ComposeProcessor
-            is ComposeProcessor
+            is legacy_processor_module.ComposeProcessor
         )
         assert reloaded_legacy_processor_module.ClassType_co is ClassType_co
     assert not hasattr(legacy_processor_module, "ModelIOProcessor")
@@ -570,7 +576,9 @@ def test_deprecated_package_reload_emits_single_warning(
     module_name: str,
     expected_message: str,
 ):
-    module = importlib.import_module(module_name)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        module = importlib.import_module(module_name)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", DeprecationWarning)
@@ -587,7 +595,7 @@ def test_processor_add_and_iadd():
     )
 
     combined = add_processor + scale_processor
-    assert isinstance(combined, ComposeProcessor)
+    assert isinstance(combined, ComposedIOProcessor)
     assert len(combined.processors) == 2
     assert combined[0] is add_processor
     assert combined[1] is scale_processor
@@ -595,7 +603,7 @@ def test_processor_add_and_iadd():
     prepended = (
         AddProcessor(AddProcessorCfg(pre_add=5.0, post_add=7.0)) + combined
     )
-    assert isinstance(prepended, ComposeProcessor)
+    assert isinstance(prepended, ComposedIOProcessor)
     assert len(prepended.processors) == 3
     assert cast(AddProcessor, prepended[0]).cfg.pre_add == 5.0
     assert prepended[1] is add_processor
@@ -628,18 +636,18 @@ def test_processor_add_and_iadd():
     assert torch.equal(pre_processed["input_data"], torch.tensor([10.0]))
 
 
-def test_legacy_processor_accepts_canonical_composed_processor():
-    legacy_composed = AddProcessor(
+def test_processor_accepts_canonical_composed_processor():
+    composed = AddProcessor(
         AddProcessorCfg(pre_add=1.0, post_add=10.0)
     ) + MultiplyProcessor(MultiplyProcessorCfg(pre_scale=2.0, post_scale=3.0))
     canonical_composed = ComposedIOProcessorCfg(
         processors=[AddProcessorCfg(pre_add=5.0, post_add=7.0)]
     )()
 
-    mixed = legacy_composed + canonical_composed
+    mixed = composed + canonical_composed
 
-    assert isinstance(mixed, ComposeProcessor)
-    assert len(legacy_composed.processors) == 2
+    assert isinstance(mixed, ComposedIOProcessor)
+    assert len(composed.processors) == 2
     assert len(mixed.processors) == 3
     assert isinstance(mixed[2], AddProcessor)
 
