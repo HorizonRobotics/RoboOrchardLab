@@ -808,8 +808,16 @@
       }
 
       function getOrderedFailureItems() {
+        function getSortValue(item) {
+          return typeof item.mark_time_sec === "number" &&
+            Number.isFinite(item.mark_time_sec)
+              ? item.mark_time_sec
+              : Number.POSITIVE_INFINITY;
+        }
         return Array.from(state.failures.values()).sort(
-          (left, right) => left.mark_time_sec - right.mark_time_sec
+          (left, right) =>
+            getSortValue(left) - getSortValue(right) ||
+            String(left.mcap_id ?? "").localeCompare(String(right.mcap_id ?? ""))
         );
       }
 
@@ -841,8 +849,9 @@
         elements.empty.style.display = items.length ? "none" : "block";
 
         items.forEach((item) => {
+          const canJump = Boolean(findSegmentByMcapId(item.mcap_id));
           const row = document.createElement("tr");
-          row.dataset.clickable = "true";
+          row.dataset.clickable = canJump ? "true" : "false";
           row.dataset.active =
             state.currentSegment?.mcap_id === item.mcap_id ? "true" : "false";
           row.innerHTML = `
@@ -855,9 +864,11 @@
               event.stopPropagation();
             });
           });
-          row.addEventListener("click", () => {
-            jumpToFailureItem(item);
-          });
+          if (canJump) {
+            row.addEventListener("click", () => {
+              jumpToFailureItem(item);
+            });
+          }
           elements.tableBody.appendChild(row);
         });
 

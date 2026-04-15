@@ -580,22 +580,31 @@ def build_manual_review_failures(
             continue
         mcap_id = item.get("uuid") or report_row["mcap_path"] or ""
         segment = segment_by_mcap_id.get(mcap_id)
-        if not segment:
-            continue
         items.append(
             {
                 "mcap_id": mcap_id,
                 "mcap_path": report_row["mcap_path"],
-                "video_file": segment["video_file"],
-                "mark_time_sec": segment["start_sec"],
+                "video_file": segment["video_file"] if segment else "",
+                "mark_time_sec": segment["start_sec"] if segment else None,
                 "note_summary": build_manual_review_note_summary(item),
-                "error_log_anchor": build_manual_review_error_log_anchor(
-                    report_row["mcap_path"] or mcap_id
+                "error_log_anchor": (
+                    build_manual_review_error_log_anchor(
+                        report_row["mcap_path"] or mcap_id
+                    )
+                    if segment
+                    else ""
                 ),
                 "note": "",
             }
         )
-    items.sort(key=lambda item: item["mark_time_sec"])
+    items.sort(
+        key=lambda item: (
+            float("inf")
+            if item["mark_time_sec"] is None
+            else item["mark_time_sec"],
+            item["mcap_id"],
+        )
+    )
 
     return {
         "concat_video": "concat_videos.mp4",

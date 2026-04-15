@@ -29,7 +29,7 @@ class InspectConfig:
     """
 
     camera_topics_mean_fps_limit: float = 25.0
-    camera_topics_min_fps_limit: float = 10.0
+    camera_topics_min_fps_limit: float = 5.0
     robot_state_topics_mean_fps_limit: float = 180.0
     robot_state_topics_min_fps_limit: float = 50.0
     timestamp_limit: float = 0.5

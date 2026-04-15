@@ -21,6 +21,7 @@ import logging
 import multiprocessing
 import os
 import subprocess
+from typing import Any
 
 import cv2
 import numpy as np
@@ -433,6 +434,7 @@ class PiperMcapChecker:
                 "time": [],
             }
         observed_topics: set[str] = set()
+        parse_warnings: list[str] = []
         topic_summaries = {}
         alignment_time_diff_stats = {}
 
@@ -600,6 +602,29 @@ class PiperMcapChecker:
                 [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
                 for _ in range(step_count)
             ]
+
+        def _reshape_joint_component(
+            values: Any, topic: str, field_name: str
+        ) -> np.ndarray:
+            component = np.asarray(values, dtype="float64")
+            if component.size == 0:
+                return component.reshape(-1, 7)
+            if (
+                field_name == "velocity"
+                and component.ndim == 2
+                and component.shape[1] == 6
+            ):
+                warning = (
+                    f"{uuid} | {topic} - velocity has 6 dims; "
+                    "pad trailing gripper velocity with 0"
+                )
+                logger.warning(warning)
+                parse_warnings.append(warning)
+                padded = np.zeros((component.shape[0], 7), dtype="float64")
+                padded[:, :6] = component
+                return padded
+            return component.reshape(-1, 7)
+
         for t in images:
             images[t]["freq"] = get_frequency(
                 images[t]["time"], uuid + " | " + t
@@ -698,15 +723,15 @@ class PiperMcapChecker:
                 if time_diff.size
                 else 0.0,
             }
-            joints[t]["position"] = np.asarray(
-                joints[t]["position"], dtype="float64"
-            ).reshape(-1, 7)
-            joints[t]["velocity"] = np.asarray(
-                joints[t]["velocity"], dtype="float64"
-            ).reshape(-1, 7)
-            joints[t]["effort"] = np.asarray(
-                joints[t]["effort"], dtype="float64"
-            ).reshape(-1, 7)
+            joints[t]["position"] = _reshape_joint_component(
+                joints[t]["position"], t, "position"
+            )
+            joints[t]["velocity"] = _reshape_joint_component(
+                joints[t]["velocity"], t, "velocity"
+            )
+            joints[t]["effort"] = _reshape_joint_component(
+                joints[t]["effort"], t, "effort"
+            )
 
         if joints[left_joint_topic]["position"].shape[0] == 0:
             left_ee_pose = np.repeat(np.eye(4)[None], 0, axis=0)
@@ -981,6 +1006,7 @@ class PiperMcapChecker:
             joint_limit_names=joint_limit_names,
             joint_lower_limits=joint_lower_limits,
             joint_upper_limits=joint_upper_limits,
+            parse_warnings=parse_warnings,
             topic_summaries=topic_summaries,
             alignment_time_diff_stats=alignment_time_diff_stats,
             static_filter_applied=(
