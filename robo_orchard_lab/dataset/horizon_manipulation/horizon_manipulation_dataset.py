@@ -204,13 +204,9 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         return {"T_world2cam": T_world2cam}
 
     def get_calibration(self, lmdb_index, data):
-        # TODO, only for agilex collected data currently
-        calibration = self.meta_lmdbs[lmdb_index][f"{data['uuid']}/extrinsics"]
-        calibration = dict(
-            left=calibration["piper_left_end_pose_to_camera_left_link"],
-            mid=calibration["piper_left_base_link_to_camera_mid_link"],
-            right=calibration["piper_right_end_pose_to_camera_right_link"],
-        )
+        calibration = self.meta_lmdbs[lmdb_index][
+            f"{data['uuid']}/calibration"
+        ]
         return {"calibration": calibration}
 
     def _concat_shards(self, *shards):

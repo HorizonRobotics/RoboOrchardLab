@@ -78,6 +78,7 @@ def apply_dataset_register():
         import config_rh20t_dataset  # noqa: F401
         import config_robotwin_dataset  # noqa: F401
         import config_table30_ro_dataset  # noqa: F401
+        import config_table30v2_dataset  # noqa: F401
 
         REGISTERED = True
 

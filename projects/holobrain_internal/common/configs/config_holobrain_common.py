@@ -57,6 +57,7 @@ config = dict(
         # "isaac_pick_place",
         "libero",
         # "agibot_digit_challenge_task",
+        "table30v2",
     ],
     # validation_datasets=["horizon_beijing"],
     deploy_datasets=[
@@ -70,6 +71,7 @@ config = dict(
         "isaac_pick_place",
         "libero",
         "agibot_digit_challenge",
+        "table30v2",
     ],
     # vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
@@ -109,6 +111,10 @@ config = dict(
 #         libero_10=0.2,
 #         # agibot_digit_challenge_task,
 #         behavior1k_manipulation=5,
+#         table30v2_ur5=2,
+#         table30v2_arx5=2,
+#         table30v2_aloha=2,
+#         table30v2_dos_w1=2,
 #     ),
 # )
 

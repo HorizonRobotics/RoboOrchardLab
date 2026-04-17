@@ -294,7 +294,14 @@ class AddItems:
         self.items = copy.deepcopy(kwargs)
         for k, v in self.items.items():
             if to_numpy and not isinstance(v, np.ndarray):
-                self.items[k] = np.array(v)
+                self.items[k] = self._to_numpy(v)
+
+    def _to_numpy(self, x):
+        if isinstance(x, dict):
+            return {k: self._to_numpy(v) for k, v in x.items()}
+        if isinstance(x, str):
+            return x
+        return np.array(x)
 
     def __call__(self, data):
         for k, v in self.items.items():
