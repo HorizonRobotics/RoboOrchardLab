@@ -44,7 +44,7 @@ __all__ = [
 class ModelIOProcessor(
     ClassInitFromConfigMixin, StateSaveLoadMixin, metaclass=abc.ABCMeta
 ):
-    """An abstract base class for model boundary I/O processors.
+    """Legacy-compatible model boundary I/O processor base class.
 
     This class defines the standard interface for processors that encapsulate
     the pre-processing and post-processing logic required around a model. The
@@ -52,6 +52,10 @@ class ModelIOProcessor(
     dataset-provided data into a format suitable for model consumption and to
     convert raw model outputs into a more user-friendly, structured
     representation.
+
+    This family remains fully supported as a compatibility input surface, but
+    new code should prefer :class:`EnvelopeIOProcessor` so model input and
+    ``processor_context`` follow the canonical envelope runtime contract.
 
     In the standard inference pipeline workflow, :meth:`pre_process` is
     called once per raw sample before any collate function runs, so subclasses
@@ -149,6 +153,11 @@ class ModelIOProcessor(
 
         Returns:
             ComposedIOProcessor: A new composed processor instance.
+
+        Notes:
+            This operator preserves the legacy compose family. New envelope-
+            first code should prefer ``compose_envelope(...)`` or
+            :class:`EnvelopeIOProcessor` composition helpers.
         """
         if not isinstance(other, ModelIOProcessor):
             raise TypeError(
@@ -186,6 +195,10 @@ class ModelIOProcessorCfg(ClassConfig[ModelIOProcessorType_co]):
     This Pydantic-based config stores the processor class to instantiate and
     any processor-specific fields required to build it. Subclasses are
     responsible for specifying ``class_type`` and their own runtime settings.
+
+    The config remains valid on public pipeline surfaces, but new code should
+    prefer :class:`EnvelopeIOProcessorCfg` so runtime resolution can stay in
+    the canonical envelope family from the start.
     """
 
     def __add__(

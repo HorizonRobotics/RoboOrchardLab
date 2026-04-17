@@ -29,6 +29,7 @@ description: Load these instructions when working with git history, commit messa
   usernames embedded in paths, proxy wrappers, and internal-only URLs.
 - Apply the public-artifact rule from `default.instructions.md` to merge
   request and pull request text as well.
+- Default to omitting `Co-authored-by:` trailers attributing AI tools (e.g. GitHub Copilot, ChatGPT, Claude) in commits, MR descriptions, and PR descriptions. These trailers are optional; add them only when the user explicitly asks for them. This applies to both the commit message body and any web UI description fields.
 
 ## Branch Workflow
 

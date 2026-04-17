@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from robo_orchard_core.utils.config import load_config_class
 
-from robo_orchard_lab.processing.io_processor import (
+from robo_orchard_lab.processing.io_processor.base import (
     ClassType_co,
     ModelIOProcessor,
     ModelIOProcessorCfg,

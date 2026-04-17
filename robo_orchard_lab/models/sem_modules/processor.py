@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import torch
 
-from robo_orchard_lab.processing.io_processor import (
+from robo_orchard_lab.processing.io_processor.base import (
     ClassType_co,
     ModelIOProcessor,
     ModelIOProcessorCfg,

@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional, Sequence, Tuple
 import torch
 from typing_extensions import deprecated
 
-from robo_orchard_lab.processing.io_processor import ModelIOProcessor
+from robo_orchard_lab.processing.io_processor.base import ModelIOProcessor
 from robo_orchard_lab.processing.step_processor.pipeline_step import (
     DeprecatedError,
     LossNotProvidedError,

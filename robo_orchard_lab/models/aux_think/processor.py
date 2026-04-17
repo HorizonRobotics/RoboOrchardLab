@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Union
 import fsspec
 from PIL import Image
 
-from robo_orchard_lab.processing.io_processor import (
+from robo_orchard_lab.processing.io_processor.base import (
     ClassType_co,
     ModelIOProcessor,
     ModelIOProcessorCfg,

@@ -18,6 +18,7 @@ import contextlib
 from typing import Any, Literal
 
 import torch
+from robo_orchard_core.datatypes.dataclass import TensorToMixin
 
 __all__ = ["to_device", "switch_model_mode"]
 
@@ -26,9 +27,9 @@ def to_device(data: Any, device: torch.device) -> Any:
     """Recursively moves tensors in a nested data structure to a specified device.
 
     This function traverses common nested data structures such as dictionaries,
-    lists, and tuples. For each `torch.Tensor` it finds, it applies the
-    `.to(device)` method. Other data types within the structure are
-    returned unmodified.
+    lists, and tuples. For each `torch.Tensor` or `TensorToMixin` value it
+    finds, it applies the `.to(device)` method. Other data types within the
+    structure are returned unmodified.
 
     Args:
         data (Any): The data structure to move. It can be a `torch.Tensor`,
@@ -38,13 +39,17 @@ def to_device(data: Any, device: torch.device) -> Any:
 
     Returns:
         Any: A new data structure of the same type and shape as `data`, but
-             with all `torch.Tensor` instances located on the target device.
+             with all `torch.Tensor` and `TensorToMixin` instances located on
+             the target device.
     """  # noqa: E501
     # Base case: If data is a tensor, move it directly to the device.
     if isinstance(data, torch.Tensor):
         if data.device == device:
             return data
         return data.to(device)
+
+    elif isinstance(data, TensorToMixin):
+        return data.to(device=device)
 
     # Recursive step for dictionaries: apply to_device to each value.
     elif isinstance(data, dict):

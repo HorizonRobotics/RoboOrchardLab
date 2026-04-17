@@ -10,6 +10,21 @@ description: Load these instructions when modifying Python source files, tests, 
 - Reuse existing patterns, helpers, constants, and types before adding new ones.
 - Keep new logic focused; avoid abstraction added only for style.
 - Do not silently swallow exceptions. If catching one, keep enough context to debug it.
+- For processor, envelope, compose, or `pre_process`/`post_process` contract work, follow `.agents/references/processor-guideline.md`.
+
+## Package Export Surfaces
+
+- Treat repository-owned package `__init__.py` files and their `__all__`
+  lists as curated public API surfaces, not as mirrors of every submodule
+  symbol.
+- Prefer exporting only the most common intended entrypoints from package
+  roots. Keep compatibility-only, adapter, resolver, and type-alias symbols
+  in their defining submodules unless the package root is intentionally the
+  supported import path.
+- When an old package-level import path must remain for compatibility,
+  prefer a deprecated compatibility re-export and update repository-owned
+  imports to the defining submodule instead of growing the root surface
+  further.
 
 ## Spatial Transform And Matrix Naming
 

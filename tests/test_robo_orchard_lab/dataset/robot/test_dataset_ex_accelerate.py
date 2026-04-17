@@ -16,7 +16,6 @@
 
 import json
 import os
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -26,12 +25,6 @@ import pytest
 _ACCELERATE_TRACE_RUNNER = Path(__file__).with_name(
     "_dataset_ex_accelerate_trace_runner.py"
 )
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _run_accelerate_trace_subprocess(
@@ -50,8 +43,17 @@ def _run_accelerate_trace_subprocess(
     assert _ACCELERATE_TRACE_RUNNER.exists(), _ACCELERATE_TRACE_RUNNER
 
     env = os.environ.copy()
-    for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "COVERAGE_PROCESS_START",
+    ]:
         env.pop(key, None)
+    for key in tuple(env):
+        if key.startswith("COV_CORE_"):
+            env.pop(key, None)
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         project_root
@@ -68,7 +70,9 @@ def _run_accelerate_trace_subprocess(
         "--num_processes",
         "2",
         "--main_process_port",
-        str(_find_free_port()),
+        # Let the distributed launcher atomically reserve an ephemeral port so
+        # xdist workers do not race on a probe-then-release socket.
+        "0",
         str(_ACCELERATE_TRACE_RUNNER),
         "--prepare-mode",
         prepare_mode,

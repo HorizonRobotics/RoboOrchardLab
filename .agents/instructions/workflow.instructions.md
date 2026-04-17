@@ -39,3 +39,13 @@ description: Load these instructions when planning complex repository work, vali
 - Add or update tests when behavior changes.
 - Broaden validation for shared behavior, public APIs, packaging, or config changes.
 - If validation is partial or blocked, say what ran, what did not, and the remaining risk.
+
+## External CI Diagnosis
+
+- When external CI logs contain both a primary build/test failure and later
+  post-action, sandbox, or log-processing errors, identify the first real
+  failure before acting on the tail error.
+- For flaky-test diagnosis, inspect the repository's real parallel test
+  entrypoints (for example `Makefile` targets, `tests/run_unit_tests.py`,
+  xdist mode, and worker counts) before treating an isolated local rerun as
+  representative.

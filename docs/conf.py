@@ -87,11 +87,16 @@ extensions = [
     "sphinx_codeautolink",
     # "sphinx_toolbox.more_autodoc.generic_bases",
     # "myst_sphinx_gallery",
-    "nbsphinx",
 ]
 
 if not AUTOAPI_ENABLED:
     extensions.remove("autoapi.extension")
+
+if not BUILD_CONTEXT.no_tutorials:
+    # nbsphinx is only needed when notebook-backed tutorial pages are part of
+    # the build. Keep debug-api fast paths independent from the notebook
+    # exporter stack when tutorials are intentionally disabled.
+    extensions.append("nbsphinx")
 
 autodoc_mock_imports = []
 

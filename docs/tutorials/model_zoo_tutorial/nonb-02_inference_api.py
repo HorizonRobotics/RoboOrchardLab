@@ -72,7 +72,7 @@ from robo_orchard_lab.pipeline.inference import (
     InferencePipelineCfg,
     InferencePipelineMixin,
 )
-from robo_orchard_lab.processing.io_processor import (
+from robo_orchard_lab.processing.io_processor.base import (
     ModelIOProcessor,
     ModelIOProcessorCfg,
 )

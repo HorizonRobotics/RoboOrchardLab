@@ -18,7 +18,12 @@
 import numpy as np
 import pytest
 import torch
+from typing_extensions import Literal
 
+from robo_orchard_lab.dataset.datatypes.geometry import BatchPose
+from robo_orchard_lab.models.layers.data_preprocessors import (
+    BaseDataPreprocessor,
+)
 from robo_orchard_lab.utils.torch import switch_model_mode, to_device
 
 # --- Test Setup using Pytest Fixtures ---
@@ -43,6 +48,15 @@ def device(request: pytest.FixtureRequest) -> torch.device:
 
 
 # --- Unit Tests ---
+def _make_batch_pose() -> BatchPose:
+    return BatchPose(
+        xyz=torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32),
+        quat=torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
+        frame_id="world",
+        timestamps=[1],
+    )
+
+
 class TestToDevice:
     def test_to_device_single_tensor(self, device: torch.device):
         """Tests moving a single torch.Tensor."""
@@ -130,6 +144,51 @@ class TestToDevice:
         assert to_device((), device) == ()
         assert to_device({}, device) == {}
 
+    def test_to_device_tensor_to_mixin(self, device: torch.device):
+        """Tests moving TensorToMixin-backed datatypes."""
+        pose = _make_batch_pose()
+
+        moved_pose = to_device(pose, device)
+
+        assert isinstance(moved_pose, BatchPose)
+        assert moved_pose.xyz.device.type == device.type
+        assert moved_pose.quat.device.type == device.type
+        if device.type == "cpu":
+            assert moved_pose is pose
+        else:
+            assert moved_pose is not pose
+            assert pose.xyz.device.type == "cpu"
+            assert pose.quat.device.type == "cpu"
+
+
+class TestBaseDataPreprocessor:
+    def test_cast_data_tensor_to_mixin(self, device: torch.device):
+        """Tests moving TensorToMixin values through BaseDataPreprocessor."""
+        preprocessor = BaseDataPreprocessor()
+        pose = _make_batch_pose()
+
+        processed = preprocessor.cast_data(
+            {"pose": pose, "poses": [pose]},
+            device=device,
+        )
+
+        assert isinstance(processed, dict)
+        processed_pose = processed["pose"]
+        processed_poses = processed["poses"]
+        assert isinstance(processed_pose, BatchPose)
+        assert isinstance(processed_poses, list)
+        assert all(isinstance(item, BatchPose) for item in processed_poses)
+        assert processed_pose.xyz.device.type == device.type
+        assert processed_pose.quat.device.type == device.type
+        assert processed_poses[0].xyz.device.type == device.type
+        assert processed_poses[0].quat.device.type == device.type
+        if device.type == "cpu":
+            assert processed_pose is pose
+        else:
+            assert processed_pose is not pose
+            assert pose.xyz.device.type == "cpu"
+            assert pose.quat.device.type == "cpu"
+
 
 class SimpleTestModel(torch.nn.Module):
     """A simple model with layers sensitive to train/eval modes."""
@@ -198,7 +257,9 @@ class TestSwitchModelMode:
             pytest.param("eval", id="eval_to_eval"),
         ],
     )
-    def test_no_change_if_mode_is_already_correct(self, mode: str):
+    def test_no_change_if_mode_is_already_correct(
+        self, mode: Literal["train", "eval"]
+    ):
         """Tests that no state change happens if the model is already in the target mode."""  # noqa: E501
         model = SimpleTestModel()
         if mode == "train":

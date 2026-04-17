@@ -18,6 +18,7 @@ import importlib
 import warnings
 from dataclasses import dataclass
 from typing import Optional, cast
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -46,8 +47,17 @@ from robo_orchard_lab.pipeline.training.hook_based_trainer import (
     HookBasedTrainer,
 )
 from robo_orchard_lab.processing.io_processor import (
+    EnvelopeIOProcessor,
+    EnvelopeIOProcessorCfg,
+    PipelineEnvelope,
+    compose_envelope,
+)
+from robo_orchard_lab.processing.io_processor.base import (
     ModelIOProcessor,
     ModelIOProcessorCfg,
+)
+from robo_orchard_lab.processing.io_processor.envelope import (
+    ModelIOProcessorEnvelopeAdapter,
 )
 from robo_orchard_lab.processing.step_processor import (
     DeprecatedError as StepProcessorDeprecatedError,
@@ -58,14 +68,6 @@ from robo_orchard_lab.processing.step_processor import (
 
 @dataclass
 class TrainerState:
-    """A class to manage the state of the training process.
-
-    Attributes:
-        epoch (int): The current epoch in the training process.
-        step (int): The current step within the current epoch.
-        global_step (int): The total number of steps taken across all epochs.
-    """
-
     epoch: int = 0
     step: int = 0
     global_step: int = 0
@@ -108,11 +110,9 @@ class DummyPipelineHook(PipelineHooks):
 
     def on_loop_begin(self, args: PipelineHookArgs):
         self._on_loop_begin_cnt += 1
-        print("Loop begin")
 
     def on_loop_end(self, args: PipelineHookArgs):
         self._on_loop_end_cnt += 1
-        print("Loop end")
 
     def on_epoch_begin(self, args: PipelineHookArgs):
         self._on_epoch_begin_cnt += 1
@@ -121,7 +121,6 @@ class DummyPipelineHook(PipelineHooks):
             step=args.step_id,
             global_step=args.global_step_id,
         )
-        print("Epoch begin. begin state: ", self._on_epoch_begin_state)
 
     def on_epoch_end(self, args: PipelineHookArgs):
         self._on_epoch_end_cnt += 1
@@ -130,14 +129,10 @@ class DummyPipelineHook(PipelineHooks):
             step=args.step_id,
             global_step=args.global_step_id,
         )
-        print("Epoch end. end state: ", self._on_epoch_end_state)
-        print("Checking trainer state...")
         assert self._on_epoch_begin_state is not None
         assert (
             self._on_epoch_end_state.epoch == self._on_epoch_begin_state.epoch
         )
-        # for epoch with step number > 1, the global step should be
-        # different from the epoch step
         assert (
             self._on_epoch_end_state.global_step
             != self._on_epoch_begin_state.global_step
@@ -151,7 +146,6 @@ class DummyPipelineHook(PipelineHooks):
             step=args.step_id,
             global_step=args.global_step_id,
         )
-        print("Step begin. begin state: ", self._on_step_begin_state)
 
     def on_step_end(self, args: PipelineHookArgs):
         self._on_step_end_cnt += 1
@@ -160,8 +154,6 @@ class DummyPipelineHook(PipelineHooks):
             step=args.step_id,
             global_step=args.global_step_id,
         )
-        print("Step end. end state: ", self._on_step_end_state)
-        print("Checking trainer state...")
         assert self._on_step_begin_state is not None
         assert self._on_step_end_state.step == self._on_step_begin_state.step
         assert (
@@ -172,8 +164,6 @@ class DummyPipelineHook(PipelineHooks):
 
 
 class SimpleModel(torch.nn.Module):
-    """A simple neural network model for testing."""
-
     def __init__(self):
         super().__init__()
         self.linear = torch.nn.Linear(2, 1)
@@ -183,8 +173,6 @@ class SimpleModel(torch.nn.Module):
 
 
 class DummyBatchProcessor(SimpleStepProcessor):
-    """A simple batch processor for testing."""
-
     def forward(self, model: torch.nn.Module, batch: torch.Tensor):
         if (
             self.accelerator is not None
@@ -193,7 +181,7 @@ class DummyBatchProcessor(SimpleStepProcessor):
             batch = batch.to(self.accelerator.device)
 
         outputs = model(batch)
-        loss = torch.mean((outputs - 1) ** 2)  # Mean squared error loss
+        loss = torch.mean((outputs - 1) ** 2)
         return outputs, loss
 
 
@@ -216,6 +204,30 @@ class AddTensorIOProcessorCfg(ModelIOProcessorCfg[AddTensorIOProcessor]):
     class_type: ClassType[AddTensorIOProcessor] = AddTensorIOProcessor
     pre_add: float = 0.0
     post_add: float = 0.0
+
+
+class ModuleBackedIOProcessor(ModelIOProcessor, torch.nn.Module):
+    cfg: "ModuleBackedIOProcessorCfg"
+
+    def __init__(self, cfg: "ModuleBackedIOProcessorCfg"):
+        torch.nn.Module.__init__(self)
+        ModelIOProcessor.__init__(self, cfg)
+        self.linear = torch.nn.Linear(2, 2)
+
+    def pre_process(self, data: torch.Tensor) -> torch.Tensor:
+        return self.linear(data)
+
+    def post_process(
+        self,
+        model_outputs: torch.Tensor,
+        model_input: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del model_input
+        return model_outputs
+
+
+class ModuleBackedIOProcessorCfg(ModelIOProcessorCfg[ModuleBackedIOProcessor]):
+    class_type: ClassType[ModuleBackedIOProcessor] = ModuleBackedIOProcessor
 
 
 class FailingPreProcessIOProcessor(ModelIOProcessor):
@@ -275,6 +287,61 @@ class RecordingBoundaryIOProcessorCfg(
     )
 
 
+class EnvelopeRecordingIOProcessor(EnvelopeIOProcessor):
+    cfg: "EnvelopeRecordingIOProcessorCfg"
+
+    def __init__(self, cfg: "EnvelopeRecordingIOProcessorCfg"):
+        super().__init__(cfg)
+        self.pre_contexts: list[dict[str, torch.Tensor]] = []
+        self.post_inputs: list[torch.Tensor] = []
+        self.post_context_refs: list[dict[str, torch.Tensor]] = []
+        self.post_contexts: list[dict[str, torch.Tensor]] = []
+
+    def pre_process(self, data: PipelineEnvelope) -> PipelineEnvelope:
+        raw_batch = cast(torch.Tensor, data.model_input)
+        processor_context = {
+            "raw_batch": raw_batch.clone(),
+            "marker": torch.tensor(self.cfg.context_marker),
+        }
+        self.pre_contexts.append(processor_context)
+        return PipelineEnvelope(
+            model_input=raw_batch + self.cfg.pre_add,
+            processor_context=processor_context,
+        )
+
+    def post_process(
+        self,
+        model_outputs,
+        *,
+        model_input=None,
+        processor_context=None,
+    ):
+        self.post_inputs.append(cast(torch.Tensor, model_input).clone())
+        context = cast(dict[str, torch.Tensor], processor_context)
+        self.post_context_refs.append(context)
+        self.post_contexts.append(
+            {
+                "raw_batch": context["raw_batch"].clone(),
+                "marker": context["marker"].clone(),
+            }
+        )
+        return {
+            "model_outputs": model_outputs,
+            "model_input": model_input,
+            "processor_context": processor_context,
+        }
+
+
+class EnvelopeRecordingIOProcessorCfg(
+    EnvelopeIOProcessorCfg[EnvelopeRecordingIOProcessor]
+):
+    class_type: ClassType[EnvelopeRecordingIOProcessor] = (
+        EnvelopeRecordingIOProcessor
+    )
+    pre_add: float = 0.0
+    context_marker: float = 0.0
+
+
 class ForwardOnlyStepProcessor(SimpleStepProcessor):
     def __init__(self, **kwargs):
         super().__init__(need_backward=False, **kwargs)
@@ -286,8 +353,6 @@ class ForwardOnlyStepProcessor(SimpleStepProcessor):
 
 
 class TensorDataset(torch.utils.data.Dataset):
-    """A simple dataset that returns tensors."""
-
     def __init__(self, data: torch.Tensor):
         self.data = data
 
@@ -351,6 +416,160 @@ def test_simple_step_processor_with_io_processor():
     assert torch.equal(hook_args.batch, torch.tensor([[1.0, 2.0]]))
     assert torch.equal(hook_args.model_outputs, expected_outputs)
     assert hook_args.reduce_loss is None
+
+
+def test_simple_step_processor_with_envelope_io_processor():
+    io_processor = EnvelopeRecordingIOProcessor(
+        EnvelopeRecordingIOProcessorCfg(pre_add=1.0, context_marker=7.0)
+    )
+    step_processor = ForwardOnlyStepProcessor(
+        io_processor=io_processor,
+        apply_post_process=True,
+    )
+    hook_args = PipelineHookArgs(
+        accelerator=Accelerator(device_placement=True),
+        batch=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda batch: batch * 2,
+    )
+
+    expected_model_input = torch.tensor([[2.0, 3.0]], dtype=torch.float32)
+    assert step_processor.io_processor is io_processor
+    assert step_processor.resolved_envelope_processor is io_processor
+    assert len(step_processor.forward_batches) == 1
+    assert torch.equal(step_processor.forward_batches[0], expected_model_input)
+    assert torch.equal(hook_args.batch, torch.tensor([[1.0, 2.0]]))
+    assert isinstance(hook_args.model_outputs, dict)
+    model_outputs = cast(dict[str, object], hook_args.model_outputs)
+    assert torch.equal(
+        model_outputs["model_outputs"], expected_model_input * 2
+    )
+    assert torch.equal(model_outputs["model_input"], expected_model_input)
+    processor_context = cast(
+        dict[str, torch.Tensor], model_outputs["processor_context"]
+    )
+    assert len(io_processor.pre_contexts) == 1
+    assert len(io_processor.post_context_refs) == 1
+    assert processor_context is io_processor.pre_contexts[0]
+    assert processor_context is io_processor.post_context_refs[0]
+    assert torch.equal(
+        processor_context["raw_batch"],
+        torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+    assert torch.equal(processor_context["marker"], torch.tensor(7.0))
+    assert processor_context["raw_batch"] is not hook_args.batch
+    assert len(io_processor.post_inputs) == 1
+    assert torch.equal(io_processor.post_inputs[0], expected_model_input)
+    assert torch.equal(
+        io_processor.post_contexts[0]["raw_batch"],
+        torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+
+def test_simple_step_processor_keeps_legacy_io_processor_unprepared():
+    io_processor = ModuleBackedIOProcessor(ModuleBackedIOProcessorCfg())
+    step_processor = ForwardOnlyStepProcessor(io_processor=io_processor)
+    accelerator = Accelerator(device_placement=True)
+    accelerator.prepare = MagicMock(
+        side_effect=AssertionError(
+            "SimpleStepProcessor must not call accelerator.prepare."
+        )
+    )
+    hook_args = PipelineHookArgs(
+        accelerator=accelerator,
+        batch=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda batch: batch,
+    )
+
+    accelerator.prepare.assert_not_called()
+    assert step_processor.io_processor is io_processor
+    assert step_processor.resolved_envelope_processor is not None
+    assert step_processor.resolved_envelope_processor.legacy is io_processor
+
+
+def test_simple_step_processor_keeps_composed_legacy_modules_unprepared():
+    first_io_processor = ModuleBackedIOProcessor(ModuleBackedIOProcessorCfg())
+    second_io_processor = ModuleBackedIOProcessor(ModuleBackedIOProcessorCfg())
+    composed = compose_envelope(first_io_processor, second_io_processor)
+    step_processor = ForwardOnlyStepProcessor(io_processor=composed)
+    accelerator = Accelerator(device_placement=True)
+    accelerator.prepare = MagicMock(
+        side_effect=AssertionError(
+            "SimpleStepProcessor must not call accelerator.prepare."
+        )
+    )
+    hook_args = PipelineHookArgs(
+        accelerator=accelerator,
+        batch=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda batch: batch,
+    )
+
+    accelerator.prepare.assert_not_called()
+    assert step_processor.io_processor is composed
+    assert step_processor.resolved_envelope_processor is composed
+    first_adapter = cast(
+        ModelIOProcessorEnvelopeAdapter,
+        composed.processors[0],
+    )
+    second_adapter = cast(
+        ModelIOProcessorEnvelopeAdapter,
+        composed.processors[1],
+    )
+    assert first_adapter.legacy is first_io_processor
+    assert second_adapter.legacy is second_io_processor
+
+
+def test_simple_step_processor_io_processor_reassignment_updates_runtime():
+    step_processor = ForwardOnlyStepProcessor(apply_post_process=True)
+    io_processor = EnvelopeRecordingIOProcessor(
+        EnvelopeRecordingIOProcessorCfg(pre_add=1.0, context_marker=7.0)
+    )
+    step_processor.io_processor = io_processor
+    hook_args = PipelineHookArgs(
+        accelerator=Accelerator(device_placement=True),
+        batch=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+    )
+
+    step_processor(
+        pipeline_hooks=PipelineHooks(),
+        on_batch_hook_args=hook_args,
+        model=lambda batch: batch * 2,
+    )
+
+    expected_model_input = torch.tensor([[2.0, 3.0]], dtype=torch.float32)
+    assert step_processor.io_processor is io_processor
+    assert step_processor.resolved_envelope_processor is io_processor
+    assert len(step_processor.forward_batches) == 1
+    assert torch.equal(step_processor.forward_batches[0], expected_model_input)
+    assert isinstance(hook_args.model_outputs, dict)
+    model_outputs = cast(dict[str, object], hook_args.model_outputs)
+    assert torch.equal(
+        model_outputs["model_outputs"],
+        expected_model_input * 2,
+    )
+    assert torch.equal(model_outputs["model_input"], expected_model_input)
+    processor_context = cast(
+        dict[str, torch.Tensor], model_outputs["processor_context"]
+    )
+    assert len(io_processor.pre_contexts) == 1
+    assert len(io_processor.post_context_refs) == 1
+    assert processor_context is io_processor.pre_contexts[0]
+    assert processor_context is io_processor.post_context_refs[0]
+    assert processor_context["raw_batch"] is not hook_args.batch
 
 
 def test_simple_step_processor_pre_process_error_keeps_hook_args_clean():
@@ -588,10 +807,8 @@ def test_legacy_trainer_facades_export_runtime_types():
     assert pipeline_module.SimpleTrainer is SimpleTrainer
 
 
-# the fixture scope should be function, not session!
 @pytest.fixture(scope="function")
 def dummy_trainer():
-    """Fixture to create a canonical trainer."""
     model = SimpleModel()
     dataloader = DataLoader(
         TensorDataset(
@@ -618,9 +835,7 @@ def dummy_trainer():
 
 
 def test_trainer_initialization(dummy_trainer):
-    """Test trainer initialization."""
     assert dummy_trainer.max_epoch == 1
-    # assert dummy_trainer.lr_scheduler_step_at == "step"
 
 
 def test_hook_based_trainer_prepares_iterable_dataloader_once(
@@ -719,21 +934,12 @@ def test_hook_based_trainer_early_break_cleans_accelerate_dataloader_state(
 
 
 def test_training_loop(dummy_trainer: HookBasedTrainer):
-    """Test training loop execution."""
-    # Spy on hook methods
-
-    print("Old hook: ", dummy_trainer.hooks)
     hook = DummyPipelineHook()
-    print("New hook: ", hook)
-
     dummy_trainer.hooks = hook
-
-    # Run the training loop
     dummy_trainer()
 
     assert dummy_trainer.dataloader is not None
 
-    # Verify that hooks were called the expected number of times
     assert hook._on_loop_begin_cnt == 1
     assert hook._on_epoch_begin_cnt == 1
     assert hook._on_step_begin_cnt == len(dummy_trainer.dataloader)
@@ -743,12 +949,10 @@ def test_training_loop(dummy_trainer: HookBasedTrainer):
 
 
 def test_optimizer_and_scheduler(dummy_trainer):
-    """Test optimizer and scheduler behavior."""
     initial_lr = dummy_trainer.optimizer.param_groups[0]["lr"]
     dummy_trainer()
     final_lr = dummy_trainer.optimizer.param_groups[0]["lr"]
 
-    # Check that the learning rate scheduler updated the learning rate
     assert final_lr < initial_lr
 
 

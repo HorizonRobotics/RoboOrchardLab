@@ -21,6 +21,7 @@ Repository skills live in `.agents/skills/`.
 ### Quick Routing
 
 - Python implementation changes: `.agents/instructions/python.instructions.md`
+- Processor, envelope, compose, or `pre_process`/`post_process` contract changes: `.agents/references/processor-guideline.md`
 - Architecture review, layering, abstraction seams, or public API surface design:
   `.agents/references/architecture-review-guideline.md`
 - License header requirements and template: `.agents/references/license-header-guideline.md`

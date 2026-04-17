@@ -24,6 +24,10 @@ matplotlib
 interrogate
 myst-parser
 nbsphinx
+# nbsphinx 0.9.x still imports nbconvert's rst template at module import time.
+# nbconvert 7 removed that template layout, so keep the docs toolchain on the
+# last compatible major version until nbsphinx usage is updated.
+nbconvert<7
 sphinx_copybutton
 sphinx_codeautolink
 jinja2

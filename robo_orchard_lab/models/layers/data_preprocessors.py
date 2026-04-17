@@ -15,11 +15,12 @@
 # permissions and limitations under the License.
 
 import copy
-from typing import Callable, Dict, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Union
 
 import numpy as np
 import torch
 from PIL import Image
+from robo_orchard_core.datatypes.dataclass import TensorToMixin
 from torch import nn
 
 from robo_orchard_lab.utils import as_sequence, build
@@ -75,11 +76,34 @@ class BaseDataPreprocessor(nn.Module):
             [build(x) for x in as_sequence(batch_transforms)]
         )
 
-    def cast_data(self, data, device="cuda"):
+    def cast_data(self, data: Any, device: str | torch.device = "cuda") -> Any:
+        """Recursively move supported payloads onto ``device``.
+
+        Mappings and sequences are traversed recursively while preserving their
+        container type. :class:`torch.Tensor` values are moved with
+        :meth:`torch.Tensor.to`, and values implementing
+        :class:`TensorToMixin` are delegated to ``to(device=...)`` so custom
+        dataclass-like containers can manage their own nested tensor transfer.
+        Strings, bytes, ``None``, and unsupported objects are returned
+        unchanged.
+
+        Args:
+            data (Any): Arbitrary nested payload containing tensors,
+                ``TensorToMixin`` values, mappings, sequences, or pass-through
+                scalars.
+            device (str | torch.device, optional): Target device for supported
+                tensor-bearing values. Default is ``"cuda"``.
+
+        Returns:
+            Any: Payload mirrored to ``device`` where supported, with the input
+                container structure preserved.
+        """
         if isinstance(data, Mapping):
             return {key: self.cast_data(data[key], device) for key in data}
         elif isinstance(data, (str, bytes)) or data is None:
             return data
+        elif isinstance(data, TensorToMixin):
+            return data.to(device=device)
         elif isinstance(data, Sequence):
             return type(data)(
                 self.cast_data(sample, device) for sample in data

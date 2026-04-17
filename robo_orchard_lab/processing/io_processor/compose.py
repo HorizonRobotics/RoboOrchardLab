@@ -30,13 +30,17 @@ __all__ = [
 
 
 class ComposedIOProcessor(ModelIOProcessor):
-    """An I/O processor that chains multiple processors together.
+    """A legacy-compatible composed processor chain.
 
     This processor acts as a container that applies a sequence of other
     processors serially. It is useful for building complex model I/O pipelines
     from smaller, reusable components. ``pre_process`` is applied from left to
     right, while ``post_process`` is applied in reverse order so the output
     transformation mirrors the input transformation stack.
+
+    This compose family is still supported for compatibility, but new code
+    should prefer :class:`ComposedEnvelopeIOProcessor` via
+    ``compose_envelope(...)`` or envelope-family ``+`` composition.
 
     The composed processor preserves the standard processor call semantics:
     child ``pre_process`` methods are fed one sample at a time before
@@ -130,7 +134,12 @@ class ComposedIOProcessor(ModelIOProcessor):
 
 
 class ComposedIOProcessorCfg(ModelIOProcessorCfg[ComposedIOProcessor]):
-    """Configuration for :class:`ComposedIOProcessor`."""
+    """Configuration for the legacy-compatible composed processor family.
+
+    New code should prefer :class:`ComposedEnvelopeIOProcessorCfg` and
+    ``compose_envelope_cfg(...)`` when defining composed processors directly
+    in the envelope family.
+    """
 
     class_type: ClassType_co[ComposedIOProcessor] = ComposedIOProcessor
     processors: list[ModelIOProcessorCfgType_co]  # type: ignore

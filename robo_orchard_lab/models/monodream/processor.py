@@ -21,7 +21,7 @@ import fsspec
 from PIL import Image as PILImage
 
 from robo_orchard_lab.models.monodream.utils.constants import Image
-from robo_orchard_lab.processing.io_processor import (
+from robo_orchard_lab.processing.io_processor.base import (
     ClassType_co,
     ModelIOProcessor,
     ModelIOProcessorCfg,

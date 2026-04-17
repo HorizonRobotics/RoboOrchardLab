@@ -33,6 +33,7 @@ from robo_orchard_core.utils.config import (
     ConfigInstanceOf,
 )
 from torch.utils.data import Dataset
+from typing_extensions import deprecated
 
 from robo_orchard_lab.dataset.collates import (
     CollatorConfig,
@@ -46,8 +47,18 @@ from robo_orchard_lab.pipeline.inference.mixin import (
     OutputType,
 )
 from robo_orchard_lab.processing.io_processor import (
+    EnvelopeIOProcessor,
+    EnvelopeIOProcessorCfg,
+    PipelineEnvelope,
+)
+from robo_orchard_lab.processing.io_processor.base import (
     ModelIOProcessor,
     ModelIOProcessorCfg,
+)
+from robo_orchard_lab.processing.io_processor.envelope import (
+    ModelIOProcessorEnvelopeAdapter,
+    normalize_pipeline_envelope,
+    resolve_envelope_processor,
 )
 from robo_orchard_lab.utils.torch import to_device
 
@@ -68,21 +79,19 @@ class InferencePipeline(
     handling the surrounding runtime steps such as pre-processing, batching,
     model forwarding, and post-processing.
 
-    The defined workflow in :meth:`__call__` is:
+    The canonical workflow in :meth:`__call__` is:
 
-    1. Pre-process the raw input data using the configured processor.
-    2. Collate the processed data into a mini-batch when batching is needed.
-    3. Perform model inference.
-    4. Post-process the model's output using the processor.
-
-    In this workflow, ``processor.pre_process`` is invoked once per raw
-    sample before collation. ``processor.post_process`` runs after model
-    forward, so it usually receives batched model outputs together with the
-    collated model input, even when the effective batch size is 1.
+    1. Wrap each raw sample into a single-sample :class:`PipelineEnvelope`.
+    2. Resolve the configured processor into the envelope family.
+    3. Collate only ``model_input`` when batching is needed.
+    4. Pass ``processor_context`` through post-process without collating it:
+       non-collated paths keep the original object, while collated paths pass
+       a per-sample list aligned with the collated batch.
+    5. Post-process using the resolved envelope processor when present.
     """
 
     cfg: InferencePipelineCfg
-    processor: ModelIOProcessor | None
+    envelope_processor: EnvelopeIOProcessor | None
     collate_fn: CallableType[[list[Any]], Any] | None
 
     def __init__(
@@ -107,20 +116,40 @@ class InferencePipeline(
         """Configure the pipeline runtime helpers.
 
         Besides storing ``cfg`` and ``model`` through the mixin, this method
-        instantiates the optional model I/O processor and resolves the
-        effective collate function so the pipeline can be reused after loading
-        or state restoration.
+        instantiates the configured processor, resolves the canonical envelope
+        processor, resolves the effective collate function, and warns when a
+        downstream class still defines the unsupported legacy private
+        ``_model_forward_with_processor(...)`` hook name. That legacy name is
+        never called by runtime and is detected only to surface migration
+        warnings during setup, including after loading or state restoration.
 
         Args:
             cfg (InferencePipelineMixinCfg): The pipeline configuration.
             model (TorchModelMixin): The model bound to the pipeline.
         """
         super()._setup(cfg, model)
-        self.processor = self.cfg.processor() if self.cfg.processor else None
+        source_processor = self.cfg.processor() if self.cfg.processor else None
+        self.envelope_processor = resolve_envelope_processor(source_processor)
         if isinstance(self.cfg.collate_fn, CollatorConfig):
             self.collate_fn = self.cfg.collate_fn()
         else:
             self.collate_fn = self.cfg.collate_fn
+
+        if (
+            getattr(type(self), "_model_forward_with_processor", None)
+            is not None
+            and type(self)._model_forward_with_envelope
+            is InferencePipeline._model_forward_with_envelope
+        ):
+            warnings.warn(
+                f"{type(self).__name__} still provides "
+                "unsupported private "
+                "`_model_forward_with_processor(...)` hook name. "
+                "`InferencePipeline` runtime never calls it. Override "
+                "`_model_forward_with_envelope(...)` instead.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     def _get_ignore_save_attributes(self) -> list[str]:
         """Return runtime-only attributes that should not be serialized.
@@ -134,7 +163,7 @@ class InferencePipeline(
                 state.
         """
         return super()._get_ignore_save_attributes() + [
-            "processor",
+            "envelope_processor",
             "collate_fn",
         ]
 
@@ -150,6 +179,42 @@ class InferencePipeline(
         """
         pass
 
+    @property
+    @deprecated(
+        "Use `envelope_processor` instead. `processor` remains a "
+        "deprecated compatibility alias that unwraps legacy adapters and "
+        "otherwise returns the configured envelope processor.",
+        category=None,
+    )  # type: ignore
+    def processor(
+        self,
+    ) -> ModelIOProcessor | EnvelopeIOProcessor | None:
+        """Backward-compatible alias for the configured processor.
+
+        Legacy adapter-backed pipelines return the wrapped
+        :class:`ModelIOProcessor`. Envelope-native pipelines return the
+        configured :class:`EnvelopeIOProcessor` directly. Assignments resolve
+        through :attr:`envelope_processor` so existing runtime reassignment
+        code can keep using ``pipeline.processor = ...``.
+        """
+
+        if self.envelope_processor is None:
+            return None
+        if isinstance(
+            self.envelope_processor, ModelIOProcessorEnvelopeAdapter
+        ):
+            return self.envelope_processor.legacy
+        return self.envelope_processor
+
+    @processor.setter
+    def processor(
+        self,
+        value: ModelIOProcessor | EnvelopeIOProcessor | None,
+    ) -> None:
+        """Resolve and store the canonical envelope processor runtime."""
+
+        self.envelope_processor = resolve_envelope_processor(value)
+
     @overload
     def __call__(self, data: InputType) -> OutputType: ...
 
@@ -160,18 +225,15 @@ class InferencePipeline(
     def __call__(
         self, data: InputType | DatasetType
     ) -> OutputType | Iterable[OutputType]:
-        """Executes the standard end-to-end inference workflow.
-
-        This method orchestrates the full pipeline: pre-processing,
-        collation, model forwarding, and post-processing.
+        """Execute the canonical end-to-end inference workflow.
 
         Args:
-            data (InputType | DatasetType): The raw input data for the
-                pipeline. It can be a single sample or a dataset-like
-                iterable of samples, such as a generator, dataset, list, or
-                tuple. When an iterable is provided, the data is processed in
-                mini-batches of size ``self.cfg.batch_size`` and the method
-                yields one result per batch.
+            data (InputType | DatasetType): Raw input data for the pipeline.
+                It can be a single sample or a dataset-like iterable of
+                samples, such as a generator, dataset, list, or tuple. When an
+                iterable is provided, the data is processed in mini-batches of
+                size ``self.cfg.batch_size`` and the method yields one result
+                per batch.
 
         Returns:
             OutputType | Iterable[OutputType]: The post-processed inference
@@ -180,8 +242,7 @@ class InferencePipeline(
         """
         if not isinstance(data, (Dataset, list, tuple, Generator)):
             return self._inference_single(data)
-        else:
-            return self._inference_batch_gen(data)
+        return self._inference_batch_gen(data)
 
     def _inference_batch_gen(self, data: DatasetType) -> Iterable[OutputType]:
         """Yield batched inference results from a dataset-like input.
@@ -204,36 +265,70 @@ class InferencePipeline(
             yield self._inference_batch(batch)
 
     def _inference_batch(self, batch: Iterable[InputType]) -> OutputType:
-        """Executes the standard inference workflow for a batch of data.
-
-        This method orchestrates the full batch pipeline: pre-processing,
-        collation, model forwarding, and post-processing. If no collate
-        function is configured, it falls back to
-        :func:`robo_orchard_lab.dataset.collates.collate_batch_dict`, which
-        assumes each sample is a dictionary.
-
-        The processor contract in this path is asymmetric by design:
-        ``pre_process`` runs once per sample before collation, while
-        ``post_process`` runs once on the batched model outputs and the
-        collated batch.
+        """Execute the inference workflow for a batch of raw samples.
 
         Args:
-            batch (Iterable[InputType]): A batch of raw input samples for the
-                pipeline.
+            batch (Iterable[InputType]): Raw input samples for the pipeline.
 
         Returns:
-            OutputType: The final, post-processed batch result.
+            OutputType: Final post-processed batch result.
         """
-        model_input = self._build_model_input(batch, is_batch=True)
-        return self._model_forward_with_processor(model_input)
+        model_input, processor_context = self._build_runtime_input(
+            batch, is_batch=True
+        )
+        return self._model_forward_with_envelope(
+            model_input,
+            processor_context=processor_context,
+        )
 
-    def _build_model_input(
+    def _prepare_single_input(self, data: InputType) -> PipelineEnvelope:
+        """Prepare one raw sample into a pipeline envelope."""
+
+        envelope = PipelineEnvelope(model_input=data)
+        if self.envelope_processor is not None:
+            envelope = self.envelope_processor.pre_process(envelope)
+        return normalize_pipeline_envelope(envelope)
+
+    def _collate_model_input_keep_processor_context(
+        self,
+        envelope_batch: list[PipelineEnvelope],
+    ) -> tuple[Any, Any]:
+        """Collate model input while leaving processor context untouched.
+
+        Args:
+            envelope_batch (list[PipelineEnvelope]): Per-sample envelopes
+                produced by ``pre_process``.
+
+        Returns:
+            tuple[Any, Any]: Collated model input plus a list of original
+                per-sample ``processor_context`` values. If this helper is
+                used, ``processor_context`` is always returned as a list,
+                even when only one sample was collated.
+        """
+        model_inputs = [item.model_input for item in envelope_batch]
+        if self.collate_fn is None:
+            warnings.warn(
+                "No collate function is specified in the pipeline config for "
+                "batch inference. Using default collate function "
+                "`collate_batch_dict`, which assumes each data sample is a "
+                "dictionary."
+            )
+            collated_model_input = collate_batch_dict(model_inputs)  # type: ignore[arg-type]
+        else:
+            collated_model_input = self.collate_fn(model_inputs)
+
+        processor_contexts = [
+            item.processor_context for item in envelope_batch
+        ]
+        return collated_model_input, processor_contexts
+
+    def _build_runtime_input(
         self,
         data: InputType | Iterable[InputType],
         *,
         is_batch: bool,
-    ) -> Any:
-        """Prepare model inputs with optional processor pre-processing.
+    ) -> tuple[Any, Any]:
+        """Prepare model input plus passthrough processor context.
 
         Args:
             data (InputType | Iterable[InputType]): Raw input sample or raw
@@ -241,89 +336,84 @@ class InferencePipeline(
             is_batch (bool): Whether ``data`` is a batch of raw samples.
 
         Returns:
-            Any: Model-ready input after optional pre-processing and
-                collation.
+            tuple[Any, Any]: Model-facing input and passthrough
+                ``processor_context`` payload. The runtime collates only
+                model input. If model input collation is used,
+                ``processor_context`` is returned as a list of per-sample
+                values for the processor to interpret, even when the list
+                length is 1.
         """
         if is_batch:
             batch_inputs = list(cast(Iterable[InputType], data))
-            if self.processor is not None:
-                batch_data = [
-                    self.processor.pre_process(sample)
-                    for sample in batch_inputs
-                ]
-            else:
-                batch_data = batch_inputs
+            envelope_batch = [
+                self._prepare_single_input(sample) for sample in batch_inputs
+            ]
+            return self._collate_model_input_keep_processor_context(
+                envelope_batch
+            )
 
-            if self.collate_fn is None:
-                warnings.warn(
-                    "No collate function is specified in the pipeline "
-                    "config for batch inference. Using default collate "
-                    "function `collate_batch_dict`, which assumes each "
-                    "data sample is a dictionary."
-                )
-                return collate_batch_dict(batch_data)  # type: ignore[arg-type]
-
-            return self.collate_fn(batch_data)
-
-        model_input = (
-            self.processor.pre_process(data) if self.processor else data
-        )
+        envelope = self._prepare_single_input(cast(InputType, data))
         if self.collate_fn is None:
-            return model_input
-        return self.collate_fn([model_input])
+            return envelope.model_input, envelope.processor_context
 
-    def _model_forward_with_processor(
+        collated_model_input, processor_context = (
+            self._collate_model_input_keep_processor_context([envelope])
+        )
+        return collated_model_input, processor_context
+
+    def _model_forward_with_envelope(
         self,
         data: Any,
+        *,
+        processor_context: Any = None,
     ) -> OutputType:
-        """Run model forward and optional processor post-processing.
+        """Run the canonical forward path with envelope passthrough context.
 
-        Subclasses may override this method to customize the final inference
-        stage while reusing the default input preparation performed by
-        :meth:`_build_model_input`.
+        This is the public subclass override seam for inference runtimes that
+        need direct access to envelope ``processor_context``. The standard
+        pipeline runtime always dispatches here.
 
         Args:
-            data (Any): Model-ready input, already collated when needed.
+            data (Any): Prepared model-facing input.
+            processor_context (Any, optional): Envelope passthrough context
+                aligned with ``data``. When model-input collation is used, this
+                is typically a list of per-sample contexts or other structured
+                runtime-owned batch metadata. Default is None.
 
         Returns:
             OutputType: Final inference output after optional post-process.
         """
         model_outputs = self._model_forward(data)
-        if self.processor is not None:
-            return self.processor.post_process(model_outputs, data)
+        if self.envelope_processor is not None:
+            return self.envelope_processor.post_process(
+                model_outputs,
+                model_input=data,
+                processor_context=processor_context,
+            )
         return model_outputs
 
     def _inference_single(self, data: InputType) -> OutputType:
-        """Executes the standard end-to-end inference workflow for one sample.
-
-        This method applies optional pre-processing, optional single-sample
-        collation, model forwarding, and optional post-processing for a scalar
-        input.
-
-        When a collate function is configured, the single pre-processed sample
-        is still wrapped into a size-1 batch before model forward. As a
-        result, ``processor.post_process`` usually still receives batched
-        inputs and outputs in this path.
+        """Execute the inference workflow for one raw sample.
 
         Args:
-            data (InputType): The raw input data for the pipeline.
+            data (InputType): Raw input sample for the pipeline.
 
         Returns:
-            OutputType: The final, post-processed result.
+            OutputType: Final post-processed result.
         """
-        model_input = self._build_model_input(data, is_batch=False)
-        return self._model_forward_with_processor(model_input)
+        model_input, processor_context = self._build_runtime_input(
+            data, is_batch=False
+        )
+        return self._model_forward_with_envelope(
+            model_input,
+            processor_context=processor_context,
+        )
 
     def _model_forward(self, data: Any) -> Any:
         """Perform the model's forward pass.
 
-        For simple models, this method directly calls the model with the
-        prepared batch. More specialized pipelines, such as ones wrapping
-        auto-regressive generation models, can override this method to
-        implement task-specific forward or generation logic.
-
         Args:
-            data (Any): Input data for the model. It is already batched when a
+            data (Any): Model-facing input data. It is already batched when a
                 collate function is configured or when dataset-like inference
                 is used.
 
@@ -353,8 +443,17 @@ class InferencePipelineCfg(
 
     class_type: ClassType_co[InferencePipelineType_co] = InferencePipeline  # type: ignore # noqa: E501
 
-    processor: ConfigInstanceOf[ModelIOProcessorCfg] | None = None
-    """The configuration for the model I/O processor."""
+    processor: (
+        ConfigInstanceOf[ModelIOProcessorCfg]
+        | ConfigInstanceOf[EnvelopeIOProcessorCfg]
+        | None
+    ) = None
+    """Configuration for an I/O processor.
+
+    New code should prefer ``EnvelopeIOProcessorCfg``.
+    ``ModelIOProcessorCfg`` remains supported as a compatibility input and is
+    automatically resolved into the envelope runtime.
+    """
 
     collate_fn: CallableType[[list[Any]], Any] | CollatorConfig | None = None
     """The function used to collate single data items into a batch.

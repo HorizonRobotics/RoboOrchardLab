@@ -14,17 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
-from typing import (
-    Any,
-    Callable,
-    Optional,
-    Tuple,
-)
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 from accelerate import Accelerator
+from typing_extensions import deprecated
 
 from robo_orchard_lab.pipeline.hooks.mixin import (
     ModelOutput,
@@ -32,7 +29,16 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
     PipelineHookArgs,
     PipelineHooks,
 )
-from robo_orchard_lab.processing.io_processor import ModelIOProcessor
+from robo_orchard_lab.processing.io_processor import (
+    EnvelopeIOProcessor,
+    PipelineEnvelope,
+)
+from robo_orchard_lab.processing.io_processor.base import ModelIOProcessor
+from robo_orchard_lab.processing.io_processor.envelope import (
+    ModelIOProcessorEnvelopeAdapter,
+    normalize_pipeline_envelope,
+    resolve_envelope_processor,
+)
 
 __all__ = [
     "BatchStepProcessorMixin",
@@ -58,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 
 forward_fn_type = Callable[[Callable, Any], Tuple[Any, Optional[torch.Tensor]]]
+step_io_processor_type = ModelIOProcessor | EnvelopeIOProcessor
 
 
 class LossNotProvidedError(Exception):
@@ -111,6 +118,15 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
     4. Publish outputs and reduced loss into hook arguments.
     5. Run backward when ``need_backward`` is enabled.
 
+    The public ``io_processor`` slot still accepts legacy
+    :class:`ModelIOProcessor` instances, but the runtime path resolves them
+    into the envelope processor family internally so model input and
+    ``processor_context`` follow the canonical pipeline envelope.
+
+    This step processor does not own ``accelerator.prepare(...)``. Training
+    runtimes such as :class:`HookBasedTrainer` remain the only layer that
+    prepares distributed runtime objects.
+
     Subclasses typically only need to implement :meth:`forward`.
     """
 
@@ -118,7 +134,7 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
         self,
         need_backward: bool = True,
         *,
-        io_processor: ModelIOProcessor | None = None,
+        io_processor: step_io_processor_type | None = None,
         apply_post_process: bool = False,
     ) -> None:
         """Initializes the step processor.
@@ -127,10 +143,11 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             need_backward (bool, optional): Whether backward computation is
                 needed. When True, :meth:`forward` must return a loss tensor.
                 Default is True.
-            io_processor (ModelIOProcessor | None, optional): Optional
-                model I/O processor used to pre-process batches before the
-                forward pass and optionally post-process model outputs.
-                Default is None.
+            io_processor (step_io_processor_type | None, optional):
+                Optional model I/O processor used to pre-process
+                batches before the forward pass and optionally post-process
+                model outputs. Legacy processors are automatically adapted into
+                the envelope processor family. Default is None.
             apply_post_process (bool, optional): Whether to call
                 ``io_processor.post_process`` after the forward pass. This is
                 usually enabled for evaluation or deployment, and disabled for
@@ -138,17 +155,48 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 False.
         """
         self.need_backward = need_backward
-        self.io_processor = io_processor
+        self.resolved_envelope_processor = resolve_envelope_processor(
+            io_processor
+        )
         self.apply_post_process = apply_post_process
-        self._is_prepared = False
         self.accelerator: Optional[Accelerator] = None
+
+    @property
+    @deprecated(
+        "Use `resolved_envelope_processor` instead. `io_processor` remains a "
+        "deprecated compatibility alias that unwraps legacy adapters and "
+        "otherwise returns the resolved envelope processor.",
+        category=None,
+    )  # type: ignore
+    def io_processor(
+        self,
+    ) -> step_io_processor_type | None:
+        """Backward-compatible alias for the configured processor."""
+
+        if self.resolved_envelope_processor is None:
+            return None
+        if isinstance(
+            self.resolved_envelope_processor,
+            ModelIOProcessorEnvelopeAdapter,
+        ):
+            return self.resolved_envelope_processor.legacy
+        return self.resolved_envelope_processor
+
+    @io_processor.setter
+    def io_processor(
+        self,
+        value: step_io_processor_type | None,
+    ) -> None:
+        """Resolve and store the canonical envelope processor runtime."""
+
+        self.resolved_envelope_processor = resolve_envelope_processor(value)
 
     @staticmethod
     def from_callable(
         forward_fn: forward_fn_type,
         need_backward: bool = True,
         *,
-        io_processor: ModelIOProcessor | None = None,
+        io_processor: step_io_processor_type | None = None,
         apply_post_process: bool = False,
     ) -> "StepProcessorFromCallable":
         """Create a :class:`SimpleStepProcessor` from a plain callable.
@@ -162,9 +210,10 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 ``(outputs, loss)``.
             need_backward (bool, optional): Whether backward computation is
                 needed. Default is True.
-            io_processor (ModelIOProcessor | None, optional): Optional model
-                I/O processor used to transform batches and outputs. Default is
-                None.
+            io_processor (step_io_processor_type | None, optional):
+                Optional model I/O processor used to transform
+                batches and outputs. Legacy processors are automatically
+                adapted into the envelope processor family. Default is None.
             apply_post_process (bool, optional): Whether to call
                 ``io_processor.post_process`` after forward execution. Default
                 is False.
@@ -179,28 +228,6 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             apply_post_process=apply_post_process,
         )
 
-    def _initialize(self, accelerator: Accelerator) -> None:
-        """Prepare owned modules with the current accelerator once.
-
-        Any ``torch.nn.Module`` stored on the processor instance is passed
-        through ``accelerator.prepare`` the first time the processor executes a
-        batch. This keeps helper modules aligned with the same distributed
-        runtime setup as the surrounding loop.
-
-        Args:
-            accelerator (Accelerator): Accelerator used to prepare owned
-                modules.
-        """
-        if self._is_prepared:
-            return
-
-        for key, obj in vars(self).items():
-            if isinstance(obj, torch.nn.Module):
-                new_obj = accelerator.prepare(obj)
-                setattr(self, key, new_obj)
-
-        self._is_prepared = True
-
     @abstractmethod
     def forward(
         self,
@@ -209,8 +236,8 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
     ) -> Tuple[ModelOutput | ModelOutputHasLossKeys, Optional[torch.Tensor]]:
         """Define the forward pass logic for the model.
 
-        This method handles the execution of the forward pass, processes the
-        prepared batch, and computes the outputs of the model. It also
+        This method handles the execution of the forward pass on the prepared
+        model-facing batch and computes the outputs of the model. It also
         optionally computes a loss tensor when the step requires backward
         propagation.
 
@@ -218,9 +245,13 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             model (Callable): The model to be used for inference or training.
                 It should be a callable object such as a PyTorch module or a
                 plain function.
-            batch (Any): The batch data for the model. This may be a tuple,
-                dictionary, tensor, or another structure depending on the data
-                pipeline and optional ``io_processor``.
+            batch (Any): The prepared model-facing batch for the model. This
+                may be a tuple, dictionary, tensor, or another structure
+                depending on the data pipeline and optional ``io_processor``.
+                If an ``io_processor`` is configured, this argument receives
+                the unwrapped ``envelope.model_input`` after pre-processing;
+                the :class:`PipelineEnvelope` itself is not passed into
+                :meth:`forward`.
 
         Returns:
             tuple: A pair of the model output and an optional reduced loss
@@ -273,12 +304,13 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             LossNotProvidedError: If ``need_backward`` is True but
                 :meth:`forward` returns ``loss=None``.
         """
-        self._initialize(accelerator=on_batch_hook_args.accelerator)
         batch = on_batch_hook_args.batch
-        if self.io_processor is not None:
-            model_input = self.io_processor.pre_process(batch)
-        else:
-            model_input = batch
+
+        envelope = PipelineEnvelope(model_input=batch)
+        if self.resolved_envelope_processor is not None:
+            envelope = self.resolved_envelope_processor.pre_process(envelope)
+        envelope = normalize_pipeline_envelope(envelope)
+        model_input = envelope.model_input
 
         with pipeline_hooks.begin(
             "on_model_forward",
@@ -287,9 +319,14 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             accelerator = on_forward_hook_args.accelerator
             self.accelerator = accelerator
             raw_outputs, loss = self.forward(model=model, batch=model_input)
-            if self.io_processor is not None and self.apply_post_process:
-                outputs = self.io_processor.post_process(
-                    raw_outputs, model_input
+            if (
+                self.resolved_envelope_processor is not None
+                and self.apply_post_process
+            ):
+                outputs = self.resolved_envelope_processor.post_process(
+                    raw_outputs,
+                    model_input=envelope.model_input,
+                    processor_context=envelope.processor_context,
                 )
             else:
                 outputs = raw_outputs
@@ -297,7 +334,7 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             on_forward_hook_args.model_outputs = outputs
             reduce_loss: torch.Tensor | None = loss
             if accelerator.num_processes > 1 and loss is not None:
-                reduce_loss = accelerator.reduce(loss, reduction="mean")  # type: ignore
+                reduce_loss = accelerator.reduce(loss, reduction="mean")  # type: ignore[arg-type]
 
             on_forward_hook_args.reduce_loss = reduce_loss
 
@@ -331,7 +368,7 @@ class StepProcessorFromCallable(SimpleStepProcessor):
         forward_fn: forward_fn_type,
         need_backward: bool = True,
         *,
-        io_processor: ModelIOProcessor | None = None,
+        io_processor: step_io_processor_type | None = None,
         apply_post_process: bool = False,
     ) -> None:
         """Initialize the callable-backed step processor.
@@ -341,9 +378,10 @@ class StepProcessorFromCallable(SimpleStepProcessor):
                 step logic.
             need_backward (bool, optional): Whether backward propagation is
                 required. Default is True.
-            io_processor (ModelIOProcessor | None, optional): Optional model
-                I/O processor used to transform batches and outputs. Default is
-                None.
+            io_processor (step_io_processor_type | None, optional):
+                Optional model I/O processor used to transform
+                batches and outputs. Legacy processors are automatically
+                adapted into the envelope processor family. Default is None.
             apply_post_process (bool, optional): Whether to call
                 ``io_processor.post_process`` after forward execution. Default
                 is False.
@@ -365,7 +403,9 @@ class StepProcessorFromCallable(SimpleStepProcessor):
 
         Args:
             model (Callable): The model function or callable.
-            batch (Any): Prepared batch data to pass to ``forward_fn``.
+            batch (Any): Prepared model-facing batch to pass to ``forward_fn``.
+                This is the unwrapped ``model_input`` value, not a
+                :class:`PipelineEnvelope`.
 
         Returns:
             Tuple[Any, Optional[torch.Tensor]]: The output tuple returned by

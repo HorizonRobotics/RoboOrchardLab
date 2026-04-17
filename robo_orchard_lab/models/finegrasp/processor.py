@@ -28,7 +28,7 @@ from robo_orchard_lab.models.finegrasp.utils import (
     ModelFreeCollisionDetector,
     pred_decode,
 )
-from robo_orchard_lab.processing.io_processor import (
+from robo_orchard_lab.processing.io_processor.base import (
     ClassType_co,
     ModelIOProcessor,
     ModelIOProcessorCfg,
