@@ -49,15 +49,23 @@ logger = logging.getLogger(__name__)
 
 
 class TextTemplate(nn.Module):
-    def __init__(self, with_subtask=True):
+    def __init__(self, with_subtask=True, image_first=True):
         super().__init__()
         self.with_subtask = with_subtask
-        self.template = (
-            "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-            "<|im_start|>user\n{image_token}\nYou are a robot. "
-            "{instruction}<|im_end|>\n"
-            "<|im_start|>assistant\n"
-        )
+        if image_first:
+            self.template = (
+                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+                "<|im_start|>user\n{image_token}\nYou are a robot. "
+                "{instruction}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+        else:
+            self.template = (
+                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+                "<|im_start|>user\nYou are a robot. "
+                "{instruction}\n{image_token}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
 
     def forward(self, data):
         batch_size, num_cams = data["imgs"].shape[:2]

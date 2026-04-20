@@ -177,6 +177,7 @@ def build_transforms(config):
         ToTensor,
         UpSampleJointState,
         MoveEgoToCam,
+        TextAug,
     )
 
     from robo_orchard_lab.transforms import ValueSampling
@@ -313,6 +314,8 @@ def build_transforms(config):
         joint_mask=np.array(joint_mask),
     )
 
+    text_aug = TextAug()
+
     return [
         add_data_relative_items,
         value_sampling,
@@ -326,6 +329,7 @@ def build_transforms(config):
         convert_dtype,
         kinematics,
         joint_selection,  # Filter robot_state and joint_scale_shift to 16 joints
+        text_aug,
         item_selection,
     ]
 

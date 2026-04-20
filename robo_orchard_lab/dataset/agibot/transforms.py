@@ -44,6 +44,24 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+class TextAug():
+    def __init__(self, subtask_prob=0.9, subtask_concat_prob=0.4):
+        self.subtask_prob = subtask_prob
+        self.subtask_concat_prob = subtask_concat_prob
+
+    def __call__(self, data):
+        if data.get("subtask") is None:
+            return data
+        if np.random.uniform() > self.subtask_prob:
+            return data
+        
+        if np.random.uniform() > self.subtask_concat_prob:
+            data["text"] = data["subtask"]
+        else:
+            data["text"] = data["text"] + " " + data["subtask"]
+        return data
+
+
 class MoveEgoToCam:
     def __init__(self, cam_idx=-1):
         self.cam_idx = cam_idx
