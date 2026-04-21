@@ -40,7 +40,7 @@ BatchImageDataType = TypeVar(
 )
 
 
-class ColorJitter(DictTransform):
+class ColorJitter(DictTransform[dict[str, BatchImageData | BatchCameraData]]):
     cfg: ColorJitterConfig
 
     def __init__(self, cfg: ColorJitterConfig) -> None:
@@ -54,8 +54,8 @@ class ColorJitter(DictTransform):
         )
 
     def transform(
-        self, **kwargs: dict[str, BatchImageDataType]
-    ) -> dict[str, BatchImageDataType]:
+        self, **kwargs: BatchImageData | BatchCameraData
+    ) -> dict[str, BatchImageData | BatchCameraData]:
         """Apply color jitter to the input columns."""
         if self.cfg.batching_all:
             return self._transform_together(**kwargs)
@@ -63,8 +63,8 @@ class ColorJitter(DictTransform):
             return self._transform_seperately(**kwargs)
 
     def _transform_seperately(
-        self, **kwargs: dict[str, BatchImageDataType]
-    ) -> dict[str, BatchImageDataType]:
+        self, **kwargs: BatchImageData | BatchCameraData
+    ) -> dict[str, BatchImageData | BatchCameraData]:
         """Apply color jitter to the input columns."""
         ret = {}
         for k, v in kwargs.items():
@@ -78,8 +78,8 @@ class ColorJitter(DictTransform):
         return ret
 
     def _transform_together(
-        self, **kwargs: dict[str, BatchImageDataType]
-    ) -> dict[str, BatchImageDataType]:
+        self, **kwargs: BatchImageData | BatchCameraData
+    ) -> dict[str, BatchImageData | BatchCameraData]:
         """Apply color jitter to the input columns."""
         ret = {}
         all_images: list[torch.Tensor] = []

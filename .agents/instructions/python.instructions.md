@@ -25,6 +25,11 @@ description: Load these instructions when modifying Python source files, tests, 
   prefer a deprecated compatibility re-export and update repository-owned
   imports to the defining submodule instead of growing the root surface
   further.
+- If preserving package-root `import *` or `__all__` parity is an explicit
+  compatibility requirement during a migration, document that exception in
+  package-specific guidance and keep repository-owned imports on the
+  defining submodule instead of treating the compatibility export as the
+  preferred new entrypoint.
 
 ## Spatial Transform And Matrix Naming
 

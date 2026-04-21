@@ -16,7 +16,6 @@
 
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -26,6 +25,10 @@ import torch
 from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransform,
     BatchFrameTransformGraph,
+)
+from robo_orchard_lab.dataset.robot.db_orm import (
+    Robot,
+    RobotDescriptionFormat,
 )
 from robo_orchard_lab.envs.robotwin.env import (
     LEFT_EEF_FROM_JOINT_FRAME_ID,
@@ -60,7 +63,7 @@ def _make_reset_stub_env(
     robot: SimpleNamespace,
 ) -> RoboTwinEnv:
     env = RoboTwinEnv.__new__(RoboTwinEnv)
-    cast(Any, env).cfg = SimpleNamespace(
+    env.cfg = SimpleNamespace(
         seed=1,
         task_name="robotwin_dummy_task",
         episode_id=0,
@@ -69,9 +72,10 @@ def _make_reset_stub_env(
         get_task_config=lambda: {},
         calculate_seed=lambda seed: seed,
     )
-    cast(Any, env)._instructions = None
-    cast(Any, env)._video_ffmpeg = None
-    cast(Any, env)._check_and_update_seed = lambda: (
+    env._instructions = None
+    env._cached_obs_robots = None
+    env._video_ffmpeg = None
+    env._check_and_update_seed = lambda: (
         SimpleNamespace(
             robot=robot,
             setup_demo=lambda **kwargs: None,
@@ -83,6 +87,12 @@ def _make_reset_stub_env(
     monkeypatch.setattr(
         "robo_orchard_lab.envs.robotwin.env.in_robotwin_workspace",
         nullcontext,
+    )
+    monkeypatch.setattr(
+        env,
+        "get_robot_urdf",
+        lambda: {"left": b"<robot/>"},
+        raising=False,
     )
     return env
 
@@ -119,7 +129,7 @@ def dummy_env_without_expert_check():
 class TestRoboTwinEnv:
     def test_joints2ee_pose_uses_arm_joints_only(self, monkeypatch):
         env = RoboTwinEnv.__new__(RoboTwinEnv)
-        cast(Any, env)._task = SimpleNamespace(
+        env._task = SimpleNamespace(
             robot=SimpleNamespace(
                 left_arm_joints_name=["left_joint_0", "left_joint_1"],
                 right_arm_joints_name=["right_joint_0", "right_joint_1"],
@@ -187,6 +197,40 @@ class TestRoboTwinEnv:
         obs, info = env.reset()
         assert obs is not None
         assert "tf" in obs
+        assert "robots" in obs
+
+    def test_get_obs_robots_caches_robot_metadata(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        urdf_calls = {"count": 0}
+
+        def _get_robot_urdf() -> dict[str, bytes]:
+            urdf_calls["count"] += 1
+            return {"left": b"<robot name='combined'/>"}
+
+        monkeypatch.setattr(
+            env,
+            "get_robot_urdf",
+            _get_robot_urdf,
+            raising=False,
+        )
+
+        first = env.get_obs_robots()
+        second = env.get_obs_robots()
+
+        assert urdf_calls["count"] == 1
+        assert set(first.keys()) == {"left"}
+        first_robot = first["left"]
+        assert isinstance(first_robot, Robot)
+        assert first_robot.name == "left"
+        assert first_robot.content == "<robot name='combined'/>"
+        assert first_robot.content_format == RobotDescriptionFormat.URDF
+        assert first_robot.md5
+        assert second["left"] is first_robot
 
     def test_format_obs_adds_joint_and_endpose_tfs(self, monkeypatch):
         robot = SimpleNamespace(
@@ -201,7 +245,7 @@ class TestRoboTwinEnv:
             right_gripper_name={"base": "right_gripper"},
         )
         env = _make_reset_stub_env(monkeypatch, robot=robot)
-        cast(Any, env)._task = SimpleNamespace(robot=robot)
+        env._task = SimpleNamespace(robot=robot)
         joint_eef = RoboTwinEEF(
             left_eef=BatchFrameTransform(
                 xyz=torch.tensor([[10.0, 1.0, 2.0]]),
@@ -222,6 +266,7 @@ class TestRoboTwinEnv:
             lambda joints: joint_eef,
             raising=False,
         )
+        raw_urdf = env.get_robot_urdf()["left"]
 
         obs = env._format_obs(
             {
@@ -283,6 +328,13 @@ class TestRoboTwinEnv:
             parent_frame_id="world",
             child_frame_id=right_endpose_frame_id,
         )
+        assert set(obs["robots"].keys()) == {"left"}
+        obs_robot = obs["robots"]["left"]
+        assert isinstance(obs_robot, Robot)
+        assert obs_robot.name == "left"
+        assert obs_robot.content == raw_urdf.decode("utf-8")
+        assert obs_robot.content_format == RobotDescriptionFormat.URDF
+        assert obs_robot.md5
 
     def test_endpose_in_obs_when_enabled(self):
         env = RoboTwinEnv(
@@ -398,7 +450,7 @@ class TestRoboTwinEnv:
         env = _make_reset_stub_env(monkeypatch, robot=robot)
         close_calls: list[bool] = []
 
-        cast(Any, env)._task = SimpleNamespace(
+        env._task = SimpleNamespace(
             close_env=lambda clear_cache: close_calls.append(clear_cache),
             render_freq=0,
             robot=robot,
@@ -449,7 +501,7 @@ class TestRoboTwinEnv:
                     ),
                 )
 
-        cast(Any, env)._joints_to_eef_transform = _OldJointsToEEF()
+        env._joints_to_eef_transform = _OldJointsToEEF()
 
         raw_obs = {
             "joint_action": {
@@ -468,7 +520,7 @@ class TestRoboTwinEnv:
             close_env=lambda clear_cache: None,
             render_freq=0,
         )
-        cast(Any, env)._check_and_update_seed = lambda: (new_task, [])
+        env._check_and_update_seed = lambda: (new_task, [])
 
         built = {"count": 0}
 
@@ -539,7 +591,7 @@ class TestRoboTwinEnv:
             get_obs=lambda: {},
             info={},
         )
-        cast(Any, env)._check_and_update_seed = lambda: (task, [])
+        env._check_and_update_seed = lambda: (task, [])
         env.cfg.get_task_config = lambda: {"now_ep_num": env.cfg.episode_id}
 
         recorded: dict[str, object] = {}

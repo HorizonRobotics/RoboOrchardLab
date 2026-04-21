@@ -57,6 +57,7 @@ from robo_orchard_lab.processing.io_processor.base import (
 )
 from robo_orchard_lab.processing.io_processor.envelope import (
     ModelIOProcessorEnvelopeAdapter,
+    PostProcessContext,
     normalize_pipeline_envelope,
     resolve_envelope_processor,
 )
@@ -66,6 +67,8 @@ __all__ = ["InferencePipeline", "InferencePipelineCfg"]
 
 
 DatasetType: TypeAlias = Dataset | list | tuple | Generator
+PreparedModelInputT = TypeVar("PreparedModelInputT")
+PreparedProcessorContextT = TypeVar("PreparedProcessorContextT")
 
 
 class InferencePipeline(
@@ -281,7 +284,9 @@ class InferencePipeline(
             processor_context=processor_context,
         )
 
-    def _prepare_single_input(self, data: InputType) -> PipelineEnvelope:
+    def _prepare_single_input(
+        self, data: InputType
+    ) -> PipelineEnvelope[Any, Any]:
         """Prepare one raw sample into a pipeline envelope."""
 
         envelope = PipelineEnvelope(model_input=data)
@@ -291,8 +296,10 @@ class InferencePipeline(
 
     def _collate_model_input_keep_processor_context(
         self,
-        envelope_batch: list[PipelineEnvelope],
-    ) -> tuple[Any, Any]:
+        envelope_batch: list[
+            PipelineEnvelope[PreparedModelInputT, PreparedProcessorContextT]
+        ],
+    ) -> tuple[Any, list[PreparedProcessorContextT]]:
         """Collate model input while leaving processor context untouched.
 
         Args:
@@ -300,10 +307,11 @@ class InferencePipeline(
                 produced by ``pre_process``.
 
         Returns:
-            tuple[Any, Any]: Collated model input plus a list of original
-                per-sample ``processor_context`` values. If this helper is
-                used, ``processor_context`` is always returned as a list,
-                even when only one sample was collated.
+            tuple[Any, list[PreparedProcessorContextT]]: Collated model input
+                plus a list of original per-sample ``processor_context``
+                values. If this helper is used, ``processor_context`` is
+                always returned as a list, even when only one sample was
+                collated.
         """
         model_inputs = [item.model_input for item in envelope_batch]
         if self.collate_fn is None:
@@ -327,7 +335,7 @@ class InferencePipeline(
         data: InputType | Iterable[InputType],
         *,
         is_batch: bool,
-    ) -> tuple[Any, Any]:
+    ) -> tuple[Any, PostProcessContext[Any]]:
         """Prepare model input plus passthrough processor context.
 
         Args:
@@ -336,9 +344,9 @@ class InferencePipeline(
             is_batch (bool): Whether ``data`` is a batch of raw samples.
 
         Returns:
-            tuple[Any, Any]: Model-facing input and passthrough
-                ``processor_context`` payload. The runtime collates only
-                model input. If model input collation is used,
+            tuple[Any, PostProcessContext[Any]]: Model-facing input and
+                passthrough ``processor_context`` payload. The runtime
+                collates only model input. If model input collation is used,
                 ``processor_context`` is returned as a list of per-sample
                 values for the processor to interpret, even when the list
                 length is 1.
@@ -363,9 +371,11 @@ class InferencePipeline(
 
     def _model_forward_with_envelope(
         self,
-        data: Any,
+        data: PreparedModelInputT,
         *,
-        processor_context: Any = None,
+        processor_context: PostProcessContext[
+            PreparedProcessorContextT
+        ] = None,
     ) -> OutputType:
         """Run the canonical forward path with envelope passthrough context.
 
@@ -374,11 +384,13 @@ class InferencePipeline(
         pipeline runtime always dispatches here.
 
         Args:
-            data (Any): Prepared model-facing input.
-            processor_context (Any, optional): Envelope passthrough context
-                aligned with ``data``. When model-input collation is used, this
-                is typically a list of per-sample contexts or other structured
-                runtime-owned batch metadata. Default is None.
+            data (PreparedModelInputT): Prepared model-facing input.
+            processor_context (PostProcessContext[
+                PreparedProcessorContextT], optional): Envelope passthrough
+                context aligned with ``data``. When model-input collation is
+                used, this is typically a list of per-sample contexts or
+                other structured runtime-owned batch metadata. Default is
+                None.
 
         Returns:
             OutputType: Final inference output after optional post-process.

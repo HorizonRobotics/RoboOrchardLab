@@ -17,6 +17,7 @@
 from __future__ import annotations
 from typing import Sequence, TypeVar
 
+from pydantic import AliasChoices, Field
 from robo_orchard_core.datatypes.camera_data import (
     ImageChannelLayout,
     ImageMode,
@@ -41,7 +42,9 @@ BatchImageDataType = TypeVar(
 )
 
 
-class ImageLayoutFormatter(DictTransform):
+class ImageLayoutFormatter(
+    DictTransform[dict[str, BatchImageData | BatchCameraData]]
+):
     """A transform to format the image layout.
 
     This transform changes the layout of the image data to HWC or CHW format,
@@ -91,8 +94,8 @@ class ImageLayoutFormatter(DictTransform):
         return out
 
     def transform(
-        self, **kwargs: dict[str, BatchImageDataType]
-    ) -> dict[str, BatchImageDataType]:
+        self, **kwargs: BatchImageData | BatchCameraData
+    ) -> dict[str, BatchImageData | BatchCameraData]:
         """Format the image layout."""
         ret = {}
         for key, value in kwargs.items():
@@ -110,9 +113,17 @@ class ImageLayoutFormatter(DictTransform):
 class ImageLayoutFormatterConfig(DictTransformConfig[ImageLayoutFormatter]):
     class_type: ClassType[ImageLayoutFormatter] = ImageLayoutFormatter
 
-    input_columns: Sequence[str]
+    input_columns: Sequence[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+    )
     "The columns to format."
     output_layout: ImageChannelLayout = ImageChannelLayout.CHW
     "The output image channel layout."
     output_dtype: str | None = None
     "The output image dtype. If None, the input dtype is used."
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.input_columns is None:
+            raise ValueError("input_columns must be provided.")

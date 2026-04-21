@@ -15,7 +15,9 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-from typing import Sequence
+from typing import Any, Sequence
+
+from pydantic import AliasChoices, Field
 
 from robo_orchard_lab.transforms.base import (
     ClassType,
@@ -29,7 +31,7 @@ __all__ = [
 ]
 
 
-class TakeKeys(DictTransform):
+class TakeKeys(DictTransform[dict[str, Any]]):
     """A transform to take only the specified keys from the input dict."""
 
     cfg: TakeKeysConfig
@@ -38,7 +40,7 @@ class TakeKeys(DictTransform):
         super().__init__()
         self.cfg = cfg
 
-    def transform(self, **kwargs) -> dict:
+    def transform(self, **kwargs: Any) -> dict[str, Any]:
         return dict(**kwargs)
 
 
@@ -52,13 +54,18 @@ class TakeKeysConfig(DictTransformConfig[TakeKeys]):
 
     class_type: ClassType[TakeKeys] = TakeKeys
 
-    input_columns: Sequence[str]
+    input_columns: Sequence[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+    )
     """The keys to take from the input dict."""
 
     keep_input_columns: bool = False
 
     def __post_init__(self):
         super().__post_init__()
+        if self.input_columns is None:
+            raise ValueError("input_columns must be provided.")
         if self.keep_input_columns is True:
             raise ValueError(
                 "keep_input_columns should be set to False "

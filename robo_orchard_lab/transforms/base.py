@@ -16,14 +16,22 @@
 
 
 from __future__ import annotations
-import copy
 import functools
 import inspect
 from abc import ABCMeta, abstractmethod
-from dataclasses import is_dataclass
-from typing import Any, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, is_dataclass
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+)
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+)
 from robo_orchard_core.utils.config import (
     ClassConfig,
     ClassType,
@@ -39,38 +47,331 @@ from robo_orchard_lab.utils.state import (
     StateSaveLoadMixin,
 )
 
+if TYPE_CHECKING:
+    from robo_orchard_lab.transforms.legacy_concat import (
+        ConcatDictTransform,
+        ConcatDictTransformConfig,
+    )
+
 __all__ = [
     "Config",
     "ClassType",
     "ConfigInstanceOf",
+    "DictRowTransform",
+    "DictRowTransformConfig",
     "DictTransform",
     "DictTransformType",
     "DictTransformConfig",
+    "DictTransformPipeline",
+    "DictTransformPipelineConfig",
     "ConcatDictTransform",
     "ConcatDictTransformConfig",
 ]
 
 
-def _to_dict(obj: dict | BaseModel | Any) -> dict | Any:
+SemanticOutputT = TypeVar("SemanticOutputT")
+DictRowTransformType = TypeVar(
+    "DictRowTransformType", bound="DictRowTransform[Any]", covariant=True
+)
+
+
+@dataclass(frozen=True)
+class _TransformReflectionMetadata:
+    signature_input_columns: tuple[str, ...]
+    input_defaults: dict[str, Any]
+    inferred_output_columns: tuple[str, ...] | None
+
+
+def semantic_output_to_dict(output: Any) -> dict[str, Any]:
+    """Normalize a supported semantic output into a dict view."""
+    if isinstance(output, dict):
+        return output
+    if isinstance(output, BaseModel):
+        return {k: getattr(output, k) for k in output.model_fields}
+    if is_dataclass(output) and not isinstance(output, type):
+        return {
+            field.name: getattr(output, field.name)
+            for field in output.__dataclass_fields__.values()
+        }
+    raise TypeError(
+        "Expected a semantic output to be a dict, BaseModel, or dataclass "
+        f"instance, but got {type(output)}."
+    )
+
+
+def _to_dict(obj: Mapping[str, Any] | BaseModel | Any) -> dict[str, Any] | Any:
     if isinstance(obj, dict):
         return obj
-    elif isinstance(obj, BaseModel):
-        return {k: getattr(obj, k) for k in obj.model_fields}
-    elif is_dataclass(obj):
-        return {
-            field.name: getattr(obj, field.name)
-            for field in obj.__dataclass_fields__.values()
-        }
+    if isinstance(obj, Mapping):
+        return dict(obj)
+    if isinstance(obj, BaseModel) or (
+        is_dataclass(obj) and not isinstance(obj, type)
+    ):
+        return semantic_output_to_dict(obj)
+    return obj
+
+
+def _flatten_runtime_transforms(
+    transforms: Sequence[DictRowTransform[Any]],
+) -> list[DictTransform[Any]]:
+    flat_transforms: list[DictTransform[Any]] = []
+    for transform in transforms:
+        flat_transforms.extend(transform._leaf_transforms())
+    return flat_transforms
+
+
+def _flatten_transform_configs(
+    configs: Sequence[DictRowTransformConfig[Any]],
+) -> list[DictTransformConfig[Any]]:
+    flat_configs: list[DictTransformConfig[Any]] = []
+    for config in configs:
+        if isinstance(config, DictTransformPipelineConfig):
+            flat_configs.extend(config.transforms)
+        else:
+            flat_configs.append(config)
+    return flat_configs
+
+
+def _instantiate_transform_from_config(
+    transform_cfg: DictTransformConfig[Any],
+) -> DictTransform[Any]:
+    """Instantiate one child transform while preserving config contracts.
+
+    The standard `InitFromConfig = True` path keeps the original child config
+    object attached to the runtime transform. Configs that rely on custom
+    `__call__`, `create_instance_by_cfg`, or kwargs-based construction still
+    go through `transform_cfg()` so those hooks remain honored.
+    """
+
+    class_type = transform_cfg.class_type
+    if (
+        getattr(class_type, "InitFromConfig", False)
+        and type(transform_cfg).__call__ is ClassConfig.__call__
+        and type(transform_cfg).create_instance_by_cfg
+        is ClassConfig.create_instance_by_cfg
+    ):
+        return class_type(transform_cfg)
+    transform = transform_cfg()
+    if getattr(transform, "cfg", None) is not transform_cfg:
+        # Keep the runtime child bound to the exact config object stored on the
+        # pipeline so later cfg mutations still flow through to the child.
+        transform.cfg = transform_cfg
+    return transform
+
+
+@functools.lru_cache(maxsize=2048)
+def _get_cached_ordered_mapped_columns(
+    transform_columns: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    input_columns: list[str] = []
+    input_seen: set[str] = set()
+    output_columns: list[str] = []
+    output_seen: set[str] = set()
+
+    for cur_inputs_tuple, cur_outputs_tuple in transform_columns:
+        cur_inputs = list(cur_inputs_tuple)
+        consumed_outputs = output_seen.intersection(cur_inputs)
+        if consumed_outputs:
+            output_columns = [
+                name for name in output_columns if name not in consumed_outputs
+            ]
+            output_seen.difference_update(consumed_outputs)
+        for name in cur_inputs:
+            if name in consumed_outputs or name in input_seen:
+                continue
+            input_columns.append(name)
+            input_seen.add(name)
+        for name in cur_outputs_tuple:
+            if name in output_seen:
+                continue
+            output_columns.append(name)
+            output_seen.add(name)
+
+    return tuple(input_columns), tuple(output_columns)
+
+
+def _get_pipeline_transform_columns_key(
+    transforms: Sequence[DictTransform[Any]],
+) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]:
+    return tuple(
+        (
+            tuple(transform.mapped_input_columns),
+            tuple(transform.mapped_output_columns),
+        )
+        for transform in transforms
+    )
+
+
+def _infer_output_columns_from_annotation(
+    return_annotation: Any,
+) -> tuple[str, ...] | None:
+    if is_dataclass(return_annotation):
+        return tuple(return_annotation.__dataclass_fields__.keys())
+    try:
+        if issubclass(return_annotation, BaseModel):
+            return tuple(return_annotation.model_fields.keys())
+    except TypeError:
+        pass
+    return None
+
+
+def _build_transform_reflection_metadata(
+    transform: Any,
+) -> _TransformReflectionMetadata:
+    sig = inspect.signature(transform, eval_str=True)
+    input_columns = []
+    input_defaults = {}
+    for param in sig.parameters.values():
+        if (
+            param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+            and param.name != "self"
+        ):
+            input_columns.append(param.name)
+            if param.default != inspect.Parameter.empty:
+                input_defaults[param.name] = param.default
+    return _TransformReflectionMetadata(
+        signature_input_columns=tuple(input_columns),
+        input_defaults=input_defaults,
+        inferred_output_columns=_infer_output_columns_from_annotation(
+            sig.return_annotation
+        ),
+    )
+
+
+@functools.cache
+def _get_cached_transform_reflection_metadata(
+    transform_callable: Any,
+) -> _TransformReflectionMetadata:
+    return _build_transform_reflection_metadata(transform_callable)
+
+
+def _get_transform_reflection_metadata(
+    transform: Any,
+) -> _TransformReflectionMetadata:
+    transform_callable = getattr(transform, "__func__", transform)
+    try:
+        hash(transform_callable)
+    except TypeError:
+        return _build_transform_reflection_metadata(transform)
+    return _get_cached_transform_reflection_metadata(transform_callable)
+
+
+def _normalize_input_columns_config_key(
+    input_columns: dict[str, str] | Sequence[str] | None,
+) -> tuple[str, tuple[Any, ...] | None]:
+    if isinstance(input_columns, Mapping):
+        return (
+            "mapping",
+            tuple(input_columns.items()),
+        )
+    if isinstance(input_columns, (list, tuple)):
+        return (
+            "sequence",
+            tuple(input_columns),
+        )
+    if input_columns is None:
+        return ("none", None)
+    raise TypeError(
+        f"Expected input_columns to be a dict, list, tuple or None, but got "
+        f"{type(input_columns)}."
+    )
+
+
+@functools.lru_cache(maxsize=2048)
+def _get_cached_input_column_views(
+    signature_input_columns: tuple[str, ...],
+    normalized_input_columns: tuple[str, tuple[Any, ...] | None],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    kind, payload = normalized_input_columns
+    input_columns = list(signature_input_columns)
+    if kind == "mapping":
+        input_columns.extend(value for _, value in payload or ())
+    elif kind == "sequence":
+        input_columns.extend(payload or ())
+    input_columns_tuple = tuple(dict.fromkeys(input_columns))
+    if kind == "mapping":
+        inverted_mapping = {value: key for key, value in payload or ()}
+        mapped_input_columns = tuple(
+            inverted_mapping.get(col, col) for col in input_columns_tuple
+        )
+    elif kind == "sequence":
+        mapped_input_columns = tuple(payload or ())
     else:
-        return obj
+        mapped_input_columns = input_columns_tuple
+    return input_columns_tuple, mapped_input_columns
 
 
-class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
+class DictRowTransform(
+    StateSaveLoadMixin, Generic[SemanticOutputT], metaclass=ABCMeta
+):
+    """Shared row-aware transform contract for leaf and pipeline objects.
+
+    This interface intentionally covers only the row application boundary that
+    both single-stage transforms and transform pipelines implement. Leaf-only
+    semantics such as ``transform(...)``, ``input_columns``, and
+    ``output_columns`` still belong to :class:`DictTransform`.
+    """
+
+    cfg: DictRowTransformConfig[Any]
+
+    @abstractmethod
+    def apply(
+        self, row: Mapping[str, Any]
+    ) -> tuple[SemanticOutputT, dict[str, Any]]:
+        """Apply the row-aware transform and return raw plus merged outputs."""
+        raise NotImplementedError
+
+    def __call__(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Call the row-aware transform and return the merged row only."""
+        _, final_row = self.apply(row)
+        return final_row
+
+    @property
+    @abstractmethod
+    def mapped_input_columns(self) -> list[str]:
+        """The external input columns consumed by the row-aware transform."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def mapped_output_columns(self) -> list[str]:
+        """The external output columns produced by the row-aware transform."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def __add__(
+        self,
+        other: DictRowTransform[Any],
+    ) -> DictTransformPipeline:
+        """Concatenate another row-aware transform into a pipeline."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_config(
+        cls: type[DictRowTransformType], config_path: str
+    ) -> DictRowTransformType:
+        """Load a row-aware transform from a configuration file."""
+        cfg = load_from(config_path, ensure_type=DictRowTransformConfig)
+        if not issubclass(cfg.class_type, cls):
+            raise TypeError(
+                f"Config class_type {cfg.class_type} is not a subclass of "
+                f"{cls.__name__}."
+            )
+        return cfg()
+
+    @abstractmethod
+    def _leaf_transforms(self) -> tuple[DictTransform[Any], ...]:
+        """Return the flattened leaf transforms that back this object."""
+        raise NotImplementedError
+
+
+class DictTransform(DictRowTransform[SemanticOutputT]):
     """A class that defines the interface for transforming a dict.
 
     The dict is usually a row in a dataset, and the transform
-    will take the input columns, apply some transformation, and return
-    a new dict with the transformed values added to the original dict.
+    will take the input columns and produce a semantic transform output.
+    Row merging, output-column mapping, and compatibility dict assembly
+    happen later through ``apply(...)`` and ``__call__(...)``.
 
     User should implement the `transform` method to define the specific
     transformation logic.
@@ -95,29 +396,61 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
     cfg: DictTransformConfig
 
     @abstractmethod
-    def transform(self, **kwargs) -> dict | BaseModel:
-        """Transform the input columns into a new row dict to be updated.
+    def transform(self, **kwargs) -> SemanticOutputT:
+        """Transform input columns into a semantic stage output.
 
-        All input columns will be passed as keyword arguments.
+        All input columns will be passed as keyword arguments. The return
+        value may be a ``dict``, dataclass instance, or ``BaseModel``.
+        ``apply(...)`` and ``__call__(...)`` handle row-level merging.
         """
         raise NotImplementedError
 
-    def __call__(self, row: dict) -> dict:
-        """Call the transform on a row dict.
+    def apply(
+        self, row: Mapping[str, Any]
+    ) -> tuple[SemanticOutputT, dict[str, Any]]:
+        """Apply the transform once and return both raw and merged outputs.
 
         This method will extract the input columns from the row dict,
         call the transform method, and return a new row dict with the
         transformed values added to the original row dict.
 
+        Use the first return value when callers need the structured semantic
+        output of ``transform(...)``. Use ``__call__(...)`` or the second
+        return value when callers need the final row dict after output-column
+        mapping and row merge.
+
+        Returns:
+            tuple[SemanticOutputT, dict[str, Any]]: The raw
+                ``transform(...)`` result and the final merged row dict that
+                ``__call__`` would return.
+
         """
         row = _to_dict(row)
         if not isinstance(row, dict):
             raise TypeError(f"Expected row to be a dict, but got {type(row)}.")
+        return self._apply_dict(row)
 
-        mapped_input = row.copy()
-        # mapping input columns if needed
-        if isinstance(self.cfg.input_columns, dict):
-            for src_name, dst_name in self.cfg.input_columns.items():
+    def _apply_dict(
+        self, row: dict[str, Any]
+    ) -> tuple[SemanticOutputT, dict[str, Any]]:
+        """Apply the transform assuming ``row`` is already a plain dict."""
+
+        reflection_metadata = _get_transform_reflection_metadata(
+            self.transform
+        )
+        normalized_input_columns = _normalize_input_columns_config_key(
+            self.cfg.input_columns
+        )
+        input_column_mapping_items = (
+            normalized_input_columns[1]
+            if normalized_input_columns[0] == "mapping"
+            else None
+        )
+        mapped_input = (
+            row if input_column_mapping_items is None else row.copy()
+        )
+        if input_column_mapping_items is not None:
+            for src_name, dst_name in input_column_mapping_items:
                 if src_name not in mapped_input:
                     raise ValueError(
                         f"Input column {src_name} not found in row dict."
@@ -125,13 +458,15 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                 mapped_input[dst_name] = mapped_input.pop(src_name)
 
         ts_input = {}
-        sig = inspect.signature(self.transform)
-        for col in self.input_columns:
+        input_columns, _ = _get_cached_input_column_views(
+            reflection_metadata.signature_input_columns,
+            normalized_input_columns,
+        )
+        for col in input_columns:
             if col not in mapped_input:
-                param = sig.parameters.get(col)
-                if param and param.default != inspect.Parameter.empty:
+                if col in reflection_metadata.input_defaults:
                     # Use the default value from the function signature
-                    ts_input[col] = param.default
+                    ts_input[col] = reflection_metadata.input_defaults[col]
                 elif not self.cfg.missing_input_columns_as_none:
                     raise KeyError(
                         f"Input column `{col}` not found in row dict."
@@ -141,12 +476,13 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
             else:
                 ts_input[col] = mapped_input[col]
 
-        columns_after = _to_dict(self.transform(**ts_input))
-        if not isinstance(columns_after, dict):
-            raise TypeError(
-                f"Transform {self.__class__.__name__} must return a dict, "
-                f"got {type(columns_after)}."
-            )
+        transform_result = self.transform(**ts_input)
+        columns_after = semantic_output_to_dict(transform_result)
+        output_column_mapping = self.cfg.output_column_mapping
+        if columns_after is transform_result and output_column_mapping:
+            # Keep raw dict outputs unchanged when key remapping mutates the
+            # compatibility row patch below.
+            columns_after = columns_after.copy()
 
         # check that the output columns match the expected output columns
         if self.cfg.check_return_columns:
@@ -157,7 +493,7 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
                         f"{self.output_columns}."
                     )
 
-        for src_name, dst_name in self.cfg.output_column_mapping.items():
+        for src_name, dst_name in output_column_mapping.items():
             if dst_name in columns_after:
                 raise ValueError(
                     f"Output column {dst_name} already exists in transformed "
@@ -170,9 +506,13 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         else:
             ret = {}
         ret.update(columns_after)
-        return ret
+        return transform_result, ret
 
-    @functools.cached_property
+    def __call__(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Call the transform on a row dict and return the merged row only."""
+        return super().__call__(row)
+
+    @property
     def input_columns(self) -> list[str]:
         """The input columns that this transform requires.
 
@@ -185,42 +525,19 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         is set, it will be used as well to determine the input columns.
 
         """
-        # use inspect to get the parameters of the transform method
-        self._input_columns = []
+        reflection_metadata = _get_transform_reflection_metadata(
+            self.transform
+        )
+        normalized_input_columns = _normalize_input_columns_config_key(
+            self.cfg.input_columns
+        )
+        input_columns, _ = _get_cached_input_column_views(
+            reflection_metadata.signature_input_columns,
+            normalized_input_columns,
+        )
+        return list(input_columns)
 
-        def get_input_from_signature() -> list[str]:
-            ret = []
-            sig = inspect.signature(self.transform)
-            for param in sig.parameters.values():
-                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
-                    ret.append(param.name)
-                elif param.kind == inspect.Parameter.VAR_POSITIONAL:
-                    continue
-                elif param.kind == inspect.Parameter.VAR_KEYWORD:
-                    continue
-                else:
-                    continue
-            return ret
-
-        self._input_columns = get_input_from_signature()
-        if isinstance(self.cfg.input_columns, dict):
-            # if input_columns is a dict, we need to use the values as
-            # input columns
-            self._input_columns += list(self.cfg.input_columns.values())
-        elif isinstance(self.cfg.input_columns, (list, tuple)):
-            # if input_columns is a list or tuple, we use it directly
-            self._input_columns += list(self.cfg.input_columns)
-        else:
-            if self.cfg.input_columns is not None:
-                raise TypeError(
-                    f"Expected input_columns to be a dict, list, "
-                    f"tuple or None, but got {type(self.cfg.input_columns)}."
-                )
-        # handle duplicate columns and retain order
-        self._input_columns = list(dict.fromkeys(self._input_columns).keys())
-        return self._input_columns
-
-    @functools.cached_property
+    @property
     def mapped_input_columns(self) -> list[str]:
         """The input columns that this transform requires for column mapping.
 
@@ -228,29 +545,19 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
 
         """
 
-        old_input_columns = self.input_columns
+        reflection_metadata = _get_transform_reflection_metadata(
+            self.transform
+        )
+        normalized_input_columns = _normalize_input_columns_config_key(
+            self.cfg.input_columns
+        )
+        _, mapped_input_columns = _get_cached_input_column_views(
+            reflection_metadata.signature_input_columns,
+            normalized_input_columns,
+        )
+        return list(mapped_input_columns)
 
-        if isinstance(self.cfg.input_columns, dict):
-            inverted_mapping = {
-                v: k for k, v in self.cfg.input_columns.items()
-            }
-            mapped_input_columns = [
-                inverted_mapping.get(col, col) for col in old_input_columns
-            ]
-        elif isinstance(self.cfg.input_columns, (list, tuple)):
-            mapped_input_columns = list(self.cfg.input_columns)
-        elif self.cfg.input_columns is None:
-            mapped_input_columns = old_input_columns
-        else:
-            raise TypeError(
-                f"Expected input_columns to be a dict, list, tuple or None, "
-                f"but got {type(self.cfg.input_columns)}."
-            )
-
-        self._mapped_input_columns = mapped_input_columns
-        return self._mapped_input_columns
-
-    @functools.cached_property
+    @property
     def output_columns(self) -> list[str]:
         """The output columns that this transform produces.
 
@@ -265,57 +572,37 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         the transform can produce.
 
         """
+        inferred_output_columns = _get_transform_reflection_metadata(
+            self.transform
+        ).inferred_output_columns
+        if inferred_output_columns is None:
+            return_annotation = inspect.signature(
+                self.transform, eval_str=True
+            ).return_annotation
+            raise NotImplementedError(
+                "Cannot determine output columns for "
+                f"{self.__class__.__name__}. Return type "
+                f"{return_annotation} "
+                "is not a dataclass or BaseModel. You should implement the "
+                "output_columns property to return the expected output "
+                "columns for this transform."
+            )
+        return list(inferred_output_columns)
 
-        def generate_output_columns() -> list[str]:
-            # using signature to get the return type of the transform method
-            sig = inspect.signature(self.transform, eval_str=True)
-            return_annotation = sig.return_annotation
-            # get the classtype from the return annotation
-            # if the return type is dataclass, we need to extract the fields
-            if is_dataclass(return_annotation):
-                return list(return_annotation.__dataclass_fields__.keys())
-            # if the return type is a subclass of BaseModel,
-            # we can use its fields
-            elif isinstance(return_annotation, type) and issubclass(
-                return_annotation, BaseModel
-            ):
-                return list(return_annotation.model_fields.keys())
-            else:
-                raise NotImplementedError(
-                    "Cannot determine output columns for "
-                    f"{self.__class__.__name__}. Return type "
-                    f"{return_annotation} is not a dataclass or BaseModel. "
-                    "You should implement the output_columns property to "
-                    "return the expected output columns for this transform."
-                )
-
-        self._output_columns = generate_output_columns()
-        return self._output_columns
-
-    @functools.cached_property
+    @property
     def mapped_output_columns(self) -> list[str]:
         """The output columns that this transform produces after mapping."""
         old_output_columns = self.output_columns
-        mapped_output_columns = [
+        return [
             self.cfg.output_column_mapping.get(col, col)
             for col in old_output_columns
         ]
-        self._mapped_output_columns = mapped_output_columns
-        return self._mapped_output_columns
 
     def __repr__(self) -> str:
         ret = f"{self.__class__.__name__}("
         ret += f"cfg={self.cfg.to_dict(exclude_defaults=True)}"
         ret += ")"
         return ret
-
-    def _get_ignore_save_attributes(self) -> list[str]:
-        return [
-            "_input_columns",
-            "_output_columns",
-            "_mapped_input_columns",
-            "_mapped_output_columns",
-        ]
 
     def _get_state(self) -> State:
         """Get the state of the object for saving."""
@@ -332,46 +619,72 @@ class DictTransform(StateSaveLoadMixin, metaclass=ABCMeta):
         super()._set_state(state)
 
     def __add__(
-        self, other: DictTransform | ConcatDictTransform
-    ) -> ConcatDictTransform:
+        self,
+        other: DictRowTransform[Any],
+    ) -> DictTransformPipeline:
         """Concatenate another DictTransform to this one.
 
-        This will modify the current configuration to include the transforms
-        from the other configuration.
+        This returns a new canonical pipeline and does not mutate the
+        left-hand side. It intentionally does not preserve the deprecated
+        ``ConcatDictTransform`` wrapper as a ``+`` result.
         """
-        if not isinstance(other, DictTransform):
+        if not isinstance(other, DictRowTransform):
             raise TypeError(
                 "Can only concatenate DictTransform or "
-                "ConcatDictTransform objects."
+                "DictTransformPipeline objects."
             )
-        if not isinstance(self, ConcatDictTransform):
-            # if self is not a ConcatDictTransform, we need to create one
-            new_transform = ConcatDictTransform.__new__(ConcatDictTransform)
-            new_transform.cfg = ConcatDictTransformConfig(
-                transforms=[self.cfg],
-                input_columns=None,
-            )
-            new_transform._transforms = [self]
-        else:
-            new_transform = copy.copy(self)
-        new_transform += other
-        return new_transform
+        return _get_runtime_add_result_pipeline_type(
+            self, other
+        ).from_transforms([self, other])
 
     @classmethod
     def from_config(
         cls: type[DictTransformType], config_path: str
     ) -> DictTransformType:
-        """Load a DictTransform from a configuration file."""
-        cfg = load_from(config_path, ensure_type=DictTransformConfig)
+        """Load a transform from a configuration file.
+
+        During the current concat-to-pipeline migration, the legacy
+        ``DictTransform`` loader still accepts row-aware pipeline configs so
+        callers can migrate config files before they migrate load sites.
+        """
+        cfg = load_from(config_path, ensure_type=DictRowTransformConfig)
+        if cls is DictTransform and issubclass(
+            cfg.class_type, DictTransformPipeline
+        ):
+            return cfg()  # type: ignore[return-value]
+        if not issubclass(cfg.class_type, cls):
+            raise TypeError(
+                f"Config class_type {cfg.class_type} is not a subclass of "
+                f"{cls.__name__}."
+            )
         return cfg()
+
+    def _leaf_transforms(self) -> tuple[DictTransform[Any], ...]:
+        return (self,)
 
 
 DictTransformType = TypeVar(
-    "DictTransformType", bound=DictTransform, covariant=True
+    "DictTransformType", bound=DictTransform[Any], covariant=True
 )
 
 
-class DictTransformConfig(ClassConfig[DictTransformType]):
+class DictRowTransformConfig(ClassConfig[DictRowTransformType]):
+    """Shared row-aware transform config contract.
+
+    Both single-stage and pipeline config objects implement this interface.
+    """
+
+    class_type: ClassType[DictRowTransformType]
+
+    def __add__(
+        self,
+        other: DictRowTransformConfig[Any],
+    ) -> DictTransformPipelineConfig:
+        """Concatenate two row-aware configs into a pipeline config."""
+        raise NotImplementedError
+
+
+class DictTransformConfig(DictRowTransformConfig[DictTransformType]):
     class_type: ClassType[DictTransformType]
 
     input_columns: dict[str, str] | Sequence[str] | None = Field(
@@ -419,179 +732,278 @@ class DictTransformConfig(ClassConfig[DictTransformType]):
     removed from the output dict.
     """
 
-    # overload + operator to return concat
+    # overload + operator to return the canonical pipeline config
     def __add__(
-        self, other: DictTransformConfig | ConcatDictTransformConfig
-    ) -> ConcatDictTransformConfig:
+        self,
+        other: DictRowTransformConfig[Any],
+    ) -> DictTransformPipelineConfig:
         """Concatenate two DictTransformConfig objects.
 
-        This will create a new ConcatDictTransformConfig object that
-        combines the transforms from both configurations.
+        This returns a new canonical pipeline config and does not mutate the
+        left-hand side. It intentionally does not preserve the deprecated
+        ``ConcatDictTransformConfig`` wrapper as a ``+`` result.
         """
-        if not isinstance(other, DictTransformConfig):
+        if not isinstance(other, DictRowTransformConfig):
             raise TypeError(
                 "Can only concatenate DictTransformConfig objects."
             )
-        if not isinstance(self, ConcatDictTransformConfig):
-            # if self is not a ConcatDictTransformConfig, we need to create one
-            new_cfg = ConcatDictTransformConfig(
-                transforms=[self],
-                input_columns=None,
-            )
-        else:
-            new_cfg = self.model_copy(deep=False)
-        new_cfg += other
-        return new_cfg
+        return _get_config_add_result_pipeline_type(self, other).from_configs(
+            [self, other]
+        )
 
 
-class ConcatDictTransform(DictTransform):
-    cfg: ConcatDictTransformConfig
+def _get_runtime_add_result_pipeline_type(
+    left: DictRowTransform[Any],
+    right: DictRowTransform[Any],
+) -> type[DictTransformPipeline]:
+    """Pick the pipeline type produced by ``+``.
 
-    def __init__(self, cfg: ConcatDictTransformConfig) -> None:
-        super().__init__()
+    Deprecated legacy concat wrappers are normalized back to the canonical
+    ``DictTransformPipeline`` surface so `+` does not keep propagating the old
+    compatibility type.
+    """
+
+    from robo_orchard_lab.transforms.legacy_concat import ConcatDictTransform
+
+    if isinstance(left, ConcatDictTransform) or isinstance(
+        right, ConcatDictTransform
+    ):
+        return DictTransformPipeline
+    if (
+        isinstance(left, DictTransformPipeline)
+        and type(left) is not DictTransformPipeline
+    ):
+        return type(left)
+    if (
+        isinstance(right, DictTransformPipeline)
+        and type(right) is not DictTransformPipeline
+    ):
+        return type(right)
+    return DictTransformPipeline
+
+
+def _get_config_add_result_pipeline_type(
+    left: DictRowTransformConfig[Any],
+    right: DictRowTransformConfig[Any],
+) -> type[DictTransformPipelineConfig]:
+    """Pick the pipeline-config type produced by ``+``.
+
+    Deprecated legacy concat wrappers are normalized back to the canonical
+    ``DictTransformPipelineConfig`` surface so `+` does not keep propagating
+    the old compatibility type.
+    """
+
+    from robo_orchard_lab.transforms.legacy_concat import (
+        ConcatDictTransformConfig,
+    )
+
+    if isinstance(left, ConcatDictTransformConfig) or isinstance(
+        right, ConcatDictTransformConfig
+    ):
+        return DictTransformPipelineConfig
+    if (
+        isinstance(left, DictTransformPipelineConfig)
+        and type(left) is not DictTransformPipelineConfig
+    ):
+        return type(left)
+    if (
+        isinstance(right, DictTransformPipelineConfig)
+        and type(right) is not DictTransformPipelineConfig
+    ):
+        return type(right)
+    return DictTransformPipelineConfig
+
+
+class DictTransformPipeline(DictRowTransform[Any]):
+    """A pipeline that applies multiple row-aware dict transforms in order.
+
+    ``DictTransformPipeline`` implements the shared row-aware contract through
+    ``apply(...)``, ``__call__(...)``, and mapped column metadata. It does not
+    expose leaf-only semantics such as ``transform(...)``, ``input_columns``,
+    or ``output_columns`` because those concepts stay owned by each child
+    transform.
+    """
+
+    InitFromConfig: bool = True
+
+    cfg: DictTransformPipelineConfig
+    _transforms: list[DictTransform[Any]]
+
+    def __init__(self, cfg: DictTransformPipelineConfig) -> None:
         self.cfg = cfg
-
         self._transforms = [
-            t() for t in self.cfg.transforms
-        ]  # Instantiate all transforms
+            _instantiate_transform_from_config(transform_cfg)
+            for transform_cfg in cfg.transforms
+        ]
 
-    def __getitem__(self, index: int) -> DictTransform:
+    @classmethod
+    def from_transforms(
+        cls,
+        transforms: Sequence[DictRowTransform[Any]],
+    ) -> DictTransformPipeline:
+        """Build a pipeline container around existing runtime transforms.
+
+        This preserves runtime transform identity, so repeating the same
+        runtime stage in the input sequence will reuse that same instance.
+        """
+        instance = cls.__new__(cls)
+        instance._transforms = _flatten_runtime_transforms(transforms)
+        instance.cfg = DictTransformPipelineConfig(
+            transforms=[transform.cfg for transform in instance._transforms]
+        )
+        return instance
+
+    def __getitem__(self, index: int) -> DictTransform[Any]:
         return self._transforms[index]
 
-    def __iadd__(
-        self, other: DictTransform | ConcatDictTransform
-    ) -> ConcatDictTransform:
-        """Concatenate another DictTransform to this one.
-
-        This will modify the current configuration to include the transforms
-        from the other configuration.
-        """
-        if not isinstance(other, DictTransform):
+    def __add__(
+        self,
+        other: DictRowTransform[Any],
+    ) -> DictTransformPipeline:
+        """Return a new pipeline extended with ``other``."""
+        if not isinstance(other, DictRowTransform):
             raise TypeError(
                 "Can only concatenate DictTransform or "
-                "ConcatDictTransform objects."
+                "DictTransformPipeline objects."
             )
-        if isinstance(other, ConcatDictTransform):
-            self._transforms.extend(other._transforms)
-        else:
-            self._transforms.append(other)
-        self.cfg += other.cfg
+        return _get_runtime_add_result_pipeline_type(
+            self, other
+        ).from_transforms([self, other])
+
+    def __iadd__(
+        self,
+        other: DictRowTransform[Any],
+    ) -> DictTransformPipeline:
+        """Append another transform or pipeline to this pipeline in place."""
+        if not isinstance(other, DictRowTransform):
+            raise TypeError(
+                "Can only concatenate DictTransform or "
+                "DictTransformPipeline objects."
+            )
+        new_transforms = _flatten_runtime_transforms([other])
+        self._transforms.extend(new_transforms)
+        self.cfg.transforms = tuple(self.cfg.transforms) + tuple(
+            transform.cfg for transform in new_transforms
+        )
         return self
 
     @property
-    def input_columns(self) -> list[str]:
-        raise RuntimeError(
-            "ConcatDictTransform does not implement input_columns. "
-            "Use the mapped_input_columns property instead."
-        )
-
-    def _init_input_output_columns(self):
-        input_columns: set[str] = set()
-        output_columns: set[str] = set()
-        for transform in self._transforms:
-            cur_input_set = set(transform.mapped_input_columns)
-            # consume the output columns if required as input
-            to_consume = cur_input_set.intersection(output_columns)
-            output_columns.difference_update(to_consume)
-            # remove the input that is taken from the previous output
-            # and update the input columns
-            cur_input_set.difference_update(to_consume)
-            input_columns.update(cur_input_set)
-            # update the output columns
-            output_columns.update(transform.mapped_output_columns)
-
-        self._mapped_input_columns = list(input_columns)
-        self._mapped_output_columns = list(output_columns)
-
-    @functools.cached_property
     def mapped_input_columns(self) -> list[str]:
-        """Get the input columns for this transform."""
-
-        self._init_input_output_columns()
-        return self._mapped_input_columns.copy()
+        mapped_input_columns, _ = _get_cached_ordered_mapped_columns(
+            _get_pipeline_transform_columns_key(self._transforms)
+        )
+        return list(mapped_input_columns)
 
     @property
-    def output_columns(self) -> list[str]:
-        """Get the output columns for this transform."""
-        raise RuntimeError(
-            "ConcatDictTransform does not implement output_columns. "
-            "Use the mapped_output_columns property instead."
-        )
-
-    @functools.cached_property
     def mapped_output_columns(self) -> list[str]:
-        """Get the output columns for this transform."""
-        self._init_input_output_columns()
-        return self._mapped_output_columns.copy()
-
-    def transform(self, **kwargs) -> dict:
-        raise RuntimeError(
-            "ConcatDictTransform does not implement transform method. "
-            "Use the __call__ method instead."
+        _, mapped_output_columns = _get_cached_ordered_mapped_columns(
+            _get_pipeline_transform_columns_key(self._transforms)
         )
+        return list(mapped_output_columns)
 
-    def __call__(self, row: dict) -> dict:
-        """Concatenate the input columns into a new row dict.
-
-        This method will apply all transforms in the order they are defined
-        in the configuration, and return a new row dict with the transformed
-        values added to the original row dict.
-        """
+    def apply(self, row: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
+        """Apply each child once and return the final stage output."""
+        last_transform_result: Any = None
+        current_row = _to_dict(row)
+        if not isinstance(current_row, dict):
+            raise TypeError(
+                f"Expected row to be a dict, but got {type(current_row)}."
+            )
         for transform in self._transforms:
-            row = transform(row)
-        return row
+            last_transform_result, current_row = transform._apply_dict(
+                current_row
+            )
+        return last_transform_result, current_row
+
+    def __call__(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        return super().__call__(row)
+
+    def _leaf_transforms(self) -> tuple[DictTransform[Any], ...]:
+        return tuple(self._transforms)
 
     def _get_state(self) -> State:
         return State(
-            state=dict(
-                # use StateList to enable pickling the transforms separately
-                transforms=StateList(self._transforms)
-            ),
+            state=dict(transforms=StateList(self._transforms)),
             config=self.cfg,
             hierarchical_save=None,
             class_type=type(self),
         )
 
     def _set_state(self, state: State) -> None:
-        """Set the state of the object from the unpickled state."""
         self.cfg = state.config  # type: ignore
         self._transforms = state.state["transforms"]
+        self.cfg.transforms = tuple(
+            transform.cfg for transform in self._transforms
+        )
 
 
-class ConcatDictTransformConfig(
-    DictTransformConfig[ConcatDictTransform],
+class DictTransformPipelineConfig(
+    DictRowTransformConfig[DictTransformPipeline]
 ):
-    class_type: ClassType[ConcatDictTransform] = ConcatDictTransform
+    """Config for a row-aware pipeline built from child transform configs."""
 
-    transforms: Sequence[
-        ConfigInstanceOf[DictTransformConfig[DictTransform]]
-    ] = Field(min_length=1)
+    class_type: ClassType[DictTransformPipeline] = DictTransformPipeline
 
-    """A sequence of transforms to apply to the input columns."""
+    transforms: Sequence[ConfigInstanceOf[DictTransformConfig]] = Field(
+        min_length=1
+    )
 
-    input_columns: None = None
-    """Input columns are not used in ConcatDictTransform, as the input columns
-    are determined by the transforms themselves. This should be set to None.
-    """
+    def model_post_init(self, __context: Any) -> None:
+        object.__setattr__(
+            self,
+            "transforms",
+            tuple(_flatten_transform_configs(self.transforms)),
+        )
+
+    @classmethod
+    def from_configs(
+        cls,
+        configs: Sequence[DictRowTransformConfig[Any]],
+    ) -> DictTransformPipelineConfig:
+        """Build a flattened pipeline config from one or more configs.
+
+        This preserves child config identity, but runtime instantiation still
+        creates one child transform per listed config entry.
+        """
+        return cls(transforms=tuple(_flatten_transform_configs(configs)))
 
     def __getitem__(self, item):
         return self.transforms[item]
 
-    # overload += operator
-    def __iadd__(
-        self, other: DictTransformConfig | ConcatDictTransformConfig
-    ) -> ConcatDictTransformConfig:
-        """Concatenate two DictTransformConfig objects in place.
-
-        This will modify the current configuration to include the transforms
-        from the other configuration.
-        """
-        if not isinstance(other, DictTransformConfig):
+    def __add__(
+        self,
+        other: DictRowTransformConfig[Any],
+    ) -> DictTransformPipelineConfig:
+        if not isinstance(other, DictRowTransformConfig):
             raise TypeError(
                 "Can only concatenate DictTransformConfig objects."
             )
-        if isinstance(other, ConcatDictTransformConfig):
-            self.transforms = list(self.transforms) + list(other.transforms)
-        else:
-            self.transforms = list(self.transforms) + [other]
+        return _get_config_add_result_pipeline_type(self, other).from_configs(
+            [self, other]
+        )
+
+    def __iadd__(
+        self,
+        other: DictRowTransformConfig[Any],
+    ) -> DictTransformPipelineConfig:
+        if not isinstance(other, DictRowTransformConfig):
+            raise TypeError(
+                "Can only concatenate DictTransformConfig objects."
+            )
+        self.transforms = tuple(self.transforms) + tuple(
+            _flatten_transform_configs([other])
+        )
         return self
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"ConcatDictTransform", "ConcatDictTransformConfig"}:
+        from robo_orchard_lab.transforms.legacy_concat import (
+            ConcatDictTransform,
+            ConcatDictTransformConfig,
+        )
+
+        globals()["ConcatDictTransform"] = ConcatDictTransform
+        globals()["ConcatDictTransformConfig"] = ConcatDictTransformConfig
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

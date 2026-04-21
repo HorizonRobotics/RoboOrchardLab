@@ -14,4 +14,47 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from robo_orchard_lab.transforms.base import *
+"""Compatibility wrapper for the canonical transform package root.
+
+Prefer importing new code from ``robo_orchard_lab.transforms``. This module
+remains as a compatibility surface while legacy callers are phased out.
+"""
+
+import robo_orchard_lab.transforms as _canonical_transforms
+from robo_orchard_lab.transforms import (
+    _COMPAT_TRANSFORM_EXPORTS,
+    _PUBLIC_TRANSFORM_EXPORTS,
+    AddNoise,
+    AddNoiseConfig,
+    DictRowTransform,
+    DictRowTransformConfig,
+    DictTransform,
+    DictTransformConfig,
+    DictTransformPipeline,
+    DictTransformPipelineConfig,
+    GaussianNoiseConfig,
+    Normalize,
+    NormalizeConfig,
+    NormStatistics,
+    PaddingList,
+    PaddingListConfig,
+    TakeKeys,
+    TakeKeysConfig,
+    UniformNoiseConfig,
+    UnNormalize,
+)
+from robo_orchard_lab.utils.deprecation import warn_deprecated_package
+
+__all__ = _PUBLIC_TRANSFORM_EXPORTS + _COMPAT_TRANSFORM_EXPORTS  # pyright: ignore[reportUnsupportedDunderAll]
+
+
+def __getattr__(name: str) -> object:
+    """Delegate compatibility-only imports to the canonical package root."""
+    return getattr(_canonical_transforms, name)
+
+
+warn_deprecated_package(
+    __name__,
+    "`robo_orchard_lab.dataset.transforms` is deprecated. "
+    "Use `robo_orchard_lab.transforms` instead.",
+)

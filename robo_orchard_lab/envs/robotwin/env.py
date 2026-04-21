@@ -37,6 +37,10 @@ from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransform,
     BatchFrameTransformGraph,
 )
+from robo_orchard_lab.dataset.robot.db_orm import (
+    Robot,
+    RobotDescriptionFormat,
+)
 from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinEEF,
     RoboTwinJointsToEEF,
@@ -60,6 +64,7 @@ __all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
 
 LEFT_EEF_FROM_JOINT_FRAME_ID = "left_eef_from_joint"
 RIGHT_EEF_FROM_JOINT_FRAME_ID = "right_eef_from_joint"
+COMBINED_DUAL_ARM_OBS_ROBOT_KEY = "left"
 
 
 @dataclass
@@ -90,6 +95,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     - ``close(...)``: close the current RoboTwin task.
     - ``unwrapped_env()``: return the underlying RoboTwin ``Base_Task``.
     - ``get_robot_urdf()``: return the supported combined dual-arm URDF.
+      RoboTwin stores this dual-arm descriptor under the ``"left"`` key by
+      convention; that is a RoboTwin compatibility contract, not an env bug.
+    - ``get_obs_robots()``: return observation-facing robot metadata.
     - ``current_seed`` / ``instructions`` / ``num_envs``: runtime properties
       exposed by the wrapper.
 
@@ -116,6 +124,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         self.cfg = cfg
         self._eval_chosen_instruction: str | None = None
         self._joints_to_eef_transform: RoboTwinJointsToEEF | None = None
+        self._cached_obs_robots: dict[str, Robot] | None = None
         self._video_ffmpeg: subprocess.Popen[bytes] | None = None
 
     def _check_and_update_seed(self):
@@ -430,6 +439,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         # Reset the FK helper before formatting the first observation so the
         # returned post-reset EEF edges always reflect the current episode.
         self._joints_to_eef_transform = None
+        self._cached_obs_robots = None
 
         self._eval_chosen_instruction = None
 
@@ -558,6 +568,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         """Close the environment."""
         self._stop_video_recording()
         self._joints_to_eef_transform = None
+        self._cached_obs_robots = None
         if hasattr(self, "_task") and self._task is not None:
             self._task.close_env(clear_cache=clear_cache)
             if self._task.render_freq > 0:
@@ -691,7 +702,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         available, it also includes additional world-frame end-effector edges:
         the joint-derived edges use ``*_eef_from_joint`` child frame IDs,
         while the raw RoboTwin end poses keep the runtime EE frame IDs
-        reported by the RoboTwin robot object.
+        reported by the RoboTwin robot object. The returned observation also
+        includes ``ret["robots"]`` with observation-facing robot metadata
+        derived from the supported combined dual-arm URDF descriptor.
         """
         eef_tf_edges = self._get_eef_tf_edges(ret)
         ret["instructions"] = self.instructions
@@ -703,6 +716,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             ret["cameras"] = get_observation_cams(ret)
             ret.pop("observation")
         ret["tf"] = self._get_tf()
+        ret["robots"] = self.get_obs_robots()
         if eef_tf_edges:
             ret["tf"].add_tf(eef_tf_edges)
         return ret
@@ -882,7 +896,10 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
         Returns:
             dict[str, bytes]: A compatibility mapping containing the combined
-                dual-arm URDF content under the ``"left"`` key.
+                dual-arm URDF content under the ``"left"`` key. RoboTwin
+                itself uses ``"left"`` as the compatibility slot for the
+                shared dual-arm descriptor, so this key name is preserved
+                here intentionally and is not an env-layer bug.
         """
         self._assert_supported_robot_layout()
 
@@ -892,6 +909,40 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 urdf_content = f.read()
 
         return {"left": urdf_content}
+
+    def get_obs_robots(self) -> dict[str, Robot]:
+        """Return observation-facing robot metadata for the current layout.
+
+        The current RoboTwin env surface exposes a single combined dual-arm
+        robot descriptor under the ``"left"`` key. This key matches
+        RoboTwin's existing ``get_robot_urdf()`` convention for the shared
+        dual-arm URDF and is kept intentionally for consistency, not because
+        the env mistakes the robot for a single-arm ``left`` embodiment.
+        Future layouts may return more than one descriptor, but the public
+        observation contract is already plural.
+        """
+        if self._cached_obs_robots is not None:
+            return self._cached_obs_robots.copy()
+
+        urdf_map = self.get_robot_urdf()
+        urdf_content = urdf_map.get("left")
+        if not isinstance(urdf_content, bytes):
+            raise RuntimeError(
+                "Expected supported RoboTwin layouts to expose a combined "
+                "dual-arm URDF under the 'left' key."
+            )
+
+        robot = Robot(
+            index=0,
+            name=COMBINED_DUAL_ARM_OBS_ROBOT_KEY,
+            content=urdf_content.decode("utf-8"),
+            content_format=RobotDescriptionFormat.URDF,
+        )
+        robot.update_md5()
+        self._cached_obs_robots = {
+            COMBINED_DUAL_ARM_OBS_ROBOT_KEY: robot,
+        }
+        return self._cached_obs_robots.copy()
 
 
 class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):

@@ -18,6 +18,7 @@ from typing import Literal
 
 import pytest
 
+import robo_orchard_lab.transforms.image as image_transforms_pkg
 from robo_orchard_lab.dataset.datatypes import (
     BatchCameraData,
     BatchCameraDataEncoded,
@@ -26,6 +27,28 @@ from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.transforms.image import (
     ImageDecodeConfig,
 )
+
+
+class TestImageTransformPackageSurface:
+    def test_image_transform_root_is_curated(self):
+        assert image_transforms_pkg.__all__ == [
+            "ImageResizeConfig",
+            "ImageRotateConfig",
+            "ColorJitter",
+            "ColorJitterConfig",
+            "ImageDecode",
+            "ImageDecodeConfig",
+            "ImageChannelLayout",
+            "ImageLayoutFormatter",
+            "ImageLayoutFormatterConfig",
+            "ImageMode",
+            "RandomAffineConfig",
+            "RandomApplyTransform2DConfig",
+            "RandomChooseTransform2DConfig",
+            "RandomImageTransform2DConfig",
+        ]
+        assert hasattr(image_transforms_pkg, "ImageDecodeConfig")
+        assert not hasattr(image_transforms_pkg, "ImageTransform2D")
 
 
 class TestImageDecoder:

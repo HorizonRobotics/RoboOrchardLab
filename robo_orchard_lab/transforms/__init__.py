@@ -14,19 +14,64 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-"""Transform module.
+"""Transforms package root with explicit compatibility-export parity."""
 
-A Transform is a callable that takes an input and returns a transformed output.
+from . import base as _base_transforms
+from .base import (
+    DictRowTransform,
+    DictRowTransformConfig,
+    DictTransform,
+    DictTransformConfig,
+    DictTransformPipeline,
+    DictTransformPipelineConfig,
+)
+from .noise import (
+    AddNoise,
+    AddNoiseConfig,
+    GaussianNoiseConfig,
+    UniformNoiseConfig,
+)
+from .normalize import (
+    Normalize,
+    NormalizeConfig,
+    NormStatistics,
+    UnNormalize,
+)
+from .padding import PaddingList, PaddingListConfig
+from .take import TakeKeys, TakeKeysConfig
 
-Usually transforms are used to preprocess the input data before feeding
-it into a model. The data loader usually applies dataset-specific transforms
-to the input data, such as decoding, resizing, cropping, etc, to normalize
-the input data to a specific format.
+_PUBLIC_TRANSFORM_EXPORTS = (
+    "DictTransform",
+    "DictTransformConfig",
+    "DictTransformPipeline",
+    "DictTransformPipelineConfig",
+    "DictRowTransform",
+    "DictRowTransformConfig",
+    "GaussianNoiseConfig",
+    "UniformNoiseConfig",
+    "AddNoise",
+    "AddNoiseConfig",
+    "Normalize",
+    "UnNormalize",
+    "NormalizeConfig",
+    "NormStatistics",
+    "PaddingList",
+    "PaddingListConfig",
+    "TakeKeys",
+    "TakeKeysConfig",
+)
 
-"""
+_COMPAT_TRANSFORM_EXPORTS = tuple(
+    name
+    for name in getattr(_base_transforms, "__all__", ())
+    if name not in _PUBLIC_TRANSFORM_EXPORTS
+)
 
-from .base import *
-from .noise import *
-from .normalize import *
-from .padding import *
-from .take import *
+__all__ = _PUBLIC_TRANSFORM_EXPORTS + _COMPAT_TRANSFORM_EXPORTS  # pyright: ignore[reportUnsupportedDunderAll]
+
+
+def __getattr__(name: str) -> object:
+    """Keep legacy package-root imports working during the migration."""
+    if name in _COMPAT_TRANSFORM_EXPORTS:
+        return getattr(_base_transforms, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

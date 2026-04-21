@@ -58,6 +58,7 @@ from robo_orchard_lab.processing.io_processor.compose import (
 from robo_orchard_lab.processing.io_processor.envelope import (
     ModelIOProcessorEnvelopeAdapter,
     ModelIOProcessorEnvelopeAdapterCfg,
+    PostProcessContext,
     resolve_envelope_processor,
     resolve_envelope_processor_cfg,
 )
@@ -168,7 +169,10 @@ class EnvelopeContextProcessor(EnvelopeIOProcessor):
         super().__init__(cfg)
         self.post_calls: list[tuple[InputDict | None, object]] = []
 
-    def pre_process(self, data: PipelineEnvelope) -> PipelineEnvelope:
+    def pre_process(
+        self,
+        data: PipelineEnvelope[InputDict, object | None],
+    ) -> PipelineEnvelope[InputDict, dict[str, torch.Tensor]]:
         model_input = copy.deepcopy(cast(InputDict, data.model_input))
         model_input["input_data"] = (
             model_input["input_data"] + self.cfg.pre_add
@@ -185,8 +189,10 @@ class EnvelopeContextProcessor(EnvelopeIOProcessor):
         self,
         model_outputs: OutputDict,
         *,
-        model_input=None,
-        processor_context=None,
+        model_input: InputDict | None = None,
+        processor_context: (
+            dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None
+        ) = None,
     ) -> OutputDict:
         self.post_calls.append(
             (
@@ -235,7 +241,10 @@ class ContextMutatingEnvelopeProcessor(EnvelopeIOProcessor):
         self.post_calls: list[tuple[InputDict | None, object]] = []
         self.raw_post_calls: list[tuple[InputDict | None, object]] = []
 
-    def pre_process(self, data: PipelineEnvelope) -> PipelineEnvelope:
+    def pre_process(
+        self,
+        data: PipelineEnvelope[InputDict, dict[str, list[int]] | None],
+    ) -> PipelineEnvelope[InputDict, dict[str, list[int]]]:
         model_input = cast(InputDict, data.model_input)
         model_input["input_data"] = (
             model_input["input_data"] + self.cfg.pre_add
@@ -258,8 +267,10 @@ class ContextMutatingEnvelopeProcessor(EnvelopeIOProcessor):
         self,
         model_outputs: OutputDict,
         *,
-        model_input=None,
-        processor_context=None,
+        model_input: InputDict | None = None,
+        processor_context: (
+            dict[str, list[int]] | list[dict[str, list[int]]] | None
+        ) = None,
     ) -> OutputDict:
         # Keep raw references so compose tests can assert the no-copy replay
         # contract directly.
@@ -336,9 +347,9 @@ class HookedRuntimeInferencePipeline(InferencePipeline[InputDict, OutputDict]):
 
     def _model_forward_with_envelope(
         self,
-        data: object,
+        data: InputDict,
         *,
-        processor_context: object = None,
+        processor_context: PostProcessContext[None] = None,
     ) -> OutputDict:
         self.forwarded_inputs.append(copy.deepcopy(data))
         self.forwarded_processor_contexts.append(
@@ -627,9 +638,9 @@ def test_runtime_does_not_warn_when_envelope_hook_is_overridden():
 
         def _model_forward_with_envelope(
             self,
-            data: object,
+            data: InputDict,
             *,
-            processor_context: object = None,
+            processor_context: PostProcessContext[None] = None,
         ) -> OutputDict:
             return super()._model_forward_with_envelope(
                 data,
@@ -1157,6 +1168,35 @@ def test_model_io_processor_envelope_adapter_load_preserves_legacy_state(
     assert restored.legacy is not legacy
 
 
+def test_composed_envelope_load_preserves_mixed_legacy_child(tmp_path):
+    composed = compose_envelope(
+        EnvelopeContextProcessorCfg(
+            pre_add=2.0,
+            post_add=1.0,
+            context_offset=4.0,
+        )(),
+        AddProcessorCfg(pre_add=3.0, post_add=5.0)(),
+    )
+    save_dir = tmp_path / "composed_envelope_state"
+
+    composed.save(str(save_dir))
+    restored = ComposedEnvelopeIOProcessor.load(str(save_dir))
+
+    assert isinstance(restored, ComposedEnvelopeIOProcessor)
+    assert isinstance(restored.processors[0], EnvelopeContextProcessor)
+    assert isinstance(restored.processors[1], ModelIOProcessorEnvelopeAdapter)
+    assert isinstance(
+        restored.cfg.processors[1],
+        ModelIOProcessorEnvelopeAdapterCfg,
+    )
+    assert isinstance(
+        restored.cfg.processors[1].legacy_processor,
+        AddProcessorCfg,
+    )
+    assert restored.cfg.processors[1].legacy_processor.pre_add == 3.0
+    assert restored.cfg.processors[1].legacy_processor.post_add == 5.0
+
+
 def test_envelope_authoring_surface_accepts_legacy_inputs():
     envelope_cfg = EnvelopeContextProcessorCfg(pre_add=1.0, post_add=2.0)
     legacy_cfg = AddProcessorCfg(pre_add=3.0, post_add=4.0)
@@ -1176,6 +1216,22 @@ def test_envelope_authoring_surface_accepts_legacy_inputs():
     assert len(chained_runtime.processors) == 2
     assert isinstance(chained_cfg, ComposedEnvelopeIOProcessorCfg)
     assert len(chained_cfg.processors) == 2
+
+
+def test_compose_envelope_ignores_none_processors():
+    first = ContextMutatingEnvelopeProcessor(
+        ContextMutatingEnvelopeProcessorCfg(pre_add=1.0, marker=1)
+    )
+    second = ContextMutatingEnvelopeProcessor(
+        ContextMutatingEnvelopeProcessorCfg(pre_add=2.0, marker=2)
+    )
+
+    composed = compose_envelope(first, None, second)
+
+    assert isinstance(composed, ComposedEnvelopeIOProcessor)
+    assert len(composed.processors) == 2
+    assert composed.processors[0] is first
+    assert composed.processors[1] is second
 
 
 def test_composed_envelope_post_process_degrades_gracefully_on_none_context():

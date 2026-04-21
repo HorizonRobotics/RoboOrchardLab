@@ -108,6 +108,22 @@ Use this guideline when designing, implementing, reviewing, or testing:
   to snapshot it.
 - If a processor intentionally relies on shared-reference behavior, document
   that choice near the implementation or test that owns it.
+- If a compose helper intentionally accepts `None` sentinels for optional
+  processors, keep that support explicit in the function signature,
+  docstring, and focused tests instead of relying on implementation-only
+  tolerance.
+
+## Persistence And Config Serialization
+
+- For composed processors or adapters that persist nested child configs,
+  declare polymorphic child-config fields with `ConfigInstanceOf[...]`
+  instead of a bare base-config type so nested serialization preserves
+  subtype-specific fields on save and load.
+- For `StateSaveLoadMixin` adapters, separate the config-based reconstruction
+  fallback from the runtime state that must survive round-trip persistence.
+- Do not drop materialized wrapped-runtime fields such as adapter caches when
+  the supported save/load contract is expected to preserve wrapped legacy
+  runtime state rather than only rebuild from config.
 
 ## Testing Expectations
 
@@ -118,5 +134,7 @@ Use this guideline when designing, implementing, reviewing, or testing:
   context object or intentionally shares references.
 - For composed envelope behavior, test the `model_input` semantics and the
   `processor_context` replay semantics that the processor depends on.
+- For composed processor or adapter persistence changes that cross processor
+  families, add at least one mixed-family save/load round-trip test.
 - If identity matters, assert identity directly, for example with `is`, not
   only value equality.

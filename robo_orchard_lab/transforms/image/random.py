@@ -19,6 +19,7 @@ from typing import Generic, Sequence
 
 import numpy as np
 from pydantic import Field
+from robo_orchard_core.utils.config import ConfigInstanceOf
 from robo_orchard_core.utils.math.transform import (
     Rotate2D,
     Scale2D,
@@ -27,7 +28,6 @@ from robo_orchard_core.utils.math.transform import (
     Translate2D,
 )
 
-from robo_orchard_lab.transforms import ConfigInstanceOf
 from robo_orchard_lab.transforms.image.transform2d import (
     ImageTransform2DConfig,
     Transform2DGenMixin,

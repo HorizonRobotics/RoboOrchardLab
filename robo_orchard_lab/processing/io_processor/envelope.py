@@ -17,7 +17,15 @@
 from __future__ import annotations
 import abc
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    TypeAlias,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from robo_orchard_core.utils.config import (
     ClassConfig,
@@ -59,8 +67,17 @@ __all__ = [
 ]
 
 
+ModelInputT = TypeVar("ModelInputT")
+ProcessorContextT = TypeVar("ProcessorContextT")
+PostProcessContextT = TypeVar("PostProcessContextT")
+
+PostProcessContext: TypeAlias = (
+    PostProcessContextT | list[PostProcessContextT] | None
+)
+
+
 @dataclass
-class PipelineEnvelope:
+class PipelineEnvelope(Generic[ModelInputT, ProcessorContextT]):
     """Envelope carrying model input and processor-context payload.
 
     :class:`PipelineEnvelope` describes structure, not granularity.
@@ -79,18 +96,30 @@ class PipelineEnvelope:
             None.
     """
 
-    model_input: Any
-    processor_context: Any = None
+    model_input: ModelInputT
+    processor_context: ProcessorContextT = None  # type: ignore[assignment]
 
 
-def normalize_pipeline_envelope(value: Any) -> PipelineEnvelope:
+@overload
+def normalize_pipeline_envelope(
+    value: PipelineEnvelope[ModelInputT, ProcessorContextT],
+) -> PipelineEnvelope[ModelInputT, ProcessorContextT]: ...
+
+
+@overload
+def normalize_pipeline_envelope(
+    value: ModelInputT,
+) -> PipelineEnvelope[ModelInputT, None]: ...
+
+
+def normalize_pipeline_envelope(value: Any) -> PipelineEnvelope[Any, Any]:
     """Normalize a raw value into :class:`PipelineEnvelope`.
 
     Args:
         value (Any): Existing envelope or a raw model-facing value.
 
     Returns:
-        PipelineEnvelope: Normalized envelope.
+        PipelineEnvelope[Any, Any]: Normalized envelope.
     """
 
     if isinstance(value, PipelineEnvelope):
@@ -106,7 +135,9 @@ EnvelopeIOProcessorType_co = TypeVar(
 
 
 class EnvelopeIOProcessor(
-    ClassInitFromConfigMixin, StateSaveLoadMixin, metaclass=abc.ABCMeta
+    ClassInitFromConfigMixin,
+    StateSaveLoadMixin,
+    metaclass=abc.ABCMeta,
 ):
     """Base class for processors that consume and return envelopes.
 
@@ -136,20 +167,23 @@ class EnvelopeIOProcessor(
         self.cfg = cfg
 
     @abc.abstractmethod
-    def pre_process(self, data: PipelineEnvelope) -> PipelineEnvelope:
+    def pre_process(
+        self,
+        data: PipelineEnvelope[Any, Any],
+    ) -> PipelineEnvelope[Any, Any]:
         """Transform an envelope before model forward.
 
         Args:
-            data (PipelineEnvelope): Owner-defined envelope containing model
-                input plus optional aligned ``processor_context``. Depending on
-                the runtime, ``data.model_input`` may describe a single sample
-                or a batch.
+            data (PipelineEnvelope[Any, Any]): Owner-defined envelope
+                containing model input plus optional aligned
+                ``processor_context``. Depending on the runtime,
+                ``data.model_input`` may describe a single sample or a batch.
 
         Returns:
-            PipelineEnvelope: Updated envelope. If the returned
-            ``processor_context`` must remain isolated from later mutation,
-            return a fresh context object instead of reusing and mutating a
-            shared reference.
+            PipelineEnvelope[Any, Any]: Updated envelope. If the returned
+                ``processor_context`` must remain isolated from later
+                mutation, return a fresh context object instead of reusing and
+                mutating a shared reference.
         """
 
     def post_process(
@@ -157,7 +191,7 @@ class EnvelopeIOProcessor(
         model_outputs,
         *,
         model_input: Any = None,
-        processor_context: Any = None,
+        processor_context: PostProcessContext[Any] = None,
     ):
         """Transform raw model outputs into a user-facing representation.
 
@@ -165,18 +199,17 @@ class EnvelopeIOProcessor(
             model_outputs (Any): Raw model outputs returned by the model.
             model_input (Any, optional): Model-facing payload that was passed
                 into the forward call. Default is None.
-            processor_context (Any, optional): Envelope passthrough context
-                preserved from pre-processing. The standard inference runtime
-                never collates it by itself. Paths that bypass model-input
-                collation pass the original object. Paths that do collate
-                model input pass a list of per-sample context values, even
-                when the list length is 1. Composed envelope runtimes may use
-                structured wrappers such as ``ProcessorContextStack`` to
-                encode per-child stacks without overloading plain lists.
-                Entries are replayed
-                using the exact references returned by the matching
-                ``pre_process`` path; no copy or deepcopy is applied. Default
-                is None.
+            processor_context (PostProcessContext[Any], optional): Envelope
+                passthrough context preserved from pre-processing. The
+                standard inference runtime never collates it by itself. Paths
+                that bypass model-input collation pass the original object.
+                Paths that do collate model input pass a list of per-sample
+                context values, even when the list length is 1. Composed
+                envelope runtimes may use structured wrappers such as
+                ``ProcessorContextStack`` to encode per-child stacks without
+                overloading plain lists. Entries are replayed using the exact
+                references returned by the matching ``pre_process`` path; no
+                copy or deepcopy is applied. Default is None.
 
         Returns:
             Any: Post-processed model outputs.
@@ -260,12 +293,10 @@ EnvelopeIOProcessorCfgType_co = TypeVar(
 LegacyProcessorT = TypeVar(
     "LegacyProcessorT",
     bound=ModelIOProcessor,
-    covariant=True,
 )
 LegacyProcessorCfgT = TypeVar(
     "LegacyProcessorCfgT",
     bound=ModelIOProcessorCfg,
-    covariant=True,
 )
 
 
@@ -329,7 +360,10 @@ class ModelIOProcessorEnvelopeAdapter(
         adapter.legacy = legacy
         return cast(ModelIOProcessorEnvelopeAdapter[LegacyProcessorT], adapter)
 
-    def pre_process(self, data: PipelineEnvelope) -> PipelineEnvelope:
+    def pre_process(
+        self,
+        data: PipelineEnvelope[Any, Any],
+    ) -> PipelineEnvelope[Any, Any]:
         """Run the wrapped legacy ``pre_process`` on ``model_input`` only."""
 
         return PipelineEnvelope(
@@ -342,7 +376,7 @@ class ModelIOProcessorEnvelopeAdapter(
         model_outputs,
         *,
         model_input: Any = None,
-        processor_context: Any = None,
+        processor_context: PostProcessContext[Any] = None,
     ):
         """Delegate post-processing to the wrapped legacy processor."""
 

@@ -64,6 +64,18 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - Use `.agents/references/*` for stable, agent-facing terminology, naming guidance, checklists, and short decision summaries.
 - Keep reference files concise and specific enough that `AGENTS.md` or a skill can link to them directly.
 
+## Asset Fit And Extraction
+
+- Do not default to appending new guidance to the nearest existing file just
+  because that file is already open.
+- When a stable lesson introduces a new reusable topic, a new routing target,
+  or a distinct ownership boundary, prefer a dedicated instruction,
+  reference, or template over expanding an only-partially-related file.
+- If the new content would turn one file into a mixed-scope catch-all or
+  duplicate the same rule across guidance families, split it out and leave
+  short cross-links instead. Temporary stopgap additions should be extracted
+  once the topic proves stable.
+
 ## Temporary Design Drafts And Retrospectives
 
 - Temporary design drafts and one-off task retrospectives are not shared agent guidance.

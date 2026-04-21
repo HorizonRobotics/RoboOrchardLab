@@ -15,9 +15,9 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-from typing import Literal, Sequence
+from typing import Any, Literal, Sequence
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from robo_orchard_lab.transforms.base import (
     ClassType,
@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-class PaddingList(DictTransform):
+class PaddingList(DictTransform[dict[str, list[Any]]]):
     """A transform that applies padding to input lists.
 
     This transform supports padding input lists by replacing None values in the
@@ -46,7 +46,7 @@ class PaddingList(DictTransform):
         super().__init__()
         self.cfg = cfg
 
-    def transform(self, **kwargs) -> dict:
+    def transform(self, **kwargs: list[Any]) -> dict[str, list[Any]]:
         """Apply padding to the input columns.
 
         This method replaces None values in the head of input lists with the
@@ -101,7 +101,9 @@ class PaddingListConfig(DictTransformConfig[PaddingList]):
 
     class_type: ClassType[PaddingList] = PaddingList
 
-    input_columns: Sequence[str] = Field(
+    input_columns: Sequence[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
         description="The input columns to apply padding to.",
     )
 
@@ -115,3 +117,8 @@ class PaddingListConfig(DictTransformConfig[PaddingList]):
     """
 
     check_return_columns: bool = False
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.input_columns is None:
+            raise ValueError("input_columns must be provided.")

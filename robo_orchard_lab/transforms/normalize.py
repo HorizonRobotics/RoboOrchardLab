@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 
-class Normalize(DictTransform):
+class Normalize(DictTransform[dict[str, torch.Tensor]]):
     """A transform to normalize the input data."""
 
     cfg: NormalizeConfig[Normalize]
@@ -62,7 +62,7 @@ class Normalize(DictTransform):
         super()._set_state(state)
         self._setup(self.cfg)
 
-    def transform(self, **kwargs) -> dict:
+    def transform(self, **kwargs: torch.Tensor) -> dict[str, torch.Tensor]:
         ret = {}
         for key, data in kwargs.items():
             if not isinstance(data, torch.Tensor):
@@ -75,7 +75,7 @@ class Normalize(DictTransform):
         return ret
 
 
-class UnNormalize(DictTransform):
+class UnNormalize(DictTransform[dict[str, torch.Tensor]]):
     cfg: NormalizeConfig[UnNormalize]
 
     def __init__(self, cfg: NormalizeConfig[UnNormalize]):
@@ -94,7 +94,7 @@ class UnNormalize(DictTransform):
         super()._set_state(state)
         self._setup(self.cfg)
 
-    def transform(self, **kwargs) -> dict:
+    def transform(self, **kwargs: torch.Tensor) -> dict[str, torch.Tensor]:
         ret = {}
         for key, data in kwargs.items():
             if not isinstance(data, torch.Tensor):

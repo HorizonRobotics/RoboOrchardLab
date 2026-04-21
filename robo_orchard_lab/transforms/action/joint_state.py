@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Generic, Literal
 
 import torch
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from robo_orchard_lab.dataset.datatypes import BatchJointsState
 from robo_orchard_lab.transforms.base import (
@@ -45,14 +45,18 @@ __all__ = [
 ]
 
 
-class AddNoiseToJointsState(DictTransform, Generic[NoiseConfigT_co]):
+class AddNoiseToJointsState(
+    DictTransform[dict[str, BatchJointsState]], Generic[NoiseConfigT_co]
+):
     cfg: AddNoiseToJointsStateConfig[NoiseConfigT_co]
 
     def __init__(self, cfg: AddNoiseToJointsStateConfig[NoiseConfigT_co]):
         super().__init__()
         self.cfg = cfg
 
-    def transform(self, **kwargs) -> dict:
+    def transform(
+        self, **kwargs: BatchJointsState
+    ) -> dict[str, BatchJointsState]:
         ret = {}
         for key, value in kwargs.items():
             if isinstance(value, BatchJointsState):
@@ -76,9 +80,12 @@ class AddNoiseToJointsState(DictTransform, Generic[NoiseConfigT_co]):
 
 
 class AddNoiseToJointsStateConfig(
-    DictTransformConfig[AddNoiseToJointsState], Generic[NoiseConfigT_co]
+    DictTransformConfig[AddNoiseToJointsState[NoiseConfigT_co]],
+    Generic[NoiseConfigT_co],
 ):
-    class_type: ClassType[AddNoiseToJointsState] = AddNoiseToJointsState
+    class_type: ClassType[AddNoiseToJointsState[NoiseConfigT_co]] = (
+        AddNoiseToJointsState
+    )
 
     noise: NoiseConfigT_co
 
@@ -94,7 +101,7 @@ class AddNoiseToJointsStateConfig(
         )
 
 
-class UpdateVelocity(DictTransform):
+class UpdateVelocity(DictTransform[dict[str, BatchJointsState]]):
     cfg: UpdateVelocityConfig
 
     def __init__(self, cfg: UpdateVelocityConfig) -> None:
@@ -112,7 +119,9 @@ class UpdateVelocity(DictTransform):
 
         return out
 
-    def transform(self, **kwargs) -> dict:
+    def transform(
+        self, **kwargs: BatchJointsState
+    ) -> dict[str, BatchJointsState]:
         ret = {}
         for key, value in kwargs.items():
             if isinstance(value, BatchJointsState):
@@ -128,10 +137,18 @@ class UpdateVelocity(DictTransform):
 class UpdateVelocityConfig(DictTransformConfig[UpdateVelocity]):
     class_type: ClassType[UpdateVelocity] = UpdateVelocity
 
-    input_columns: list[str]
+    input_columns: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+    )
 
     override_existing: bool = False
     inplace: bool = True
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.input_columns is None:
+            raise ValueError("input_columns must be provided.")
 
 
 @dataclass
@@ -139,7 +156,7 @@ class ToDeltaJointsStateReturn:
     delta: BatchJointsState
 
 
-class ToDeltaJointsState(DictTransform):
+class ToDeltaJointsState(DictTransform[ToDeltaJointsStateReturn]):
     cfg: ToDeltaJointsStateConfig
 
     def __init__(self, cfg: ToDeltaJointsStateConfig | None) -> None:
@@ -216,7 +233,10 @@ class ToDeltaJointsState(DictTransform):
 class ToDeltaJointsStateConfig(DictTransformConfig[ToDeltaJointsState]):
     class_type: ClassType[ToDeltaJointsState] = ToDeltaJointsState
 
-    input_columns: dict[str, str] = Field(default_factory=dict)
+    input_columns: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
+    )
     """Mapping of input columns.
 
     The values of mapping must be in ["current", "future"]."""

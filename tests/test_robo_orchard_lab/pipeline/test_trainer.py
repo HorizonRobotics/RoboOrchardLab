@@ -297,7 +297,10 @@ class EnvelopeRecordingIOProcessor(EnvelopeIOProcessor):
         self.post_context_refs: list[dict[str, torch.Tensor]] = []
         self.post_contexts: list[dict[str, torch.Tensor]] = []
 
-    def pre_process(self, data: PipelineEnvelope) -> PipelineEnvelope:
+    def pre_process(
+        self,
+        data: PipelineEnvelope[torch.Tensor, None],
+    ) -> PipelineEnvelope[torch.Tensor, dict[str, torch.Tensor]]:
         raw_batch = cast(torch.Tensor, data.model_input)
         processor_context = {
             "raw_batch": raw_batch.clone(),
@@ -313,8 +316,10 @@ class EnvelopeRecordingIOProcessor(EnvelopeIOProcessor):
         self,
         model_outputs,
         *,
-        model_input=None,
-        processor_context=None,
+        model_input: torch.Tensor | None = None,
+        processor_context: (
+            dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None
+        ) = None,
     ):
         self.post_inputs.append(cast(torch.Tensor, model_input).clone())
         context = cast(dict[str, torch.Tensor], processor_context)

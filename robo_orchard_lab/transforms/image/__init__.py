@@ -14,8 +14,37 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from .affine import *
-from .color import *
-from .decode import *
-from .formatter import *
-from .random import *
+"""Curated public image-transform surface."""
+
+from .affine import ImageResizeConfig, ImageRotateConfig
+from .color import ColorJitter, ColorJitterConfig
+from .decode import ImageDecode, ImageDecodeConfig
+from .formatter import (
+    ImageChannelLayout,
+    ImageLayoutFormatter,
+    ImageLayoutFormatterConfig,
+    ImageMode,
+)
+from .random import (
+    RandomAffineConfig,
+    RandomApplyTransform2DConfig,
+    RandomChooseTransform2DConfig,
+    RandomImageTransform2DConfig,
+)
+
+__all__ = [
+    "ImageResizeConfig",
+    "ImageRotateConfig",
+    "ColorJitter",
+    "ColorJitterConfig",
+    "ImageDecode",
+    "ImageDecodeConfig",
+    "ImageChannelLayout",
+    "ImageLayoutFormatter",
+    "ImageLayoutFormatterConfig",
+    "ImageMode",
+    "RandomAffineConfig",
+    "RandomApplyTransform2DConfig",
+    "RandomChooseTransform2DConfig",
+    "RandomImageTransform2DConfig",
+]

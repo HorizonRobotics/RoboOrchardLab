@@ -36,6 +36,7 @@ from robo_orchard_lab.processing.io_processor import (
 from robo_orchard_lab.processing.io_processor.base import ModelIOProcessor
 from robo_orchard_lab.processing.io_processor.envelope import (
     ModelIOProcessorEnvelopeAdapter,
+    PostProcessContext,
     normalize_pipeline_envelope,
     resolve_envelope_processor,
 )
@@ -306,11 +307,14 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
         """
         batch = on_batch_hook_args.batch
 
-        envelope = PipelineEnvelope(model_input=batch)
+        envelope: PipelineEnvelope[Any, Any] = PipelineEnvelope(
+            model_input=batch
+        )
         if self.resolved_envelope_processor is not None:
             envelope = self.resolved_envelope_processor.pre_process(envelope)
         envelope = normalize_pipeline_envelope(envelope)
         model_input = envelope.model_input
+        processor_context: PostProcessContext[Any] = envelope.processor_context
 
         with pipeline_hooks.begin(
             "on_model_forward",
@@ -326,7 +330,7 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 outputs = self.resolved_envelope_processor.post_process(
                     raw_outputs,
                     model_input=envelope.model_input,
-                    processor_context=envelope.processor_context,
+                    processor_context=processor_context,
                 )
             else:
                 outputs = raw_outputs

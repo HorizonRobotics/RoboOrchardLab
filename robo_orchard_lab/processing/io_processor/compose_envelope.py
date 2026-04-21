@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Generic, Sequence, TypeVar, cast
+
+from robo_orchard_core.utils.config import ConfigInstanceOf
 
 from robo_orchard_lab.processing.io_processor.base import (
     ModelIOProcessor,
@@ -40,9 +42,11 @@ __all__ = [
     "compose_envelope_cfg",
 ]
 
+ProcessorContextEntryT = TypeVar("ProcessorContextEntryT")
+
 
 @dataclass
-class ProcessorContextStack:
+class ProcessorContextStack(Generic[ProcessorContextEntryT]):
     """Structured per-child context stack for one composed envelope path.
 
     Args:
@@ -51,7 +55,7 @@ class ProcessorContextStack:
             in forward order.
     """
 
-    processor_context_stack: list[Any]
+    processor_context_stack: list[ProcessorContextEntryT]
 
 
 class ComposedEnvelopeIOProcessor(EnvelopeIOProcessor):
@@ -79,7 +83,7 @@ class ComposedEnvelopeIOProcessor(EnvelopeIOProcessor):
     @classmethod
     def from_processors(
         cls,
-        processors: list[EnvelopeIOProcessor | None],
+        processors: Sequence[EnvelopeIOProcessor | None],
     ) -> "ComposedEnvelopeIOProcessor":
         """Build a composed envelope processor from runtime child objects.
 
@@ -309,7 +313,7 @@ class ComposedEnvelopeIOProcessorCfg(
     class_type: ClassType_co[ComposedEnvelopeIOProcessor] = (
         ComposedEnvelopeIOProcessor
     )
-    processors: list[EnvelopeIOProcessorCfg]
+    processors: list[ConfigInstanceOf[EnvelopeIOProcessorCfg]]
 
     def __getitem__(self, item: int) -> EnvelopeIOProcessorCfg:
         """Return a child envelope processor config by position.
@@ -362,13 +366,14 @@ class ComposedEnvelopeIOProcessorCfg(
 
 
 def compose_envelope(
-    *processors: EnvelopeIOProcessor | ModelIOProcessor,
+    *processors: EnvelopeIOProcessor | ModelIOProcessor | None,
 ) -> ComposedEnvelopeIOProcessor:
     """Build an envelope compose runtime chain.
 
     Args:
-        *processors (EnvelopeIOProcessor | ModelIOProcessor): Envelope or
-            legacy processors to compose.
+        *processors (EnvelopeIOProcessor | ModelIOProcessor | None):
+            Envelope processors, legacy processors, or ``None`` placeholders
+            to compose. ``None`` entries are ignored.
 
     Returns:
         ComposedEnvelopeIOProcessor: Flattened composed runtime chain.

@@ -20,7 +20,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 import torch
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from robo_orchard_lab.dataset.datatypes import (
     BatchCameraData,
@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 
-class ImageDecode(DictTransform):
+class ImageDecode(DictTransform[dict[str, BatchCameraData]]):
     """A transform to decode BatchCameraDataEncoded to BatchCameraData."""
 
     cfg: ImageDecodeConfig
@@ -162,7 +162,9 @@ class ImageDecodeConfig(DictTransformConfig[ImageDecode]):
 
     backend: Literal["pil", "cv2"] = "pil"
 
-    input_columns: Sequence[str] = Field(
+    input_columns: Sequence[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("input_column_mapping", "input_columns"),
         description="The columns to decode.",
     )
 
@@ -173,3 +175,8 @@ class ImageDecodeConfig(DictTransformConfig[ImageDecode]):
     but should be treated as BGR. This flag allows to invert the channels
     accordingly.
     """
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.input_columns is None:
+            raise ValueError("input_columns must be provided.")
