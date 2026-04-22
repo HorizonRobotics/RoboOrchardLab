@@ -20,7 +20,7 @@
         "robo_orchard_lab",
         "projects/holobrain_internal/common/configs",
         "projects/holobrain_internal/common/train.py",
-        "projects/holobrain_internal/common/utils.py"
+        "projects/holobrain_internal/common/holobrain_utils.py"
     ],
     "job_password": "1227",
     "queue_name": "project-5090-robot-lab-bcloud-bj",

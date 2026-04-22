@@ -24,7 +24,7 @@ import torch
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState, is_initialized
 from accelerate.utils import DataLoaderConfiguration, ProjectConfiguration
-from utils import ActionMetric, load_checkpoint, load_config
+from holobrain_utils import ActionMetric, load_checkpoint, load_config
 
 from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.dataset.dataset_wrapper import (

@@ -20,7 +20,7 @@ import logging
 import os
 import shutil
 
-from utils import load_checkpoint, load_config
+from holobrain_utils import load_checkpoint, load_config
 
 from robo_orchard_lab.models.holobrain import HoloBrainProcessor
 from robo_orchard_lab.models.mixin import ModelMixin

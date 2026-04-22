@@ -19,7 +19,7 @@ import json
 import logging
 import os
 
-from utils import HolobrainVideoVisualizer, load_config
+from holobrain_utils import HolobrainVideoVisualizer, load_config
 
 from robo_orchard_lab.utils import log_basic_config
 
