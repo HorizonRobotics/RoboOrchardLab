@@ -63,6 +63,7 @@ class BatchDepthProbGTGenerator(nn.Module):
         output_key="depth_prob_gt",
         max_valid_depth=None,
         valid_threshold=-1,
+        depth_drop_prob=None,
     ):
         super().__init__()
         self.max_depth = max_depth
@@ -74,6 +75,7 @@ class BatchDepthProbGTGenerator(nn.Module):
         self.output_key = output_key
         self.max_valid_depth = max_valid_depth
         self.valid_threshold = valid_threshold
+        self.depth_drop_prob = depth_drop_prob
 
     def __call__(self, data):
         if not self.training:
@@ -160,6 +162,11 @@ class BatchDepthProbGTGenerator(nn.Module):
                 0, (bs, num_view)
             )
             data[self.output_key] = [data[self.output_key], valid_ratio]
+
+        if self.depth_drop_prob and self.depth_drop_prob > 0:
+            drop_mask = torch.rand([bs, num_view]) > self.depth_drop_prob
+            drop_mask = drop_mask[:, :, None, None, None].to(depth)
+            data[self.input_key] = drop_mask * data[self.input_key]
         return data
 
 
