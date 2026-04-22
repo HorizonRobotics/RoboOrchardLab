@@ -131,10 +131,10 @@ class Struct2Dict:
         else:
             cam_names = self.cam_names
 
-        assert data.intrinsic is not None
-        input_data["intrinsic"] = np.stack(
-            [data.intrinsic[x] for x in cam_names]
-        )
+        if data.intrinsic is not None:
+            input_data["intrinsic"] = np.stack(
+                [data.intrinsic[x] for x in cam_names]
+            )
 
         if data.t_world2cam is not None:
             input_data["T_world2cam"] = np.stack(
