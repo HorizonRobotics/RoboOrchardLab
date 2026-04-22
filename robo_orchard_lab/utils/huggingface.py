@@ -34,6 +34,7 @@ __all__ = [
     "AcceleratorState",
     "download_hf_resource",
     "auto_add_repo_type",
+    "resolve_hf_compatible_path",
 ]
 
 
@@ -233,6 +234,28 @@ class AcceleratorState:
 
 
 VALID_REPO_TYPES = {"model", "dataset", "space"}
+
+
+def resolve_hf_compatible_path(path: str, repo_type: str = "model") -> str:
+    """Resolve the repository's ``hf://`` URI form into a local resource.
+
+    Non-``hf://`` inputs are returned unchanged so callers can layer their own
+    path semantics, such as ``abspath`` or local-existence checks, on top.
+
+    Args:
+        path (str): Local path, standard Hugging Face identifier, or
+            repository-specific ``hf://`` URI.
+        repo_type (str, optional): Default repo type to inject for bare
+            ``hf://`` URIs that omit it. Default is ``"model"``.
+
+    Returns:
+        str: Local downloaded path for ``hf://`` URIs, otherwise the original
+            input path.
+    """
+
+    if path.startswith("hf://"):
+        return download_hf_resource(auto_add_repo_type(path, repo_type))
+    return path
 
 
 def download_hf_resource(url: str) -> str:

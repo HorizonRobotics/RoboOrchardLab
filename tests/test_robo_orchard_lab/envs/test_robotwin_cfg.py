@@ -75,6 +75,24 @@ def robotwin_task_config_assets(tmp_path: Path, monkeypatch):
 
 
 class TestRoboTwinEnvCfg:
+    def test_eval_mode_keeps_cfg_seed_as_start_seed(
+        self, robotwin_task_config_assets: Path
+    ):
+        cfg = RoboTwinEnvCfg(
+            task_name="place_object_basket",
+            check_expert=False,
+            check_task_init=False,
+            task_config_path=str(robotwin_task_config_assets),
+            eval_mode=True,
+            seed=3,
+        )
+
+        task_config = cfg.get_task_config()
+
+        assert cfg.seed == 3
+        assert cfg.resolve_start_seed(cfg.seed) == 400000
+        assert task_config["seed"] == 400000
+
     def test_get_task_config_applies_final_overrides(
         self, robotwin_task_config_assets: Path
     ):

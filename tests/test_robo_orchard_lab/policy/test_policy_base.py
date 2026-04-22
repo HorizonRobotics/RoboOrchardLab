@@ -148,6 +148,26 @@ def test_inference_pipeline_policy_to_delegates_to_pipeline(monkeypatch):
     assert called["device"] == "cuda:1"
 
 
+def test_inference_pipeline_policy_accepts_identical_pipeline_cfg_without_eq(
+    monkeypatch,
+):
+    pipeline_cfg = DummyPipelineCfg()
+    pipeline = DummyPipeline(cfg=pipeline_cfg)
+
+    def _raise_on_eq(self, other):
+        del self, other
+        raise AssertionError("__eq__ should not be called for same cfg")
+
+    monkeypatch.setattr(DummyPipelineCfg, "__eq__", _raise_on_eq)
+
+    policy = InferencePipelinePolicy(
+        InferencePipelinePolicyCfg(),
+        pipeline=pipeline,
+    )
+
+    assert policy.pipeline is pipeline
+
+
 def test_inference_pipeline_policy_state_save_load_preserves_pipeline(
     tmp_path,
 ):

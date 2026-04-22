@@ -55,7 +55,13 @@ class _FakeSuccessRateMetric:
         self.info = {}
         self.last_update_info = None
 
-    def update_episode(self, task_name: str, seed: int, success: bool):
+    def update_episode(
+        self,
+        task_name: str,
+        seed: int,
+        success: bool,
+        offset_seed: int | None = None,
+    ):
         task_info = self.info.setdefault(
             task_name,
             {
@@ -68,12 +74,17 @@ class _FakeSuccessRateMetric:
         task_info["total_count"] += 1
         if success:
             task_info["success_count"] += 1
-        task_info["info_list"].append({"seed": seed, "success": success})
-        self.last_update_info = {
+        info = {"seed": seed, "success": success}
+        last_update_info = {
             "task_name": task_name,
             "seed": seed,
             "success": success,
         }
+        if offset_seed is not None:
+            info["offset_seed"] = offset_seed
+            last_update_info["offset_seed"] = offset_seed
+        task_info["info_list"].append(info)
+        self.last_update_info = last_update_info
 
     def merge(self, metrics):
         for metric in metrics:
@@ -117,10 +128,14 @@ class _FakeSuccessRateMetric:
 class _FakeEvaluator:
     def __init__(self):
         self.metrics = None
+        self.env_cfg = None
         self.setup_calls = []
         self.reset_calls = []
         self.evaluate_calls = []
         self.current_episode = None
+        self.current_start_seed = None
+        self.current_offset_seed = 0
+        self.has_applied_initial_retry = False
 
     def setup(self, env_cfg, policy_or_cfg, metrics, device=None):
         self.setup_calls.append(
@@ -130,12 +145,36 @@ class _FakeEvaluator:
                 "device": device,
             }
         )
+        self.env_cfg = env_cfg
         self.metrics = metrics
 
     def reset_env(self, **kwargs):
         self.reset_calls.append(kwargs)
         self.current_episode = kwargs
-        return None, {"seed": kwargs["seed"]}
+        assert isinstance(self.env_cfg, dict)
+        if self.current_start_seed is None:
+            self.current_start_seed = self.env_cfg["seed"]
+
+        seed_request = kwargs.get("seed")
+        if seed_request == "next":
+            self.current_offset_seed += 1
+        elif seed_request is not None:
+            self.current_start_seed = seed_request
+            self.current_offset_seed = 0
+
+        if not self.has_applied_initial_retry:
+            self.current_offset_seed += 2
+            self.has_applied_initial_retry = True
+
+        resolved_start_seed = (
+            100000 * (1 + self.current_start_seed)
+            if self.current_start_seed < 100000
+            else self.current_start_seed
+        )
+        return None, {
+            "seed": resolved_start_seed + self.current_offset_seed,
+            "offset_seed": self.current_offset_seed,
+        }
 
     def evaluate_episode(self, max_steps, env_reset_kwargs=None):
         self.evaluate_calls.append(
@@ -148,10 +187,17 @@ class _FakeEvaluator:
             self.reset_env(**env_reset_kwargs)
         assert self.metrics is not None
         assert self.current_episode is not None
+        resolved_start_seed = (
+            100000 * (1 + self.current_start_seed)
+            if self.current_start_seed < 100000
+            else self.current_start_seed
+        )
+        seed = resolved_start_seed + self.current_offset_seed
         self.metrics.update_episode(
             task_name=self.current_episode["task_name"],
-            seed=self.current_episode["seed"],
+            seed=seed,
             success=True,
+            offset_seed=self.current_offset_seed,
         )
         return {"last_update": self.metrics.last_update_info}
 
@@ -263,6 +309,8 @@ class RobotwinEvalScriptTest(unittest.TestCase):
         self.assertEqual(len(metrics["tasks"]), 2)
         self.assertEqual(metrics["tasks"][0]["total_count"], 2)
         self.assertEqual(metrics["tasks"][1]["total_count"], 2)
+        self.assertEqual(metrics["last_update"]["seed"], 400003)
+        self.assertEqual(metrics["last_update"]["offset_seed"], 3)
         self.assertEqual(
             _FakePolicyEvaluatorConfig.last_evaluator.reset_calls,
             [
@@ -270,7 +318,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                     "clear_cache": True,
                     "episode_id": 0,
                     "return_obs": True,
-                    "seed": 400000,
+                    "seed": 3,
                     "task_name": "task_b",
                     "video_dir": None,
                 },
@@ -278,7 +326,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                     "clear_cache": True,
                     "episode_id": 1,
                     "return_obs": True,
-                    "seed": 400001,
+                    "seed": "next",
                     "task_name": "task_b",
                     "video_dir": None,
                 },
@@ -324,7 +372,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                 "clear_cache": True,
                 "episode_id": 0,
                 "return_obs": True,
-                "seed": 100000,
+                "seed": 0,
                 "task_name": "task_a",
                 "video_dir": os.path.join(
                     "eval_result",

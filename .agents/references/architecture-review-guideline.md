@@ -38,6 +38,10 @@ boundaries, and the main execution path understandable.
 - Treat code style, naming nits, and low-confidence cleanup suggestions as
   outside the core architecture-review scope unless they directly affect
   boundary clarity or contract correctness.
+- Distinguish immediate correctness or compatibility blockers from design
+  follow-up notes. Do not escalate a design preference into a blocker unless
+  the reviewed scope shows a concrete regression, caller breakage, or
+  meaningful extension cost that is already material.
 - Do not report one-off collaboration preferences or local workflow habits as
   architecture issues unless they were explicitly adopted as stable project
   rules.
@@ -70,6 +74,13 @@ boundaries, and the main execution path understandable.
   ad hoc string-based lookups or similar dynamic indirection in the main path.
 - Keep optionality and defaults explicit instead of encoding critical
   semantics through missing keys, missing fields, or silent fallback logic.
+- When a config or reference is validated against a runtime object, preserve
+  reconstruction-critical fields such as checkpoint or artifact sources unless
+  the runtime object explicitly becomes the new source of truth.
+- If one config field fans out to multiple downstream APIs with different
+  accepted kwargs or invariants, split the field or validate the branch-local
+  contract explicitly instead of relying on one shared kwargs bag plus
+  downstream errors.
 
 ## Dependency And Source-Of-Truth Discipline
 
@@ -85,6 +96,9 @@ boundaries, and the main execution path understandable.
 - Preserve compatibility only for surfaces with clear external cost.
 - Treat public exports and documented import paths as compatibility
   commitments rather than incidental implementation details.
+- Do not treat a module-local helper export or `__all__` entry by itself as a
+  strong public-surface commitment when the package root, docs, and
+  repository-owned imports do not reinforce that path.
 - Do not keep dead shims or stale aliases once their supported behavior is
   gone.
 - Keep caller-facing package or module exports deliberate and minimal.
@@ -96,6 +110,8 @@ boundaries, and the main execution path understandable.
   stack.
 - Enforce invariants at construction or boundary points when possible so
   invalid combinations fail before deep runtime logic.
+- Prefer explicit runtime exceptions for config- or user-provided invariants.
+  Do not rely on `assert` for production contract enforcement.
 - Attach validation and tests to the true design boundaries, not only to the
   easiest integrated path.
 - Keep main flows readable without forcing the reader to chase many thin

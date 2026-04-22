@@ -1,6 +1,6 @@
 ---
 name: prmr-codereview
-description: Review a GitHub PR or GitLab MR when the user explicitly asks for PR/MR review or PR/MR comment posting. Use this skill for PR/MR-specific transport, metadata, and comment workflows.
+description: Review a GitHub PR or GitLab MR when the task is a PR/MR review or comment flow. Use this skill for PR/MR-specific transport, metadata, and comment workflows.
 ---
 Provide a code review for the given pull request or merge request.
 
@@ -11,10 +11,12 @@ final report, also read `../references/report-composition.md`.
 Do not use this skill for commit review, branch diff review, staged diff
 review, working tree review, or generic local code review. Use
 `../changeset-codereview/SKILL.md` for those. If the user explicitly wants
-architecture review of a PR/MR, pass that requirement into the delegated
-changeset review workflow rather than launching a separate architecture pass
-here. Keep this skill as the main report owner and summarize any paired
-review result in `Related review inputs`.
+architecture review of a PR/MR, or if the reviewed PR/MR materially changes
+layering, ownership boundaries, dependency direction, compatibility/public
+surfaces, or other architecture-review dimensions, pass that requirement into
+the delegated changeset review workflow rather than launching a separate
+architecture pass here. Keep this skill as the main report owner and
+summarize any paired review result in `Related review inputs`.
 
 **Agent assumptions (applies to all agents and subagents):**
 - All tools are functional and will work without error. Do not test tools or
@@ -26,10 +28,15 @@ review result in `Related review inputs`.
   names: use a lightweight reviewer for simple PR/MR triage or file
   discovery, a general reviewer for balanced summaries, and the strongest
   available reviewer for issue validation when needed.
-- This workflow requires subagents. Do not silently collapse it into
-  a single-agent review. If delegation is unavailable or not yet
-  authorized, stop and ask the user for explicit delegation
-  permission before proceeding.
+- When the user explicitly asks for a re-review after updates, treat that as a
+  fresh review pass on the updated head rather than as a reason to stop just
+  because the same reviewer account commented before.
+- This workflow requires subagents. Do not silently collapse it into a
+  single-agent review. If delegation is unavailable or not yet authorized,
+  stop and ask for explicit delegation permission before proceeding.
+- Close completed triage and delegated review agents as soon as their outputs
+  have been incorporated. Do not keep early review-phase agents idle while
+  later PR/MR-specific steps run.
 - Treat each required subagent step from this skill and the delegated
   `changeset-codereview` workflow as mandatory. Do not reduce the required
   subagent count or merge distinct reviewer roles just to keep the flow
@@ -41,20 +48,34 @@ To do this, follow these steps precisely:
    - The pull request is closed
    - The pull request is a draft
    - The pull request does not need code review (for example automated PR or trivial change that is obviously correct)
-   - A previous automated review from the current authenticated reviewer account has already commented on this review target
+   - A previous automated review from the current authenticated reviewer
+     account has already commented on the same review target at the same
+     reviewed head, and the user is not explicitly asking for a re-review
 
    If any condition is true, stop and do not proceed.
+   If the same reviewer account commented on an older head and the PR/MR has
+   advanced, or the user explicitly asks for a re-review, continue and treat
+   the task as a re-review instead of stopping.
+   Close this triage agent once the stop/continue decision has been recorded.
 
-2. Fetch the PR/MR title, description, source branch, target branch, file
-   list, and diff.
+2. Fetch the PR/MR title, description, source branch, target branch, current
+   head, file list, and full current diff.
+   - If this is a re-review, also fetch the last reviewed head when available,
+     the incremental diff since that head, and the current reviewer's prior
+     findings or comment threads that need status verification.
 
 3. If the user asked to publish PR/MR comments, determine whether summary
    comments, inline comments, or both are required.
 
 4. Load `../changeset-codereview/SKILL.md` and run its generic
    issue-discovery and validation workflow against the reviewed PR/MR diff.
-   Pass the PR/MR title, description, and any explicit architecture-review
-   request to that workflow as review context.
+   Pass the PR/MR title, description, and any explicit or auto-triggered
+   architecture-review requirement to that workflow as review context.
+   - For re-review, pass the prior-findings ledger and last reviewed head as
+     context, but keep the delegated review scoped to the full current
+     effective diff rather than only the incremental patch.
+   Close the delegated review agents before moving on to the PR/MR-specific
+   report formatting and comment-posting steps.
 
 5. Convert the validated findings into the PR/MR-specific report format in
    `REPORT_TEMPLATE.md`.
@@ -62,8 +83,6 @@ To do this, follow these steps precisely:
      `Related review inputs` summary for each paired skill. Keep those
      summaries concise and reference the paired report instead of copying its
      findings into the main findings sections.
-   - If the delegated changeset review produced a paired architecture input,
-     this summary is required; do not omit it from the final report.
 
    If `--comment` argument was NOT provided, stop here. Do not post any
    review comments.
@@ -77,6 +96,11 @@ To do this, follow these steps precisely:
 6. Create a list of all comments that you plan on leaving. This is only for
    you to make sure you are comfortable with the comments. Do not post this
    list anywhere.
+   - For re-review, separate comments into: prior findings now fixed, prior
+     findings still unresolved, and newly introduced validated issues.
+   - Before posting anything, do one convergence check to make sure no new
+     validated issue from the current full-diff pass is missing from this
+     review round.
 
 7. Post inline comments for each issue using the platform-appropriate
    mechanism.
@@ -93,6 +117,9 @@ To do this, follow these steps precisely:
      suggestion block.
    - Never post a committable suggestion unless committing the suggestion
      fixes the issue entirely.
+   - For re-review, reply in the existing discussion for previously reported
+     findings whenever possible, and open new comments only for newly
+     introduced validated issues or findings that were not previously reported.
 
 Notes:
 

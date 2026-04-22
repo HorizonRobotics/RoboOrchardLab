@@ -56,7 +56,7 @@ First prepare [robotwin dependency](https://github.com/TianxingChen/RoboTwin/blo
 torch==2.4.1
 torchmetrics==1.6.1 
 torchvision==0.19.1
-transformers==4.49.0
+transformers==4.57.1
 lmdb==1.6.2 
 safetensors==0.5.3 
 accelerate==1.4.0 

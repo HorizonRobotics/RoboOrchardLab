@@ -29,23 +29,33 @@ from robo_orchard_lab.policy.evaluator.robotwin import (
 )
 
 
-class _FakeWorkerMetric:
+class _FakeWorkerMetric(SuccessRateMetric):
     def __init__(
-        self, task_name: str, seed: int, success: bool = True
+        self,
+        task_name: str,
+        seed: int,
+        success: bool = True,
+        offset_seed: int | None = None,
     ) -> None:
+        super().__init__()
+        info = {"seed": seed, "success": success}
+        last_update_info = {
+            "task_name": task_name,
+            "seed": seed,
+            "success": success,
+        }
+        if offset_seed is not None:
+            info["offset_seed"] = offset_seed
+            last_update_info["offset_seed"] = offset_seed
         self.info = {
             task_name: SuccessRateInfo(
                 task_name=task_name,
                 success_count=1 if success else 0,
                 total_count=1,
-                info_list=[{"seed": seed, "success": success}],
+                info_list=[info],
             )
         }
-        self.last_update_info = {
-            "task_name": task_name,
-            "seed": seed,
-            "success": success,
-        }
+        self.last_update_info = last_update_info
 
     def reset(self, **kwargs) -> None:
         self.info = {}
@@ -84,7 +94,10 @@ class _FakeEvaluator:
     def reset_env(self, **kwargs):
         self.reset_calls.append(kwargs)
         self.current_episode = kwargs
-        return None, {"seed": kwargs["seed"]}
+        return None, {
+            "seed": kwargs.get("seed", kwargs.get("offset_seed", 0)),
+            "offset_seed": kwargs.get("offset_seed", 0),
+        }
 
     def evaluate_episode(self, max_steps, env_reset_kwargs=None):
         if env_reset_kwargs is not None:
@@ -93,8 +106,13 @@ class _FakeEvaluator:
         if self.behavior == "hang":
             time.sleep(self.sleep_s)
         task_name = self.current_episode["task_name"]
-        seed = self.current_episode["seed"]
-        self.metrics = _FakeWorkerMetric(task_name=task_name, seed=seed)
+        offset_seed = self.current_episode.get("offset_seed", 0)
+        seed = self.current_episode.get("seed", offset_seed)
+        self.metrics = _FakeWorkerMetric(
+            task_name=task_name,
+            seed=seed,
+            offset_seed=offset_seed,
+        )
         return {"last_update": self.metrics.last_update_info}
 
     def get_metrics(self):
@@ -103,7 +121,7 @@ class _FakeEvaluator:
 
 def test_task_info_counts_only_completed_episodes():
     task_queue: queue.Queue[RoboTwinTaskQueueItem] = queue.Queue()
-    task_queue.put(RoboTwinTaskQueueItem(task_name="task_a", seed=1))
+    task_queue.put(RoboTwinTaskQueueItem(task_name="task_a", offset_seed=1))
     info = TaskInfo(
         tasks={"task_a": TaskStatus()},
         task_queue=task_queue,
@@ -111,23 +129,25 @@ def test_task_info_counts_only_completed_episodes():
     )
 
     item = info.get_task_item()
-    assert item == RoboTwinTaskQueueItem(task_name="task_a", seed=1)
+    assert item == RoboTwinTaskQueueItem(task_name="task_a", offset_seed=1)
     assert info.tasks["task_a"].episode_count == 0
 
     assert info.requeue_task_item(item) is True
     same_item = info.get_task_item()
-    assert same_item == RoboTwinTaskQueueItem(task_name="task_a", seed=1)
+    assert same_item == RoboTwinTaskQueueItem(
+        task_name="task_a", offset_seed=1
+    )
 
-    assert info.complete_task_item(same_item, next_seed=2) is True
+    assert info.complete_task_item(same_item, next_offset_seed=2) is True
     assert info.tasks["task_a"].episode_count == 1
 
     next_item = info.get_task_item()
     assert next_item == RoboTwinTaskQueueItem(
         task_name="task_a",
-        seed=2,
+        offset_seed=2,
         episode_id=1,
     )
-    assert info.complete_task_item(next_item, next_seed=3) is False
+    assert info.complete_task_item(next_item, next_offset_seed=3) is False
     assert info.tasks["task_a"].episode_count == 2
     assert info.has_pending_work() is False
 
@@ -188,9 +208,33 @@ def test_robotwin_remote_evaluator_replaces_timed_out_worker(monkeypatch):
     assert evaluator.metric.info["task_b"].success_count == 2
 
 
+def test_generate_env_cfg_forwards_action_type(monkeypatch):
+    evaluator = RoboTwinRemoteEvaluator.__new__(RoboTwinRemoteEvaluator)
+    evaluator.cfg = SimpleNamespace(
+        config_type="demo_clean",
+        seed=0,
+        format_datatypes=True,
+        action_type="ee",
+    )
+
+    monkeypatch.setattr(
+        "robo_orchard_lab.policy.evaluator.robotwin.config_robotwin_path",
+        lambda: "/tmp/robotwin",
+    )
+    monkeypatch.setattr(
+        "robo_orchard_lab.policy.evaluator.robotwin.os.path.exists",
+        lambda path: True,
+    )
+
+    env_cfg = evaluator._generate_env_cfg("task_a")
+
+    assert env_cfg.task_name == "task_a"
+    assert env_cfg.action_type == "ee"
+
+
 def test_task_info_marks_task_started_once():
     task_queue: queue.Queue[RoboTwinTaskQueueItem] = queue.Queue()
-    task_queue.put(RoboTwinTaskQueueItem(task_name="task_a", seed=1))
+    task_queue.put(RoboTwinTaskQueueItem(task_name="task_a", offset_seed=1))
     info = TaskInfo(
         tasks={"task_a": TaskStatus()},
         task_queue=task_queue,
@@ -198,13 +242,17 @@ def test_task_info_marks_task_started_once():
     )
 
     first_item = info.get_task_item()
-    assert first_item == RoboTwinTaskQueueItem(task_name="task_a", seed=1)
+    assert first_item == RoboTwinTaskQueueItem(
+        task_name="task_a", offset_seed=1
+    )
     assert info.mark_task_started("task_a") is True
     assert info.mark_task_started("task_a") is False
 
     assert info.requeue_task_item(first_item) is True
     second_item = info.get_task_item()
-    assert second_item == RoboTwinTaskQueueItem(task_name="task_a", seed=1)
+    assert second_item == RoboTwinTaskQueueItem(
+        task_name="task_a", offset_seed=1
+    )
     assert info.mark_task_started("task_a") is False
 
 
@@ -222,19 +270,24 @@ def test_robotwin_remote_evaluator_prints_task_start_and_final_summary():
     workers = [
         SimpleNamespace(
             generation=0,
-            item=RoboTwinTaskQueueItem(task_name="task_a", seed=1),
+            item=RoboTwinTaskQueueItem(task_name="task_a", offset_seed=1),
             thread=object(),
             started_at=1.0,
         )
     ]
     result_queue: queue.Queue = queue.Queue()
-    worker_metric = _FakeWorkerMetric(task_name="task_a", seed=1, success=True)
+    worker_metric = _FakeWorkerMetric(
+        task_name="task_a",
+        seed=1,
+        success=True,
+        offset_seed=1,
+    )
     result_queue.put(
         SimpleNamespace(
             worker_idx=0,
             generation=0,
-            item=RoboTwinTaskQueueItem(task_name="task_a", seed=1),
-            next_seed=2,
+            item=RoboTwinTaskQueueItem(task_name="task_a", offset_seed=1),
+            next_offset_seed=2,
             metric_info={"last_update": worker_metric.last_update_info},
             metrics=worker_metric,
             error=None,
@@ -244,7 +297,7 @@ def test_robotwin_remote_evaluator_prints_task_start_and_final_summary():
     with patch("builtins.print") as mock_print:
         evaluator._log_task_started_if_needed(
             task_info=task_info,
-            item=RoboTwinTaskQueueItem(task_name="task_a", seed=1),
+            item=RoboTwinTaskQueueItem(task_name="task_a", offset_seed=1),
         )
         evaluator._drain_worker_results(
             result_queue=result_queue,
@@ -264,7 +317,7 @@ def test_robotwin_remote_evaluator_prints_task_start_and_final_summary():
     )
 
 
-def test_robotwin_remote_evaluator_passes_seed_episode_id():
+def test_robotwin_remote_evaluator_passes_offset_seed_episode_id():
     evaluator = RoboTwinRemoteEvaluator.__new__(RoboTwinRemoteEvaluator)
     evaluator.cfg = SimpleNamespace(
         config_type="demo_clean",
@@ -280,7 +333,7 @@ def test_robotwin_remote_evaluator_passes_seed_episode_id():
         evaluator=fake_evaluator,
         item=RoboTwinTaskQueueItem(
             task_name="task_a",
-            seed=123,
+            offset_seed=123,
             episode_id=4,
         ),
         result_queue=result_queue,
@@ -288,7 +341,7 @@ def test_robotwin_remote_evaluator_passes_seed_episode_id():
 
     assert fake_evaluator.reset_calls == [
         {
-            "seed": 123,
+            "offset_seed": 123,
             "task_name": "task_a",
             "episode_id": 4,
             "clear_cache": True,

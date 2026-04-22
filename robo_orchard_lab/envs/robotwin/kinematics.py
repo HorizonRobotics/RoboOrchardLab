@@ -132,50 +132,45 @@ class RoboTwinJointsToEEF:
         self._left_arm = KinematicSerialChain(left_robot, left_eef_name)
         self._right_arm = KinematicSerialChain(right_robot, right_eef_name)
 
+        def _build_robot_base_tf(
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+            child_frame_id: str,
+        ) -> BatchFrameTransform:
+            return BatchFrameTransform(
+                xyz=torch.tensor(
+                    _validate_vector(
+                        "robot_base_xyz",
+                        robot_base_xyz,
+                        expected_size=3,
+                    ),
+                    dtype=dtype,
+                    device=device,
+                ),
+                quat=torch.tensor(
+                    _validate_vector(
+                        "robot_base_quat",
+                        robot_base_quat,
+                        expected_size=4,
+                    ),
+                    dtype=dtype,
+                    device=device,
+                ),
+                parent_frame_id="world",
+                child_frame_id=child_frame_id,
+            )
+
         # Single robot base: use the same base transform for both arms.
-        self._left_robot_base_tf = BatchFrameTransform(
-            **{
-                "xyz": torch.tensor(
-                    _validate_vector(
-                        "robot_base_xyz",
-                        robot_base_xyz,
-                        expected_size=3,
-                    ),
-                    dtype=torch.float32,
-                ),
-                "quat": torch.tensor(
-                    _validate_vector(
-                        "robot_base_quat",
-                        robot_base_quat,
-                        expected_size=4,
-                    ),
-                    dtype=torch.float32,
-                ),
-                "parent_frame_id": "world",
-                "child_frame_id": left_robot.frame_names[0],
-            }
+        self._left_robot_base_tf = _build_robot_base_tf(
+            device=self._left_arm.device,
+            dtype=self._left_arm.dtype,
+            child_frame_id=left_robot.frame_names[0],
         )
-        self._right_robot_base_tf = BatchFrameTransform(
-            **{
-                "xyz": torch.tensor(
-                    _validate_vector(
-                        "robot_base_xyz",
-                        robot_base_xyz,
-                        expected_size=3,
-                    ),
-                    dtype=torch.float32,
-                ),
-                "quat": torch.tensor(
-                    _validate_vector(
-                        "robot_base_quat",
-                        robot_base_quat,
-                        expected_size=4,
-                    ),
-                    dtype=torch.float32,
-                ),
-                "parent_frame_id": "world",
-                "child_frame_id": right_robot.frame_names[0],
-            }
+        self._right_robot_base_tf = _build_robot_base_tf(
+            device=self._right_arm.device,
+            dtype=self._right_arm.dtype,
+            child_frame_id=right_robot.frame_names[0],
         )
 
     def transform(
@@ -194,6 +189,14 @@ class RoboTwinJointsToEEF:
         Returns:
             RoboTwinEEF: World-frame left and right end-effector poses.
         """
+        left_arm_joints = left_arm_joints.to(
+            device=self._left_arm.device,
+            dtype=self._left_arm.dtype,
+        )
+        right_arm_joints = right_arm_joints.to(
+            device=self._right_arm.device,
+            dtype=self._right_arm.dtype,
+        )
         left_eef_in_base_tf = self._left_arm.forward_kinematics_tf(
             left_arm_joints
         )[self._left_eef_name]

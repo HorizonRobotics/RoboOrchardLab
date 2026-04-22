@@ -38,7 +38,6 @@ from robo_orchard_lab.envs.robotwin import (
 )
 from robo_orchard_lab.envs.robotwin.env import (
     EVAL_INSTRUCTION_NUM,
-    EVAL_SEED_BASE,
     config_robotwin_path,
     create_task_from_name,
     in_robotwin_workspace,
@@ -75,7 +74,7 @@ SEM_TASKS_16 = (
 @dataclass
 class RoboTwinTaskQueueItem:
     task_name: str
-    seed: int | None
+    offset_seed: int = 0
     episode_id: int = 0
 
 
@@ -121,12 +120,12 @@ class TaskInfo:
     def complete_task_item(
         self,
         item: RoboTwinTaskQueueItem,
-        next_seed: int,
+        next_offset_seed: int,
     ) -> bool:
-        """Mark an episode complete and enqueue the next seed if needed.
+        """Mark an episode complete and enqueue the next offset if needed.
 
         Returns:
-            bool: True if the next seed was enqueued, False otherwise.
+            bool: True if the next offset was enqueued, False otherwise.
         """
         with self.lock:
             name = item.task_name
@@ -135,7 +134,7 @@ class TaskInfo:
                 self.task_queue.put(
                     RoboTwinTaskQueueItem(
                         task_name=name,
-                        seed=next_seed,
+                        offset_seed=next_offset_seed,
                         episode_id=item.episode_id + 1,
                     )
                 )
@@ -180,7 +179,7 @@ class WorkerEvalResult:
     worker_idx: int
     generation: int
     item: RoboTwinTaskQueueItem
-    next_seed: int | None = None
+    next_offset_seed: int | None = None
     metric_info: dict[str, Any] | None = None
     metrics: SuccessRateMetric | None = None
     error: BaseException | None = None
@@ -268,14 +267,16 @@ class SuccessRateMetric:
         task_info.total_count += 1
         if success:
             task_info.success_count += 1
-        task_info.info_list.append(
-            {"seed": step_return.info["seed"], "success": success}
-        )
-        self.last_update_info = {
+        seed_info = {
             "task_name": task_name,
             "seed": step_return.info["seed"],
+            "start_seed": step_return.info["start_seed"],
+            "resolved_start_seed": step_return.info["resolved_start_seed"],
+            "offset_seed": step_return.info["offset_seed"],
             "success": success,
         }
+        task_info.info_list.append(seed_info)
+        self.last_update_info = seed_info
 
     def compute(self) -> dict:
         success_rates: list[float] = []
@@ -386,7 +387,7 @@ class RoboTwinRemoteEvaluator:
             task_queue.put(
                 RoboTwinTaskQueueItem(
                     task_name=task_name,
-                    seed=self._robotwin_eval_start_seed,
+                    offset_seed=0,
                     episode_id=0,
                 )
             )
@@ -477,7 +478,7 @@ class RoboTwinRemoteEvaluator:
         try:
             evaluator.reset_metrics()
             env_reset_kwargs = {
-                "seed": item.seed,
+                "offset_seed": item.offset_seed,
                 "task_name": item.task_name,
                 "episode_id": item.episode_id,
                 "clear_cache": True,
@@ -491,14 +492,17 @@ class RoboTwinRemoteEvaluator:
                 env_reset_kwargs=env_reset_kwargs,
             )
             current_metrics = evaluator.get_metrics()
-            assert current_metrics is not None
-            actual_seed = current_metrics.last_update_info["seed"]
+            assert isinstance(current_metrics, SuccessRateMetric)
+            assert current_metrics.last_update_info is not None
+            actual_offset_seed = current_metrics.last_update_info[
+                "offset_seed"
+            ]
             result_queue.put(
                 WorkerEvalResult(
                     worker_idx=worker_idx,
                     generation=generation,
                     item=item,
-                    next_seed=actual_seed + 1,
+                    next_offset_seed=actual_offset_seed + 1,
                     metric_info=metric_info,
                     metrics=current_metrics,
                 )
@@ -590,9 +594,9 @@ class RoboTwinRemoteEvaluator:
             if result.error is not None:
                 task_info.requeue_task_item(result.item)
                 logger.error(
-                    "Worker failed on task %s seed %s.",
+                    "Worker failed on task %s offset_seed %s.",
                     result.item.task_name,
-                    result.item.seed,
+                    result.item.offset_seed,
                     exc_info=(
                         type(result.error),
                         result.error,
@@ -609,11 +613,11 @@ class RoboTwinRemoteEvaluator:
 
             assert result.metrics is not None
             assert result.metric_info is not None
-            assert result.next_seed is not None
+            assert result.next_offset_seed is not None
             self.metric.merge([result.metrics])
             result.metrics.reset()
             has_next = task_info.complete_task_item(
-                result.item, result.next_seed
+                result.item, result.next_offset_seed
             )
             success_info = self.metric.info[result.item.task_name]
             print(
@@ -658,11 +662,11 @@ class RoboTwinRemoteEvaluator:
             task_info.requeue_task_item(timed_out_item)
             logger.warning(
                 (
-                    "Worker timed out on task %s seed %s after %.1fs. "
+                    "Worker timed out on task %s offset_seed %s after %.1fs. "
                     "Replacing worker."
                 ),
                 timed_out_item.task_name,
-                timed_out_item.seed,
+                timed_out_item.offset_seed,
                 timeout,
             )
             worker.item = None
@@ -693,8 +697,9 @@ class RoboTwinRemoteEvaluator:
             eval_mode=True,
             max_instruction_num=EVAL_INSTRUCTION_NUM,
             format_datatypes=self.cfg.format_datatypes,
+            action_type=self.cfg.action_type,
             task_config_path=task_config_path,
-            seed=self._robotwin_eval_start_seed,
+            seed=self.cfg.seed,
         )
 
     def _get_episode_video_dir(
@@ -708,10 +713,6 @@ class RoboTwinRemoteEvaluator:
             task_name,
             self.cfg.config_type,
         )
-
-    @property
-    def _robotwin_eval_start_seed(self) -> int:
-        return EVAL_SEED_BASE * (1 + self.cfg.seed)
 
 
 class RoboTwinRemoteEvaluatorCfg(ClassConfig[RoboTwinRemoteEvaluator]):
@@ -729,9 +730,13 @@ class RoboTwinRemoteEvaluatorCfg(ClassConfig[RoboTwinRemoteEvaluator]):
     """
 
     seed: int = 0
+    """Caller-facing evaluation start seed passed into RoboTwinEnvCfg."""
 
     format_datatypes: bool = True
     """Whether to convert RoboTwin env observations to orchard datatypes."""
+
+    action_type: Literal["qpos", "ee"] = "qpos"
+    """The RoboTwin env action representation used during evaluation."""
 
     num_parallel_envs: int = Field(ge=1, default=1)
     """Number of parallel environments to run in the remote evaluator."""

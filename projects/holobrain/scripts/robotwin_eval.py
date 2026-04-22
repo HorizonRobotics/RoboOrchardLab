@@ -36,7 +36,6 @@ from projects.holobrain.policy.robotwin_policy import (  # noqa: E402
 )
 from robo_orchard_lab.envs.robotwin.env import (  # noqa: E402
     EVAL_INSTRUCTION_NUM,
-    EVAL_SEED_BASE,
     RoboTwinEnvCfg,
     config_robotwin_path,
 )
@@ -99,10 +98,6 @@ def parse_args() -> Config:
         raise
 
 
-def robotwin_eval_start_seed(seed: int) -> int:
-    return EVAL_SEED_BASE * (1 + seed)
-
-
 def build_robotwin_env_cfg(
     task_name: str,
     config_type: Literal["demo_clean", "demo_randomized"],
@@ -132,15 +127,21 @@ def evaluate_tasks_locally(
     seed: int = 0,
     save_video: bool = False,
 ) -> dict:
+    """Evaluate tasks locally within one start-seed family per task.
+
+    The first episode uses the configured start seed for the task. Later
+    episodes request ``seed="next"``, which asks ``RoboTwinEnv`` to keep the
+    same start-seed family and continue from the next actual runtime seed
+    after any env-internal retry offsets.
+    """
     aggregate_metric = SuccessRateMetric()
-    start_seed = robotwin_eval_start_seed(seed)
 
     for task_name in task_names:
         evaluator = PolicyEvaluatorConfig()()
         env_cfg = build_robotwin_env_cfg(
             task_name=task_name,
             config_type=config_type,
-            seed=start_seed,
+            seed=seed,
         )
         evaluator.setup(
             env_cfg=env_cfg,
@@ -149,20 +150,13 @@ def evaluate_tasks_locally(
             device=device,
         )
         for episode_id in range(episode_num):
-            # TODO(@yiwei.jin): Known issue pending a dedicated follow-up fix.
-            # Local RoboTwin evaluation advances the requested seed from
-            # `episode_id` instead of chaining the actual resolved seed
-            # returned after `evaluate_episode()`. When RoboTwin bumps the
-            # seed during reset to recover from unstable env initialization,
-            # different `episode_id` values can end up evaluating the same
-            # actual seed, so the local path may repeat one episode while
-            # reporting different episode IDs.
+            seed_request: int | str = seed if episode_id == 0 else "next"
             evaluator.evaluate_episode(
                 max_steps=1500,
                 env_reset_kwargs={
                     "clear_cache": True,
                     "return_obs": True,
-                    "seed": start_seed + episode_id,
+                    "seed": seed_request,
                     "task_name": task_name,
                     "episode_id": episode_id,
                     "video_dir": (

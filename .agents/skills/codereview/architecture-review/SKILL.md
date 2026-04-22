@@ -1,6 +1,6 @@
 ---
 name: architecture-review
-description: Review local code, diffs, modules, directories, or design changes for consequential architecture issues when the user explicitly asks for architecture review or when the task is primarily an architecture-focused refactor.
+description: Review local code, diffs, modules, directories, or design changes for consequential architecture issues when the user explicitly asks for architecture review, when an upstream review routes architecture-sensitive scope here, or when the current review/evaluation request is primarily architectural.
 ---
 Provide an architecture review for the given local target.
 
@@ -8,9 +8,9 @@ Use this skill after `.agents/skills/codereview/SKILL.md` routes the task
 here. Read `../references/triggering-and-signal.md` first.
 
 Do not use this skill for ordinary PR/MR bug review when architecture is not
-the main question. Use `../prmr-codereview/SKILL.md` for that flow. Do not
-use this skill for routine implementation self-checks or casual cleanup
-opinions.
+the main or clearly material question. Use `../prmr-codereview/SKILL.md` for
+that flow. Do not use this skill for routine implementation self-checks or
+casual cleanup opinions.
 
 **Agent assumptions (applies to all agents and subagents):**
 - All tools are functional and will work without error. Do not test tools or
@@ -22,10 +22,12 @@ opinions.
   names: use a lightweight reviewer for scope discovery, a general reviewer
   for structural summaries, and the strongest available reviewer for issue
   finding or validation.
-- This workflow requires subagents. Do not silently collapse it into
-  a single-agent review. If delegation is unavailable or not yet
-  authorized, stop and ask the user for explicit delegation
-  permission before proceeding.
+- This workflow requires subagents. Do not silently collapse it into a
+  single-agent review. If delegation is unavailable or not yet authorized,
+  stop and ask for explicit delegation permission before proceeding.
+- Keep the active architecture-review wave bounded. Close completed
+  structural-summary, reviewer, and validator agents as soon as their outputs
+  have been incorporated before launching later phases.
 - The reviewer counts and validation pass described below are mandatory for
   this workflow. Do not silently launch fewer subagents or merge distinct
   reviewer roles into one agent.
@@ -65,13 +67,16 @@ To do this, follow these steps precisely:
    - clear impact on maintainability, compatibility, extension cost, or
      correctness boundary
    - enough evidence to validate the issue from the reviewed scope
+   Close these reviewers once the candidate-issue set has been consolidated.
 
 5. Validate each proposed issue.
-   - Launch validation reviewers in parallel for candidate issues.
+   - Launch validation reviewers in small batches for candidate issues.
    - Validate that the issue is real within the stated scope and that the
      claimed impact is concrete.
    - Validate any cited `AGENTS.md` / `.agents` guidance rule is actually in
      scope for the affected files.
+   - Close each validator as soon as its assigned validations have been
+     incorporated.
 
 6. Filter and de-duplicate.
    - Remove unvalidated issues.

@@ -151,7 +151,10 @@ class InferencePipelinePolicy(PolicyMixin[OBSType, ACTType]):
     ):
         self.observation_space = observation_space
         self.action_space = action_space
-        if pipeline.cfg != cfg.pipeline_cfg:
+        if (
+            pipeline.cfg is not cfg.pipeline_cfg
+            and pipeline.cfg != cfg.pipeline_cfg
+        ):
             raise ValueError(
                 "The pipeline's cfg does not match the policy's pipeline_cfg. "
                 f"Got pipeline.cfg: {pipeline.cfg}, "

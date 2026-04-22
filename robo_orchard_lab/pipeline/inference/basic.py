@@ -86,7 +86,10 @@ class InferencePipeline(
 
     1. Wrap each raw sample into a single-sample :class:`PipelineEnvelope`.
     2. Resolve the configured processor into the envelope family.
-    3. Collate only ``model_input`` when batching is needed.
+    3. If ``collate_fn`` is configured, collate only ``model_input`` into
+       model-facing batched form. Dataset-like inputs collate by
+       ``batch_size`` mini-batches, while single-sample inputs collate as a
+       size-1 batch.
     4. Pass ``processor_context`` through post-process without collating it:
        non-collated paths keep the original object, while collated paths pass
        a per-sample list aligned with the collated batch.
@@ -236,7 +239,10 @@ class InferencePipeline(
                 samples, such as a generator, dataset, list, or tuple. When an
                 iterable is provided, the data is processed in mini-batches of
                 size ``self.cfg.batch_size`` and the method yields one result
-                per batch.
+                per batch. ``batch_size`` only controls this dataset-like
+                path. When a single sample is provided and ``collate_fn`` is
+                configured, runtime still collates the sample into a size-1
+                model batch for shape consistency with batched inference.
 
         Returns:
             OutputType | Iterable[OutputType]: The post-processed inference
@@ -349,7 +355,8 @@ class InferencePipeline(
                 collates only model input. If model input collation is used,
                 ``processor_context`` is returned as a list of per-sample
                 values for the processor to interpret, even when the list
-                length is 1.
+                length is 1. For single-sample inference, model input is
+                collated only when ``self.collate_fn`` is configured.
         """
         if is_batch:
             batch_inputs = list(cast(Iterable[InputType], data))
@@ -411,7 +418,9 @@ class InferencePipeline(
             data (InputType): Raw input sample for the pipeline.
 
         Returns:
-            OutputType: Final post-processed result.
+            OutputType: Final post-processed result. When ``collate_fn`` is
+                configured, the sample is first normalized into a size-1 model
+                batch before model forward.
         """
         model_input, processor_context = self._build_runtime_input(
             data, is_batch=False
@@ -467,12 +476,28 @@ class InferencePipelineCfg(
     automatically resolved into the envelope runtime.
     """
 
-    collate_fn: CallableType[[list[Any]], Any] | CollatorConfig | None = None
-    """The function used to collate single data items into a batch.
+    collate_fn: (
+        ConfigInstanceOf[CollatorConfig]
+        | CallableType[[list[Any]], Any]
+        | None
+    ) = None
+    """Optional function used to collate ``model_input`` into batch form.
 
-    This setting is required when the input data is a dataset-like iterable,
-    such as a dataset, list, tuple, or generator.
+    When configured, the pipeline always normalizes model-facing input through
+    this callable, including single-sample inference. In that case, a single
+    raw sample is collated as a size-1 batch so the model sees the same input
+    structure as the batched inference path.
+
+    When omitted, single-sample inference forwards the prepared
+    ``model_input`` directly. Dataset-like inference still collates the batch,
+    but falls back to ``collate_batch_dict`` with a warning.
     """
 
     batch_size: int = 1
-    """The number of samples to process in each mini-batch during inference."""
+    """Mini-batch size for dataset-like inputs only.
+
+    This field controls how :meth:`InferencePipeline.__call__` chunks
+    datasets, lists, tuples, and generators in ``_inference_batch_gen``. It
+    does not disable size-1 collation on the single-sample path when
+    ``collate_fn`` is configured.
+    """

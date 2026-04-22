@@ -22,6 +22,19 @@ description: Load these instructions when creating, updating, or validating test
 - For frame or transform adapters, prefer one narrow unit test that checks the
   naming and graph assembly rules and one integration-style test that checks
   numerical consistency against the real runtime source.
+- For Pydantic config, ref, or other caller-facing validation surfaces,
+  do not rely only on direct Python construction in tests.
+- Prefer covering direct construction, `model_validate(...)`, and a JSON
+  round-trip when compatibility aliases, coercion, or serialized loading
+  behavior matter.
+- If branch selection depends on Pydantic coercion, include at least one
+  validation-path test that proves the coerced semantics match the runtime
+  branch taken.
+- When one config field or kwargs surface fans out to multiple downstream
+  APIs with different accepted arguments, add at least one focused negative
+  test for an invalid cross-branch combination.
+- Prefer failing at the repository-owned boundary with a readable error
+  instead of relying on a deep dependency stack trace as the first signal.
 
 ## Fixtures
 

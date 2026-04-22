@@ -17,17 +17,20 @@ from __future__ import annotations
 import abc
 import logging
 import os
-from typing import Generic, Literal
+from typing import Generic, Literal, TypeAlias
 
 import torch
-from robo_orchard_core.utils.config import ClassConfig, ClassType_co, load_from
+from robo_orchard_core.utils.config import (
+    ClassConfig,
+    ClassType_co,
+    ConfigInstanceOf,
+    load_from,
+)
 from typing_extensions import TypeVar
 
 from robo_orchard_lab.models.mixin import TorchModelMixin, TorchModuleCfg
-from robo_orchard_lab.utils.huggingface import (
-    auto_add_repo_type,
-    download_hf_resource,
-)
+from robo_orchard_lab.models.model_ref import TorchModelRef
+from robo_orchard_lab.utils.huggingface import resolve_hf_compatible_path
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     abspath,
@@ -48,6 +51,10 @@ InputType = TypeVar("InputType")
 OutputType = TypeVar("OutputType")
 DeviceMapValue = int | str | torch.device
 DeviceMap = dict[str, DeviceMapValue]
+PipelineModelCfg: TypeAlias = (
+    ConfigInstanceOf[TorchModuleCfg[TorchModelMixin]]
+    | ConfigInstanceOf[TorchModelRef[TorchModelMixin]]
+)
 
 
 class InferencePipelineMixin(
@@ -86,17 +93,19 @@ class InferencePipelineMixin(
 
         This constructor either instantiates the model from
         ``cfg.model_cfg`` or binds an already constructed model instance into
-        the pipeline. When a model instance is provided, ``cfg.model_cfg`` must
-        either be None or match ``model.cfg`` so the saved configuration stays
-        self-consistent.
+        the pipeline. ``cfg.model_cfg`` remains the compatibility field name,
+        but may now carry either a concrete ``TorchModuleCfg`` or a
+        ``TorchModelRef`` that resolves into the model. When a model instance
+        is provided, the config-side structural source of truth must still
+        match ``model.cfg`` so the saved configuration stays self-consistent.
 
         Args:
             cfg (InferencePipelineMixinCfg): The configuration for the
-                inference pipeline, including the model configuration when
-                ``model`` is not provided.
+                inference pipeline, including the model compatibility input
+                when ``model`` is not provided.
             model (TorchModelMixin | None, optional): An optional model
                 instance to use in the pipeline. If None, the model is
-                instantiated from ``cfg.model_cfg``. Default is None.
+                resolved from ``cfg.model_cfg``. Default is None.
 
         Raises:
             ValueError: If no model configuration is available, or if
@@ -104,20 +113,9 @@ class InferencePipelineMixin(
                 ``model``.
         """
         if model is None:
-            if cfg.model_cfg is None:
-                raise ValueError("The model configuration is missing.")
-            model = cfg.model_cfg()
+            model = cfg.build_model()
         else:
-            if (cfg.model_cfg is not None) and cfg.model_cfg != model.cfg:
-                raise ValueError(
-                    "The provided model configuration in the pipeline "
-                    "differs from the configuration of the given model "
-                    "instance. You should set cfg.model_cfg to None when "
-                    "model is provided."
-                )
-            if cfg.model_cfg is None:
-                cfg.model_cfg = model.cfg
-        assert model is not None
+            cfg.validate_model(model)
         self._setup(cfg=cfg, model=model)
 
     def _setup(self, cfg: InferencePipelineMixinCfg, model: TorchModelMixin):
@@ -261,10 +259,7 @@ class InferencePipelineMixin(
             InferencePipelineMixin: An initialized instance of the pipeline
                 subclass defined in the saved configuration.
         """
-        if directory.startswith("hf://"):
-            directory = download_hf_resource(auto_add_repo_type(directory))
-
-        directory = abspath(directory)
+        directory = abspath(resolve_hf_compatible_path(directory))
 
         with in_cwd(directory):
             cfg = load_from(
@@ -345,11 +340,65 @@ class InferencePipelineMixinCfg(ClassConfig[InferencePipelineMixinType_co]):
     """Configuration class for an inference pipeline.
 
     This Pydantic-based config stores the pipeline class to instantiate and
-    the model configuration required to construct or reload the pipeline.
+    the model compatibility input required to construct or reload the
+    pipeline.
     """
 
-    model_cfg: TorchModuleCfg | None = None
-    """The configuration for the model used in the pipeline."""
+    model_cfg: PipelineModelCfg | None = None
+    """Compatibility input for the model used in the pipeline.
+
+    The field name is intentionally retained for caller compatibility. It may
+    carry either a concrete :class:`TorchModuleCfg` or a
+    :class:`~robo_orchard_lab.models.model_ref.TorchModelRef`.
+    """
+
+    def _get_structural_model_cfg(
+        self,
+    ) -> TorchModuleCfg[TorchModelMixin] | None:
+        if self.model_cfg is None:
+            return None
+        if isinstance(self.model_cfg, TorchModelRef):
+            return self.model_cfg.cfg
+        structural_cfg: TorchModuleCfg[TorchModelMixin] = self.model_cfg
+        return structural_cfg
+
+    def build_model(self) -> TorchModelMixin:
+        """Build or load the pipeline model from ``model_cfg``."""
+
+        if self.model_cfg is None:
+            raise ValueError("The model configuration is missing.")
+        model: TorchModelMixin = self.model_cfg()
+        return model
+
+    def validate_model(self, model: TorchModelMixin) -> None:
+        """Validate ``model_cfg`` against a runtime model.
+
+        Runtime model binding keeps structural validation anchored on concrete
+        comparable configs. A load-from-only ref has no comparable structural
+        config, so this method validates its explicit runtime constraints but
+        preserves the ref itself as the reconstruction source of truth.
+        """
+
+        if self.model_cfg is None:
+            self.model_cfg = model.cfg
+            return
+
+        if isinstance(self.model_cfg, TorchModelRef):
+            self.model_cfg.validate_runtime_model(model)
+
+        structural_cfg = self._get_structural_model_cfg()
+        if structural_cfg is None:
+            # A load-from-only ref has no comparable structural config, but
+            # it still carries the checkpoint source needed for reconstruction.
+            return
+
+        if structural_cfg is not model.cfg and structural_cfg != model.cfg:
+            raise ValueError(
+                "The provided model configuration in the pipeline "
+                "differs from the configuration of the given model "
+                "instance. You should set cfg.model_cfg to None or provide "
+                "a compatible structural config/ref when model is provided."
+            )
 
     def update_model_cfg(self, model_cfg_path: str):
         """Update the model configuration from a saved config file.

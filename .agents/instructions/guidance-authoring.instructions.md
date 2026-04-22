@@ -1,5 +1,5 @@
 ---
-description: Load these instructions when creating, editing, or reorganizing AGENTS.md files, .agents/instructions/*.md files, .agents/references/* assets, or .agents/skills/* guidance in this repository.
+description: Load these instructions when creating, editing, or reorganizing AGENTS.md files, .agents/instructions/*.md files, .agents/references/* assets, .agents/skills/* guidance, or .agents/templates/* assets in this repository.
 ---
 
 # Guidance Authoring Instructions
@@ -7,7 +7,7 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 ## Guidance Model
 
 - Treat this repository as an independent guidance root.
-- Keep local `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, and `.agents/skills/`
+- Keep local `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, `.agents/skills/`, and `.agents/templates/`
   self-contained; do not rely on any containing workspace or parent
   repository to make the wording complete.
 - When borrowing a rule from another repository, rewrite it so it remains
@@ -19,7 +19,7 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - Keep detailed behavior rules in `.agents/instructions/` or
   `.agents/skills/`, not in `AGENTS.md`.
 - Keep `Quick Routing` limited to topics owned by this repository.
-- If `AGENTS.md` says a local `.agents/instructions/`, `.agents/references/`, or `.agents/skills/`
+- If `AGENTS.md` says a local `.agents/instructions/`, `.agents/references/`, `.agents/skills/`, or `.agents/templates/`
   tree exists, make sure the referenced paths actually exist.
 - Keep `source of truth` and `independent repository` wording consistent
   with the no-parent-fallback model.
@@ -32,6 +32,10 @@ description: Load these instructions when creating, editing, or reorganizing AGE
   scope, precedence, routing, and discoverability.
 - Keep each file focused on repository-specific behavior or a clearly
   scoped topic instead of duplicating broad guidance without need.
+- For high-frequency entrypoint instructions such as
+  `.agents/instructions/python.instructions.md`, prefer compact direct rules
+  plus narrow local routing over broad cross-reference-only indirection when
+  that keeps routine tasks from loading a much larger reference file.
 - Prefer one clear routing entry over repeated topic lists across `Read
   First`, `Quick Routing`, and repository notes when the repeated text does
   not add repository-specific meaning.
@@ -64,6 +68,12 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - Use `.agents/references/*` for stable, agent-facing terminology, naming guidance, checklists, and short decision summaries.
 - Keep reference files concise and specific enough that `AGENTS.md` or a skill can link to them directly.
 
+## Template Files
+
+- Use `.agents/templates/*` for reusable fill-in scaffolds, intake forms, or recurring implementation and test skeletons.
+- Keep templates action-oriented and focused on repeated capture structure instead of durable rules that belong in instructions or references.
+- Prefer a shared `.agents/templates/` path when multiple local workflows would otherwise duplicate the same scaffold.
+
 ## Asset Fit And Extraction
 
 - Do not default to appending new guidance to the nearest existing file just
@@ -79,9 +89,12 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 ## Temporary Design Drafts And Retrospectives
 
 - Temporary design drafts and one-off task retrospectives are not shared agent guidance.
-- Keep in-progress design notes in a disposable scratch path such as `.agents/scratch/designs/` while the task is active, then delete them after confirmation.
+- Keep in-progress design notes in a disposable scratch path such as `.agents/scratch/designs/` while the task is active.
+- Before deleting temporary design notes or other temporary development documents, get explicit user confirmation.
+- Before that deletion, run a local experience distillation pass. If durable lessons remain, update the appropriate local instructions, references, templates, or skills and record concise repo memory notes when that will help future tasks.
+- Do not treat temporary scratch notes as routed shared guidance while they remain task-local.
 - Promote stable project-facing knowledge into `docs/`, package docs, or another established design-doc location for this repository.
-- Distill stable agent-facing lessons into local instructions or other intentional local shared agent assets as appropriate, not raw scratch notes.
+- Distill stable agent-facing lessons into local instructions, references, templates, or other intentional local shared agent assets as appropriate; do not preserve one-off retrospectives when nothing durable should remain.
 
 ## Consistency Checks
 

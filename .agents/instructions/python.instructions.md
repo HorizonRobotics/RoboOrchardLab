@@ -10,7 +10,25 @@ description: Load these instructions when modifying Python source files, tests, 
 - Reuse existing patterns, helpers, constants, and types before adding new ones.
 - Keep new logic focused; avoid abstraction added only for style.
 - Do not silently swallow exceptions. If catching one, keep enough context to debug it.
+- Prefer explicit exceptions over `assert` for production-facing runtime
+  contracts such as config values, user inputs, and environment settings.
 - For processor, envelope, compose, or `pre_process`/`post_process` contract work, follow `.agents/references/processor-guideline.md`.
+- For shared model-loading surfaces, `TorchModelRef`,
+  `HFPretrainedModelRef`, `TorchModelLoadConfig`, or `hf://`-compatible path
+  handling, follow `.agents/references/model-loading-guideline.md`.
+
+## Logging
+
+- For newly created repository-owned Python modules under `robo_orchard_lab/`,
+  prefer
+  `LoggerManager().get_child(__name__)` for module-level loggers.
+- When editing an existing file, keep the established nearby logger surface
+  unless the task explicitly includes logging cleanup or refactoring.
+- Do not rewrite existing files from `logging.getLogger(__name__)` to
+  `LoggerManager().get_child(__name__)` as incidental cleanup.
+- Keep a framework-native logger only when the surrounding module family
+  already depends on framework-specific logging behavior, such as
+  `accelerate.logging.get_logger(__name__)`.
 
 ## Package Export Surfaces
 
@@ -46,6 +64,21 @@ description: Load these instructions when modifying Python source files, tests, 
 
 - Preserve or add type annotations when touching function signatures or return values.
 - Prefer complete type hints for public APIs, key helpers, and newly added functions unless a clear local pattern or technical reason suggests otherwise.
+- When a Pydantic config field is meant to accept a config base class and its
+  subclasses, annotate it with `ConfigInstanceOf[BaseConfig]` instead of the
+  raw base config type.
+- Do not rely on a raw base-config annotation such as `BaseConfig` or
+  `BaseConfig[Any]` to express "this base config or any subclass config":
+  Pydantic may then serialize only the base fields or emit subtype
+  serialization warnings when a subclass config instance is provided.
+- When validation normalizes a field into a narrower stable runtime type,
+  annotate the field with that stored invariant rather than the full raw
+  input surface.
+- If callers still need to provide a wider input type, keep that wider
+  shape at the validation boundary and expose a small conversion helper or
+  separate input alias for runtime use.
+- Do not leave field annotations implying that normalized-away input types
+  still remain available after validation.
 
 ## Documentation and Comments
 
@@ -68,6 +101,12 @@ description: Load these instructions when modifying Python source files, tests, 
 - Follow the project's existing Google-style docstring format with `Args:` and `Returns:` when documenting functions.
 - In `Args:`, use `name (Type): ...` for required parameters and `name (Type, optional): ... Default is ...` for optional parameters.
 - Keep docstrings concise, with consistent indentation and defaults documented only for optional parameters.
+- For public Python docstrings that render into API docs, prefer standard
+  Sphinx / Napoleon-friendly section shapes.
+- Do not introduce ad hoc section headers followed by lists or examples
+  unless the local docs toolchain already uses that pattern safely.
+- Prefer `Example::`, standard `Examples:` sections, or explicit
+  `.. code-block:: python` blocks for usage examples in public docstrings.
 
 ## Dependencies
 

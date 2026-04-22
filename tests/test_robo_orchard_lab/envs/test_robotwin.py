@@ -36,7 +36,10 @@ from robo_orchard_lab.envs.robotwin.env import (
     RoboTwinEnv,
     RoboTwinEnvCfg,
 )
-from robo_orchard_lab.envs.robotwin.kinematics import RoboTwinEEF
+from robo_orchard_lab.envs.robotwin.kinematics import (
+    RoboTwinEEF,
+    RoboTwinJointsToEEF,
+)
 
 pytestmark = pytest.mark.sim_env
 
@@ -70,8 +73,12 @@ def _make_reset_stub_env(
         eval_mode=False,
         format_datatypes=False,
         get_task_config=lambda: {},
+        get_task_config_for_seed=lambda runtime_seed: {"seed": runtime_seed},
         calculate_seed=lambda seed: seed,
+        resolve_start_seed=lambda seed: seed,
     )
+    env._resolved_start_seed = env.cfg.seed
+    env._offset_seed = 0
     env._instructions = None
     env._cached_obs_robots = None
     env._video_ffmpeg = None
@@ -97,6 +104,30 @@ def _make_reset_stub_env(
     return env
 
 
+def _make_step_stub_env(
+    *,
+    action_type: str,
+) -> tuple[RoboTwinEnv, MagicMock]:
+    env = RoboTwinEnv.__new__(RoboTwinEnv)
+    env.cfg = SimpleNamespace(action_type=action_type)
+    take_action = MagicMock()
+    env._task = SimpleNamespace(
+        robot=SimpleNamespace(
+            get_left_arm_jointState=lambda: [0.0] * 7,
+            get_right_arm_jointState=lambda: [0.0] * 7,
+        ),
+        take_action=take_action,
+        step_lim=None,
+        take_action_cnt=0,
+        eval_success=False,
+        get_obs=lambda: {},
+    )
+    env._write_video_frame = lambda raw_obs: None
+    env._format_obs = lambda raw_obs: raw_obs
+    env._get_info = lambda: {}
+    return env, take_action
+
+
 def _assert_pose_close(
     actual: BatchFrameTransform,
     expected: BatchFrameTransform,
@@ -110,6 +141,44 @@ def _assert_pose_close(
         torch.ones_like(quat_alignment),
         atol=atol,
     )
+
+
+class _FakeSerialChain:
+    def __init__(
+        self,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+        end_frame_name: str,
+    ) -> None:
+        self.dtype = dtype
+        self.device = device
+        self._end_frame_name = end_frame_name
+        self.recorded_joint_dtypes: list[torch.dtype] = []
+
+    def forward_kinematics_tf(
+        self,
+        joint_positions: torch.Tensor,
+    ) -> dict[str, BatchFrameTransform]:
+        self.recorded_joint_dtypes.append(joint_positions.dtype)
+        batch_size = joint_positions.shape[0]
+        return {
+            self._end_frame_name: BatchFrameTransform(
+                xyz=torch.zeros(
+                    batch_size,
+                    3,
+                    dtype=self.dtype,
+                    device=self.device,
+                ),
+                quat=torch.tensor(
+                    [[1.0, 0.0, 0.0, 0.0]],
+                    dtype=self.dtype,
+                    device=self.device,
+                ).repeat(batch_size, 1),
+                parent_frame_id="robot_base",
+                child_frame_id=self._end_frame_name,
+            )
+        }
 
 
 @pytest.fixture()
@@ -388,6 +457,39 @@ class TestRoboTwinEnv:
         assert step_return.observations is not None
         assert "tf" in step_return.observations
 
+    def test_step_rejects_qpos_action_width_mismatch(self):
+        env, take_action = _make_step_stub_env(action_type="qpos")
+
+        with pytest.raises(
+            ValueError,
+            match="expected 14, got 16",
+        ):
+            env.step([0.0] * 16)
+
+        take_action.assert_not_called()
+
+    def test_step_rejects_ee_action_width_mismatch(self):
+        env, take_action = _make_step_stub_env(action_type="ee")
+
+        with pytest.raises(
+            ValueError,
+            match="expected 16, got 14",
+        ):
+            env.step([0.0] * 14)
+
+        take_action.assert_not_called()
+
+    def test_step_rejects_unsupported_action_type(self):
+        env, take_action = _make_step_stub_env(action_type="unsupported")
+
+        with pytest.raises(
+            ValueError,
+            match="Unsupported RoboTwin action_type",
+        ):
+            env.step([0.0] * 16)
+
+        take_action.assert_not_called()
+
     def test_get_urdf(self, dummy_env_without_expert_check: RoboTwinEnv):
         env = dummy_env_without_expert_check
         env.reset()
@@ -592,7 +694,10 @@ class TestRoboTwinEnv:
             info={},
         )
         env._check_and_update_seed = lambda: (task, [])
-        env.cfg.get_task_config = lambda: {"now_ep_num": env.cfg.episode_id}
+        env.cfg.get_task_config_for_seed = lambda runtime_seed: {
+            "now_ep_num": env.cfg.episode_id,
+            "seed": runtime_seed,
+        }
 
         recorded: dict[str, object] = {}
         monkeypatch.setattr(
@@ -616,6 +721,151 @@ class TestRoboTwinEnv:
         assert recorded["video_path"] == (
             "/tmp/task/demo_clean/episode_7_seed_1.mp4"
         )
+
+    def test_reset_tracks_start_seed_and_offset_seed(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        task = SimpleNamespace(
+            robot=robot,
+            setup_demo=lambda **kwargs: None,
+            get_obs=lambda: {},
+            close_env=lambda clear_cache: None,
+            render_freq=0,
+            info={},
+        )
+        env._check_and_update_seed = lambda: (task, [])
+
+        obs, info = env.reset(seed=2, offset_seed=3)
+
+        assert obs is not None
+        assert env.cfg.seed == 2
+        assert env.start_seed == 2
+        assert env.offset_seed == 3
+        assert env.resolved_start_seed == 2
+        assert env.current_seed == 5
+        assert info["seed"] == 5
+        assert info["start_seed"] == 2
+        assert info["resolved_start_seed"] == 2
+        assert info["offset_seed"] == 3
+
+    def test_reset_resets_offset_when_start_seed_changes(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        task = SimpleNamespace(
+            robot=robot,
+            setup_demo=lambda **kwargs: None,
+            get_obs=lambda: {},
+            close_env=lambda clear_cache: None,
+            info={},
+        )
+        env._check_and_update_seed = lambda: (task, [])
+        env._offset_seed = 4
+
+        _, info = env.reset(seed=2)
+
+        assert env.start_seed == 2
+        assert env.offset_seed == 0
+        assert env.current_seed == 2
+        assert info["offset_seed"] == 0
+
+    def test_reset_seed_next_advances_within_current_seed_family(
+        self, monkeypatch
+    ):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        task = SimpleNamespace(
+            robot=robot,
+            setup_demo=lambda **kwargs: None,
+            get_obs=lambda: {},
+            close_env=lambda clear_cache: None,
+            render_freq=0,
+            info={},
+        )
+        check_calls = {"count": 0}
+
+        def fake_check_and_update_seed():
+            if check_calls["count"] == 0:
+                env._offset_seed += 2
+            check_calls["count"] += 1
+            return task, []
+
+        env._check_and_update_seed = fake_check_and_update_seed
+
+        _, first_info = env.reset(seed=2)
+        _, second_info = env.reset(seed="next")
+
+        assert env.cfg.seed == 2
+        assert env.start_seed == 2
+        assert first_info["offset_seed"] == 2
+        assert first_info["seed"] == 4
+        assert second_info["offset_seed"] == 3
+        assert second_info["seed"] == 5
+
+    def test_reset_rejects_seed_next_with_explicit_offset(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+
+        with pytest.raises(
+            ValueError,
+            match="seed='next' cannot be combined with offset_seed",
+        ):
+            env.reset(seed="next", offset_seed=3)
+
+    def test_joints_to_eef_aligns_joint_and_base_tf_dtype(self, monkeypatch):
+        fake_chain = SimpleNamespace(
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            frame_names=["robot_base"],
+        )
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.kinematics.KinematicChain.from_content",
+            lambda data, format: fake_chain,
+        )
+        left_chain = _FakeSerialChain(
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            end_frame_name="fl_link6",
+        )
+        right_chain = _FakeSerialChain(
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            end_frame_name="fr_link6",
+        )
+        created_chains = [left_chain, right_chain]
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.kinematics.KinematicSerialChain",
+            lambda chain, end_frame_name: created_chains.pop(0),
+        )
+
+        joints_to_eef = RoboTwinJointsToEEF(urdf_content="<robot/>")
+
+        assert joints_to_eef._left_robot_base_tf.xyz.dtype == torch.float32
+        assert joints_to_eef._right_robot_base_tf.quat.dtype == torch.float32
+
+        joints_to_eef.transform(
+            left_arm_joints=torch.zeros(2, 6, dtype=torch.float64),
+            right_arm_joints=torch.zeros(2, 6, dtype=torch.float64),
+        )
+
+        assert left_chain.recorded_joint_dtypes == [torch.float32]
+        assert right_chain.recorded_joint_dtypes == [torch.float32]
 
     def test_reset_reuses_cfg_episode_id_for_video_dir(self, monkeypatch):
         env = _make_reset_stub_env(

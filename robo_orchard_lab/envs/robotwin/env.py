@@ -122,6 +122,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
+        self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
+        self._offset_seed = 0
         self._eval_chosen_instruction: str | None = None
         self._joints_to_eef_transform: RoboTwinJointsToEEF | None = None
         self._cached_obs_robots: dict[str, Robot] | None = None
@@ -140,7 +142,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 "This may take a while... "
                 "You can set `check_expert=False` to skip this step."
             )
-            requested_seed = self.cfg.seed
+            requested_seed = self.current_seed
             task, success = self._check_expert_traj()
             retry_num = 0
             while not success:
@@ -152,24 +154,25 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                         "Please check the task configuration!"
                     )
 
-                failed_seed = self.cfg.seed
-                self.cfg.seed += 1
+                failed_seed = self.current_seed
+                self._offset_seed += 1
                 logger.warning(
                     "Expert trajectory check failed for task "
                     f"{self.cfg.task_name} at seed {failed_seed}; "
-                    f"retrying with seed {self.cfg.seed}."
+                    f"retrying with seed {self.current_seed}."
                 )
                 task, success = self._check_expert_traj()
                 if success:
                     logger.info(
                         f"Successfully created task {self.cfg.task_name} "
-                        f"with seed {self.cfg.seed} using expert trajectory."
+                        "with seed "
+                        f"{self.current_seed} using expert trajectory."
                     )
             if retry_num > 0:
                 logger.info(
                     f"Requested seed {requested_seed} for task "
                     f"{self.cfg.task_name} resolved to actual seed "
-                    f"{self.cfg.seed} after {retry_num} retries."
+                    f"{self.current_seed} after {retry_num} retries."
                 )
 
             assert task is not None
@@ -205,8 +208,23 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
     @property
     def current_seed(self) -> int:
-        """The current seed of the environment."""
+        """The actual RoboTwin runtime seed for the current episode."""
+        return self._resolved_start_seed + self._offset_seed
+
+    @property
+    def start_seed(self) -> int:
+        """The caller-facing start seed configured on the env."""
         return self.cfg.seed
+
+    @property
+    def resolved_start_seed(self) -> int:
+        """The eval-mode-normalized runtime start seed."""
+        return self._resolved_start_seed
+
+    @property
+    def offset_seed(self) -> int:
+        """The env-local retry offset from ``resolved_start_seed``."""
+        return self._offset_seed
 
     @property
     def instructions(self) -> dict | None | str:
@@ -238,7 +256,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     def _create_task(self) -> Base_Task:
         with in_robotwin_workspace():
             task = create_task_from_name(self.cfg.task_name)
-            task_config = self.cfg.get_task_config()
+            task_config = self.cfg.get_task_config_for_seed(
+                runtime_seed=self.current_seed
+            )
             task.setup_demo(**task_config)  # type: ignore
             return task
 
@@ -252,7 +272,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         """
         with in_robotwin_workspace():
             task = create_task_from_name(self.cfg.task_name)
-            config = self.cfg.get_task_config()
+            config = self.cfg.get_task_config_for_seed(
+                runtime_seed=self.current_seed
+            )
             config["render_freq"] = 0
             try:
                 task.setup_demo(**config)  # type: ignore
@@ -295,6 +317,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                   `[qw, qx, qy, qz]` convention. For the currently supported
                   combined dual-arm layout this means 16 values in total.
 
+                The wrapper validates this expected width exactly before
+                forwarding the action to RoboTwin.
+
         Returns:
             RoboTwinEnvStepReturn: The step result after taking the action.
                 This function always returns a step result. Episode end is
@@ -302,16 +327,39 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 returning None. `rewards` is a boolean indicating whether
                 the task has succeeded.
         """
-        if isinstance(action, np.ndarray):
-            if action.ndim != 1:
-                raise ValueError(
-                    "Action should be a 1-D array, "
-                    f"but got {action.ndim} dimensions."
-                )
+        action_array = np.asarray(action)
+        if action_array.ndim != 1:
+            raise ValueError(
+                "Action should be a 1-D array, "
+                f"but got {action_array.ndim} dimensions."
+            )
+
+        if self.cfg.action_type == "qpos":
+            expected_action_dim = len(
+                self._task.robot.get_left_arm_jointState()
+            ) + len(self._task.robot.get_right_arm_jointState())
+        elif self.cfg.action_type == "ee":
+            expected_action_dim = 16
+        else:
+            raise ValueError(
+                f"Unsupported RoboTwin action_type: {self.cfg.action_type!r}."
+            )
+
+        # RoboTwin silently slices extra dimensions for qpos actions, so the
+        # wrapper validates the exact width before forwarding the command.
+        if action_array.shape[0] != expected_action_dim:
+            raise ValueError(
+                "Action width does not match RoboTwin action_type "
+                f"{self.cfg.action_type!r}: expected {expected_action_dim}, "
+                f"got {action_array.shape[0]}."
+            )
         # the take_action method will do internal check if reach step limit
         # or task is successful. Either case, the task will not take further
         # actions.
-        self._task.take_action(action, action_type=self.cfg.action_type)
+        self._task.take_action(
+            action_array,
+            action_type=self.cfg.action_type,
+        )
 
         # when reach step limit, truncated is True
         # Note that step_lim is None for default unlimited steps.
@@ -348,6 +396,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         self,
         env_ids: Sequence[int] | None = None,
         seed: int | str | None = None,
+        offset_seed: int | str | None = None,
         task_name: str | None = None,
         clear_cache: bool = False,
         return_obs: bool = True,
@@ -359,7 +408,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         If the environment has not been reset before, or the seed is
         different from the previous one, or the task_name is different
         from the previous one, the environment will be re-created
-        and check the seed, and the seed will be updated in the config.
+        and check the seed. The config ``seed`` remains the caller-facing
+        start seed while the env tracks runtime retries through
+        ``offset_seed``.
 
         Warning:
             RoboTwin does not use local RandomGenerator, when the environment
@@ -372,9 +423,17 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             env_ids (Sequence[int] | None, optional): Not supported.
                 Defaults to None.
             seed (int | str | None, optional): The seed to reset the
-                environment. If None, the seed in the config will be used.
-                If "next", the seed will be incremented by 1.
-                Default is None.
+                environment start point. If None, the seed in the config will
+                be used. If an int is provided, it replaces the caller-facing
+                start seed. If "next", the env keeps the current start seed
+                and advances to the next runtime seed after the current actual
+                offset. ``seed="next"`` cannot be combined with
+                ``offset_seed``. Default is None.
+            offset_seed (int | str | None, optional): Runtime offset from the
+                resolved start seed. If None, the existing env offset is
+                reused unless ``seed`` also changes, in which case the offset
+                resets to 0. If "next", the current offset is incremented by
+                1. Default is None.
             task_name (str | None, optional): The task name to reset the
                 environment. If None, the task name in the config will be used.
                 Default is None.
@@ -405,24 +464,56 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             )
 
         self.close(clear_cache=clear_cache)
-        # calculate the actual seed
+        start_seed = None
+        next_offset_seed_from_seed = None
         if seed is not None:
-            seed = self.cfg.calculate_seed(seed)
+            if isinstance(seed, str):
+                if seed != "next":
+                    raise ValueError(
+                        f"Invalid seed string: {seed}. "
+                        "Only 'next' is supported."
+                    )
+                if offset_seed is not None:
+                    raise ValueError(
+                        "seed='next' cannot be combined with offset_seed. "
+                        "Use one runtime-seed control at a time."
+                    )
+                next_offset_seed_from_seed = self._offset_seed + 1
+            else:
+                start_seed = self.cfg.calculate_seed(seed)
         if episode_id is not None:
             self.cfg.episode_id = episode_id
 
-        seed_changes = seed is not None and seed != self.cfg.seed
+        seed_changes = start_seed is not None and start_seed != self.cfg.seed
+        if next_offset_seed_from_seed is not None:
+            next_offset_seed = next_offset_seed_from_seed
+        elif offset_seed is not None:
+            next_offset_seed = self._resolve_offset_seed(offset_seed)
+        elif seed_changes:
+            next_offset_seed = 0
+        else:
+            next_offset_seed = self._offset_seed
+        offset_seed_changes = next_offset_seed != self._offset_seed
         task_name_changes = (
             task_name is not None and task_name != self.cfg.task_name
         )
         # check if task is not initialized or seed/task_name changes
-        if not hasattr(self, "_task") or seed_changes or task_name_changes:
+        if (
+            not hasattr(self, "_task")
+            or seed_changes
+            or offset_seed_changes
+            or task_name_changes
+        ):
             # when need to create new env:
             # * when no existing env
             # * when seed changes
             if seed_changes:
-                assert seed is not None
-                self.cfg.seed = seed
+                assert start_seed is not None
+                self.cfg.seed = start_seed
+                self._resolved_start_seed = self.cfg.resolve_start_seed(
+                    self.cfg.seed
+                )
+            self._offset_seed = next_offset_seed
             if task_name_changes:
                 assert task_name is not None
                 self.cfg.task_name = task_name
@@ -433,7 +524,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             self._instructions = instructions
 
         with in_robotwin_workspace():
-            task_config = self.cfg.get_task_config()
+            task_config = self.cfg.get_task_config_for_seed(
+                runtime_seed=self.current_seed
+            )
             self._task.setup_demo(**task_config)  # type: ignore
         self._assert_supported_robot_layout()
         # Reset the FK helper before formatting the first observation so the
@@ -447,7 +540,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         if video_dir is not None:
             episode_video_path = os.path.join(
                 video_dir,
-                f"episode_{self.cfg.episode_id}_seed_{self.cfg.seed}.mp4",
+                f"episode_{self.cfg.episode_id}_seed_{self.current_seed}.mp4",
             )
 
         raw_obs = self._task.get_obs()
@@ -533,9 +626,29 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         return self._joints_to_eef_transform
 
     def _get_info(self) -> dict[str, Any]:
-        info = {"seed": self.cfg.seed, "task": self.cfg.task_name}
+        info = {
+            "seed": self.current_seed,
+            "start_seed": self.start_seed,
+            "resolved_start_seed": self.resolved_start_seed,
+            "offset_seed": self.offset_seed,
+            "task": self.cfg.task_name,
+        }
         info.update(self._task.info)
         return info
+
+    def _resolve_offset_seed(self, offset_seed: int | str | None) -> int:
+        if offset_seed is None:
+            return self._offset_seed
+        if isinstance(offset_seed, str):
+            if offset_seed == "next":
+                return self._offset_seed + 1
+            raise ValueError(
+                f"Invalid offset_seed string: {offset_seed}. "
+                "Only 'next' is supported."
+            )
+        if offset_seed < 0:
+            raise ValueError(f"offset_seed must be >= 0, got {offset_seed}.")
+        return offset_seed
 
     def _assert_supported_robot_layout(self) -> None:
         """Validate that the current RoboTwin robot layout is supported.
@@ -954,10 +1067,10 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """The name of the task to run, e.g., 'place_object_scale'."""
 
     seed: int = 0
-    """The random seed for the environment.
+    """The caller-facing start seed for the environment.
 
-    If eval_mode is True, the seed will be changed in `__post_init__` to
-    `100000 * (1 + seed)` to match the implementation in RoboTwin.
+    In eval mode the env resolves this start seed into RoboTwin's reserved
+    runtime seed range, but the config field itself remains unchanged.
     """
 
     episode_id: int = 0
@@ -978,12 +1091,24 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     check_expert: bool = False
     """Whether to check the expert trajectory for the task.
 
-    If true, the environment will attempt to run the task with given seed
+    If true, the environment will attempt to run the task with the current
+    runtime seed
     to check if the task can be completed successfully using the expert
-    trajectory. If fails, new seed will be generated and used.
+    trajectory. If it fails, the env will increment its runtime
+    ``offset_seed`` and retry until it finds a seed that can be completed by
+    the expert trajectory.
+
+    This mode is stronger than ``check_task_init``: it not only executes
+    RoboTwin's ``play_once()`` initialization path, but also treats expert
+    success as a requirement and may rewrite the env runtime offset to the
+    first valid seed that passes the check.
 
     This field is used to make sure that the environment can be recorded
     successfully using the expert trajectory for imitation learning.
+
+    ``check_expert`` and ``check_task_init`` are mutually exclusive. For
+    evaluation, this is the recommended mode: use expert-verified seeds by
+    setting ``check_expert=True`` and ``check_task_init=False``.
 
     """
 
@@ -994,6 +1119,12 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     with expert trajectory to check if the task can be initialized
     successfully.
 
+    Compared with ``check_expert``, this mode is weaker and is meant as a
+    RoboTwin warm-up path: it runs the same ``play_once()`` initialization
+    flow once so task-specific runtime attributes are created, but it does
+    not search for a new seed when the current one is unstable or cannot be
+    solved by the expert trajectory.
+
     This field should be set to True because some task attributes that
     required for interaction may be initialized in the `play_once()` method,
     such as `place_object_scale` task.
@@ -1001,12 +1132,22 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     This should be a BUG in RoboTwin and will significantly affect the
     performance of the environment initialization.
 
+    ``check_task_init`` and ``check_expert`` can not both be True. For
+    evaluation, prefer ``check_expert`` instead of this flag because
+    evaluation should use a seed that is known to be expert-solvable.
+
     """
 
     eval_mode: bool = False
     """Whether for evaluation.
 
     If true, the environment will use unseen texture_type.
+
+    Evaluation also requires expert-verified seeds, so ``__post_init__``
+    forces ``check_expert=True`` and ``check_task_init=False`` when
+    ``eval_mode=True``. In other words, callers usually do not need to set
+    those two flags manually for evaluation; enabling ``eval_mode`` is the
+    recommended entrypoint.
     """
 
     max_instruction_num: int = 10
@@ -1079,27 +1220,34 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             )
             self.max_instruction_num = EVAL_INSTRUCTION_NUM
 
-        self.seed = self.calculate_seed(self.seed)
-
     def calculate_seed(self, seed: int | str) -> int:
-        """Calculate the actual seed used in RoboTwin.
+        """Normalize the caller-facing start seed.
 
-        In eval_mode, the seed is calculated as `100000 * (1 + seed)`.
-
-        Args:
-            seed (int | str): The base seed. The string value `"next"`
-                increments the current seed by 1.
-
-        Returns:
-            int: The actual seed used in RoboTwin.
+        This compatibility helper preserves the existing public method name
+        while returning a caller-space start seed, not the actual runtime seed.
         """
         if isinstance(seed, str):
             if seed == "next":
-                seed = self.seed + 1
-            else:
-                raise ValueError(
-                    f"Invalid seed string: {seed}. Only 'next' is supported."
-                )
+                return self.seed + 1
+            raise ValueError(
+                f"Invalid seed string: {seed}. Only 'next' is supported."
+            )
+        return seed
+
+    def resolve_start_seed(self, seed: int | str) -> int:
+        """Resolve a caller-facing start seed into a RoboTwin runtime seed.
+
+        In eval mode, start seeds below ``EVAL_SEED_BASE`` are mapped into
+        RoboTwin's reserved evaluation seed range.
+
+        Args:
+            seed (int | str): The caller-facing start seed. The string value
+                `"next"` increments the current start seed by 1.
+
+        Returns:
+            int: The resolved runtime start seed used in RoboTwin.
+        """
+        seed = self.calculate_seed(seed)
 
         if self.eval_mode and seed < EVAL_SEED_BASE:
             seed = EVAL_SEED_BASE * (1 + seed)
@@ -1129,6 +1277,11 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         )
 
     def get_task_config(self) -> dict[str, Any]:
+        return self.get_task_config_for_seed(
+            runtime_seed=self.resolve_start_seed(self.seed)
+        )
+
+    def get_task_config_for_seed(self, runtime_seed: int) -> dict[str, Any]:
         """Return the resolved task configuration for `setup_demo()`.
 
         The returned config combines the YAML template, derived RoboTwin
@@ -1140,7 +1293,10 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             open(self.task_config_path, "r", encoding="utf-8") as f,
         ):
             task_config = yaml.load(f.read(), Loader=yaml.FullLoader)
-            ret = self._update_task_config(task_config)
+            ret = self._update_task_config(
+                task_config,
+                runtime_seed=runtime_seed,
+            )
             self._apply_task_config_overrides(ret)
 
             ret["task_name"] = self.task_name
@@ -1220,7 +1376,12 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
                 )
             target[leaf_key] = value
 
-    def _update_task_config(self, task_args: dict[str, Any]) -> dict[str, Any]:
+    def _update_task_config(
+        self,
+        task_args: dict[str, Any],
+        *,
+        runtime_seed: int,
+    ) -> dict[str, Any]:
         """Update the task configuration.
 
         The function reads additional configuration files for task arguments
@@ -1284,7 +1445,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
         # update attributes in self
 
-        task_args["seed"] = self.seed
+        task_args["seed"] = runtime_seed
         task_args["now_ep_num"] = self.episode_id
         task_args["eval_mode"] = self.eval_mode
         task_args["is_test"] = self.eval_mode

@@ -26,11 +26,19 @@ import torch.nn as nn
 from robo_orchard_core.utils.config import ClassType_co
 
 import robo_orchard_lab.processing.io_processor as io_processor_module
-from robo_orchard_lab.dataset.collates import collate_batch_dict
+from robo_orchard_lab.dataset.collates import (
+    Collator,
+    CollatorConfig,
+    collate_batch_dict,
+)
 from robo_orchard_lab.models.mixin import (
     ModelMixin,
     TorchModelMixin,
     TorchModuleCfg,
+)
+from robo_orchard_lab.models.model_ref import (
+    TorchModelLoadConfig,
+    TorchModelRef,
 )
 from robo_orchard_lab.pipeline.inference import (
     InferencePipeline,
@@ -81,6 +89,21 @@ class DummyModel(ModelMixin):
 
 class DummyModelCfg(TorchModuleCfg[DummyModel]):
     class_type: ClassType_co[DummyModel] = DummyModel
+
+
+class OtherDummyModel(ModelMixin):
+    def __init__(self, cfg: "OtherDummyModelCfg"):
+        super().__init__(cfg)
+        self.linear = nn.Linear(10, 5)
+
+    def forward(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        return {"output_data": self.linear(batch["input_data"]) - 1}
+
+
+class OtherDummyModelCfg(TorchModuleCfg[OtherDummyModel]):
+    class_type: ClassType_co[OtherDummyModel] = OtherDummyModel
 
 
 class DummyProcessor(ModelIOProcessor):
@@ -160,6 +183,22 @@ class MultiplyProcessorCfg(ModelIOProcessorCfg[MultiplyProcessor]):
     class_type: ClassType_co[MultiplyProcessor] = MultiplyProcessor
     pre_scale: float = 1.0
     post_scale: float = 1.0
+
+
+class DummyCollator(Collator):
+    cfg: "DummyCollatorCfg"
+
+    def __init__(self, cfg: "DummyCollatorCfg"):
+        self.cfg = cfg
+
+    def __call__(self, batch):
+        del batch
+        return {"marker": self.cfg.marker}
+
+
+class DummyCollatorCfg(CollatorConfig[DummyCollator]):
+    class_type: ClassType_co[DummyCollator] = DummyCollator
+    marker: int = 0
 
 
 class EnvelopeContextProcessor(EnvelopeIOProcessor):
@@ -407,6 +446,75 @@ def test_pipeline_initialization(test_pipeline: MyTestPipeline):
         test_pipeline.envelope_processor, ModelIOProcessorEnvelopeAdapter
     )
     assert isinstance(test_pipeline.processor, DummyProcessor)
+
+
+def test_pipeline_cfg_call_accepts_torch_model_ref_cfg():
+    pipeline = MyTestPipelineCfg(
+        model_cfg=TorchModelRef(cfg=DummyModelCfg())
+    )()
+
+    assert isinstance(pipeline, MyTestPipeline)
+    assert isinstance(pipeline.model, DummyModel)
+
+
+def test_direct_pipeline_initialization_accepts_torch_model_ref_cfg():
+    pipeline = MyTestPipeline(
+        cfg=MyTestPipelineCfg(model_cfg=TorchModelRef(cfg=DummyModelCfg()))
+    )
+
+    assert isinstance(pipeline.model, DummyModel)
+
+
+def test_runtime_model_preserves_load_only_torch_model_ref(tmp_path):
+    saved_model = DummyModel(DummyModelCfg())
+    with torch.no_grad():
+        saved_model.linear.weight.fill_(1.25)
+        saved_model.linear.bias.fill_(-0.5)
+    save_dir = tmp_path / "saved_model"
+    saved_model.save_model(str(save_dir))
+    runtime_model = DummyModel(DummyModelCfg())
+    with torch.no_grad():
+        runtime_model.linear.weight.zero_()
+        runtime_model.linear.bias.zero_()
+    cfg = MyTestPipelineCfg(
+        model_cfg=TorchModelRef(
+            load_from=TorchModelLoadConfig(directory=str(save_dir))
+        )
+    )
+
+    pipeline = MyTestPipeline(cfg=cfg, model=runtime_model)
+    rebuilt_pipeline = pipeline.cfg()
+
+    assert pipeline.model is runtime_model
+    assert isinstance(pipeline.cfg.model_cfg, TorchModelRef)
+    assert pipeline.cfg.model_cfg.load_from is not None
+    assert pipeline.cfg.model_cfg.load_from.directory == str(save_dir)
+    assert torch.equal(
+        rebuilt_pipeline.model.linear.weight,
+        saved_model.linear.weight,
+    )
+    assert torch.equal(
+        rebuilt_pipeline.model.linear.bias,
+        saved_model.linear.bias,
+    )
+
+
+def test_runtime_model_rejects_mismatched_torch_model_ref_ensure_type(
+    tmp_path,
+):
+    saved_model = DummyModel(DummyModelCfg())
+    save_dir = tmp_path / "saved_model"
+    saved_model.save_model(str(save_dir))
+    runtime_model = OtherDummyModel(OtherDummyModelCfg())
+    cfg = MyTestPipelineCfg(
+        model_cfg=TorchModelRef(
+            load_from=TorchModelLoadConfig(directory=str(save_dir)),
+            ensure_type=DummyModel,
+        )
+    )
+
+    with pytest.raises(TypeError, match="ensure_type"):
+        MyTestPipeline(cfg=cfg, model=runtime_model)
 
 
 def test_direct_mixin_pipeline_reset_requires_concrete_implementation():
@@ -1355,6 +1463,35 @@ def test_pipeline_composed_envelope_preserves_batched_context_with_collator():
     assert second_context == expected_processor_context
 
 
+def test_pipeline_cfg_serializes_collator_subclass_without_warning():
+    pipeline_cfg = InferencePipelineCfg(
+        model_cfg=DummyModelCfg(),
+        collate_fn=DummyCollatorCfg(marker=7),
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        serialized = pipeline_cfg.model_dump(mode="json")
+
+    assert [str(item.message) for item in caught] == []
+    assert serialized["collate_fn"]["marker"] == 7
+    assert serialized["collate_fn"]["class_type"].endswith(":DummyCollator")
+
+
+def test_pipeline_cfg_deserializes_collator_subclass_from_json():
+    pipeline_cfg = InferencePipelineCfg(
+        model_cfg=DummyModelCfg(),
+        collate_fn=DummyCollatorCfg(marker=7),
+    )
+
+    loaded = InferencePipelineCfg.model_validate(
+        pipeline_cfg.model_dump(mode="json")
+    )
+
+    assert isinstance(loaded.collate_fn, DummyCollatorCfg)
+    assert loaded.collate_fn.marker == 7
+
+
 def test_pipeline_save_and_load(test_pipeline: MyTestPipeline, tmp_path):
     save_dir = tmp_path / "saved_pipeline"
     test_pipeline.save_pipeline(str(save_dir))
@@ -1381,6 +1518,20 @@ def test_pipeline_save_and_load(test_pipeline: MyTestPipeline, tmp_path):
     assert torch.allclose(
         original_output["output_data"], loaded_output["output_data"]
     )
+
+
+def test_pipeline_save_and_load_after_torch_model_ref_construction(tmp_path):
+    pipeline = MyTestPipeline(
+        cfg=MyTestPipelineCfg(model_cfg=TorchModelRef(cfg=DummyModelCfg()))
+    )
+    save_dir = tmp_path / "saved_pipeline_from_ref"
+
+    pipeline.save_pipeline(str(save_dir))
+    loaded_pipeline = InferencePipelineMixin.load_pipeline(str(save_dir))
+
+    assert isinstance(loaded_pipeline, MyTestPipeline)
+    assert isinstance(loaded_pipeline.model, DummyModel)
+    assert isinstance(loaded_pipeline.cfg.model_cfg, DummyModelCfg)
 
 
 def test_save_raises_error_if_dir_not_empty(

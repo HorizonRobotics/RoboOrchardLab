@@ -36,10 +36,7 @@ from transformers.modeling_utils import (
 )
 from typing_extensions import Self, deprecated
 
-from robo_orchard_lab.utils.huggingface import (
-    auto_add_repo_type,
-    download_hf_resource,
-)
+from robo_orchard_lab.utils.huggingface import resolve_hf_compatible_path
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     abspath,
@@ -404,10 +401,7 @@ class TorchModelMixin(
             ValueError: If the Hugging Face Hub URI is invalid.
         """  # noqa: E501
 
-        if directory.startswith("hf://"):
-            directory = download_hf_resource(auto_add_repo_type(directory))
-
-        directory = abspath(directory)
+        directory = abspath(resolve_hf_compatible_path(directory))
 
         if not os.path.exists(directory):
             raise FileNotFoundError(f"checkpoint {directory} does not exists!")

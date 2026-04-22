@@ -30,6 +30,9 @@ Reusable agent-facing templates live in `.agents/templates/`.
 - Processor, envelope, compose, or `pre_process`/`post_process` contract changes: `.agents/references/processor-guideline.md`
 - Policy, rollout boundary, or `act(...)` / `reset(...)` contract changes:
   `.agents/references/policy-guideline.md`
+- Shared model-loading surfaces, `TorchModelRef`,
+  `HFPretrainedModelRef`, `TorchModelLoadConfig`, or `hf://` compatibility:
+  `.agents/references/model-loading-guideline.md`
 - Robot interactive env, `reset()` / `step()` observation contracts, or
   env-owned runtime metadata:
   `.agents/references/robot-interactive-env-guideline.md`
@@ -43,6 +46,8 @@ Reusable agent-facing templates live in `.agents/templates/`.
   `.agents/instructions/environment.instructions.md`
 - Fresh environment bootstrap or local setup: `.agents/instructions/prepare_env.instructions.md`
 - Spatial transform, pose, or matrix naming: `.agents/references/spatial-transform-and-matrix-naming-guideline.md`
+- Distilling stable implementation, review, or design-process lessons into local guidance:
+  `.agents/instructions/experience-distillation.instructions.md`
 - `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, or `.agents/skills/` authoring and refactors: `.agents/instructions/guidance-authoring.instructions.md`
 
 ## Skills
