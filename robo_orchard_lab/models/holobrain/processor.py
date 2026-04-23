@@ -136,13 +136,11 @@ class Struct2Dict:
 
         if self.load_image:
             assert data.image is not None
-            images = [data.image[x][-1] for x in cam_names]
-            input_data["imgs"] = np.stack(images)
+            input_data["imgs"] = [data.image[x][-1] for x in cam_names]
 
         if self.load_depth:
             assert data.depth is not None
-            depth = [data.depth[x][-1] for x in cam_names]
-            input_data["depths"] = np.stack(depth)
+            input_data["depths"] = [data.depth[x][-1] for x in cam_names]
 
         input_data["text"] = (
             "" if data.instruction is None else data.instruction

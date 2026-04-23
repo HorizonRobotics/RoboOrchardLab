@@ -14,12 +14,32 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from .robotwin_policy import (
-    HoloBrainRoboTwinPolicy,
-    HoloBrainRoboTwinPolicyCfg,
-)
+# Lazy compatibility re-exports.  Importing the package no longer eagerly
+# loads every policy submodule; individual symbols are resolved on first
+# access so that unrelated runtime dependencies stay unloaded.
 
-__all__ = [
-    "HoloBrainRoboTwinPolicy",
-    "HoloBrainRoboTwinPolicyCfg",
-]
+_COMPAT_IMPORTS: dict[str, tuple[str, str]] = {
+    "HoloBrainRoboTwinPolicy": (
+        ".robotwin_policy",
+        "HoloBrainRoboTwinPolicy",
+    ),
+    "HoloBrainRoboTwinPolicyCfg": (
+        ".robotwin_policy",
+        "HoloBrainRoboTwinPolicyCfg",
+    ),
+}
+
+
+def __getattr__(name: str):
+    if name in _COMPAT_IMPORTS:
+        module_path, attr = _COMPAT_IMPORTS[name]
+        import importlib
+
+        mod = importlib.import_module(module_path, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = list(_COMPAT_IMPORTS.keys())

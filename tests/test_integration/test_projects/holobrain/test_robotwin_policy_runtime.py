@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from projects.holobrain.policy import (
+from projects.holobrain.policy.robotwin_policy import (
     HoloBrainRoboTwinPolicy,
     HoloBrainRoboTwinPolicyCfg,
 )

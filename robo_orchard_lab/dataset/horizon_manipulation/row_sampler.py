@@ -30,10 +30,16 @@ __all__ = [
 
 
 class EpisodeChunkSampler(MultiRowSampler):
+    """Sample history and prediction chunks by packed dataset row index."""
+
     def __init__(self, cfg: "EpisodeChunkSamplerConfig") -> None:
         self.cfg = cfg
         self.hist_steps = cfg.hist_steps
         self.pred_steps = cfg.pred_steps
+        self.pred_interval = cfg.pred_interval
+        assert (
+            isinstance(self.pred_interval, int) and self.pred_interval >= 1
+        ), "pred_interval must be an integer >= 1"
         self.chunk_size = self.hist_steps + self.pred_steps
 
     @property
@@ -52,10 +58,18 @@ class EpisodeChunkSampler(MultiRowSampler):
         cur_episode_idx = cur_row["episode_index"]
         dataset_len = len(index_dataset)
 
-        raw_start_idx = index - self.hist_steps + 1
-        raw_end_idx = index + self.pred_steps
+        raw_hist_start_idx = index - self.hist_steps + 1
+        hist_indices = np.arange(raw_hist_start_idx, index + 1)
 
-        start_idx = max(raw_start_idx, 0)
+        if self.pred_steps > 0:
+            future_offsets = np.arange(1, self.pred_steps + 1)
+            future_indices = index + future_offsets * self.pred_interval
+            raw_end_idx = int(future_indices[-1])
+        else:
+            future_indices = np.array([], dtype=np.int64)
+            raw_end_idx = index
+
+        start_idx = max(raw_hist_start_idx, 0)
         while start_idx < dataset_len:
             start_row = index_dataset[start_idx]
             if start_row["episode_index"] == cur_episode_idx:
@@ -69,7 +83,7 @@ class EpisodeChunkSampler(MultiRowSampler):
                 break
             end_idx -= 1
 
-        raw_indices = np.arange(raw_start_idx, raw_end_idx + 1)
+        raw_indices = np.concatenate([hist_indices, future_indices])
         padded_indices = np.clip(raw_indices, start_idx, end_idx)
 
         chunk_indices: list[int] = padded_indices.tolist()
@@ -90,3 +104,5 @@ class EpisodeChunkSamplerConfig(MultiRowSamplerConfig[EpisodeChunkSampler]):
 
     hist_steps: int = 1
     pred_steps: int = 64
+    # Future sampling stride in packed kept rows.
+    pred_interval: int = 1

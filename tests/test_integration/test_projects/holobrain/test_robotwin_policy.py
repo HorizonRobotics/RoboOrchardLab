@@ -17,7 +17,7 @@
 import numpy as np
 import pytest
 
-from projects.holobrain.policy import (
+from projects.holobrain.policy.robotwin_policy import (
     HoloBrainRoboTwinPolicy,
     HoloBrainRoboTwinPolicyCfg,
 )
