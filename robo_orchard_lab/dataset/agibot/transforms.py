@@ -159,10 +159,29 @@ class SimpleStateSampling:
         self.static_threshold = static_threshold
         self.only_hist = only_hist
 
+    def _clip_joint(self, joint_state):
+        non_gripper_indices = [
+            i
+            for i in range(joint_state.shape[1])
+            if i not in self.gripper_indices
+        ]
+        joint_state[..., non_gripper_indices] = np.clip(
+            joint_state[..., non_gripper_indices],
+            -self.limitation,
+            self.limitation
+        )
+        # TODO, fixed gripper limitation
+        joint_state[..., self.gripper_indices] = np.clip(
+            joint_state[..., self.gripper_indices],
+            -1000,
+            1000
+        )
+        return joint_state
+
     def __call__(self, data):
         if "joint_state" not in data and "hist_joint_state" in data:
-            data["hist_joint_state"] = np.clip(
-                data["hist_joint_state"], -self.limitation, self.limitation
+            data["hist_joint_state"] = self._clip_joint(
+                data["hist_joint_state"]
             )
             return data
 
@@ -177,7 +196,7 @@ class SimpleStateSampling:
             & (joint_state[..., non_gripper_indices] < self.limitation),
             axis=-1,
         )
-        joint_state = np.clip(joint_state, -self.limitation, self.limitation)
+        joint_state = self._clip_joint(joint_state)
 
         step_index = data["step_index"]
         hist_steps = self.hist_steps
