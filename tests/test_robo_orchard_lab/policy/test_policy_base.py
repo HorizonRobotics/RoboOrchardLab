@@ -32,6 +32,7 @@ from robo_orchard_lab.policy.base import (
     PolicyConfig,
     PolicyMixin,
 )
+from robo_orchard_lab.utils.state import State
 
 
 class PolicyWithoutTo(PolicyMixin):
@@ -49,6 +50,27 @@ class PolicyWithoutTo(PolicyMixin):
 
 class PolicyWithoutToCfg(PolicyConfig[PolicyWithoutTo]):
     class_type: ClassType[PolicyWithoutTo] = PolicyWithoutTo
+
+
+class PolicyWithRuntimeState(PolicyMixin):
+    cfg: "PolicyWithRuntimeStateCfg"
+
+    def __init__(self, cfg: "PolicyWithRuntimeStateCfg") -> None:
+        self.cfg = cfg
+        self.counter = 0
+
+    def reset(self, **kwargs) -> None:
+        del kwargs
+
+    def act(self, obs):
+        return obs
+
+    def to(self, device: torch.device | str):
+        del device
+
+
+class PolicyWithRuntimeStateCfg(PolicyConfig[PolicyWithRuntimeState]):
+    class_type: ClassType[PolicyWithRuntimeState] = PolicyWithRuntimeState
 
 
 class DummyModel(ModelMixin):
@@ -108,6 +130,33 @@ def test_policy_mixin_to_requires_override():
         assert "must be implemented" in str(exc)
     else:
         raise AssertionError("PolicyMixin.to() should require an override.")
+
+
+def test_policy_mixin_uses_generic_state_seam_without_runtime_aliases():
+    policy = PolicyWithRuntimeState(PolicyWithRuntimeStateCfg())
+    policy.counter = 7
+    state = policy.get_state()
+
+    assert isinstance(state, State)
+    assert state.state["counter"] == 7
+    assert not hasattr(policy, "get_policy_runtime_state")
+    assert not hasattr(policy, "load_policy_runtime_state")
+
+
+def test_policy_mixin_load_state_restores_runtime_state():
+    policy = PolicyWithRuntimeState(PolicyWithRuntimeStateCfg())
+    policy.counter = 7
+
+    state = policy.get_state()
+    assert isinstance(state, State)
+    assert state.state["counter"] == 7
+
+    policy.counter = 0
+    policy.load_state(state)
+
+    assert policy.counter == 7
+    assert "cfg" not in state.state
+    assert state.config is not None
 
 
 def test_inference_pipeline_policy_reset_forwards_kwargs():

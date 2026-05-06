@@ -25,6 +25,27 @@ description: Load these instructions when planning complex repository work, vali
 - When the `feature-dev` skill applies, treat it as the detailed implementation of the design, develop, and confirm portions of this loop. The repository-level distill and clean-up requirements still apply after that skill's development flow completes.
 - Before implementation, write a temporary design note in a disposable repository-local scratch path such as `.agents/scratch/designs/`; keep it uncommitted by default.
 - Capture the problem, constraints, chosen approach, validation plan, and explicit non-goals in that temporary design note.
+- For complex refactors, cross-layer features, public API changes, resource
+  lifecycle changes, schedulers, or compatibility migrations, use
+  `.agents/templates/design-doc-scaffold.md` as the default scratch design
+  structure.
+- Keep design notes focused on architecture, ownership, contracts, failure
+  semantics, compatibility, and testing boundaries. Put task ordering, worker
+  assignment, and validation commands in a separate implementation plan.
+- Before dispatching parallel implementation agents, make the plan state the
+  shared interface freeze points, disjoint write scopes, dependency order,
+  expected validation, and how conflicts should be reported back to the
+  coordinator.
+- Do not bake a per-task commit requirement into repository-local plans.
+  Commit cadence should follow the user's request and this repository's git
+  instructions, even when an external workflow recommends frequent commits.
+- If a Superpowers workflow is also in use, treat Superpowers as the
+  collaboration and process guide, and this repository's design template as
+  the repo-local content standard. User-specified scratch paths override
+  Superpowers default `docs/superpowers/...` paths.
+- A design is ready to become a plan only after public/internal boundaries,
+  failure semantics, compatibility strategy, and test boundaries are explicit,
+  and no unresolved user decision blocks implementation.
 - Skip the temporary design note for small, local, or mechanical changes when the implementation path is already obvious.
 - After implementation, run the smallest useful validation and confirm the result against the user's request before treating the task as complete.
 - After confirmation, delete the temporary design note.
@@ -38,7 +59,23 @@ description: Load these instructions when planning complex repository work, vali
 - Prefer `make doc-debug-api ...` for API-doc impact and `make doc-debug-tutorial ...` for tutorial impact before escalating to a full `make doc` build.
 - Add or update tests when behavior changes.
 - Broaden validation for shared behavior, public APIs, packaging, or config changes.
+- When broad pytest validation is large enough to justify xdist, prefer
+  repository-owned entrypoints or an explicit worker count that matches the
+  target's runtime profile; do not default to `-n auto`.
 - If validation is partial or blocked, say what ran, what did not, and the remaining risk.
+
+## Cleanup Gate
+
+- Before finalizing non-trivial implementation, inspect `git diff --stat` and
+  make sure the change size still matches the intended scope.
+- Scan changed areas for expanding compatibility or unfinished work markers
+  such as `TODO`, `legacy`, `compat`, `deprecated`, and newly added helper
+  names when those terms are relevant to the task.
+- Check each newly added `__all__` entry, public class, protocol, and helper:
+  keep it only if it has a clear caller, compatibility purpose, or semantic
+  boundary that cannot be handled by an existing seam.
+- Prefer deleting, merging, or downgrading compatibility-only code before
+  adding another abstraction to explain it.
 
 ## External CI Diagnosis
 

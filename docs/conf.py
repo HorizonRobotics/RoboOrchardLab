@@ -39,7 +39,9 @@ import robo_orchard_lab
 
 CUR_DIR = os.path.abspath(os.path.dirname(__file__))
 BUILD_CONTEXT = doc_gen.build_context_from_env(CUR_DIR)
-AUTOAPI_ENABLED = not BUILD_CONTEXT.is_debug_tutorial
+AUTOAPI_ENABLED = not (
+    BUILD_CONTEXT.is_debug_tutorial or BUILD_CONTEXT.is_debug_overview
+)
 
 with_comment = os.environ.get("DOC_WITH_COMMENT", "0") == "1"
 # -- Project information -----------------------------------------------------
@@ -253,8 +255,8 @@ suppress_warnings = [
     # Emitted if resolving references to objects in an imported module failed.
     "autoapi.python_import_resolution",
 ]
-if BUILD_CONTEXT.is_debug_tutorial:
-    # Tutorial debug builds intentionally skip API page generation, so keep
+if BUILD_CONTEXT.is_debug_tutorial or BUILD_CONTEXT.is_debug_overview:
+    # These debug builds intentionally skip API page generation, so keep
     # internal Python cross-reference misses from failing the fast path.
     suppress_warnings.append("ref.python")
 
@@ -517,6 +519,8 @@ def setup(app):
             if BUILD_CONTEXT.is_debug_api
             else "Debug Tutorial Contents"
             if BUILD_CONTEXT.is_debug_tutorial
+            else "Debug Overview Contents"
+            if BUILD_CONTEXT.is_debug_overview
             else "Contents"
         ),
     )

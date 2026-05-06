@@ -77,6 +77,10 @@ doc-debug-api:
 doc-debug-tutorial:
 	make -C docs debug-tutorial TUTORIAL_TARGETS="$(TUTORIAL_TARGETS)"
 
+# Debug overview docs without AutoAPI or tutorial generation.
+doc-debug-overview:
+	make -C docs debug-overview
+
 doc-clean:
 	make -C docs clean
 

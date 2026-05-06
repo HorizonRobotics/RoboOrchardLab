@@ -8,3 +8,4 @@ Overview
 
     lab_arch
     hook_based_trainer_arch
+    benchmark_evaluator_arch

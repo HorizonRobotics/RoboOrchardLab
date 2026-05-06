@@ -10,7 +10,15 @@ description: Load these instructions when creating, updating, or validating test
 - Prefer the smallest test that proves the target behavior.
 - Use real fixtures, datasets, models, and file paths when the test is intended to validate actual integration behavior.
 - Do not replace required real test inputs with fallback skip logic when the test is expected to prove correctness in the configured environment.
+- When a test depends on an external binary, codec, or other runtime
+  capability that is not a documented repository-baseline requirement, probe
+  that capability in the test and skip when unavailable instead of making
+  the default test phase fail for environment reasons.
 - Use mocks or monkeypatch only when the test target is isolated assembly logic and real dependencies are not part of the behavior under test.
+- For process-backed or external-binary integrations, prefer one real
+  integration path that proves the happy path against the actual dependency
+  and separate narrow fake or monkeypatched tests for failure paths that are
+  difficult to trigger reliably with the real backend.
 - For processor, envelope, compose, or `pre_process`/`post_process` contract tests, follow `.agents/references/processor-guideline.md`.
 - When adding a new `EnvelopeIOProcessor` or any new processor or adapter that reads or writes `processor_context`, add tests for the contract it relies on, including whether it returns fresh context objects or intentionally shares references.
 - When deprecating or removing a processor or inference hook seam, test the canonical path and make the legacy seam's status explicit.
@@ -35,6 +43,21 @@ description: Load these instructions when creating, updating, or validating test
   test for an invalid cross-branch combination.
 - Prefer failing at the repository-owned boundary with a readable error
   instead of relying on a deep dependency stack trace as the first signal.
+- For `PolicyEvaluator` or `PolicyEvaluatorRemote` changes, keep the minimum
+  matrix explicit:
+  - local and remote parity for the public evaluator surface
+  - configuration-boundary validation for contracts or metric capabilities
+  - timeout, worker-lost, busy, and recreate behavior for remote wrappers
+  - recoverable policy or metric runtime-state restore after recreate when
+    the feature depends on cross-episode state
+  - higher-level orchestration partial-failure coverage when a failed episode
+    could leave mutated metric state behind
+  - at least one integration-style test when script-level orchestration such
+    as RobotWin evaluation depends on the changed evaluator contract
+- For benchmark evaluator or backend changes, follow
+  `.agents/references/benchmark-evaluator-guideline.md`; keep fast tests fake
+  by default and reserve real simulator runs for explicit integration or
+  manual validation unless the task directly targets simulator integration.
 
 ## Fixtures
 
@@ -52,6 +75,10 @@ description: Load these instructions when creating, updating, or validating test
 
 - Before running `python`, `pytest`, or `ruff`, load `.agents/instructions/environment.instructions.md`.
 - Run the narrowest relevant `pytest` target for the changed test or module first.
+- For small or focused local validation, prefer serial pytest runs. When the
+  pytest scope is broad enough that parallelism will materially reduce
+  turnaround time, prefer the repository's canonical test entrypoints or an
+  explicit worker count that fits the target instead of `-n auto`.
 - When running repository tests, disable `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` unless the task explicitly requires proxy access.
 - For tests that spawn `accelerate launch`, `torchrun`, or similar
   distributed subprocesses under xdist, do not use a probe-and-release

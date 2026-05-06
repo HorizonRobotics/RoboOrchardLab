@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from robo_orchard_lab.envs.robotwin.env import RoboTwinEnvCfg
+from robo_orchard_lab.envs.robotwin.env import RoboTwinEnv, RoboTwinEnvCfg
 
 
 @pytest.fixture()
@@ -75,6 +75,22 @@ def robotwin_task_config_assets(tmp_path: Path, monkeypatch):
 
 
 class TestRoboTwinEnvCfg:
+    def test_json_round_trip_serializes_class_type(
+        self, robotwin_task_config_assets: Path
+    ):
+        cfg = RoboTwinEnvCfg(
+            task_name="place_object_basket",
+            check_expert=False,
+            check_task_init=False,
+            task_config_path=str(robotwin_task_config_assets),
+        )
+
+        json_str = cfg.to_str(format="json")
+        loaded_cfg = RoboTwinEnvCfg.from_str(json_str, format="json")
+
+        assert loaded_cfg.class_type is RoboTwinEnv
+        assert loaded_cfg == cfg
+
     def test_eval_mode_keeps_cfg_seed_as_start_seed(
         self, robotwin_task_config_assets: Path
     ):

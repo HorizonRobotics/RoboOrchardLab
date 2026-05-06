@@ -14,14 +14,19 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import shutil
+import subprocess
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import torch
+from pydantic import ValidationError
 
+import robo_orchard_lab.envs.robotwin.env as robotwin_env
 from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransform,
     BatchFrameTransformGraph,
@@ -33,6 +38,9 @@ from robo_orchard_lab.dataset.robot.db_orm import (
 from robo_orchard_lab.envs.robotwin.env import (
     LEFT_EEF_FROM_JOINT_FRAME_ID,
     RIGHT_EEF_FROM_JOINT_FRAME_ID,
+    ROBOTWIN_ENV_STATE_SCHEMA_VERSION,
+    ROBOTWIN_VIDEO_FPS,
+    ROBOTWIN_VIDEO_PIXEL_FORMAT,
     RoboTwinEnv,
     RoboTwinEnvCfg,
 )
@@ -40,8 +48,56 @@ from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinEEF,
     RoboTwinJointsToEEF,
 )
+from robo_orchard_lab.envs.state import ENV_STATE_SCOPE_KEY, EnvStateScope
+from robo_orchard_lab.utils.video import VideoWriter
 
 pytestmark = pytest.mark.sim_env
+
+
+def _install_fake_robotwin_instruction_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    description_module = ModuleType("description")
+    utils_module = ModuleType("description.utils")
+    generator_module = ModuleType(
+        "description.utils.generate_episode_instructions"
+    )
+    description_module.__dict__["__path__"] = []
+    utils_module.__dict__["__path__"] = []
+    generator_module.__dict__["generate_episode_descriptions"] = (
+        lambda task_name, infos, max_descriptions: [{"seen": [task_name]}]
+    )
+    monkeypatch.setitem(sys.modules, "description", description_module)
+    monkeypatch.setitem(sys.modules, "description.utils", utils_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "description.utils.generate_episode_instructions",
+        generator_module,
+    )
+
+
+def _get_ffmpeg_binary(*, require_libx264: bool = False) -> str:
+    ffmpeg_binary = shutil.which("ffmpeg")
+    if ffmpeg_binary is None:
+        pytest.skip("ffmpeg is required for real RoboTwin video tests.")
+
+    if not require_libx264:
+        return ffmpeg_binary
+
+    encoders = subprocess.run(
+        [ffmpeg_binary, "-hide_banner", "-encoders"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    encoder_listing = f"{encoders.stdout}\n{encoders.stderr}"
+    if encoders.returncode != 0 or "libx264" not in encoder_listing:
+        pytest.skip(
+            "ffmpeg with libx264 support is required for real RoboTwin "
+            "video tests."
+        )
+
+    return ffmpeg_binary
 
 
 def _make_fake_sapien_pose(
@@ -79,9 +135,13 @@ def _make_reset_stub_env(
     )
     env._resolved_start_seed = env.cfg.seed
     env._offset_seed = 0
+    env._task = None
     env._instructions = None
+    env._eval_chosen_instruction = None
+    env._episode_finalized = True
+    env._post_reset_state_available = False
     env._cached_obs_robots = None
-    env._video_ffmpeg = None
+    env._video_writer = None
     env._check_and_update_seed = lambda: (
         SimpleNamespace(
             robot=robot,
@@ -110,6 +170,8 @@ def _make_step_stub_env(
 ) -> tuple[RoboTwinEnv, MagicMock]:
     env = RoboTwinEnv.__new__(RoboTwinEnv)
     env.cfg = SimpleNamespace(action_type=action_type)
+    env._episode_finalized = False
+    env._post_reset_state_available = False
     take_action = MagicMock()
     env._task = SimpleNamespace(
         robot=SimpleNamespace(
@@ -128,6 +190,111 @@ def _make_step_stub_env(
     return env, take_action
 
 
+class _StateFakeTask:
+    def __init__(
+        self,
+        *,
+        robot: SimpleNamespace,
+        raw_obs: dict[str, object],
+        info: dict[str, object] | None = None,
+        close_calls: list[bool] | None = None,
+    ) -> None:
+        self.robot = robot
+        self.raw_obs = raw_obs
+        self.info = info or {}
+        self.close_calls = close_calls
+        self.setup_calls: list[dict[str, object]] = []
+        self.render_freq = 0
+
+    def setup_demo(self, **kwargs) -> None:
+        self.setup_calls.append(kwargs)
+
+    def get_obs(self) -> dict[str, object]:
+        return self.raw_obs
+
+    def close_env(self, clear_cache: bool) -> None:
+        if self.close_calls is not None:
+            self.close_calls.append(clear_cache)
+
+
+def _make_state_stub_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> tuple[RoboTwinEnv, list[bool], list[_StateFakeTask]]:
+    robot = SimpleNamespace(
+        is_dual_arm=True,
+        left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+    )
+    task_config_path = tmp_path / "task_config.yml"
+    task_config_path.write_text("{}\n", encoding="utf-8")
+
+    def _get_task_config_for_seed(
+        cfg: RoboTwinEnvCfg,
+        runtime_seed: int,
+    ) -> dict[str, object]:
+        return {
+            "seed": runtime_seed,
+            "now_ep_num": cfg.episode_id,
+            "task_name": cfg.task_name,
+        }
+
+    monkeypatch.setattr(
+        RoboTwinEnvCfg,
+        "get_task_config_for_seed",
+        _get_task_config_for_seed,
+    )
+    monkeypatch.setattr(
+        "robo_orchard_lab.envs.robotwin.env.in_robotwin_workspace",
+        nullcontext,
+    )
+
+    cfg = RoboTwinEnvCfg(
+        task_name="robotwin_dummy_task",
+        seed=1,
+        episode_id=5,
+        check_expert=False,
+        check_task_init=False,
+        task_config_path=str(task_config_path),
+    )
+    env = RoboTwinEnv(cfg)
+    env._offset_seed = 2
+    env._post_reset_state_available = True
+    env._episode_finalized = False
+    env._instructions = {"unseen": ["pick"]}
+    env._eval_chosen_instruction = None
+    close_calls: list[bool] = []
+    env._task = _StateFakeTask(
+        robot=robot,
+        raw_obs={"initial": True},
+        info={"source": "old"},
+        close_calls=close_calls,
+    )
+    monkeypatch.setattr(
+        env,
+        "_format_obs",
+        lambda raw_obs: {"formatted": raw_obs},
+        raising=False,
+    )
+
+    created_tasks: list[_StateFakeTask] = []
+
+    def _create_task_from_name(task_name: str) -> _StateFakeTask:
+        task = _StateFakeTask(
+            robot=robot,
+            raw_obs={"restored": task_name},
+            info={"source": "restored"},
+        )
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(
+        "robo_orchard_lab.envs.robotwin.env.create_task_from_name",
+        _create_task_from_name,
+    )
+    return env, close_calls, created_tasks
+
+
 def _assert_pose_close(
     actual: BatchFrameTransform,
     expected: BatchFrameTransform,
@@ -140,6 +307,36 @@ def _assert_pose_close(
         quat_alignment,
         torch.ones_like(quat_alignment),
         atol=atol,
+    )
+
+
+def _decode_first_frame_rgb(
+    video_path: str,
+    *,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    ffmpeg_binary = _get_ffmpeg_binary()
+    result = subprocess.run(
+        [
+            ffmpeg_binary,
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return np.frombuffer(result.stdout, dtype=np.uint8).reshape(
+        height, width, 3
     )
 
 
@@ -196,6 +393,99 @@ def dummy_env_without_expert_check():
 
 
 class TestRoboTwinEnv:
+    def test_logger_manager_does_not_duplicate_when_it_owns_handlers(self):
+        manager_logger = robotwin_env._logger_manager.get_logger()
+
+        if manager_logger.handlers:
+            assert manager_logger.propagate is False
+
+    def test_check_expert_logs_retry_summary_without_per_seed_warning(
+        self,
+        monkeypatch,
+    ):
+        _install_fake_robotwin_instruction_generator(monkeypatch)
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(
+            check_expert=True,
+            task_name="robotwin_dummy_task",
+            max_instruction_num=1,
+        )
+        env._resolved_start_seed = 100
+        env._offset_seed = 0
+        task = SimpleNamespace(info={"info": {"seed": 101}})
+        outcomes = [(None, False), (task, True)]
+        env._check_expert_traj = lambda: outcomes.pop(0)
+        logger = SimpleNamespace(
+            debug=MagicMock(),
+            info=MagicMock(),
+            warning=MagicMock(),
+            error=MagicMock(),
+        )
+        monkeypatch.setattr(robotwin_env, "logger", logger)
+
+        ret_task, instructions = env._check_and_update_seed()
+
+        assert ret_task is task
+        assert instructions == {"seen": ["robotwin_dummy_task"]}
+        assert env.current_seed == 101
+        logger.info.assert_called_once_with(
+            "RoboTwin expert trajectory resolved after retry: "
+            "task=%s requested_seed=%s actual_seed=%s retries=%s",
+            "robotwin_dummy_task",
+            100,
+            101,
+            1,
+        )
+        logger.warning.assert_not_called()
+        logger.error.assert_not_called()
+
+    def test_check_expert_traj_setup_failure_logs_concise_debug(
+        self,
+        monkeypatch,
+    ):
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(
+            task_name="robotwin_dummy_task",
+            get_task_config_for_seed=lambda runtime_seed: {
+                "seed": runtime_seed,
+                "large": "cfg",
+            },
+        )
+        env._resolved_start_seed = 100
+        env._offset_seed = 2
+        logger = SimpleNamespace(
+            debug=MagicMock(),
+            info=MagicMock(),
+            warning=MagicMock(),
+            error=MagicMock(),
+        )
+        failure = RuntimeError("unstable object")
+        task = SimpleNamespace(
+            setup_demo=MagicMock(side_effect=failure),
+            play_once=MagicMock(),
+            close_env=MagicMock(),
+        )
+        monkeypatch.setattr(robotwin_env, "logger", logger)
+        monkeypatch.setattr(robotwin_env, "in_robotwin_workspace", nullcontext)
+        monkeypatch.setattr(
+            robotwin_env,
+            "create_task_from_name",
+            lambda task_name: task,
+        )
+
+        ret_task, success = env._check_expert_traj()
+
+        assert ret_task is task
+        assert success is False
+        logger.debug.assert_called_once_with(
+            "RoboTwin expert trajectory check failed while playing "
+            "task config: task=%s seed=%s error=%s",
+            "robotwin_dummy_task",
+            102,
+            failure,
+        )
+        logger.error.assert_not_called()
+
     def test_joints2ee_pose_uses_arm_joints_only(self, monkeypatch):
         env = RoboTwinEnv.__new__(RoboTwinEnv)
         env._task = SimpleNamespace(
@@ -490,6 +780,35 @@ class TestRoboTwinEnv:
 
         take_action.assert_not_called()
 
+    def test_step_rejects_after_finalize_until_reset(self) -> None:
+        env, take_action = _make_step_stub_env(action_type="qpos")
+
+        def _mark_finalized() -> None:
+            env._episode_finalized = True
+
+        env.finalize_episode = _mark_finalized
+        env.finalize_episode()
+
+        with pytest.raises(RuntimeError, match="reset"):
+            env.step([0.0] * 14)
+        take_action.assert_not_called()
+
+        env._episode_finalized = False
+        env.step([0.0] * 14)
+        take_action.assert_called_once()
+
+    def test_step_rejects_without_active_episode_message(self) -> None:
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._episode_finalized = True
+
+        with pytest.raises(RuntimeError) as exc_info:
+            env.step([0.0] * 14)
+
+        error_message = str(exc_info.value)
+        assert "no active episode" in error_message
+        assert "reset()" in error_message
+        assert "finalized" not in error_message
+
     def test_get_urdf(self, dummy_env_without_expert_check: RoboTwinEnv):
         env = dummy_env_without_expert_check
         env.reset()
@@ -679,6 +998,42 @@ class TestRoboTwinEnv:
             torch.tensor([[40.0, 0.0, 0.0]], dtype=torch.float32),
         )
 
+    def test_reset_success_clears_finalized_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+
+        obs, _ = env.reset(return_obs=False)
+
+        assert obs is None
+        assert env._episode_finalized is False
+
+    def test_reset_failure_keeps_finalized_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        env._episode_finalized = False
+        env._check_and_update_seed = lambda: (_ for _ in ()).throw(
+            RuntimeError("reset failed")
+        )
+
+        with pytest.raises(RuntimeError, match="reset failed"):
+            env.reset(return_obs=False)
+
+        assert env._episode_finalized is True
+
     def test_reset_updates_episode_id_and_builds_video_path(self, monkeypatch):
         robot = SimpleNamespace(
             is_dual_arm=True,
@@ -702,11 +1057,34 @@ class TestRoboTwinEnv:
         recorded: dict[str, object] = {}
         monkeypatch.setattr(
             env,
-            "_start_video_recording",
-            lambda video_path, raw_obs: recorded.update(
-                {"video_path": video_path, "raw_obs": raw_obs}
-            ),
+            "_extract_video_frame",
+            lambda raw_obs: np.zeros((16, 16, 3), dtype=np.uint8),
             raising=False,
+        )
+
+        class FakeWriter:
+            def __init__(self, **kwargs):
+                recorded["writer_kwargs"] = kwargs
+                recorded["is_open"] = False
+
+            def open(self, output_path):
+                recorded["video_path"] = output_path
+                recorded["is_open"] = True
+
+            def write_frame(self, frame):
+                recorded["frame_shape"] = tuple(frame.shape)
+
+            def close(self):
+                recorded["closed"] = True
+                recorded["is_open"] = False
+
+            @property
+            def is_closed(self):
+                return not recorded["is_open"]
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.env.VideoWriter",
+            FakeWriter,
         )
 
         obs, _ = env.reset(
@@ -721,6 +1099,11 @@ class TestRoboTwinEnv:
         assert recorded["video_path"] == (
             "/tmp/task/demo_clean/episode_7_seed_1.mp4"
         )
+        assert recorded["writer_kwargs"] == {
+            "pixel_format": ROBOTWIN_VIDEO_PIXEL_FORMAT,
+            "fps": ROBOTWIN_VIDEO_FPS,
+        }
+        assert recorded["frame_shape"] == (16, 16, 3)
 
     def test_reset_tracks_start_seed_and_offset_seed(self, monkeypatch):
         robot = SimpleNamespace(
@@ -752,6 +1135,233 @@ class TestRoboTwinEnv:
         assert info["resolved_start_seed"] == 2
         assert info["offset_seed"] == 3
 
+    def test_get_state_captures_post_reset_recreate_payload(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, _, _ = _make_state_stub_env(monkeypatch, tmp_path)
+
+        state = env.get_state()
+
+        assert state.class_type is RoboTwinEnv
+        assert isinstance(state.config, RoboTwinEnvCfg)
+        assert state.config is not env.cfg
+        assert state.config.episode_id == 5
+        assert state.state["schema_version"] == (
+            ROBOTWIN_ENV_STATE_SCHEMA_VERSION
+        )
+        assert state.state[ENV_STATE_SCOPE_KEY] == (
+            EnvStateScope.POST_RESET.value
+        )
+        assert state.state["offset_seed"] == 2
+        assert state.state["task_config"] == {
+            "seed": 3,
+            "now_ep_num": 5,
+            "task_name": "robotwin_dummy_task",
+        }
+        assert state.state["post_reset_state_available"] is True
+        assert state.state["episode_finalized"] is False
+
+    def test_get_state_captures_episode_finalized_flag(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, _, _ = _make_state_stub_env(monkeypatch, tmp_path)
+        env._episode_finalized = True
+
+        state = env.get_state()
+
+        assert state.state["episode_finalized"] is True
+
+    def test_get_state_rejects_before_reset_or_after_step(self):
+        env, _ = _make_step_stub_env(action_type="qpos")
+
+        with pytest.raises(RuntimeError, match="after reset"):
+            env.get_state()
+
+        env._post_reset_state_available = True
+        env.step([0.0] * 14)
+
+        with pytest.raises(RuntimeError, match="after reset"):
+            env.get_state()
+
+    def test_load_state_rejects_bad_payload_before_closing_current_task(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, close_calls, created_tasks = _make_state_stub_env(
+            monkeypatch,
+            tmp_path,
+        )
+        state = env.get_state()
+        bad_state = state.model_copy(deep=True)
+        bad_state.state["offset_seed"] = -1
+
+        with pytest.raises(ValidationError, match="offset_seed"):
+            env.load_state(bad_state)
+
+        assert close_calls == []
+        assert created_tasks == []
+        assert env._post_reset_state_available is True
+
+    def test_load_state_rejects_unsupported_state_scope_before_closing_task(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, close_calls, created_tasks = _make_state_stub_env(
+            monkeypatch,
+            tmp_path,
+        )
+        state = env.get_state()
+        bad_state = state.model_copy(deep=True)
+        bad_state.state[ENV_STATE_SCOPE_KEY] = EnvStateScope.MID_EPISODE.value
+
+        with pytest.raises(ValidationError, match="POST_RESET"):
+            env.load_state(bad_state)
+
+        assert close_calls == []
+        assert created_tasks == []
+
+    def test_load_state_rejects_mismatched_class_type_before_closing_task(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, close_calls, created_tasks = _make_state_stub_env(
+            monkeypatch,
+            tmp_path,
+        )
+        state = env.get_state()
+        bad_state = state.model_copy(deep=True)
+        bad_state.class_type = object
+
+        with pytest.raises(TypeError, match="class_type"):
+            env.load_state(bad_state)
+
+        assert close_calls == []
+        assert created_tasks == []
+
+    def test_load_state_rejects_bad_recreated_task_before_closing_task(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, close_calls, _ = _make_state_stub_env(monkeypatch, tmp_path)
+        state = env.get_state()
+        old_task = env._task
+        staged_close_calls: list[bool] = []
+        bad_robot = SimpleNamespace(
+            is_dual_arm=False,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        staged_task = _StateFakeTask(
+            robot=bad_robot,
+            raw_obs={"restored": "robotwin_dummy_task"},
+            close_calls=staged_close_calls,
+        )
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.env.create_task_from_name",
+            lambda task_name: staged_task,
+        )
+
+        with pytest.raises(NotImplementedError, match="combined dual-arm"):
+            env.load_state(state)
+
+        assert close_calls == []
+        assert staged_close_calls == [True]
+        assert env._task is old_task
+        assert env._post_reset_state_available is True
+
+    def test_reset_from_state_restores_post_reset_state_and_returns_obs(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, close_calls, created_tasks = _make_state_stub_env(
+            monkeypatch,
+            tmp_path,
+        )
+        state = env.get_state()
+        env._offset_seed = 0
+        env._post_reset_state_available = False
+        env._episode_finalized = True
+
+        obs, info = env.reset_from_state(state)
+
+        assert close_calls == [True]
+        assert len(created_tasks) == 1
+        assert created_tasks[0].setup_calls == [
+            {
+                "seed": 3,
+                "now_ep_num": 5,
+                "task_name": "robotwin_dummy_task",
+            }
+        ]
+        assert env.offset_seed == 2
+        assert env.current_seed == 3
+        assert env._post_reset_state_available is True
+        assert env._episode_finalized is False
+        assert obs == {"formatted": {"restored": "robotwin_dummy_task"}}
+        assert info["seed"] == 3
+        assert info["offset_seed"] == 2
+        assert info["source"] == "restored"
+
+    def test_reset_from_state_restores_lifecycle_flags_from_state(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, _, _ = _make_state_stub_env(monkeypatch, tmp_path)
+        state = env.get_state()
+        state.state["post_reset_state_available"] = False
+        state.state["episode_finalized"] = True
+        env._post_reset_state_available = True
+        env._episode_finalized = False
+
+        env.reset_from_state(state)
+
+        assert env._post_reset_state_available is False
+        assert env._episode_finalized is True
+
+    def test_reset_from_state_format_failure_leaves_episode_inactive(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, close_calls, created_tasks = _make_state_stub_env(
+            monkeypatch,
+            tmp_path,
+        )
+        state = env.get_state()
+
+        def _raise_format_error(raw_obs):
+            del raw_obs
+            raise RuntimeError("format failed")
+
+        monkeypatch.setattr(
+            env,
+            "_format_obs",
+            _raise_format_error,
+            raising=False,
+        )
+
+        with pytest.raises(RuntimeError, match="format failed"):
+            env.reset_from_state(state)
+
+        assert close_calls == [True]
+        assert len(created_tasks) == 1
+        assert env._post_reset_state_available is False
+        assert env._episode_finalized is True
+        with pytest.raises(RuntimeError, match="no active episode"):
+            env.step([0.0] * 14)
+        with pytest.raises(RuntimeError, match="after reset"):
+            env.get_state()
+
     def test_reset_resets_offset_when_start_seed_changes(self, monkeypatch):
         robot = SimpleNamespace(
             is_dual_arm=True,
@@ -776,44 +1386,18 @@ class TestRoboTwinEnv:
         assert env.current_seed == 2
         assert info["offset_seed"] == 0
 
-    def test_reset_seed_next_advances_within_current_seed_family(
-        self, monkeypatch
-    ):
+    def test_reset_rejects_string_seed(self, monkeypatch):
         robot = SimpleNamespace(
             is_dual_arm=True,
             left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
             right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
         )
         env = _make_reset_stub_env(monkeypatch, robot=robot)
-        task = SimpleNamespace(
-            robot=robot,
-            setup_demo=lambda **kwargs: None,
-            get_obs=lambda: {},
-            close_env=lambda clear_cache: None,
-            render_freq=0,
-            info={},
-        )
-        check_calls = {"count": 0}
 
-        def fake_check_and_update_seed():
-            if check_calls["count"] == 0:
-                env._offset_seed += 2
-            check_calls["count"] += 1
-            return task, []
+        with pytest.raises(TypeError, match="seed must be an int or None"):
+            env.reset(seed="next")
 
-        env._check_and_update_seed = fake_check_and_update_seed
-
-        _, first_info = env.reset(seed=2)
-        _, second_info = env.reset(seed="next")
-
-        assert env.cfg.seed == 2
-        assert env.start_seed == 2
-        assert first_info["offset_seed"] == 2
-        assert first_info["seed"] == 4
-        assert second_info["offset_seed"] == 3
-        assert second_info["seed"] == 5
-
-    def test_reset_rejects_seed_next_with_explicit_offset(self, monkeypatch):
+    def test_reset_rejects_string_offset_seed(self, monkeypatch):
         robot = SimpleNamespace(
             is_dual_arm=True,
             left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
@@ -822,10 +1406,10 @@ class TestRoboTwinEnv:
         env = _make_reset_stub_env(monkeypatch, robot=robot)
 
         with pytest.raises(
-            ValueError,
-            match="seed='next' cannot be combined with offset_seed",
+            TypeError,
+            match="offset_seed must be an int or None",
         ):
-            env.reset(seed="next", offset_seed=3)
+            env.reset(offset_seed="next")
 
     def test_joints_to_eef_aligns_joint_and_base_tf_dtype(self, monkeypatch):
         fake_chain = SimpleNamespace(
@@ -885,11 +1469,34 @@ class TestRoboTwinEnv:
         recorded: dict[str, object] = {}
         monkeypatch.setattr(
             env,
-            "_start_video_recording",
-            lambda video_path, raw_obs: recorded.update(
-                {"video_path": video_path, "raw_obs": raw_obs}
-            ),
+            "_extract_video_frame",
+            lambda raw_obs: np.zeros((16, 16, 3), dtype=np.uint8),
             raising=False,
+        )
+
+        class FakeWriter:
+            def __init__(self, **kwargs):
+                recorded["writer_kwargs"] = kwargs
+                recorded["is_open"] = False
+
+            def open(self, output_path):
+                recorded["video_path"] = output_path
+                recorded["is_open"] = True
+
+            def write_frame(self, frame):
+                recorded["frame_shape"] = tuple(frame.shape)
+
+            def close(self):
+                recorded["closed"] = True
+                recorded["is_open"] = False
+
+            @property
+            def is_closed(self):
+                return not recorded["is_open"]
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.envs.robotwin.env.VideoWriter",
+            FakeWriter,
         )
 
         obs, _ = env.reset(
@@ -902,40 +1509,77 @@ class TestRoboTwinEnv:
         assert recorded["video_path"] == (
             "/tmp/task/demo_clean/episode_3_seed_1.mp4"
         )
+        assert recorded["writer_kwargs"] == {
+            "pixel_format": ROBOTWIN_VIDEO_PIXEL_FORMAT,
+            "fps": ROBOTWIN_VIDEO_FPS,
+        }
+        assert recorded["frame_shape"] == (16, 16, 3)
 
-    def test_video_recording_lifecycle(self):
+    def test_video_recording_lifecycle(self, tmp_path):
+        _get_ffmpeg_binary(require_libx264=True)
         env = RoboTwinEnv.__new__(RoboTwinEnv)
-        env._video_ffmpeg = None
+        env._video_writer = VideoWriter(
+            pixel_format=ROBOTWIN_VIDEO_PIXEL_FORMAT,
+            fps=ROBOTWIN_VIDEO_FPS,
+        )
+        video_path = tmp_path / "episode.mp4"
+        env._video_writer.open(video_path)
 
         raw_obs = {
             "observation": {
                 "head_camera": {
-                    "rgb": np.zeros((4, 5, 3), dtype=np.uint8),
+                    "rgb": np.full((16, 16, 3), [0, 255, 0], dtype=np.uint8),
                 }
             }
         }
-        ffmpeg = MagicMock()
-        ffmpeg.stdin = MagicMock()
 
-        with (
-            patch(
-                "robo_orchard_lab.envs.robotwin.env.shutil.which",
-                return_value="/usr/bin/ffmpeg",
-            ),
-            patch(
-                "robo_orchard_lab.envs.robotwin.env.subprocess.Popen",
-                return_value=ffmpeg,
-            ) as mock_popen,
-        ):
-            env._start_video_recording(
-                video_path="/tmp/task/demo_clean/100000.mp4",
-                raw_obs=raw_obs,
-            )
-            env._write_video_frame(raw_obs)
-            env._stop_video_recording()
+        env._write_video_frame(raw_obs)
+        env._write_video_frame(raw_obs)
+        env._stop_video_recording()
 
-        mock_popen.assert_called_once()
-        assert ffmpeg.stdin.write.call_count == 2
-        ffmpeg.stdin.close.assert_called_once()
-        ffmpeg.wait.assert_called_once()
-        assert env._video_ffmpeg is None
+        assert video_path.exists()
+        assert video_path.stat().st_size > 0
+        assert env._video_writer is not None
+        assert env._video_writer.is_closed
+
+        decoded = _decode_first_frame_rgb(
+            str(video_path),
+            width=16,
+            height=16,
+        )
+        assert decoded[..., 1].mean() > 200
+        assert decoded[..., 0].mean() < 40
+        assert decoded[..., 2].mean() < 40
+
+    def test_finalize_episode_stops_video_without_closing_task(self) -> None:
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._episode_finalized = False
+        stop_calls: list[str] = []
+        close_calls: list[bool] = []
+        env._stop_video_recording = lambda: stop_calls.append("stop")
+        env._task = SimpleNamespace(
+            close_env=lambda clear_cache: close_calls.append(clear_cache),
+            render_freq=0,
+        )
+
+        env.finalize_episode()
+
+        assert env._episode_finalized is True
+        assert stop_calls == ["stop"]
+        assert close_calls == []
+
+    def test_finalize_episode_marks_finalized_before_video_cleanup_failure(
+        self,
+    ) -> None:
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._episode_finalized = False
+
+        def _fail_stop() -> None:
+            raise RuntimeError("stop failed")
+
+        env._stop_video_recording = _fail_stop
+
+        with pytest.raises(RuntimeError, match="stop failed"):
+            env.finalize_episode()
+
+        assert env._episode_finalized is True

@@ -21,7 +21,12 @@ description: Load these instructions when working with git history, commit messa
   unrelated to the current task, ask the user before choosing a commit split.
 - Do not silently bundle unrelated changes into a single commit.
 - Do not require local checkpoint commits to be squashed unless explicitly instructed.
-- Do not force-add ignored scratch files or temporary design notes such as `.agents/scratch/**` unless the user explicitly asks for a versioned snapshot. If the content should become durable project knowledge, move or distill it into a tracked location such as `docs/` instead.
+- Do not force-add ignored scratch files or temporary design notes such as
+  `.agents/scratch/**` unless the user explicitly asks for a versioned
+  snapshot or the scratch file is an agreed task deliverable. If the content
+  should become durable project knowledge, distill the stable subset into
+  `.agents/`, `docs/`, package docs, or another intentional tracked location
+  instead of preserving the whole scratch note by default.
 - Apply the public-artifact rule from `default.instructions.md` to commit
   messages.
 - In public-facing commit text, keep `Validation` commands repository-relative

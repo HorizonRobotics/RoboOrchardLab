@@ -42,6 +42,19 @@ Identify actual bugs that will impact functionality, such as logic errors, null 
 
 Evaluate significant issues such as code duplication, missing critical error handling, broken abstractions, and inadequate validation for changed behavior.
 
+### Simplification Review
+
+For feature implementations, also check whether the change introduced:
+
+- helpers that only rename or forward one operation
+- new protocols, types, or wrappers that duplicate an existing canonical seam
+- two public APIs expressing the same concept without a compatibility reason
+- tests that assert implementation details instead of behavior contracts
+- legacy or compatibility logic in the canonical execution path
+
+Prefer concrete deletion, merge, or downgrade suggestions before proposing new
+abstractions.
+
 ## Confidence Scoring
 
 Rate each potential issue on a scale from 0-100:

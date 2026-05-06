@@ -23,8 +23,9 @@ import torch
 from mani_skill.agents.base_agent import BaseAgent
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.utils.structs.types import SimConfig
-from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_core.utils.logging import LoggerManager
+
+from robo_orchard_lab.envs.base import EnvBase, EnvBaseCfg, EnvStepReturn
 
 logger = LoggerManager().get_child(__name__)
 

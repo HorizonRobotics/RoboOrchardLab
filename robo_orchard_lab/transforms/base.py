@@ -43,7 +43,6 @@ from typing_extensions import TypeVar
 
 from robo_orchard_lab.utils.state import (
     State,
-    StateList,
     StateSaveLoadMixin,
 )
 
@@ -923,7 +922,7 @@ class DictTransformPipeline(DictRowTransform[Any]):
 
     def _get_state(self) -> State:
         return State(
-            state=dict(transforms=StateList(self._transforms)),
+            state=dict(transforms=list(self._transforms)),
             config=self.cfg,
             hierarchical_save=None,
             class_type=type(self),

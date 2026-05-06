@@ -34,6 +34,18 @@ description: Load these baseline instructions only for tasks that touch this rep
 	introducing extra helpers unless they improve readability or reuse.
 - Inline single-call helpers that only rename or forward one operation when
 	they do not create a meaningful semantic boundary.
+- Preserve IDE discoverability and static refactor safety when compressing
+	call paths. Do not hide typed method names, parameter shapes, or public API
+	forwarding behind string-dispatch or generic `getattr(...)` helpers only to
+	reduce boilerplate; centralize only true shared boundary behavior.
+- For non-trivial implementation, write down the negative design constraints
+  before coding: do not add parallel abstractions, duplicate source-of-truth,
+  synonym public APIs, or compatibility logic in canonical paths unless the
+  task explicitly requires them.
+- After non-trivial implementation, run a simplification pass before
+  finalizing: remove single-use forwarding helpers, merge thin abstractions,
+  check for duplicate sources of truth, and keep compatibility paths out of
+  canonical execution paths.
 - If documentation conflicts with code, treat the code as the source of
 	truth unless the task says otherwise.
 

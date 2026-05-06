@@ -28,14 +28,37 @@ Reusable agent-facing templates live in `.agents/templates/`.
   `.agents/references/dict-transform-guideline.md` and
   `.agents/templates/dict-transform-scaffold.md`
 - Processor, envelope, compose, or `pre_process`/`post_process` contract changes: `.agents/references/processor-guideline.md`
+- Complex feature/refactor design notes, design-doc structure, or plan
+  readiness:
+  `.agents/references/design-doc-guideline.md` and
+  `.agents/templates/design-doc-scaffold.md`
 - Policy, rollout boundary, or `act(...)` / `reset(...)` contract changes:
   `.agents/references/policy-guideline.md`
 - Shared model-loading surfaces, `TorchModelRef`,
   `HFPretrainedModelRef`, `TorchModelLoadConfig`, or `hf://` compatibility:
   `.agents/references/model-loading-guideline.md`
+- `State`, `StateSaveLoadMixin`, `obj2state` / `state2obj`,
+  runtime recovery payloads, or cross-domain recoverability contracts:
+  `.agents/references/state-recovery-guideline.md`
+- `PolicyEvaluator`, `PolicyEvaluatorRemote`, episode contracts,
+  metric capability dispatch, recovery snapshot behavior, or
+  multi-episode orchestration guidance:
+  `.agents/references/policy-evaluator-guideline.md`
+- Benchmark evaluator, `LocalBenchmarkBackend`, `RemoteBenchmarkBackend`,
+  benchmark driver contracts, benchmark retry, or worker scheduling:
+  `.agents/references/benchmark-evaluator-guideline.md`
 - Robot interactive env, `reset()` / `step()` observation contracts, or
   env-owned runtime metadata:
   `.agents/references/robot-interactive-env-guideline.md`
+- `RoboTwinEnv`, RoboTwin reset/seed/task config behavior, post-reset
+  recreate State, or RoboTwin compatibility rules:
+  `.agents/references/robotwin-env-guideline.md`
+- Key interface docstrings for public classes/functions or boundary helpers
+  whose safe use is not obvious from the signature alone, including
+  resource-owning or stateful interfaces: start with
+  `.agents/references/interface-docstring-guideline.md`; use
+  `.agents/templates/interface-docstring-scaffold.md` only when a short
+  drafting scaffold is helpful
 - Architecture review, layering, abstraction seams, or public API surface design:
   `.agents/references/architecture-review-guideline.md`
 - License header requirements and template: `.agents/references/license-header-guideline.md`

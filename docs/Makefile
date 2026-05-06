@@ -20,6 +20,8 @@ DEBUG_BUILDDIR = ../build/docs_debug_api
 DEBUG_SOURCEDIR = build/debug_api
 DEBUG_TUTORIAL_BUILDDIR = ../build/docs_debug_tutorial
 DEBUG_TUTORIAL_SOURCEDIR = build/debug_tutorial
+DEBUG_OVERVIEW_BUILDDIR = ../build/docs_debug_overview
+DEBUG_OVERVIEW_SOURCEDIR = build/debug_overview
 ROBO_ORCHARD_DOCS_CURRENT_VERSION_ID ?= master
 API_ROOT      = autoapi
 DEBUG_NO_TUTORIALS ?= 1
@@ -32,6 +34,7 @@ help:
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
 %: Makefile
 	@mkdir -p $(BUILDDIR)
+	@rm -rf $(API_ROOT)
 	@rm -rf tutorials/trainer_tutorial/workspace tutorials/model_zoo_tutorial/.workspace
 	@PYTORCH_JIT=0 ROBO_ORCHARD_NO_SOURCE_FILE=1
 	$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
@@ -71,4 +74,13 @@ debug-tutorial:
 	ROBO_ORCHARD_DOC_BUILD_MODE=debug-tutorial ROBO_ORCHARD_TUTORIAL_TARGETS="$(TUTORIAL_TARGETS)" ROBO_ORCHARD_NO_TUTORIALS=0 PYTORCH_JIT=0 ROBO_ORCHARD_NO_SOURCE_FILE=1 \
 	$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(DEBUG_TUTORIAL_BUILDDIR)/html" $(SPHINXOPTS) -E $(O)
 
-.PHONY: help Makefile
+# Debug overview pages without AutoAPI, tutorials, generated docs, or the
+# repository-level docs index. This is intended for fast architecture docs
+# iteration under docs/overview/.
+debug-overview:
+	@mkdir -p $(DEBUG_OVERVIEW_BUILDDIR)
+	@rm -rf $(DEBUG_OVERVIEW_SOURCEDIR) $(DEBUG_OVERVIEW_BUILDDIR)/*
+	ROBO_ORCHARD_DOC_BUILD_MODE=debug-overview ROBO_ORCHARD_NO_TUTORIALS=1 PYTORCH_JIT=0 ROBO_ORCHARD_NO_SOURCE_FILE=1 \
+	$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(DEBUG_OVERVIEW_BUILDDIR)/html" $(SPHINXOPTS) -E $(O)
+
+.PHONY: help Makefile debug-api debug-tutorial debug-overview

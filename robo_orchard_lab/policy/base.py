@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 from __future__ import annotations
 import copy
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import gymnasium as gym
 import torch
@@ -31,7 +31,10 @@ from robo_orchard_lab.pipeline.inference.mixin import (
     InferencePipelineMixin,
     InferencePipelineMixinCfg,
 )
-from robo_orchard_lab.utils.state import State, StateSaveLoadMixin
+from robo_orchard_lab.utils.state import (
+    State,
+    StateSaveLoadMixin,
+)
 
 __all__ = [
     "InferencePipelinePolicy",
@@ -42,13 +45,13 @@ __all__ = [
 
 
 class PolicyMixin(StateSaveLoadMixin, _PolicyMixin[OBSType, ACTType]):
-    """Base policy contract with generic state save/load support."""
+    """Base policy contract with canonical State-based recovery support."""
 
     def _get_state(self) -> State:
         """Get the state of the object for saving."""
         # pull out cfg from state for better clarity
         ret = super()._get_state()
-        ret.config = ret.state.pop("cfg", None)
+        ret.config = cast(Any, ret.state.pop("cfg", None))
         return ret
 
     def _set_state(self, state: State) -> None:
@@ -59,7 +62,7 @@ class PolicyMixin(StateSaveLoadMixin, _PolicyMixin[OBSType, ACTType]):
         super()._set_state(state)
 
     def to(self, device: torch.device | str):
-        """Move the policy runtime state to the specified device.
+        """Move the policy to the specified device.
 
         Args:
             device (torch.device | str): The target device.

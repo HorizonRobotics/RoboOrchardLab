@@ -64,6 +64,15 @@ boundaries, and the main execution path understandable.
   mechanics.
 - Do not keep abstractions that only rename a loop, move branching behind
   callbacks, or centralize parameter passing without reducing cognitive load.
+- Before large refactors, separate stable semantics, compatibility
+  boundaries, and internal implementation details. Write and test the stable
+  semantics; explicitly choose which compatibility surfaces remain; avoid
+  promoting internal helpers into public APIs.
+- Before adding a new cross-domain protocol or helper layer, check whether an
+  existing canonical seam can be extended without creating a parallel model.
+- During architecture review, prefer identifying abstractions that can be
+  deleted, merged, or downgraded to compatibility-only before proposing new
+  abstractions.
 - If multiple callers still have to remember local policy after adopting a
   shared helper, that policy likely still belongs in the local layer.
 
@@ -72,6 +81,9 @@ boundaries, and the main execution path understandable.
 - Prefer explicit, stable contracts for structures that cross multiple layers.
 - Avoid half-dynamic contracts where stable fields are still accessed through
   ad hoc string-based lookups or similar dynamic indirection in the main path.
+- Keep capability declarations separate from the implementation mechanism
+  that performs the work. Method presence or mixin inheritance alone should
+  not become a hidden capability gate for cross-layer behavior.
 - Keep optionality and defaults explicit instead of encoding critical
   semantics through missing keys, missing fields, or silent fallback logic.
 - When a config or reference is validated against a runtime object, preserve
@@ -81,6 +93,13 @@ boundaries, and the main execution path understandable.
   accepted kwargs or invariants, split the field or validate the branch-local
   contract explicitly instead of relying on one shared kwargs bag plus
   downstream errors.
+- When a plan, docstring, or comment conflicts with implementation, first
+  decide which artifact owns the intended contract. Do not mechanically edit
+  documentation to match code, or code to match documentation, without
+  checking the boundary and caller impact.
+- During review, separate blocking contract drift from follow-up cleanup. A
+  plan/implementation mismatch is blocking only when it changes behavior,
+  public API shape, capability boundaries, or validation guarantees.
 
 ## Dependency And Source-Of-Truth Discipline
 
@@ -90,18 +109,34 @@ boundaries, and the main execution path understandable.
   business semantics across layers.
 - When a lower layer already owns a semantic or invariant, configure and
   consume that owner instead of caching a second copy locally.
+- When simplifying an interface, first identify which object owns the runtime
+  truth. Prefer reading that owner at the decision point over maintaining
+  parallel snapshots, cached serialized forms, or duplicated config fields.
+- If a field is only copied through an intermediate layer to reach its real
+  owner, remove it from the intermediate layer unless the intermediate layer
+  applies an independent policy or per-call override.
 
 ## Compatibility And Public Surface
 
 - Preserve compatibility only for surfaces with clear external cost.
 - Treat public exports and documented import paths as compatibility
   commitments rather than incidental implementation details.
+- Treat parallel models, duplicate public APIs for the same concept, and
+  compatibility logic leaking into canonical execution paths as architecture
+  risks.
 - Do not treat a module-local helper export or `__all__` entry by itself as a
   strong public-surface commitment when the package root, docs, and
   repository-owned imports do not reinforce that path.
 - Do not keep dead shims or stale aliases once their supported behavior is
   gone.
+- When old and new config fields or APIs are not semantically equivalent,
+  prefer explicit removal with a migration error over approximate mapping or
+  silent no-op compatibility.
 - Keep caller-facing package or module exports deliberate and minimal.
+- When splitting a large module, optimize for reducing the concepts callers
+  must understand. First settle the public entrypoints and contracts, then
+  place helpers, registries, compatibility types, and errors in the narrowest
+  module that owns them.
 
 ## Evolvability, Validation, And Readability
 
@@ -124,6 +159,8 @@ boundaries, and the main execution path understandable.
   caller-local orchestration?
 - Does each abstraction remove real complexity instead of turning policy into
   callbacks, indirection, or parameter plumbing?
+- Can any new abstraction be deleted, merged into an existing seam, or
+  downgraded to compatibility-only?
 - Are stable cross-layer contracts explicit rather than half-dynamic?
 - Is dependency direction one-way, and is the source of truth for shared
   semantics unique?

@@ -38,6 +38,7 @@ from pathlib import Path
 DEFAULT_BUILD_MODE = "default"
 DEBUG_API_BUILD_MODE = "debug-api"
 DEBUG_TUTORIAL_BUILD_MODE = "debug-tutorial"
+DEBUG_OVERVIEW_BUILD_MODE = "debug-overview"
 _PYTHON_SUFFIXES = (".py", ".pyi")
 _TUTORIAL_SUFFIXES = (".py",)
 _DEFAULT_GALLERY_NAMES = (
@@ -76,8 +77,16 @@ class DocsBuildContext:
         return self.mode == DEBUG_TUTORIAL_BUILD_MODE
 
     @property
+    def is_debug_overview(self) -> bool:
+        return self.mode == DEBUG_OVERVIEW_BUILD_MODE
+
+    @property
     def is_debug_build(self) -> bool:
-        return self.is_debug_api or self.is_debug_tutorial
+        return (
+            self.is_debug_api
+            or self.is_debug_tutorial
+            or self.is_debug_overview
+        )
 
     @property
     def autoapi_root(self) -> str:
@@ -87,6 +96,8 @@ class DocsBuildContext:
 
     @property
     def master_doc(self) -> str:
+        if self.is_debug_overview:
+            return "overview/index"
         if self.is_debug_build:
             return os.path.splitext(
                 os.path.relpath(self.debug_index_file, self.docs_root)
@@ -390,16 +401,21 @@ def build_context_from_env(docs_root: str) -> DocsBuildContext:
         DEFAULT_BUILD_MODE,
         DEBUG_API_BUILD_MODE,
         DEBUG_TUTORIAL_BUILD_MODE,
+        DEBUG_OVERVIEW_BUILD_MODE,
     }:
         raise ValueError(
             "ROBO_ORCHARD_DOC_BUILD_MODE must be one of: "
             f"{DEFAULT_BUILD_MODE}, {DEBUG_API_BUILD_MODE}, "
-            f"{DEBUG_TUTORIAL_BUILD_MODE}"
+            f"{DEBUG_TUTORIAL_BUILD_MODE}, {DEBUG_OVERVIEW_BUILD_MODE}"
         )
 
     # The debug flow should be fast by default, so tutorials stay disabled
     # unless the caller explicitly opts back in.
-    no_tutorials_default = "1" if mode == DEBUG_API_BUILD_MODE else "0"
+    no_tutorials_default = (
+        "1"
+        if mode in {DEBUG_API_BUILD_MODE, DEBUG_OVERVIEW_BUILD_MODE}
+        else "0"
+    )
     no_tutorials = (
         os.environ.get("ROBO_ORCHARD_NO_TUTORIALS", no_tutorials_default)
         == "1"
@@ -439,6 +455,8 @@ def build_context_from_env(docs_root: str) -> DocsBuildContext:
         if mode == DEBUG_API_BUILD_MODE
         else "debug_tutorial"
         if mode == DEBUG_TUTORIAL_BUILD_MODE
+        else "debug_overview"
+        if mode == DEBUG_OVERVIEW_BUILD_MODE
         else "debug_api"
     )
     debug_root = docs_root_path / "build" / debug_root_name
@@ -586,6 +604,19 @@ def build_exclude_patterns(context: DocsBuildContext) -> list[str]:
         return base_patterns + [
             "build/debug_api/**",
             "build/debug_tutorial/**",
+            "build/debug_overview/**",
+        ]
+
+    if context.is_debug_overview:
+        return base_patterns + [
+            "autoapi/**",
+            "build/**",
+            "_templates/**",
+            "tutorials/**",
+            "getting_started/**",
+            "index.rst",
+            "readme.md",
+            "sg_execution_times.rst",
         ]
 
     debug_patterns = []

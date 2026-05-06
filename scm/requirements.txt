@@ -21,6 +21,7 @@ recommonmark>=0.7.1
 furo>=2024.8.6
 sphinx-markdown-tables>=0.0.17
 matplotlib
+timm
 interrogate
 myst-parser
 nbsphinx

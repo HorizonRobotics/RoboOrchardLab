@@ -45,6 +45,7 @@ from robo_orchard_lab.transforms.base import (
     ConcatDictTransformConfig,
     semantic_output_to_dict,
 )
+from robo_orchard_lab.utils.state import StateSequence
 
 
 @dataclass
@@ -1186,6 +1187,17 @@ class TestDictTransformPipeline:
         assert pipeline({"value": 5}) == {"value": 35}
         assert set(pipeline.mapped_input_columns) == {"value"}
         assert set(pipeline.mapped_output_columns) == {"value"}
+
+    def test_pipeline_get_state_uses_state_sequence(self):
+        pipeline = (
+            DummyTransformConfig(add_value=10)()
+            + DummyTransformConfig(add_value=20)()
+        )
+
+        state = pipeline.get_state()
+
+        assert isinstance(state.state["transforms"], StateSequence)
+        assert state.state["transforms"].kind == "list"
 
     def test_add_does_not_mutate_existing_pipeline(self):
         pipeline = (

@@ -29,6 +29,10 @@ Use this guideline when designing, implementing, reviewing, or testing:
   recurrent hidden state, or other per-episode inference state.
 - `reset(...)` should clear or rebuild policy-owned rollout state instead of
   relying on callers to reconstruct the policy object between episodes.
+- For repository-owned policy recovery, use the generic State seam on
+  `PolicyMixin`: capture with `get_state()` and restore with
+  `load_state(state)`. Do not introduce policy-specific runtime-state aliases
+  that only rename that seam.
 - Do not move source-local normalization or target reconstruction into the
   policy layer when an explicit env or source adapter already owns that work.
 

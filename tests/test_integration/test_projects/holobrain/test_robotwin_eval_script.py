@@ -46,197 +46,54 @@ def _load_script_module():
     return module
 
 
-class _FakeSuccessRateMetric:
+class _FakeLocalBenchmarkBackendCfg:
+    instances = []
+
     def __init__(self):
-        self.info = {}
-        self.last_update_info = None
-
-    def reset(self, **kwargs):
-        self.info = {}
-        self.last_update_info = None
-
-    def update_episode(
-        self,
-        task_name: str,
-        seed: int,
-        success: bool,
-        offset_seed: int | None = None,
-    ):
-        task_info = self.info.setdefault(
-            task_name,
-            {
-                "task_name": task_name,
-                "success_count": 0,
-                "total_count": 0,
-                "info_list": [],
-            },
-        )
-        task_info["total_count"] += 1
-        if success:
-            task_info["success_count"] += 1
-        info = {"seed": seed, "success": success}
-        last_update_info = {
-            "task_name": task_name,
-            "seed": seed,
-            "success": success,
-        }
-        if offset_seed is not None:
-            info["offset_seed"] = offset_seed
-            last_update_info["offset_seed"] = offset_seed
-        task_info["info_list"].append(info)
-        self.last_update_info = last_update_info
-
-    def merge(self, metrics):
-        for metric in metrics:
-            for task_name, info in metric.info.items():
-                current = self.info.setdefault(
-                    task_name,
-                    {
-                        "task_name": task_name,
-                        "success_count": 0,
-                        "total_count": 0,
-                        "info_list": [],
-                    },
-                )
-                current["success_count"] += info["success_count"]
-                current["total_count"] += info["total_count"]
-                current["info_list"].extend(info["info_list"])
-            self.last_update_info = metric.last_update_info
-
-    def compute(self):
-        tasks = []
-        rates = []
-        for info in self.info.values():
-            success_rate = info["success_count"] / info["total_count"]
-            tasks.append(
-                {
-                    "task_name": info["task_name"],
-                    "success_count": info["success_count"],
-                    "total_count": info["total_count"],
-                    "success_rate": success_rate,
-                }
-            )
-            rates.append(success_rate)
-        average_success_rate = sum(rates) / len(rates) if rates else 0.0
-        return {
-            "tasks": tasks,
-            "average_success_rate": average_success_rate,
-            "last_update": self.last_update_info,
-        }
+        self.instances.append(self)
 
 
-class _FakeEvaluator:
-    def __init__(self):
-        self.metrics = None
-        self.env_cfg = None
-        self.setup_calls = []
-        self.reset_calls = []
+class _FakeRemoteBenchmarkBackendCfg:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.instances.append(self)
+
+
+class _FakeBenchmarkEvaluator:
+    instances = []
+
+    def __init__(self, cfg):
+        self.cfg = cfg
         self.evaluate_calls = []
-        self.current_episode = None
-        self.current_start_seed = None
-        self.current_offset_seed = 0
-        self.has_applied_initial_retry = False
+        self.instances.append(self)
 
-    def setup(self, env_cfg, policy_or_cfg, metrics, device=None):
-        self.setup_calls.append(
+    def evaluate(self, policy_or_cfg, device=None):
+        self.evaluate_calls.append(
             {
-                "env_cfg": env_cfg,
                 "policy_or_cfg": policy_or_cfg,
                 "device": device,
             }
         )
-        self.env_cfg = env_cfg
-        self.metrics = metrics
-
-    def reset_env(self, **kwargs):
-        self.reset_calls.append(kwargs)
-        self.current_episode = kwargs
-        assert isinstance(self.env_cfg, dict)
-        if self.current_start_seed is None:
-            self.current_start_seed = self.env_cfg["seed"]
-
-        seed_request = kwargs.get("seed")
-        if seed_request == "next":
-            self.current_offset_seed += 1
-        elif seed_request is not None:
-            self.current_start_seed = seed_request
-            self.current_offset_seed = 0
-
-        if not self.has_applied_initial_retry:
-            self.current_offset_seed += 2
-            self.has_applied_initial_retry = True
-
-        resolved_start_seed = (
-            100000 * (1 + self.current_start_seed)
-            if self.current_start_seed < 100000
-            else self.current_start_seed
-        )
-        return None, {
-            "seed": resolved_start_seed + self.current_offset_seed,
-            "offset_seed": self.current_offset_seed,
-        }
-
-    def evaluate_episode(self, max_steps, env_reset_kwargs=None):
-        self.evaluate_calls.append(
-            {
-                "max_steps": max_steps,
-                "env_reset_kwargs": env_reset_kwargs,
+        return SimpleNamespace(
+            metrics={
+                "tasks": [{"task_name": "task_a", "success_rate": 1.0}],
+                "average_success_rate": 1.0,
+                "last_update": None,
             }
         )
-        if env_reset_kwargs is not None:
-            self.reset_env(**env_reset_kwargs)
-        assert self.metrics is not None
-        assert self.current_episode is not None
-        resolved_start_seed = (
-            100000 * (1 + self.current_start_seed)
-            if self.current_start_seed < 100000
-            else self.current_start_seed
-        )
-        seed = resolved_start_seed + self.current_offset_seed
-        self.metrics.update_episode(
-            task_name=self.current_episode["task_name"],
-            seed=seed,
-            success=True,
-            offset_seed=self.current_offset_seed,
-        )
-        return {"last_update": self.metrics.last_update_info}
-
-    def get_metrics(self):
-        return self.metrics
-
-    def reset_metrics(self):
-        assert self.metrics is not None
-        self.metrics.reset()
 
 
-class _FakePolicyEvaluatorConfig:
-    last_evaluator = None
-
-    def __call__(self):
-        evaluator = _FakeEvaluator()
-        _FakePolicyEvaluatorConfig.last_evaluator = evaluator
-        return evaluator
-
-
-class _FakeRemoteEvaluator:
-    def __init__(self, metrics):
-        self.metrics = metrics
-        self.calls = []
-
-    def evaluate(self, policy_or_cfg, device=None):
-        self.calls.append({"policy_or_cfg": policy_or_cfg, "device": device})
-        return self.metrics
-
-
-class _FakeRemoteEvaluatorCfg:
-    last_kwargs = None
-    evaluator = None
+class _FakeBenchmarkEvaluatorCfg:
+    instances = []
 
     def __init__(self, **kwargs):
-        _FakeRemoteEvaluatorCfg.last_kwargs = kwargs
+        self.kwargs = kwargs
+        self.instances.append(self)
 
     def __call__(self):
-        return _FakeRemoteEvaluatorCfg.evaluator
+        return _FakeBenchmarkEvaluator(self)
 
 
 class RobotwinEvalScriptTest(unittest.TestCase):
@@ -271,29 +128,28 @@ class RobotwinEvalScriptTest(unittest.TestCase):
         self.assertEqual(cfg.gpu_ids, [0, 2])
         self.assertEqual(cfg.workers_per_gpu, 2)
 
-    def test_evaluate_tasks_locally_aggregates_metrics(self):
+    def test_evaluate_tasks_locally_uses_local_benchmark_evaluator(self):
         module = _load_script_module()
+        _FakeBenchmarkEvaluatorCfg.instances = []
+        _FakeBenchmarkEvaluator.instances = []
+        _FakeLocalBenchmarkBackendCfg.instances = []
 
         with (
             patch.object(
                 module,
-                "SuccessRateMetric",
-                _FakeSuccessRateMetric,
+                "RoboTwinBenchmarkEvaluatorCfg",
+                _FakeBenchmarkEvaluatorCfg,
             ),
             patch.object(
                 module,
-                "PolicyEvaluatorConfig",
-                _FakePolicyEvaluatorConfig,
+                "RoboTwinLocalBenchmarkBackendCfg",
+                _FakeLocalBenchmarkBackendCfg,
             ),
             patch.object(
                 module,
-                "build_robotwin_env_cfg",
-                side_effect=lambda task_name, config_type, seed: {
-                    "task_name": task_name,
-                    "config_type": config_type,
-                    "seed": seed,
-                },
-            ) as mock_build_env,
+                "artifact_root_dir",
+                return_value="/artifacts",
+            ),
         ):
             metrics = module.evaluate_tasks_locally(
                 policy_or_cfg="policy",
@@ -302,85 +158,34 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                 device="cpu",
                 config_type="demo_clean",
                 seed=3,
-            )
-
-        self.assertEqual(mock_build_env.call_count, 2)
-        self.assertEqual(metrics["average_success_rate"], 1.0)
-        self.assertEqual(len(metrics["tasks"]), 2)
-        self.assertEqual(metrics["tasks"][0]["total_count"], 2)
-        self.assertEqual(metrics["tasks"][1]["total_count"], 2)
-        self.assertEqual(metrics["last_update"]["seed"], 400003)
-        self.assertEqual(metrics["last_update"]["offset_seed"], 3)
-        self.assertEqual(
-            _FakePolicyEvaluatorConfig.last_evaluator.reset_calls,
-            [
-                {
-                    "clear_cache": True,
-                    "episode_id": 0,
-                    "return_obs": True,
-                    "seed": 3,
-                    "task_name": "task_b",
-                    "video_dir": None,
-                },
-                {
-                    "clear_cache": True,
-                    "episode_id": 1,
-                    "return_obs": True,
-                    "seed": "next",
-                    "task_name": "task_b",
-                    "video_dir": None,
-                },
-            ],
-        )
-
-    def test_evaluate_tasks_locally_passes_episode_id_when_enabled(self):
-        module = _load_script_module()
-
-        with (
-            patch.object(
-                module,
-                "SuccessRateMetric",
-                _FakeSuccessRateMetric,
-            ),
-            patch.object(
-                module,
-                "PolicyEvaluatorConfig",
-                _FakePolicyEvaluatorConfig,
-            ),
-            patch.object(
-                module,
-                "build_robotwin_env_cfg",
-                side_effect=lambda task_name, config_type, seed: {
-                    "task_name": task_name,
-                    "config_type": config_type,
-                    "seed": seed,
-                },
-            ),
-        ):
-            module.evaluate_tasks_locally(
-                policy_or_cfg="policy",
-                task_names=["task_a"],
-                episode_num=1,
-                device="cpu",
-                config_type="demo_clean",
-                seed=0,
                 save_video=True,
             )
 
-        assert _FakePolicyEvaluatorConfig.last_evaluator.reset_calls == [
-            {
-                "clear_cache": True,
-                "episode_id": 0,
-                "return_obs": True,
-                "seed": 0,
-                "task_name": "task_a",
-                "video_dir": os.path.join(
-                    "eval_result",
-                    "task_a",
-                    "demo_clean",
-                ),
-            }
-        ]
+        self.assertEqual(metrics["average_success_rate"], 1.0)
+        benchmark_cfg = _FakeBenchmarkEvaluatorCfg.instances[0]
+        self.assertEqual(
+            benchmark_cfg.kwargs["task_names"],
+            ["task_a", "task_b"],
+        )
+        self.assertEqual(benchmark_cfg.kwargs["episode_num"], 2)
+        self.assertEqual(benchmark_cfg.kwargs["config_type"], "demo_clean")
+        self.assertEqual(benchmark_cfg.kwargs["start_seed"], 3)
+        self.assertTrue(benchmark_cfg.kwargs["format_datatypes"])
+        self.assertTrue(benchmark_cfg.kwargs["fail_fast"])
+        self.assertEqual(
+            benchmark_cfg.kwargs["artifact_root_dir"],
+            "/artifacts",
+        )
+        self.assertIs(
+            benchmark_cfg.kwargs["backend"],
+            _FakeLocalBenchmarkBackendCfg.instances[0],
+        )
+        benchmark_evaluator = _FakeBenchmarkEvaluator.instances[0]
+        self.assertIs(benchmark_evaluator.cfg, benchmark_cfg)
+        self.assertEqual(
+            benchmark_evaluator.evaluate_calls,
+            [{"policy_or_cfg": "policy", "device": "cpu"}],
+        )
 
     def test_run_loads_pipeline_builds_policy_and_writes_metrics(self):
         module = _load_script_module()
@@ -442,7 +247,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             self.assertTrue(output_path.exists())
             self.assertEqual(json.loads(output_path.read_text()), fake_metrics)
 
-    def test_run_ray_builds_policy_cfg_and_uses_remote_evaluator(self):
+    def test_run_ray_builds_policy_cfg_and_uses_remote_benchmark_backend(self):
         module = _load_script_module()
 
         fake_policy_cfg = object()
@@ -451,7 +256,9 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             "average_success_rate": 1.0,
             "last_update": None,
         }
-        _FakeRemoteEvaluatorCfg.evaluator = _FakeRemoteEvaluator(fake_metrics)
+        _FakeBenchmarkEvaluatorCfg.instances = []
+        _FakeBenchmarkEvaluator.instances = []
+        _FakeRemoteBenchmarkBackendCfg.instances = []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "metrics" / "robotwin_eval.json"
@@ -478,8 +285,13 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                 ) as mock_policy_cfg_cls,
                 patch.object(
                     module,
-                    "RoboTwinRemoteEvaluatorCfg",
-                    _FakeRemoteEvaluatorCfg,
+                    "RoboTwinBenchmarkEvaluatorCfg",
+                    _FakeBenchmarkEvaluatorCfg,
+                ),
+                patch.object(
+                    module,
+                    "RoboTwinRemoteBenchmarkBackendCfg",
+                    _FakeRemoteBenchmarkBackendCfg,
                 ),
                 patch.object(
                     module,
@@ -508,26 +320,40 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             )
             mock_set_env.assert_called_once_with(CUDA_VISIBLE_DEVICES="0,2")
             mock_remote_class_cfg.assert_called_once()
+            benchmark_cfg = _FakeBenchmarkEvaluatorCfg.instances[0]
             self.assertEqual(
-                _FakeRemoteEvaluatorCfg.last_kwargs["num_parallel_envs"], 4
-            )
-            self.assertEqual(
-                _FakeRemoteEvaluatorCfg.last_kwargs["ray_init_config"],
-                {"_temp_dir": "/tmp/ray-user"},
-            )
-            self.assertEqual(
-                _FakeRemoteEvaluatorCfg.last_kwargs["task_names"],
+                benchmark_cfg.kwargs["task_names"],
                 ["task_a", "task_b"],
             )
+            self.assertEqual(benchmark_cfg.kwargs["episode_num"], 2)
+            self.assertEqual(benchmark_cfg.kwargs["config_type"], "demo_clean")
+            self.assertEqual(benchmark_cfg.kwargs["start_seed"], 0)
+            self.assertTrue(benchmark_cfg.kwargs["format_datatypes"])
             self.assertEqual(
-                _FakeRemoteEvaluatorCfg.last_kwargs["artifact_root_dir"],
+                benchmark_cfg.kwargs["artifact_root_dir"],
                 "eval_result",
             )
-            self.assertTrue(
-                _FakeRemoteEvaluatorCfg.last_kwargs["format_datatypes"]
+            self.assertIs(
+                benchmark_cfg.kwargs["backend"],
+                _FakeRemoteBenchmarkBackendCfg.instances[0],
+            )
+            remote_backend_cfg = _FakeRemoteBenchmarkBackendCfg.instances[0]
+            self.assertEqual(
+                remote_backend_cfg.kwargs["num_parallel_envs"],
+                4,
             )
             self.assertEqual(
-                _FakeRemoteEvaluatorCfg.evaluator.calls,
+                remote_backend_cfg.kwargs["ray_init_config"],
+                {"_temp_dir": "/tmp/ray-user"},
+            )
+            self.assertIn(
+                "runtime_env",
+                remote_backend_cfg.kwargs["remote_class_config"],
+            )
+            benchmark_evaluator = _FakeBenchmarkEvaluator.instances[0]
+            self.assertIs(benchmark_evaluator.cfg, benchmark_cfg)
+            self.assertEqual(
+                benchmark_evaluator.evaluate_calls,
                 [{"policy_or_cfg": fake_policy_cfg, "device": "cuda"}],
             )
             self.assertTrue(output_path.exists())
@@ -537,12 +363,9 @@ class RobotwinEvalScriptTest(unittest.TestCase):
         module = _load_script_module()
 
         fake_policy_cfg = object()
-        fake_metrics = {
-            "tasks": [{"task_name": "task_a", "success_rate": 1.0}],
-            "average_success_rate": 1.0,
-            "last_update": None,
-        }
-        _FakeRemoteEvaluatorCfg.evaluator = _FakeRemoteEvaluator(fake_metrics)
+        _FakeBenchmarkEvaluatorCfg.instances = []
+        _FakeBenchmarkEvaluator.instances = []
+        _FakeRemoteBenchmarkBackendCfg.instances = []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "metrics" / "robotwin_eval.json"
@@ -563,8 +386,13 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                 ),
                 patch.object(
                     module,
-                    "RoboTwinRemoteEvaluatorCfg",
-                    _FakeRemoteEvaluatorCfg,
+                    "RoboTwinBenchmarkEvaluatorCfg",
+                    _FakeBenchmarkEvaluatorCfg,
+                ),
+                patch.object(
+                    module,
+                    "RoboTwinRemoteBenchmarkBackendCfg",
+                    _FakeRemoteBenchmarkBackendCfg,
                 ),
                 patch.object(
                     module,
@@ -584,8 +412,9 @@ class RobotwinEvalScriptTest(unittest.TestCase):
             ):
                 module.run(cfg)
 
+            benchmark_evaluator = _FakeBenchmarkEvaluator.instances[0]
             self.assertEqual(
-                _FakeRemoteEvaluatorCfg.evaluator.calls,
+                benchmark_evaluator.evaluate_calls,
                 [{"policy_or_cfg": fake_policy_cfg, "device": "cuda"}],
             )
 

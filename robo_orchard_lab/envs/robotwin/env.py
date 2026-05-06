@@ -15,21 +15,21 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+import copy
 import functools
 import importlib
 import os
-import shutil
-import subprocess
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Sequence, TypeAlias
+from typing import TYPE_CHECKING, Any, Sequence, TypeAlias, cast
 
 import gymnasium as gym
 import numpy as np
 import torch
 import yaml
-from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
+from pydantic import BaseModel, ConfigDict, Field
+from robo_orchard_core.utils.config import ClassType
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
@@ -41,6 +41,7 @@ from robo_orchard_lab.dataset.robot.db_orm import (
     Robot,
     RobotDescriptionFormat,
 )
+from robo_orchard_lab.envs.base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinEEF,
     RoboTwinJointsToEEF,
@@ -50,13 +51,30 @@ from robo_orchard_lab.envs.robotwin.obs import (
     get_observation_cams,
 )
 from robo_orchard_lab.envs.sapien import sapien_pose_to_orchard
+from robo_orchard_lab.envs.state import EnvStateScope, StatefulEnvMixin
+from robo_orchard_lab.utils.state import (
+    State,
+    validate_recovery_state,
+)
+from robo_orchard_lab.utils.video import (
+    VideoBackendUnavailableError,
+    VideoPixelFormat,
+    VideoWriter,
+    VideoWriterError,
+)
 
 if TYPE_CHECKING:
-    from envs._base_task import Base_Task
+    from envs._base_task import (  # pyright: ignore[reportMissingImports]
+        Base_Task,
+    )
 
 EVAL_SEED_BASE = 100000
 EVAL_INSTRUCTION_NUM = 100
-logger = LoggerManager().get_child(__name__)
+_logger_manager = LoggerManager()
+_logger_manager_logger = _logger_manager.get_logger()
+if _logger_manager_logger.handlers:
+    _logger_manager_logger.propagate = False
+logger = _logger_manager.get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
 RoboTwinObsType: TypeAlias = dict[str, Any] | None
@@ -65,6 +83,9 @@ __all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
 LEFT_EEF_FROM_JOINT_FRAME_ID = "left_eef_from_joint"
 RIGHT_EEF_FROM_JOINT_FRAME_ID = "right_eef_from_joint"
 COMBINED_DUAL_ARM_OBS_ROBOT_KEY = "left"
+ROBOTWIN_VIDEO_FPS = 10
+ROBOTWIN_VIDEO_PIXEL_FORMAT = VideoPixelFormat.RGB24
+ROBOTWIN_ENV_STATE_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -77,7 +98,22 @@ class RoboTwinEnvStepReturn(EnvStepReturn[RoboTwinObsType, bool]):
     """Whether the episode was truncated due to reaching the step limit."""
 
 
-class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
+# State.config owns task_name, start seed, and episode_id; this payload keeps
+# only post-reset runtime values that cannot be derived from config.
+class _RoboTwinPostResetStatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    scope: Literal[EnvStateScope.POST_RESET]
+    offset_seed: int = Field(ge=0)
+    task_config: dict[str, Any]
+    instructions: Any = None
+    eval_chosen_instruction: str | None = None
+    post_reset_state_available: bool = True
+    episode_finalized: bool = False
+
+
+class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
     """RoboTwin environment wrapped with the orchard env interface.
 
     This class adapts RoboTwin tasks to the ``robo_orchard_core`` env API.
@@ -93,6 +129,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     - ``step(action)``: execute one RoboTwin action and return
       ``RoboTwinEnvStepReturn``.
     - ``close(...)``: close the current RoboTwin task.
+    - ``finalize_episode()``: finalize episode-local artifacts without
+      closing the reusable RoboTwin runtime.
     - ``unwrapped_env()``: return the underlying RoboTwin ``Base_Task``.
     - ``get_robot_urdf()``: return the supported combined dual-arm URDF.
       RoboTwin stores this dual-arm descriptor under the ``"left"`` key by
@@ -120,27 +158,36 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     exact action layout for both ``"qpos"`` and ``"ee"`` modes.
     """
 
+    supported_state_scopes = frozenset({EnvStateScope.POST_RESET})
+
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
+        self._task = cast("Base_Task", None)
         self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
         self._offset_seed = 0
+        self._instructions: Any = None
         self._eval_chosen_instruction: str | None = None
+        self._episode_finalized = True
+        self._post_reset_state_available = False
         self._joints_to_eef_transform: RoboTwinJointsToEEF | None = None
         self._cached_obs_robots: dict[str, Robot] | None = None
-        self._video_ffmpeg: subprocess.Popen[bytes] | None = None
+        self._video_writer = VideoWriter(
+            pixel_format=ROBOTWIN_VIDEO_PIXEL_FORMAT,
+            fps=ROBOTWIN_VIDEO_FPS,
+        )
 
     def _check_and_update_seed(self):
         instructions = None
         task = None
-        from description.utils.generate_episode_instructions import (
+        from description.utils.generate_episode_instructions import (  # pyright: ignore[reportMissingImports]
             generate_episode_descriptions,
         )
 
         if self.cfg.check_expert:
-            logger.info(
-                "Checking expert trajectory for the task. "
-                "This may take a while... "
-                "You can set `check_expert=False` to skip this step."
+            logger.debug(
+                "Checking RoboTwin expert trajectory: task=%s seed=%s",
+                self.cfg.task_name,
+                self.current_seed,
             )
             requested_seed = self.current_seed
             task, success = self._check_expert_traj()
@@ -156,23 +203,22 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 
                 failed_seed = self.current_seed
                 self._offset_seed += 1
-                logger.warning(
-                    "Expert trajectory check failed for task "
-                    f"{self.cfg.task_name} at seed {failed_seed}; "
-                    f"retrying with seed {self.current_seed}."
+                logger.debug(
+                    "RoboTwin expert trajectory check failed: "
+                    "task=%s seed=%s retry_seed=%s",
+                    self.cfg.task_name,
+                    failed_seed,
+                    self.current_seed,
                 )
                 task, success = self._check_expert_traj()
-                if success:
-                    logger.info(
-                        f"Successfully created task {self.cfg.task_name} "
-                        "with seed "
-                        f"{self.current_seed} using expert trajectory."
-                    )
             if retry_num > 0:
                 logger.info(
-                    f"Requested seed {requested_seed} for task "
-                    f"{self.cfg.task_name} resolved to actual seed "
-                    f"{self.current_seed} after {retry_num} retries."
+                    "RoboTwin expert trajectory resolved after retry: "
+                    "task=%s requested_seed=%s actual_seed=%s retries=%s",
+                    self.cfg.task_name,
+                    requested_seed,
+                    self.current_seed,
+                    retry_num,
                 )
 
             assert task is not None
@@ -183,10 +229,10 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             )[0]
         else:
             if self.cfg.check_task_init:
-                logger.info(
-                    "Checking expert trajectory for the task. "
-                    "This may take a while... "
-                    "You can set `check_task_init=False` to skip this step."
+                logger.debug(
+                    "Checking RoboTwin task init: task=%s seed=%s",
+                    self.cfg.task_name,
+                    self.current_seed,
                 )
                 task, success = self._check_expert_traj()
                 if task is None:
@@ -253,6 +299,116 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         else:
             return self._instructions
 
+    def _get_state(self) -> State:
+        if not self._post_reset_state_available:
+            raise RuntimeError(
+                "RoboTwinEnv state is only available after reset() and "
+                "before the first step()."
+            )
+        if self._task is None:
+            raise RuntimeError("RoboTwinEnv has no active task to capture.")
+
+        state_payload: dict[str, object] = _RoboTwinPostResetStatePayload(
+            schema_version=ROBOTWIN_ENV_STATE_SCHEMA_VERSION,
+            scope=EnvStateScope.POST_RESET,
+            offset_seed=self._offset_seed,
+            task_config=copy.deepcopy(
+                self.cfg.get_task_config_for_seed(self.current_seed)
+            ),
+            instructions=copy.deepcopy(self._instructions),
+            eval_chosen_instruction=copy.deepcopy(
+                self._eval_chosen_instruction
+            ),
+            post_reset_state_available=self._post_reset_state_available,
+            episode_finalized=self._episode_finalized,
+        ).model_dump(mode="json")
+        return State(
+            class_type=type(self),
+            config=copy.deepcopy(self.cfg),
+            state=state_payload,
+            hierarchical_save=None,
+        )
+
+    def _set_state(self, state: State) -> None:
+        self._restore_post_reset_state(state)
+
+    def reset_from_state(self, state: State) -> tuple[RoboTwinObsType, dict]:
+        """Restore a post-reset State and return ``reset(...)`` output."""
+
+        payload = self._restore_post_reset_state(state, activate=False)
+        obs = self._format_obs(self._task.get_obs())
+        info = self._get_info()
+        self._post_reset_state_available = payload.post_reset_state_available
+        self._episode_finalized = payload.episode_finalized
+        return obs, info
+
+    def _restore_post_reset_state(
+        self,
+        state: State,
+        *,
+        activate: bool = True,
+    ) -> _RoboTwinPostResetStatePayload:
+        validate_recovery_state(
+            state,
+            require_class_type=True,
+            require_config=True,
+            context="RoboTwinEnv state",
+        )
+        state_class_type = state.class_type
+        if state_class_type is not type(self):
+            raise TypeError(
+                "RoboTwinEnv state class_type must match the target env. "
+                f"Got {state_class_type} for {type(self).__name__}."
+            )
+        if not isinstance(state.config, RoboTwinEnvCfg):
+            raise TypeError(
+                "RoboTwinEnv state config must be RoboTwinEnvCfg. "
+                f"Got {type(state.config).__name__}."
+            )
+
+        payload = _RoboTwinPostResetStatePayload.model_validate(
+            state.state
+        ).model_copy(deep=True)
+        cfg = copy.deepcopy(state.config)
+
+        task: Base_Task | None = None
+        try:
+            with in_robotwin_workspace():
+                task = create_task_from_name(cfg.task_name)
+                task.setup_demo(**payload.task_config)  # type: ignore
+            if task is None:
+                raise RuntimeError("RoboTwin task creation returned None.")
+            self._assert_supported_robot_layout(task)
+        except Exception:
+            if task is not None:
+                try:
+                    task.close_env(clear_cache=True)
+                except Exception:
+                    logger.exception(
+                        "Failed to close staged RoboTwin task after State "
+                        "restore validation failed."
+                    )
+            raise
+
+        self.close(clear_cache=True)
+        self.cfg = cfg
+        self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
+        self._offset_seed = payload.offset_seed
+        self._instructions = payload.instructions
+        self._eval_chosen_instruction = payload.eval_chosen_instruction
+        self._task = task
+        self._joints_to_eef_transform = None
+        self._cached_obs_robots = None
+        if activate:
+            self._post_reset_state_available = (
+                payload.post_reset_state_available
+            )
+            self._episode_finalized = payload.episode_finalized
+        else:
+            self._post_reset_state_available = False
+            self._episode_finalized = True
+        return payload
+
     def _create_task(self) -> Base_Task:
         with in_robotwin_workspace():
             task = create_task_from_name(self.cfg.task_name)
@@ -280,9 +436,12 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 task.setup_demo(**config)  # type: ignore
                 task.play_once()  # type: ignore
             except Exception as e:
-                logger.error(
-                    f"Failed to play the task config {self.cfg} "
-                    f"with error: {e}"
+                logger.debug(
+                    "RoboTwin expert trajectory check failed while playing "
+                    "task config: task=%s seed=%s error=%s",
+                    self.cfg.task_name,
+                    self.current_seed,
+                    e,
                 )
                 return task, False
             finally:
@@ -326,7 +485,19 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 reported via `terminated` and `truncated` instead of
                 returning None. `rewards` is a boolean indicating whether
                 the task has succeeded.
+
+        Raises:
+            RuntimeError: If no active episode is available for stepping.
+                This includes newly constructed, closed, and finalized env
+                states. Call ``reset()`` or restore a non-finalized ``State``
+                with ``reset_from_state()`` before stepping again.
         """
+        if self._episode_finalized:
+            raise RuntimeError(
+                "RoboTwinEnv has no active episode. "
+                "Call reset() or reset_from_state() before step()."
+            )
+
         action_array = np.asarray(action)
         if action_array.ndim != 1:
             raise ValueError(
@@ -360,6 +531,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             action_array,
             action_type=self.cfg.action_type,
         )
+        self._post_reset_state_available = False
 
         # when reach step limit, truncated is True
         # Note that step_lim is None for default unlimited steps.
@@ -395,8 +567,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
     def reset(
         self,
         env_ids: Sequence[int] | None = None,
-        seed: int | str | None = None,
-        offset_seed: int | str | None = None,
+        seed: int | None = None,
+        offset_seed: int | None = None,
         task_name: str | None = None,
         clear_cache: bool = False,
         return_obs: bool = True,
@@ -422,18 +594,14 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         Args:
             env_ids (Sequence[int] | None, optional): Not supported.
                 Defaults to None.
-            seed (int | str | None, optional): The seed to reset the
+            seed (int | None, optional): The seed to reset the
                 environment start point. If None, the seed in the config will
                 be used. If an int is provided, it replaces the caller-facing
-                start seed. If "next", the env keeps the current start seed
-                and advances to the next runtime seed after the current actual
-                offset. ``seed="next"`` cannot be combined with
-                ``offset_seed``. Default is None.
-            offset_seed (int | str | None, optional): Runtime offset from the
+                start seed. Default is None.
+            offset_seed (int | None, optional): Runtime offset from the
                 resolved start seed. If None, the existing env offset is
                 reused unless ``seed`` also changes, in which case the offset
-                resets to 0. If "next", the current offset is incremented by
-                1. Default is None.
+                resets to 0. Default is None.
             task_name (str | None, optional): The task name to reset the
                 environment. If None, the task name in the config will be used.
                 Default is None.
@@ -442,9 +610,9 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             return_obs (bool, optional): Whether to format and return the
                 initial observation. Default is True.
             video_dir (str | None, optional): Directory where the env writes
-                the episode video using the fixed file-name convention
-                ``episode_{episode_id}_seed_{seed}.mp4``. The env controls the
-                file name and callers may only choose the output directory.
+                the episode video. The env controls the final file name using
+                ``episode_{episode_id}_seed_{actual_seed}.mp4`` because the
+                actual RoboTwin runtime seed is only known after reset.
                 Default is None.
             episode_id (int | None, optional): Episode identifier forwarded to
                 RoboTwin as ``now_ep_num``. When ``video_dir`` is set, this
@@ -463,31 +631,26 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 "RoboTwinEnv does not support env_ids in reset()."
             )
 
+        if isinstance(seed, str):
+            raise TypeError(
+                "RoboTwinEnv.reset() seed must be an int or None. "
+                f"Got {seed!r}."
+            )
+        if isinstance(offset_seed, str):
+            raise TypeError(
+                "RoboTwinEnv.reset() offset_seed must be an int or None. "
+                f"Got {offset_seed!r}."
+            )
+
         self.close(clear_cache=clear_cache)
         start_seed = None
-        next_offset_seed_from_seed = None
         if seed is not None:
-            if isinstance(seed, str):
-                if seed != "next":
-                    raise ValueError(
-                        f"Invalid seed string: {seed}. "
-                        "Only 'next' is supported."
-                    )
-                if offset_seed is not None:
-                    raise ValueError(
-                        "seed='next' cannot be combined with offset_seed. "
-                        "Use one runtime-seed control at a time."
-                    )
-                next_offset_seed_from_seed = self._offset_seed + 1
-            else:
-                start_seed = self.cfg.calculate_seed(seed)
+            start_seed = self.cfg.calculate_seed(seed)
         if episode_id is not None:
             self.cfg.episode_id = episode_id
 
         seed_changes = start_seed is not None and start_seed != self.cfg.seed
-        if next_offset_seed_from_seed is not None:
-            next_offset_seed = next_offset_seed_from_seed
-        elif offset_seed is not None:
+        if offset_seed is not None:
             next_offset_seed = self._resolve_offset_seed(offset_seed)
         elif seed_changes:
             next_offset_seed = 0
@@ -499,7 +662,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         )
         # check if task is not initialized or seed/task_name changes
         if (
-            not hasattr(self, "_task")
+            self._task is None
             or seed_changes
             or offset_seed_changes
             or task_name_changes
@@ -543,13 +706,43 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 f"episode_{self.cfg.episode_id}_seed_{self.current_seed}.mp4",
             )
 
+        self._stop_video_recording()
         raw_obs = self._task.get_obs()
-        self._start_video_recording(
-            video_path=episode_video_path, raw_obs=raw_obs
-        )
-        obs = self._format_obs(raw_obs) if return_obs else None
+        if episode_video_path is not None:
+            frame = self._extract_video_frame(raw_obs)
+            if frame is None:
+                logger.warning(
+                    "Skip RoboTwin episode video recording because the head "
+                    "camera RGB frame is unavailable."
+                )
+            else:
+                try:
+                    writer = self._get_video_writer()
+                    writer.open(episode_video_path)
+                    writer.write_frame(frame)
+                except VideoBackendUnavailableError:
+                    self._stop_video_recording()
+                    logger.warning(
+                        "Skip RoboTwin episode video recording because "
+                        "ffmpeg is not available in PATH."
+                    )
+                except VideoWriterError:
+                    self._stop_video_recording()
+                    logger.exception(
+                        "Failed to start RoboTwin episode video recording at "
+                        "%s.",
+                        episode_video_path,
+                    )
+        try:
+            obs = self._format_obs(raw_obs) if return_obs else None
+            info = self._get_info()
+        except Exception:
+            self._stop_video_recording()
+            raise
+        self._post_reset_state_available = True
+        self._episode_finalized = False
 
-        return obs, self._get_info()
+        return obs, info
 
     def _joints2ee_pose(self, joints: np.ndarray) -> RoboTwinEEF:
         """Convert joint positions to world-frame end-effector transforms.
@@ -636,28 +829,33 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
         info.update(self._task.info)
         return info
 
-    def _resolve_offset_seed(self, offset_seed: int | str | None) -> int:
+    def _resolve_offset_seed(self, offset_seed: int | None) -> int:
         if offset_seed is None:
             return self._offset_seed
         if isinstance(offset_seed, str):
-            if offset_seed == "next":
-                return self._offset_seed + 1
-            raise ValueError(
-                f"Invalid offset_seed string: {offset_seed}. "
-                "Only 'next' is supported."
+            raise TypeError(
+                "RoboTwinEnv.reset() offset_seed must be an int or None. "
+                f"Got {offset_seed!r}."
             )
         if offset_seed < 0:
             raise ValueError(f"offset_seed must be >= 0, got {offset_seed}.")
         return offset_seed
 
-    def _assert_supported_robot_layout(self) -> None:
+    def _assert_supported_robot_layout(
+        self,
+        task: Base_Task | None = None,
+    ) -> None:
         """Validate that the current RoboTwin robot layout is supported.
 
         RoboTwinEnv currently supports only the combined dual-arm layout with
         one shared robot base pose. Unsupported layouts are rejected at the
         env boundary during ``reset()`` and by robot-structure helper methods.
         """
-        if self._task.robot.is_dual_arm is False:
+        if task is None:
+            task = self._task
+        if task is None:
+            raise RuntimeError("RoboTwinEnv has no active task to validate.")
+        if task.robot.is_dual_arm is False:
             raise NotImplementedError(
                 "RoboTwinEnv currently only supports a combined dual-arm "
                 "robot layout. Separate left/right URDF layouts are not "
@@ -665,10 +863,10 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             )
 
         left_base_tf = sapien_pose_to_orchard(
-            self._task.robot.left_entity_origion_pose
+            task.robot.left_entity_origion_pose
         )
         right_base_tf = sapien_pose_to_orchard(
-            self._task.robot.right_entity_origion_pose
+            task.robot.right_entity_origion_pose
         )
         if left_base_tf != right_base_tf:
             raise NotImplementedError(
@@ -677,12 +875,27 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
                 "base poses are not supported."
             )
 
+    def finalize_episode(self) -> None:
+        """Finalize episode-local artifacts without closing the runtime.
+
+        This method is idempotent and safe to call when no episode is active.
+        It stops the current episode video writer but keeps the reusable
+        RoboTwin task runtime open. After this call, ``step()`` rejects the
+        finalized episode until ``reset()`` succeeds or ``reset_from_state()``
+        restores a non-finalized episode state.
+        """
+
+        self._episode_finalized = True
+        self._stop_video_recording()
+
     def close(self, clear_cache: bool = True):
         """Close the environment."""
+        self._episode_finalized = True
+        self._post_reset_state_available = False
         self._stop_video_recording()
         self._joints_to_eef_transform = None
         self._cached_obs_robots = None
-        if hasattr(self, "_task") and self._task is not None:
+        if self._task is not None:
             self._task.close_env(clear_cache=clear_cache)
             if self._task.render_freq > 0:
                 self._task.viewer.close()
@@ -853,96 +1066,45 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
             frame_np = frame_np.astype(np.uint8)
         return np.ascontiguousarray(frame_np)
 
-    def _start_video_recording(
-        self,
-        video_path: str | None,
-        raw_obs: dict[str, Any],
-    ) -> None:
-        self._stop_video_recording()
-        if video_path is None:
+    def _write_video_frame(self, raw_obs: dict[str, Any]) -> None:
+        writer = self._get_video_writer()
+        if writer.is_closed:
             return
 
         frame = self._extract_video_frame(raw_obs)
         if frame is None:
-            logger.warning(
-                "Skip RoboTwin episode video recording because the head "
-                "camera RGB frame is unavailable."
-            )
             return
-        if shutil.which("ffmpeg") is None:
+
+        try:
+            writer.write_frame(frame)
+        except VideoBackendUnavailableError:
+            self._stop_video_recording()
             logger.warning(
                 "Skip RoboTwin episode video recording because ffmpeg is "
                 "not available in PATH."
             )
-            return
-
-        output_dir = os.path.dirname(video_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-
-        height, width, _ = frame.shape
-        try:
-            self._video_ffmpeg = subprocess.Popen(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgb24",
-                    "-video_size",
-                    f"{width}x{height}",
-                    "-framerate",
-                    "10",
-                    "-i",
-                    "-",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-vcodec",
-                    "libx264",
-                    "-crf",
-                    "23",
-                    video_path,
-                ],
-                stdin=subprocess.PIPE,
-            )
-        except Exception:
-            self._video_ffmpeg = None
-            logger.exception(
-                "Failed to start RoboTwin episode video recording at %s.",
-                video_path,
-            )
-            return
-
-        self._write_video_frame(raw_obs)
-
-    def _write_video_frame(self, raw_obs: dict[str, Any]) -> None:
-        if self._video_ffmpeg is None or self._video_ffmpeg.stdin is None:
-            return
-
-        frame = self._extract_video_frame(raw_obs)
-        if frame is None:
-            return
-
-        try:
-            self._video_ffmpeg.stdin.write(frame.tobytes())
-        except Exception:
-            logger.exception("Failed to write RoboTwin episode video frame.")
+        except VideoWriterError:
             self._stop_video_recording()
+            logger.exception("Failed to write RoboTwin episode video frame.")
 
     def _stop_video_recording(self) -> None:
-        if self._video_ffmpeg is None:
+        writer = self._video_writer
+        if writer is None or writer.is_closed:
             return
         try:
-            if self._video_ffmpeg.stdin is not None:
-                self._video_ffmpeg.stdin.close()
-            self._video_ffmpeg.wait()
-        except Exception:
+            writer.close()
+        except VideoWriterError:
             logger.exception("Failed to finalize RoboTwin episode video.")
-        finally:
-            self._video_ffmpeg = None
+
+    def _get_video_writer(self) -> VideoWriter:
+        writer = self._video_writer
+        if writer is None:
+            writer = VideoWriter(
+                pixel_format=ROBOTWIN_VIDEO_PIXEL_FORMAT,
+                fps=ROBOTWIN_VIDEO_FPS,
+            )
+            self._video_writer = writer
+        return writer
 
     @property
     def num_envs(self) -> int:
@@ -1061,7 +1223,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool]):
 class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """Configuration for the RoboTwin environment."""
 
-    class_type: type[RoboTwinEnv] = RoboTwinEnv
+    class_type: ClassType[RoboTwinEnv] = RoboTwinEnv
 
     task_name: str
     """The name of the task to run, e.g., 'place_object_scale'."""
@@ -1078,7 +1240,8 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     The value may be updated per reset by passing ``episode_id`` to
     ``RoboTwinEnv.reset()``. When episode video recording is enabled, the env
-    also uses this identifier in its fixed output file-name convention.
+    also uses this identifier in its output file-name convention together with
+    the actual runtime seed selected during reset.
     """
 
     action_type: Literal["qpos", "ee"] = "qpos"
@@ -1220,29 +1383,22 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
             )
             self.max_instruction_num = EVAL_INSTRUCTION_NUM
 
-    def calculate_seed(self, seed: int | str) -> int:
+    def calculate_seed(self, seed: int) -> int:
         """Normalize the caller-facing start seed.
 
         This compatibility helper preserves the existing public method name
         while returning a caller-space start seed, not the actual runtime seed.
         """
-        if isinstance(seed, str):
-            if seed == "next":
-                return self.seed + 1
-            raise ValueError(
-                f"Invalid seed string: {seed}. Only 'next' is supported."
-            )
         return seed
 
-    def resolve_start_seed(self, seed: int | str) -> int:
+    def resolve_start_seed(self, seed: int) -> int:
         """Resolve a caller-facing start seed into a RoboTwin runtime seed.
 
         In eval mode, start seeds below ``EVAL_SEED_BASE`` are mapped into
         RoboTwin's reserved evaluation seed range.
 
         Args:
-            seed (int | str): The caller-facing start seed. The string value
-                `"next"` increments the current start seed by 1.
+            seed (int): The caller-facing start seed.
 
         Returns:
             int: The resolved runtime start seed used in RoboTwin.

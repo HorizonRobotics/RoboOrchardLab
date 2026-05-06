@@ -35,20 +35,16 @@ from projects.holobrain.policy.robotwin_policy import (  # noqa: E402
     HoloBrainRoboTwinPolicyCfg,
 )
 from robo_orchard_lab.envs.robotwin.env import (  # noqa: E402
-    EVAL_INSTRUCTION_NUM,
-    RoboTwinEnvCfg,
     config_robotwin_path,
 )
 from robo_orchard_lab.models.holobrain.pipeline import (  # noqa: E402
     HoloBrainInferencePipeline,
 )
-from robo_orchard_lab.policy.evaluator import (  # noqa: E402
-    PolicyEvaluatorConfig,
-)
-from robo_orchard_lab.policy.evaluator.robotwin import (  # noqa: E402
+from robo_orchard_lab.policy.evaluator.benchmark.robotwin import (  # noqa: E402
     SEM_TASKS_16,
-    RoboTwinRemoteEvaluatorCfg,
-    SuccessRateMetric,
+    RoboTwinBenchmarkEvaluatorCfg,
+    RoboTwinLocalBenchmarkBackendCfg,
+    RoboTwinRemoteBenchmarkBackendCfg,
 )
 from robo_orchard_lab.utils.env import set_env  # noqa: E402
 
@@ -77,17 +73,6 @@ def artifact_root_dir() -> str:
     return "eval_result"
 
 
-def episode_video_dir(
-    task_name: str,
-    config_type: Literal["demo_clean", "demo_randomized"],
-) -> str:
-    return os.path.join(
-        artifact_root_dir(),
-        task_name,
-        config_type,
-    )
-
-
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(description=Config.__doc__)
     try:
@@ -96,26 +81,6 @@ def parse_args() -> Config:
         if e.code == 2:
             parser.print_help()
         raise
-
-
-def build_robotwin_env_cfg(
-    task_name: str,
-    config_type: Literal["demo_clean", "demo_randomized"],
-    seed: int,
-) -> RoboTwinEnvCfg:
-    task_config_path = os.path.join(
-        config_robotwin_path(), "task_config", f"{config_type}.yml"
-    )
-    return RoboTwinEnvCfg(
-        task_name=task_name,
-        check_expert=True,
-        check_task_init=False,
-        eval_mode=True,
-        max_instruction_num=EVAL_INSTRUCTION_NUM,
-        format_datatypes=True,
-        task_config_path=task_config_path,
-        seed=seed,
-    )
 
 
 def evaluate_tasks_locally(
@@ -127,54 +92,19 @@ def evaluate_tasks_locally(
     seed: int = 0,
     save_video: bool = False,
 ) -> dict:
-    """Evaluate tasks locally within one start-seed family per task.
+    """Evaluate tasks locally with the benchmark evaluator replacement."""
 
-    The first episode uses the configured start seed for the task. Later
-    episodes request ``seed="next"``, which asks ``RoboTwinEnv`` to keep the
-    same start-seed family and continue from the next actual runtime seed
-    after any env-internal retry offsets.
-    """
-    aggregate_metric = SuccessRateMetric()
-
-    for task_name in task_names:
-        evaluator = PolicyEvaluatorConfig()()
-        env_cfg = build_robotwin_env_cfg(
-            task_name=task_name,
-            config_type=config_type,
-            seed=seed,
-        )
-        evaluator.setup(
-            env_cfg=env_cfg,
-            policy_or_cfg=policy_or_cfg,
-            metrics=SuccessRateMetric(),
-            device=device,
-        )
-        for episode_id in range(episode_num):
-            seed_request: int | str = seed if episode_id == 0 else "next"
-            evaluator.evaluate_episode(
-                max_steps=1500,
-                env_reset_kwargs={
-                    "clear_cache": True,
-                    "return_obs": True,
-                    "seed": seed_request,
-                    "task_name": task_name,
-                    "episode_id": episode_id,
-                    "video_dir": (
-                        episode_video_dir(
-                            task_name=task_name,
-                            config_type=config_type,
-                        )
-                        if save_video
-                        else None
-                    ),
-                },
-            )
-            current_metrics = evaluator.get_metrics()
-            assert isinstance(current_metrics, SuccessRateMetric)
-            aggregate_metric.merge([current_metrics])
-            evaluator.reset_metrics()
-
-    return aggregate_metric.compute()
+    result = RoboTwinBenchmarkEvaluatorCfg(
+        task_names=task_names,
+        episode_num=episode_num,
+        config_type=config_type,
+        start_seed=seed,
+        format_datatypes=True,
+        fail_fast=True,
+        backend=RoboTwinLocalBenchmarkBackendCfg(),
+        artifact_root_dir=artifact_root_dir() if save_video else None,
+    )().evaluate(policy_or_cfg, device=device)
+    return result.metrics
 
 
 def evaluate_tasks_remote(
@@ -205,23 +135,25 @@ def evaluate_tasks_remote(
     os.makedirs(ray_temp_dir, exist_ok=True)
 
     with set_env(CUDA_VISIBLE_DEVICES=cuda_devices_env):
-        evaluator = RoboTwinRemoteEvaluatorCfg(
-            num_parallel_envs=len(gpu_ids) * workers_per_gpu,
+        result = RoboTwinBenchmarkEvaluatorCfg(
             task_names=task_names,
             episode_num=episode_num,
             config_type=config_type,
-            seed=seed,
+            start_seed=seed,
             format_datatypes=True,
-            ray_init_config={"_temp_dir": ray_temp_dir},
-            remote_class_config=RayRemoteClassConfig(
-                num_cpus=1,
-                num_gpus=ray_inst_gpus,
-                memory=16 * 1024**3,
-                runtime_env={"env_vars": runtime_env_vars},
+            backend=RoboTwinRemoteBenchmarkBackendCfg(
+                num_parallel_envs=len(gpu_ids) * workers_per_gpu,
+                ray_init_config={"_temp_dir": ray_temp_dir},
+                remote_class_config=RayRemoteClassConfig(
+                    num_cpus=1,
+                    num_gpus=ray_inst_gpus,
+                    memory=16 * 1024**3,
+                    runtime_env={"env_vars": runtime_env_vars},
+                ),
             ),
             artifact_root_dir=artifact_root_dir() if save_video else None,
-        )()
-    return evaluator.evaluate(policy_or_cfg, device=device)
+        )().evaluate(policy_or_cfg, device=device)
+    return result.metrics
 
 
 def run(cfg: Config) -> dict:

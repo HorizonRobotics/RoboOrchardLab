@@ -27,7 +27,6 @@ from robo_orchard_core.datatypes import (
     BatchFrameTransform,
     BatchTransform3D,
 )
-from robo_orchard_core.envs.env_base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_core.envs.task import TaskInfo
 from robo_orchard_core.kinematics.chain import KinematicChain
 from robo_orchard_core.utils.config import ClassType
@@ -42,6 +41,7 @@ from robosuite.environments.base import MujocoEnv
 from robosuite.utils.binding_utils import MjSim
 from typing_extensions import Literal
 
+from robo_orchard_lab.envs.base import EnvBase, EnvBaseCfg, EnvStepReturn
 from robo_orchard_lab.envs.libero.obs import (
     get_camera_data,
     get_joints,
