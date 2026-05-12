@@ -90,6 +90,10 @@ class BaseDataPreprocessor(nn.Module):
             return data
 
     def process_img(self, imgs):
+        if isinstance(imgs, Sequence):
+            return [self.process_img(x) for x in imgs]
+        elif imgs is None:
+            return None
         idx = [slice(None)] * imgs.dim()
         if self.channel_order is not None:
             idx[self.channel_dim] = self.channel_order

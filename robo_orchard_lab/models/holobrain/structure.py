@@ -52,40 +52,67 @@ class TextTemplate(nn.Module):
     def __init__(self, with_subtask=True, image_first=True):
         super().__init__()
         self.with_subtask = with_subtask
+        self.image_first = image_first
+        self.image_token = "<|vision_start|><|image_pad|><|vision_end|>"
         if image_first:
             self.template = (
                 "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
                 "<|im_start|>user\n{image_token}\nYou are a robot. "
-                "{instruction}<|im_end|>\n"
+                "{instruction}{reference_imgs}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             )
         else:
             self.template = (
                 "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
                 "<|im_start|>user\nYou are a robot. "
-                "{instruction}\n{image_token}<|im_end|>\n"
+                "{instruction}{reference_imgs}\n{image_token}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             )
 
     def forward(self, data):
         batch_size, num_cams = data["imgs"].shape[:2]
-        image_token = [
-            "<|vision_start|><|image_pad|><|vision_end|>"
-        ] * num_cams
+        image_token = [self.image_token] * num_cams
         image_token = " ".join(image_token)
         instructions = data.get("text", [""] * batch_size)
+
+        if "reference_imgs" in data:
+            if isinstance(data["reference_imgs"], torch.Tensor):
+                num_reference_imgs = [
+                    data["reference_imgs"].shape[1]
+                ] * batch_size
+            else:
+                assert isinstance(data["reference_imgs"], list)
+                num_reference_imgs = [
+                    len(x) if x is not None else 0
+                    for x in data["reference_imgs"]
+                ]
+            reference_imgs_text = [
+                ("Reference images:" + f" {self.image_token}" * num)
+                if num > 0
+                else ""
+                for num in num_reference_imgs
+            ]
+        else:
+            reference_imgs_text = [""] * batch_size
+
         text = [
             self.template.format(
-                image_token=image_token, instruction=instruction
+                image_token=image_token,
+                instruction=instruction,
+                reference_imgs=reference_imgs,
             )
-            for instruction in instructions
+            for instruction, reference_imgs in zip(
+                instructions, reference_imgs_text, strict=True
+            )
         ]
+
         if self.with_subtask and "subtask" in data:
             for i, subtask in enumerate(data["subtask"]):
                 if subtask is not None and len(subtask) > 0:
                     text[i] += f"{subtask}\n"
         data["instruction"] = instructions
         data["text"] = text
+        data["image_first"] = self.image_first
         return data
 
 
@@ -257,7 +284,9 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
         x = x @ torch.nn.functional.softmax(self.weight, dim=0)
         return x
 
-    def _vlm_outputs_handler(self, vlm_outputs, vlm_inputs, inputs):
+    def _vlm_outputs_handler(
+        self, vlm_outputs, vlm_inputs, inputs, main_img_mask=None
+    ):
         if self.with_cot:
             assert "sequences" in vlm_outputs
             vlm_input_ids = vlm_outputs.sequences[:, :-1]
@@ -273,11 +302,23 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
         # vlm_outputs = self.foward_feat_mapping(vlm_outputs)
         vlm_outputs = vlm_outputs.to(torch.float32)
 
-        img_feature_mask = self.vlm.config.image_token_id == vlm_input_ids
+        img_token_mask = self.vlm.config.image_token_id == vlm_input_ids
+        if main_img_mask is None:
+            img_feature_mask = img_token_mask
+        else:
+            if img_token_mask.sum() != main_img_mask.numel():
+                raise ValueError(
+                    "Image token count does not match main image patch mask: "
+                    f"tokens={int(img_token_mask.sum().item())}, "
+                    f"patches={main_img_mask.numel()}."
+                )
+            img_feature_mask = torch.zeros_like(img_token_mask)
+            img_feature_mask[img_token_mask] = main_img_mask
+        h_, w_ = h // self.qwen_patch_size, w // self.qwen_patch_size
+
         img_feature = vlm_outputs[img_feature_mask].unflatten(
             0, (batch_size, -1)
         )
-        h_, w_ = h // self.qwen_patch_size, w // self.qwen_patch_size
         feature_maps = [
             img_feature.reshape(batch_size, num_cams, h_, w_, -1).permute(
                 0, 1, 4, 2, 3
@@ -299,25 +340,100 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
         )
         return feature_maps, text_dict
 
+    def _get_image_token_counts(self, image_grid_thw):
+        image_grid_thw = image_grid_thw.to(dtype=torch.long)
+        spatial_merge_size = getattr(
+            self.vlm.config.vision_config, "spatial_merge_size", 1
+        )
+        merge_length = spatial_merge_size**2
+        return image_grid_thw.prod(dim=1).div(
+            merge_length, rounding_mode="floor"
+        )
+
+    def _build_main_img_mask(self, image_grid_thw, image_is_main):
+        if image_grid_thw is None:
+            raise ValueError(
+                "`image_grid_thw` is required to split imgs and "
+                "reference_imgs image tokens."
+            )
+
+        image_token_counts = self._get_image_token_counts(image_grid_thw)
+        if len(image_is_main) != image_token_counts.numel():
+            raise ValueError(
+                "Image metadata count does not match image_grid_thw: "
+                f"metadata={len(image_is_main)}, "
+                f"grid_rows={image_token_counts.numel()}."
+            )
+        image_is_main = torch.as_tensor(
+            image_is_main, dtype=torch.bool, device=image_grid_thw.device
+        )
+        return image_is_main.repeat_interleave(image_token_counts)
+
+    def _split_images(self, images):
+        if isinstance(images, (list, tuple)):
+            return images
+        return [x.squeeze(0) for x in images.split(dim=0, split_size=1)]
+
+    def _get_image_list(self, inputs):
+        batch_size, num_cams = inputs["imgs"].shape[:2]
+        image_is_main = None
+        if "reference_imgs" in inputs:
+            image_list = []
+            image_is_main = []
+            reference_imgs = inputs["reference_imgs"]
+            if isinstance(reference_imgs, torch.Tensor):
+                assert reference_imgs.shape[0] == batch_size
+                reference_imgs = self._split_images(reference_imgs)
+            for bs_id in range(batch_size):
+                if inputs.get("image_first", True):
+                    image_list.extend(
+                        self._split_images(inputs["imgs"][bs_id])
+                    )
+                    image_is_main.extend([True] * num_cams)
+                if (
+                    reference_imgs[bs_id] is not None
+                    and len(reference_imgs[bs_id]) > 0
+                ):
+                    image_list.extend(
+                        self._split_images(reference_imgs[bs_id])
+                    )
+                    image_is_main.extend([False] * len(reference_imgs[bs_id]))
+                if not inputs.get("image_first", True):
+                    image_list.extend(
+                        self._split_images(inputs["imgs"][bs_id])
+                    )
+                    image_is_main.extend([True] * num_cams)
+        else:
+            image_list = self._split_images(inputs["imgs"].flatten(0, 1))
+        return image_list, image_is_main
+
     def _forward(self, inputs):
         batch_size, num_cams, _, h, w = inputs["imgs"].shape
         device = next(self.parameters()).device
         text = inputs["text"]
 
+        image_list, image_is_main = self._get_image_list(inputs)
         vlm_inputs = self.vlm_processor(
             text=text,
-            images=inputs["imgs"].permute(0, 1, 3, 4, 2).flatten(0, 1),
+            images=image_list,
             padding=True,
             return_tensors="pt",
         )
         vlm_inputs = vlm_inputs.to(device)
+        if image_is_main is not None:
+            main_img_mask = self._build_main_img_mask(
+                vlm_inputs.get("image_grid_thw"),
+                image_is_main,
+            )
+        else:
+            main_img_mask = None
         if not self.with_cot:
             vlm_outputs = self._forward_vlm(**vlm_inputs)
         else:
             vlm_outputs = self._generate_vlm(vlm_inputs)
 
         feature_maps, text_dict = self._vlm_outputs_handler(
-            vlm_outputs, vlm_inputs, inputs
+            vlm_outputs, vlm_inputs, inputs, main_img_mask
         )
 
         feature_3d = self.extract_feature_3d(inputs)
