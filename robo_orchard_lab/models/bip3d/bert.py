@@ -25,6 +25,11 @@ from typing import Sequence
 import torch
 from torch import nn
 
+from robo_orchard_lab.utils.transformers_compat import (
+    batch_encode_tokenizer,
+    prepare_hf_attention_mask,
+)
+
 
 def generate_masks_with_special_tokens_and_transfer_map(
     tokenized, special_tokens_list
@@ -171,14 +176,13 @@ class BertModel(nn.Module):
         if not os.path.exists(directory):
             os.makedirs(directory)
         self.tokenizer.save_pretrained(directory)
-        self.language_backbone[0].model.save_pretrained(
-            directory, safe_serialization=False
-        )
+        self.language_backbone[0].model.save_pretrained(directory)
 
     def forward(self, captions: Sequence[str], **kwargs) -> dict:
         """Forward function."""
         device = next(self.language_backbone.parameters()).device
-        tokenized = self.tokenizer.batch_encode_plus(
+        tokenized = batch_encode_tokenizer(
+            self.tokenizer,
             captions,
             max_length=self.max_tokens,
             padding="max_length" if self.pad_to_max else "longest",
@@ -259,10 +263,15 @@ class BertEncoder(nn.Module):
 
     def forward(self, x) -> dict:
         mask = x["attention_mask"]
+        hf_attention_mask = prepare_hf_attention_mask(
+            self.model,
+            mask,
+            x["input_ids"].shape,
+        )
 
         outputs = self.model(
             input_ids=x["input_ids"],
-            attention_mask=mask,
+            attention_mask=hf_attention_mask,
             position_ids=x["position_ids"],
             token_type_ids=x["token_type_ids"],
             output_hidden_states=True,

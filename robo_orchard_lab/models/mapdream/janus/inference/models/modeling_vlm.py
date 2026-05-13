@@ -15,6 +15,10 @@
 # permissions and limitations under the License.
 
 
+from collections.abc import Mapping
+from dataclasses import field
+from typing import Any, TypeVar
+
 import torch
 from easydict import EasyDict
 from einops import rearrange
@@ -37,6 +41,8 @@ from robo_orchard_lab.models.mapdream.janus.inference.models.projector import (
 
 CLIPVisionTower = clip_encoder.CLIPVisionTower
 VQ_models = vq_model.VQ_models
+
+ConfigT = TypeVar("ConfigT", bound=PretrainedConfig)
 
 
 class VisionHead(torch.nn.Module):
@@ -74,79 +80,100 @@ def model_name_to_cls(cls_name):
     return cls
 
 
-class VisionConfig(PretrainedConfig):
+def _plain_config_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain_config_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_config_value(item) for item in value]
+    return value
+
+
+def _coerce_sub_config(
+    value: Any,
+    config_type: type[ConfigT],
+) -> ConfigT:
+    if value is None:
+        return config_type()
+    if isinstance(value, config_type):
+        return value
+    if isinstance(value, Mapping):
+        return config_type(**value)
+    raise TypeError(
+        f"{config_type.__name__} input must be a mapping, "
+        "config instance, or None."
+    )
+
+
+def _coerce_language_config(value: Any) -> LlamaConfig:
+    if value is None:
+        return LlamaConfig()
+    if isinstance(value, LlamaConfig):
+        return value
+    if isinstance(value, Mapping):
+        return LlamaConfig(**value)
+    raise TypeError(
+        "language_config input must be a mapping, LlamaConfig instance, "
+        "or None."
+    )
+
+
+class _NamedParamsConfig(PretrainedConfig):
+    cls: str = ""
+    params: EasyDict = field(default_factory=EasyDict)
+
+    def __init__(
+        self,
+        cls: str | type[Any] = "",
+        params: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.cls = cls
+        self.params = params or {}
+        self._normalize_named_params()
+
+    def __post_init__(self, **kwargs: Any) -> None:
+        super_post_init = getattr(super(), "__post_init__", None)
+        if callable(super_post_init):
+            super_post_init(**kwargs)
+        self._normalize_named_params()
+
+    def _normalize_named_params(self) -> None:
+        self.cls = self.cls if isinstance(self.cls, str) else self.cls.__name__
+        plain_params = _plain_config_value(self.params or {})
+        if not isinstance(plain_params, dict):
+            raise TypeError("params must be a mapping.")
+        self.params = EasyDict(plain_params)
+
+    def to_dict(self) -> dict[str, Any]:
+        params = self.params
+        self.params = _plain_config_value(params)
+        try:
+            output = super().to_dict()
+        finally:
+            self.params = params
+        output["params"] = _plain_config_value(params)
+        return output
+
+
+class VisionConfig(_NamedParamsConfig):
     model_type = "vision"
-    cls: str = ""
-    params: EasyDict = {}
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.cls = kwargs.get("cls", "")
-        if not isinstance(self.cls, str):
-            self.cls = self.cls.__name__
-
-        self.params = EasyDict(kwargs.get("params", {}))
 
 
-class AlignerConfig(PretrainedConfig):
+class AlignerConfig(_NamedParamsConfig):
     model_type = "aligner"
-    cls: str = ""
-    params: EasyDict = {}
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.cls = kwargs.get("cls", "")
-        if not isinstance(self.cls, str):
-            self.cls = self.cls.__name__
-
-        self.params = EasyDict(kwargs.get("params", {}))
 
 
-class GenVisionConfig(PretrainedConfig):
+class GenVisionConfig(_NamedParamsConfig):
     model_type = "gen_vision"
-    cls: str = ""
-    params: EasyDict = {}
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.cls = kwargs.get("cls", "")
-        if not isinstance(self.cls, str):
-            self.cls = self.cls.__name__
-
-        self.params = EasyDict(kwargs.get("params", {}))
 
 
-class GenAlignerConfig(PretrainedConfig):
+class GenAlignerConfig(_NamedParamsConfig):
     model_type = "gen_aligner"
-    cls: str = ""
-    params: EasyDict = {}
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.cls = kwargs.get("cls", "")
-        if not isinstance(self.cls, str):
-            self.cls = self.cls.__name__
-
-        self.params = EasyDict(kwargs.get("params", {}))
 
 
-class GenHeadConfig(PretrainedConfig):
+class GenHeadConfig(_NamedParamsConfig):
     model_type = "gen_head"
-    cls: str = ""
-    params: EasyDict = {}
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.cls = kwargs.get("cls", "")
-        if not isinstance(self.cls, str):
-            self.cls = self.cls.__name__
-
-        self.params = EasyDict(kwargs.get("params", {}))
 
 
 class MultiModalityConfig(PretrainedConfig):
@@ -162,26 +189,29 @@ class MultiModalityConfig(PretrainedConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        vision_config = kwargs.get("vision_config", {})
-        self.vision_config = VisionConfig(**vision_config)
-
-        aligner_config = kwargs.get("aligner_config", {})
-        self.aligner_config = AlignerConfig(**aligner_config)
-
-        gen_vision_config = kwargs.get("gen_vision_config", {})
-        self.gen_vision_config = GenVisionConfig(**gen_vision_config)
-
-        gen_aligner_config = kwargs.get("gen_aligner_config", {})
-        self.gen_aligner_config = GenAlignerConfig(**gen_aligner_config)
-
-        gen_head_config = kwargs.get("gen_head_config", {})
-        self.gen_head_config = GenHeadConfig(**gen_head_config)
-
-        language_config = kwargs.get("language_config", {})
-        if isinstance(language_config, LlamaConfig):
-            self.language_config = language_config
-        else:
-            self.language_config = LlamaConfig(**language_config)
+        self.vision_config = _coerce_sub_config(
+            kwargs.get("vision_config"),
+            VisionConfig,
+        )
+        self.aligner_config = _coerce_sub_config(
+            kwargs.get("aligner_config"),
+            AlignerConfig,
+        )
+        self.gen_vision_config = _coerce_sub_config(
+            kwargs.get("gen_vision_config"),
+            GenVisionConfig,
+        )
+        self.gen_aligner_config = _coerce_sub_config(
+            kwargs.get("gen_aligner_config"),
+            GenAlignerConfig,
+        )
+        self.gen_head_config = _coerce_sub_config(
+            kwargs.get("gen_head_config"),
+            GenHeadConfig,
+        )
+        self.language_config = _coerce_language_config(
+            kwargs.get("language_config")
+        )
 
 
 class MultiModalityPreTrainedModel(PreTrainedModel):
@@ -196,28 +226,33 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         super().__init__(config)
 
         vision_config = config.vision_config
+        vision_params = EasyDict(vision_config.params)
         vision_cls = model_name_to_cls(vision_config.cls)
-        self.vision_model = vision_cls(**vision_config.params)
+        self.vision_model = vision_cls(**vision_params)
 
         aligner_config = config.aligner_config
+        aligner_params = EasyDict(aligner_config.params)
         aligner_cls = model_name_to_cls(aligner_config.cls)
-        self.aligner = aligner_cls(aligner_config.params)
+        self.aligner = aligner_cls(aligner_params)
 
         gen_vision_config = config.gen_vision_config
+        gen_vision_params = EasyDict(gen_vision_config.params)
         gen_vision_cls = model_name_to_cls(gen_vision_config.cls)
         self.gen_vision_model = gen_vision_cls()
 
         gen_aligner_config = config.gen_aligner_config
+        gen_aligner_params = EasyDict(gen_aligner_config.params)
         gen_aligner_cls = model_name_to_cls(gen_aligner_config.cls)
-        self.gen_aligner = gen_aligner_cls(gen_aligner_config.params)
+        self.gen_aligner = gen_aligner_cls(gen_aligner_params)
 
         gen_head_config = config.gen_head_config
+        gen_head_params = EasyDict(gen_head_config.params)
         gen_head_cls = model_name_to_cls(gen_head_config.cls)
-        self.gen_head = gen_head_cls(gen_head_config.params)
+        self.gen_head = gen_head_cls(gen_head_params)
 
         self.gen_embed = torch.nn.Embedding(
-            gen_vision_config.params.image_token_size,
-            gen_vision_config.params.n_embed,
+            gen_vision_params.image_token_size,
+            gen_vision_params.n_embed,
         )
         self.loss_fct = torch.nn.CrossEntropyLoss()
 

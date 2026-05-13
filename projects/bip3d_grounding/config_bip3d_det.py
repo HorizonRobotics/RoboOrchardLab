@@ -362,7 +362,7 @@ def build_transform(config, detection=True):
     load_img_depth = dict(
         type=LoadMultiViewImageDepthFromFile,
         num_views=1,
-        max_num_views=18,
+        max_num_views=config.get("max_num_views", 18),
         sample_mode="random" if detection else "fix",
         rotate_3rscan=True,
         load_img=True,
@@ -378,7 +378,7 @@ def build_transform(config, detection=True):
 
     val_load_img_depth = copy.deepcopy(load_img_depth)
     val_load_img_depth.update(
-        max_num_views=50,
+        max_num_views=config.get("val_max_num_views", 50),
         sample_mode="fix",
         random_crop_range=None,
     )

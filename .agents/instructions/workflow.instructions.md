@@ -59,6 +59,11 @@ description: Load these instructions when planning complex repository work, vali
 - Prefer `make doc-debug-api ...` for API-doc impact and `make doc-debug-tutorial ...` for tutorial impact before escalating to a full `make doc` build.
 - Add or update tests when behavior changes.
 - Broaden validation for shared behavior, public APIs, packaging, or config changes.
+- For dependency compatibility-window upgrades, keep reproducible lower and
+  upper endpoint constraint files under `scm/constraints/` when the resolver
+  surface is part of the validation story. Validate source compatibility at
+  each endpoint before widening package metadata, then run a real packaging
+  or import smoke with the affected optional extras and endpoint constraints.
 - When broad pytest validation is large enough to justify xdist, prefer
   repository-owned entrypoints or an explicit worker count that matches the
   target's runtime profile; do not default to `-n auto`.

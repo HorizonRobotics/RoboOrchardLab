@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from typing import Any, Generic, Literal, TypeVar, cast
 
 import torch
-import transformers
 from pydantic import (
     Field,
     TypeAdapter,
@@ -39,6 +38,9 @@ from typing_extensions import Self
 from robo_orchard_lab.models.torch_model import TorchModelMixin, TorchModuleCfg
 from robo_orchard_lab.utils.huggingface import resolve_hf_compatible_path
 from robo_orchard_lab.utils.path import abspath, in_cwd
+from robo_orchard_lab.utils.transformers_compat import (
+    normalize_hf_dtype_kwargs,
+)
 
 __all__ = [
     "HFPretrainedModelRef",
@@ -77,49 +79,6 @@ def _normalize_ref_json_value(value: Any) -> Any:
         "Model refs only support JSON-serializable kwargs plus common "
         f"torch/path values. Unsupported value type: {type(value).__name__}."
     )
-
-
-def _runtime_hf_dtype_kwarg_name() -> Literal["dtype", "torch_dtype"]:
-    """Return the dtype kwarg name expected by the installed transformers."""
-
-    version_tokens = transformers.__version__.split(".")
-    parsed_tokens: list[int] = []
-    for token in version_tokens[:2]:
-        numeric_prefix = ""
-        for char in token:
-            if char.isdigit():
-                numeric_prefix += char
-            else:
-                break
-        if not numeric_prefix:
-            return "torch_dtype"
-        parsed_tokens.append(int(numeric_prefix))
-
-    if len(parsed_tokens) < 2:
-        return "torch_dtype"
-
-    return "dtype" if tuple(parsed_tokens[:2]) >= (4, 56) else "torch_dtype"
-
-
-def _normalize_hf_dtype_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Normalize ``dtype`` / ``torch_dtype`` aliases for transformers."""
-
-    normalized_kwargs = dict(kwargs)
-    dtype = normalized_kwargs.pop("dtype", None)
-    torch_dtype = normalized_kwargs.pop("torch_dtype", None)
-
-    if dtype is None and torch_dtype is None:
-        return normalized_kwargs
-
-    if dtype is not None and torch_dtype is not None and dtype != torch_dtype:
-        raise ValueError(
-            "`dtype` and `torch_dtype` must match when both are provided."
-        )
-
-    normalized_kwargs[_runtime_hf_dtype_kwarg_name()] = (
-        dtype if dtype is not None else torch_dtype
-    )
-    return normalized_kwargs
 
 
 class LoadableModelRef(Config, Generic[ModelT], ABC):
@@ -394,8 +353,8 @@ class HFPretrainedModelRef(LoadableModelRef[HFModelT], Generic[HFModelT]):
                 )
         elif self.load_kwargs:
             raise ValueError("`load_kwargs` requires `load_weights=True`.")
-        _normalize_hf_dtype_kwargs(self.load_kwargs)
-        _normalize_hf_dtype_kwargs(self.build_kwargs)
+        normalize_hf_dtype_kwargs(self.load_kwargs)
+        normalize_hf_dtype_kwargs(self.build_kwargs)
         return self
 
     def resolve_path(self) -> str:
@@ -430,7 +389,7 @@ class HFPretrainedModelRef(LoadableModelRef[HFModelT], Generic[HFModelT]):
         )
 
     def _build_from_config(self, config: Any) -> HFModelT:
-        build_kwargs = _normalize_hf_dtype_kwargs(self.build_kwargs)
+        build_kwargs = normalize_hf_dtype_kwargs(self.build_kwargs)
 
         from_config = getattr(self.class_type, "from_config", None)
         if callable(from_config):
@@ -473,7 +432,7 @@ class HFPretrainedModelRef(LoadableModelRef[HFModelT], Generic[HFModelT]):
             config = self._load_config(resolved_path)
 
         if self.load_weights:
-            load_kwargs = _normalize_hf_dtype_kwargs(self.load_kwargs)
+            load_kwargs = normalize_hf_dtype_kwargs(self.load_kwargs)
             if config is not None:
                 load_kwargs["config"] = config
             return self.class_type.from_pretrained(

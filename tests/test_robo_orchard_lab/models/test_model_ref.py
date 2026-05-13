@@ -450,7 +450,8 @@ class TestHFPretrainedModelRef:
     ):
         _, save_dir = self._create_unregistered_hf_model(tmp_path)
         monkeypatch.setattr(
-            "robo_orchard_lab.models.model_ref._runtime_hf_dtype_kwarg_name",
+            "robo_orchard_lab.utils.transformers_compat."
+            "runtime_hf_dtype_kwarg_name",
             lambda: "torch_dtype",
         )
         TorchDtypeOnlyPrivateConfigHFModel.last_from_private_kwargs = None

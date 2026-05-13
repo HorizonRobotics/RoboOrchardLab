@@ -1487,9 +1487,15 @@ class TestStateSaveLoadMixin:
 
         with tempfile.TemporaryDirectory(dir=tmp_local_folder) as save_path:
             state_mixin.save(save_path)
+            processor_save_path = os.path.join(save_path, "state", "processor")
             assert os.path.exists(
-                os.path.join(
-                    save_path, "state", "processor", "preprocessor_config.json"
+                os.path.join(processor_save_path, "meta.json")
+            )
+            assert any(
+                os.path.exists(os.path.join(processor_save_path, name))
+                for name in (
+                    "preprocessor_config.json",
+                    "processor_config.json",
                 )
             )
             recovered_mixin = StateSaveLoadMixin.load(save_path)

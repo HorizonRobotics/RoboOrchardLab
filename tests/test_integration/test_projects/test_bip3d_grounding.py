@@ -46,6 +46,8 @@ def test_bip3d_grounding(PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str):
             "robo_orchard_workspace/datasets/embodiedscan",
         ),
         step_log_freq=1,
+        max_num_views=12,
+        val_max_num_views=18,
         max_epoch=3,
         epoch_eval_freq=3,
         lr=0.0,

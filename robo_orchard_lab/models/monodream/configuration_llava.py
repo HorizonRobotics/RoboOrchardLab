@@ -64,7 +64,7 @@ class LlavaConfig(PretrainedConfig):
         model_dtype=None,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self.architectures = architectures
         self.llm_cfg = llm_cfg
         self.vision_tower_cfg = vision_tower_cfg

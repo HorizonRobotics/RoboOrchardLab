@@ -27,6 +27,31 @@ _ACCELERATE_TRACE_RUNNER = Path(__file__).with_name(
 )
 
 
+def _xdist_worker_index(env: dict[str, str]) -> int:
+    worker = env.get("PYTEST_XDIST_WORKER", "gw0")
+    if worker.startswith("gw") and worker[2:].isdigit():
+        return int(worker[2:])
+    return 0
+
+
+def _accelerate_port_candidates(
+    env: dict[str, str],
+    prepare_mode: str,
+    use_dataset_side_batching: bool,
+    num_workers: int,
+    shard_strategy_name: str,
+) -> list[str]:
+    key = (
+        f"{prepare_mode}:{int(use_dataset_side_batching)}:"
+        f"{num_workers}:{shard_strategy_name}"
+    )
+    worker_offset = (_xdist_worker_index(env) % 30) * 1000
+    key_offset = sum(ord(char) for char in key) % 700
+    pid_offset = os.getpid() % 200
+    start = 20000 + worker_offset + key_offset + pid_offset
+    return [str(start + attempt * 17) for attempt in range(8)]
+
+
 def _run_accelerate_trace_subprocess(
     tmp_path: Path,
     project_root: str,
@@ -62,7 +87,7 @@ def _run_accelerate_trace_subprocess(
     )
     env["CUDA_VISIBLE_DEVICES"] = ""
 
-    command = [
+    command_prefix = [
         sys.executable,
         "-m",
         "accelerate.commands.launch",
@@ -70,9 +95,8 @@ def _run_accelerate_trace_subprocess(
         "--num_processes",
         "2",
         "--main_process_port",
-        # Let the distributed launcher atomically reserve an ephemeral port so
-        # xdist workers do not race on a probe-then-release socket.
-        "0",
+    ]
+    command_suffix = [
         str(_ACCELERATE_TRACE_RUNNER),
         "--prepare-mode",
         prepare_mode,
@@ -85,17 +109,43 @@ def _run_accelerate_trace_subprocess(
         "--output-dir",
         str(output_dir),
     ]
-    completed = subprocess.run(
-        command,
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    attempted_ports = []
+    for port in _accelerate_port_candidates(
+        env,
+        prepare_mode,
+        use_dataset_side_batching,
+        num_workers,
+        shard_strategy_name,
+    ):
+        command = [*command_prefix, port, *command_suffix]
+        completed = subprocess.run(
+            command,
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode == 0:
+            break
+        attempted_ports.append(port)
+        if (
+            "EADDRINUSE" not in completed.stderr
+            and "address already in use" not in completed.stderr
+        ):
+            break
+    else:
+        assert completed.returncode == 0, (
+            "accelerate subprocess failed after port retries\n"
+            f"ports: {attempted_ports}\n"
+            f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
+
     assert completed.returncode == 0, (
         "accelerate subprocess failed\n"
+        f"ports: {attempted_ports}\n"
         f"stdout:\n{completed.stdout}\n"
         f"stderr:\n{completed.stderr}"
     )

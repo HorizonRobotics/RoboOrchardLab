@@ -1,0 +1,7 @@
+# Tested Transformers 4 compatibility entrypoint.
+numpy<2
+transformers==4.49.0
+huggingface-hub>=0.26.0,<1.0
+tokenizers>=0.21,<0.22
+safetensors>=0.4.1
+regex!=2019.12.17

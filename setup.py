@@ -238,14 +238,14 @@ if __name__ == "__main__":
     # optional dependencies
     extras_require = {
         "bip3d": [
-            "transformers<=4.49.0",
+            "transformers>=4.49.0,<=5.8.0",
             "peft>=0.17.0",
             "terminaltables",
             "pytorch3d",
             "ninja",
         ],
         "sem": [
-            "transformers<=4.57.1",
+            "transformers>=4.49.0,<=5.8.0",
             "pytorch3d>=0.7.8",
             "pytorch-kinematics",
             "ninja",
@@ -255,7 +255,7 @@ if __name__ == "__main__":
         ],
         "holobrain_0": [
             "torch>=2.6.0",
-            "transformers<=4.57.1",
+            "transformers>=4.49.0,<=5.8.0",
             "pytorch3d>=0.7.8",
             "pytorch-kinematics",
             "ninja",

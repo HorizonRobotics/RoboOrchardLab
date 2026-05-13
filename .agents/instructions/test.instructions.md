@@ -84,8 +84,18 @@ description: Load these instructions when creating, updating, or validating test
   distributed subprocesses under xdist, do not use a probe-and-release
   free-port helper. Prefer port `0` or another launcher-owned atomic port
   allocation path.
+- If a launcher implements port `0` as probe-and-release internally, use
+  per-worker stable port candidates and retry only after a real
+  `EADDRINUSE` launch failure.
 - If a subprocess helper does not need child-process coverage, clear
   inherited `COV_CORE_*` and `COVERAGE_PROCESS_START` variables before
   launch so pytest-cov noise does not mask the real failure.
+- When full-test targets change into `build/test`, set an explicit checkout
+  import path such as `PYTHONPATH="$PWD"` so validation does not import an
+  installed or sibling checkout by accident.
+- When validating with an alternate dependency environment, prefer explicit
+  interpreter entrypoints such as `RUN="<env>/bin/python -m"` or
+  `<env>/bin/python -m pytest` over relying on console scripts that may come
+  from another environment.
 - Run `ruff check` on modified test files.
 - If the local pytest environment requires temporary flags or environment variables to run successfully, document the exact command used and why it was needed.

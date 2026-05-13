@@ -40,6 +40,23 @@ Use this guideline when designing, implementing, reviewing, or testing:
 - When a compatibility wrapper remains supported, test both the canonical
   shared model-reference path and the deprecated path directly.
 
+## Transformers Compatibility
+
+- Keep Transformers version-specific compatibility behavior in
+  `robo_orchard_lab.utils.transformers_compat` instead of spreading
+  runtime-version branches through model implementations.
+- Do not import private Transformers helpers directly from model code. If an
+  older supported Transformers version provides a helper whose behavior must
+  be preserved, delegate to it inside the repository-owned compatibility
+  module and keep the fallback there.
+- Normalize Hugging Face `dtype` / `torch_dtype` load and build kwargs
+  through the shared compatibility helper so model refs and model-specific
+  loaders follow the same runtime rule.
+- For Transformers compatibility migrations, validate behavior at the
+  downstream model or module boundary. For tensor-shape or attention-mask
+  changes, inspect the actual tensors received by the underlying Hugging Face
+  module instead of relying only on wrapper-level outputs.
+
 ## `hf://`-Compatible Path Handling
 
 - Centralize `hf://` normalization and download behavior in a shared helper
