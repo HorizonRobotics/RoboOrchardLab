@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,18 +14,12 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from __future__ import annotations
 from typing import Generator, Generic, Iterable, TypeVar
 
-import datasets as hg_datasets
-
-from robo_orchard_lab.dataset.datatypes.hg_features import RODictDataFeature
 from robo_orchard_lab.dataset.robot.columns import PreservedColumnsKeys
 from robo_orchard_lab.dataset.robot.dataset import RODataset
-from robo_orchard_lab.dataset.robot.db_orm import (
-    Instruction,
-    Robot,
-    Task,
-)
+from robo_orchard_lab.dataset.robot.db_orm import Instruction, Robot, Task
 from robo_orchard_lab.dataset.robot.packaging import (
     DataFrame,
     DatasetPackaging,
@@ -36,8 +30,16 @@ from robo_orchard_lab.dataset.robot.packaging import (
     RobotData,
     TaskData,
 )
-
-__all__ = ["repack_dataset"]
+from robo_orchard_lab.dataset.robot.re_packing.contracts import (
+    RODatasetEpisodeSelection,
+)
+from robo_orchard_lab.dataset.robot.re_packing.selection import (
+    make_episode_selection,
+)
+from robo_orchard_lab.dataset.robot.re_packing.source_copy import (
+    make_repack_features,
+    normalize_optional_meta_index,
+)
 
 
 class DefaultRePackingEpisodeHelper(EpisodePackaging):
@@ -67,18 +69,34 @@ class DefaultRePackingEpisodeHelper(EpisodePackaging):
         if not all(eid == episode_list[0] for eid in episode_list):
             raise ValueError("All frames must belong to the same episode.")
         self._current_episode_index = episode_list[0]
+        self._episode_selection = make_episode_selection(
+            dataset=self.dataset,
+            episode_index=int(self._current_episode_index),
+            selected_frame_indices=self.frame_index_list,
+        )
+
+    @property
+    def episode_selection(self) -> RODatasetEpisodeSelection:
+        return self._episode_selection
 
     def generate_episode_meta(self) -> EpisodeMeta:
         frame_start = self.frame_index_list[0]
         row = self.dataset.index_dataset[frame_start]
-        orm_robot: Robot = self.dataset.get_meta(Robot, row["robot_index"])
+        robot_index = normalize_optional_meta_index(
+            row["robot_index"], "robot_index"
+        )
+        task_index = normalize_optional_meta_index(
+            row["task_index"], "task_index"
+        )
+        orm_robot = self.dataset.get_meta(Robot, robot_index)
         assert orm_robot is not None
-        orm_task: Task = self.dataset.get_meta(Task, row["task_index"])
+        orm_task = self.dataset.get_meta(Task, task_index)
         assert orm_task is not None
         robot: RobotData = RobotData.from_orm(orm_robot)
         task = TaskData(
             name=orm_task.name,
             description=orm_task.description,
+            info=orm_task.info,
         )
         return EpisodeMeta(episode=EpisodeData(), robot=robot, task=task)
 
@@ -93,13 +111,12 @@ class DefaultRePackingEpisodeHelper(EpisodePackaging):
             if key not in preserved_columns
         ]
 
-        # cache all instructions for faster access
+        # Cache all instructions for faster access.
         index_rows = self.dataset.index_dataset[self.frame_index_list]
         all_instruction = self.dataset.get_meta(
             Instruction, index_rows["instruction_index"]
         )
 
-        # split self.frame_index_list into batches
         batch_size = 128
         for batch_start in range(0, len(self.frame_index_list), batch_size):
             batch_end = min(
@@ -173,12 +190,10 @@ class RePackingDatasetHelper(Generic[RePackingEpisodeType]):
             for i, frame_index in enumerate(batch_frame_indices):
                 row = batch_rows[i]
                 episode_index = row["episode_index"]
-                # only for first frame, assign current_episode_index
                 if current_episode_index is None:
                     current_episode_index = episode_index
 
                 if episode_index != current_episode_index:
-                    # yield the previous episode
                     yield self.packing_impl(
                         self.dataset, current_episode_frames
                     )
@@ -200,64 +215,18 @@ class RePackingDatasetHelper(Generic[RePackingEpisodeType]):
             yield self.packing_impl(self.dataset, current_episode_frames)
 
 
-def repack_dataset(
-    source_dataset: RODataset,
+def helper_repack_dataset(
+    *,
+    dataset: RODataset,
     target_path: str,
-    frame_indices: Iterable[int] | None = None,
-    columns: str | list[str] | None = None,
-    writer_batch_size: int = 1024,
-    max_shard_size: str | int = "8GB",
-    force_overwrite: bool = False,
-    packing_impl: type[RePackingEpisodeType] = DefaultRePackingEpisodeHelper,
-):
-    """Re-package a RoboOrchard dataset with selected frames for each episode.
-
-    Args:
-        source_dataset (RODataset): The source dataset to re-package from.
-        target_path (str): The path to save the re-packaged dataset.
-        frame_indices (Iterable[int] | None): An iterable of frame indices
-            to include in the re-packaged dataset. Frames from the same
-            episode should be grouped together! If None, all frames will be
-            included. Default is None.
-        columns (str | list[str] | None): The columns to include in the
-            re-packaged dataset. If None, all columns will be included. If
-            a string is provided, it will be treated as a single column name.
-            Default is None.
-        writer_batch_size (int): The batch size for writing the arrow file.
-            This may affect the performance of packaging or reading the
-            dataset later. Default is 1024.
-        max_shard_size (str | int | None): The maximum size of each shard.
-            If None, no sharding will be applied. This can be a string
-            like '10GB' or an integer representing the size in bytes.
-            Default is '8GB'.
-        force_overwrite (bool): Whether to overwrite the target path if it
-            already exists. Default is False.
-        packing_impl (type[RePackingEpisodeType]): The implementation class
-            for packaging each episode. Default is
-            `DefaultRePackingEpisodeHelper`.
-
-    """
-    if columns is not None:
-        dataset = source_dataset.select_columns(columns, include_index=True)
-    else:
-        dataset = source_dataset
-
-    features = dataset.features
-
-    preserved_columns = set(PreservedColumnsKeys)
-
-    features = {
-        key: features[key] for key in features if key not in preserved_columns
-    }
-    features = hg_datasets.Features(features)
-    # check if any feature is adapted for loading. If so, we need to
-    # reset them to default for packaging to match current code version.
-    for _, feature in features.items():
-        if isinstance(feature, RODictDataFeature):
-            try:
-                feature.reset()
-            except NotImplementedError:
-                pass
+    frame_indices: Iterable[int] | None,
+    writer_batch_size: int,
+    max_shard_size: str | int,
+    force_overwrite: bool,
+    packing_impl: type[RePackingEpisodeType],
+    fail_fast: bool,
+) -> None:
+    features = make_repack_features(dataset.features)
 
     if frame_indices is None:
         frame_indices = range(len(dataset.index_dataset))
@@ -271,4 +240,5 @@ def repack_dataset(
         writer_batch_size=writer_batch_size,
         max_shard_size=max_shard_size,
         force_overwrite=force_overwrite,
+        fail_fast=fail_fast,
     )

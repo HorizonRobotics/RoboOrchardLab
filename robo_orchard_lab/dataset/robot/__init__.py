@@ -52,5 +52,5 @@ from .dataset_db_engine import *
 from .dataset_ex import *
 from .db_orm import RobotDescriptionFormat
 from .packaging import *
-from .re_packing import *
+from .re_packing import DefaultRePackingEpisodeHelper, repack_dataset
 from .row_sampler import *

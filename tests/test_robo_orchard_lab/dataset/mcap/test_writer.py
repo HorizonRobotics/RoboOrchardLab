@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import json
 import os
 import random
 import string
@@ -28,11 +29,16 @@ from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
     McapBatchFromBatchJointStateConfig,
 )
 from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
+from robo_orchard_lab.dataset.experimental.mcap.reader import (
+    MakeIterMsgArgs,
+    McapReader,
+)
 from robo_orchard_lab.dataset.experimental.mcap.writer import (
     Dataset2Mcap,
     Dict2Mcap,
 )
 from robo_orchard_lab.dataset.robot.dataset import RODataset
+from robo_orchard_lab.dataset.robot.db_orm import Episode
 
 
 @pytest.fixture(scope="module")
@@ -92,6 +98,36 @@ class TestDataset2Mcap:
             encoder_cfg=robotwin_dataset2mcap_cfg,
         )
         assert os.path.exists(target_path), "MCAP file was not created."
+
+        episode = robotwin_dataset.get_meta(Episode, 0)
+        assert episode is not None
+        first_frame = robotwin_dataset.frame_dataset[
+            episode.dataset_begin_index
+        ]
+        with open(target_path, "rb") as f:
+            reader = McapReader.make_reader(f)
+            episode_messages = list(
+                reader.iter_messages(
+                    MakeIterMsgArgs(topics=["/metadata/episode"])
+                )
+            )
+
+        assert len(episode_messages) == 1
+        assert episode_messages[0].channel.message_encoding == "json"
+        episode_message = episode_messages[0].message
+        assert episode_message.log_time == first_frame["timestamp_min"]
+        episode_payload = json.loads(episode_message.data.decode("utf-8"))
+        assert episode_payload == {
+            "index": episode.index,
+            "robot_index": episode.robot_index,
+            "task_index": episode.task_index,
+            "prev_episode_index": episode.prev_episode_index,
+            "dataset_begin_index": episode.dataset_begin_index,
+            "frame_num": episode.frame_num,
+            "truncated": episode.truncated,
+            "success": episode.success,
+            "info": episode.info,
+        }
 
 
 class TestDict2Mcap:

@@ -4,6 +4,7 @@ Repository instructions live in `.agents/instructions/`.
 Repository references live in `.agents/references/`.
 Repository skills live in `.agents/skills/`.
 Reusable agent-facing templates live in `.agents/templates/`.
+Local agent asset index lives in `.agents/README.md`.
 
 ## Guidance Scope and Precedence
 
@@ -15,8 +16,10 @@ Reusable agent-facing templates live in `.agents/templates/`.
 
 - Read `.agents/instructions/default.instructions.md` only when the task
   touches this repository's files, workflows, or behavior.
-- When editing `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, `.agents/skills/`, or `.agents/templates/`,
+- When editing `AGENTS.md`, `.agents/README.md`, `.agents/instructions/`, `.agents/references/`, `.agents/skills/`, or `.agents/templates/`,
   also read `.agents/instructions/guidance-authoring.instructions.md`.
+- When deciding where a local `.agents` asset belongs or whether a new one is
+  needed, inspect `.agents/README.md` first.
 - Use `Quick Routing` below to load topic-specific instruction or reference files when relevant.
 
 ### Quick Routing
@@ -28,7 +31,7 @@ Reusable agent-facing templates live in `.agents/templates/`.
   `.agents/references/dict-transform-guideline.md` and
   `.agents/templates/dict-transform-scaffold.md`
 - Processor, envelope, compose, or `pre_process`/`post_process` contract changes: `.agents/references/processor-guideline.md`
-- Complex feature/refactor design notes, design-doc structure, or plan
+- Complex feature/refactor design notes, design-doc prompts, or plan
   readiness:
   `.agents/references/design-doc-guideline.md` and
   `.agents/templates/design-doc-scaffold.md`
@@ -53,6 +56,16 @@ Reusable agent-facing templates live in `.agents/templates/`.
 - `RoboTwinEnv`, RoboTwin reset/seed/task config behavior, post-reset
   recreate State, or RoboTwin compatibility rules:
   `.agents/references/robotwin-env-guideline.md`
+- RODataset metadata schema, `Task.info`, `InstructionData.json_content`,
+  `EpisodeData.info`, metadata parsing, or metadata export:
+  `.agents/references/rodataset-metadata-guideline.md`
+- RODataset repack, `repack_dataset`, `RODatasetRepackTransform`,
+  `re_packing/`, frame selection, transform failure semantics, or
+  previous-episode remapping:
+  `.agents/references/rodataset-repack-guideline.md`
+- RODataset metadata database table upgrades, deprecated ORM shapes, fixed
+  legacy fixtures, or persisted identity changes:
+  `.agents/references/rodataset-upgrade-guideline.md`
 - Key interface docstrings for public classes/functions or boundary helpers
   whose safe use is not obvious from the signature alone, including
   resource-owning or stateful interfaces: start with
@@ -71,7 +84,7 @@ Reusable agent-facing templates live in `.agents/templates/`.
 - Spatial transform, pose, or matrix naming: `.agents/references/spatial-transform-and-matrix-naming-guideline.md`
 - Distilling stable implementation, review, or design-process lessons into local guidance:
   `.agents/instructions/experience-distillation.instructions.md`
-- `AGENTS.md`, `.agents/instructions/`, `.agents/references/`, or `.agents/skills/` authoring and refactors: `.agents/instructions/guidance-authoring.instructions.md`
+- `AGENTS.md`, `.agents/README.md`, `.agents/instructions/`, `.agents/references/`, or `.agents/skills/` authoring and refactors: `.agents/instructions/guidance-authoring.instructions.md`
 
 ## Skills
 
@@ -96,6 +109,7 @@ Reusable agent-facing templates live in `.agents/templates/`.
 - Treat `.agents/skills/` as the source of truth for task-specific skill workflows.
 - Treat `.agents/templates/` as the source of truth for reusable
   agent-facing implementation and test scaffolds.
+- Treat `.agents/README.md` as the local inventory for shared agent assets.
 - Keep this file as a pointer; do not copy instruction content here.
 - Use `Makefile` and `pyproject.toml` as the workflow and tool-config sources of truth when applicable.
 - Use pytest config under `tests/` as the pytest source of truth.

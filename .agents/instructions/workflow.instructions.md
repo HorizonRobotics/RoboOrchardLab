@@ -26,9 +26,10 @@ description: Load these instructions when planning complex repository work, vali
 - Before implementation, write a temporary design note in a disposable repository-local scratch path such as `.agents/scratch/designs/`; keep it uncommitted by default.
 - Capture the problem, constraints, chosen approach, validation plan, and explicit non-goals in that temporary design note.
 - For complex refactors, cross-layer features, public API changes, resource
-  lifecycle changes, schedulers, or compatibility migrations, use
-  `.agents/templates/design-doc-scaffold.md` as the default scratch design
-  structure.
+  lifecycle changes, schedulers, or compatibility migrations, consult
+  `.agents/references/design-doc-guideline.md`. Use
+  `.agents/templates/design-doc-scaffold.md` only as an optional prompt list;
+  do not force the note into that order.
 - Keep design notes focused on architecture, ownership, contracts, failure
   semantics, compatibility, and testing boundaries. Put task ordering, worker
   assignment, and validation commands in a separate implementation plan.
@@ -40,7 +41,7 @@ description: Load these instructions when planning complex repository work, vali
   Commit cadence should follow the user's request and this repository's git
   instructions, even when an external workflow recommends frequent commits.
 - If a Superpowers workflow is also in use, treat Superpowers as the
-  collaboration and process guide, and this repository's design template as
+  collaboration and process guide, and this repository's design guideline as
   the repo-local content standard. User-specified scratch paths override
   Superpowers default `docs/superpowers/...` paths.
 - A design is ready to become a plan only after public/internal boundaries,

@@ -25,7 +25,7 @@ from typing import Any, NoReturn
 import ray
 import torch
 from pydantic import Field
-from ray._raylet import ObjectRefGenerator
+from ray._private.object_ref_generator import ObjectRefGenerator
 from ray.exceptions import GetTimeoutError, RayActorError, RayTaskError
 from robo_orchard_core.utils.config import ClassType, ConfigInstanceOf
 from robo_orchard_core.utils.logging import LoggerManager
@@ -506,6 +506,8 @@ class PolicyEvaluatorRemote(RayRemoteInstance[PolicyEvaluator]):
                 )
                 if ready:
                     return next(gen)
+                if gen.is_finished():
+                    raise StopIteration
             except KeyboardInterrupt:
                 self.close()
                 raise
@@ -788,7 +790,7 @@ class PolicyEvaluatorRemoteConfig(
 
     class_type: ClassType[PolicyEvaluatorRemote] = PolicyEvaluatorRemote
     instance_config: ConfigInstanceOf[PolicyEvaluatorConfig]
-    rollout_timeout_s: float | None = Field(default=120.0, gt=0)
+    rollout_timeout_s: float | None = Field(default=1200.0, gt=0)
     """Timeout for remote episode and rollout-stream waits."""
     reset_timeout_s: float | None = Field(default=1200.0, gt=0)
     """Timeout for remote setup, reset, reconfigure, and metric calls."""

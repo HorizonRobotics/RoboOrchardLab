@@ -112,7 +112,7 @@ class DummyEpisodePackaging(EpisodePackaging):
                 "joints": BatchJointsState.dataset_feature(
                     use_pickle=self._use_pickle
                 ),
-                "tf_graph": BatchFrameTransformGraph.dataset_feature(
+                "tf_graph": BatchFrameTransformGraph.dataset_feature(  # pyright: ignore[reportAttributeAccessIssue]
                     use_pickle=self._use_pickle
                 ),
             }
@@ -144,6 +144,39 @@ class DummyEpisodePackaging(EpisodePackaging):
                 },
                 instruction=instruction,
             )
+
+
+class FailingEpisodePackaging(DummyEpisodePackaging):
+    def __init__(self, *args, error_message: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._error_message = error_message
+
+    def generate_frames(self) -> Generator[DataFrame, None, None]:
+        raise RuntimeError(self._error_message)
+
+
+class LateFailingEpisodePackaging(DummyEpisodePackaging):
+    def __init__(self, *args, error_message: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._error_message = error_message
+
+    def generate_frames(self) -> Generator[DataFrame, None, None]:
+        frame_iter = super().generate_frames()
+        yield next(frame_iter)
+        raise RuntimeError(self._error_message)
+
+
+class ExplicitEpisodeDataPackaging(DummyEpisodePackaging):
+    def __init__(self, *args, episode_data: EpisodeData, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._episode_data = episode_data
+
+    def generate_episode_meta(self) -> EpisodeMeta:
+        return EpisodeMeta(
+            episode=self._episode_data,
+            robot=self.gen_robot(),
+            task=self.gen_task(),
+        )
 
 
 @pytest.fixture(scope="module")
@@ -391,6 +424,326 @@ class TestDatasetPackaging:
             episodes=episodes,
             dataset_path=dataset_dir,
         )
+
+    def test_episode_packaging_fail_fast(
+        self,
+        tmp_local_folder: str,
+        example_tasks: list[TaskData],
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_fail_fast_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episodes = [
+            FailingEpisodePackaging(
+                gen_frame_num=1,
+                tasks=example_tasks[0:1],
+                error_message="fail fast test error",
+            )
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+        )
+
+        with pytest.raises(RuntimeError, match="fail fast test error"):
+            dataset_packaging.packaging(
+                episodes=episodes,
+                dataset_path=dataset_dir,
+                fail_fast=True,
+            )
+
+    def test_episode_packaging_accepts_explicit_episode_indices(
+        self,
+        tmp_local_folder: str,
+        example_tasks: list[TaskData],
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_explicit_indices_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episodes = [
+            ExplicitEpisodeDataPackaging(
+                gen_frame_num=1,
+                tasks=example_tasks[0:1],
+                episode_data=EpisodeData(index=0),
+            ),
+            ExplicitEpisodeDataPackaging(
+                gen_frame_num=1,
+                tasks=example_tasks[0:1],
+                episode_data=EpisodeData(index=1, prev_episode_index=0),
+            ),
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+        )
+
+        dataset_packaging.packaging(
+            episodes=episodes,
+            dataset_path=dataset_dir,
+            fail_fast=True,
+        )
+
+        dataset = RODataset(dataset_dir)
+        assert dataset.episode_num == 2
+        episode0 = dataset.get_meta(Episode, 0)
+        episode1 = dataset.get_meta(Episode, 1)
+        assert episode0 is not None
+        assert episode1 is not None
+        assert episode0.prev_episode_index is None
+        assert episode1.prev_episode_index == 0
+
+    def test_episode_data_positional_constructor_keeps_frame_num_abi(self):
+        episode_data = EpisodeData(3)
+
+        assert episode_data.frame_num == 3
+        assert episode_data.index is None
+
+    @pytest.mark.parametrize(
+        ("episode_data", "match"),
+        [
+            (
+                EpisodeData(prev_episode_index=0),
+                "prev_episode_index requires EpisodeData.index",
+            ),
+            (
+                EpisodeData(index=1),
+                "must match the next target episode index 0",
+            ),
+            (
+                EpisodeData(index=0, prev_episode_index=0),
+                "must reference a previous target episode",
+            ),
+        ],
+    )
+    def test_episode_packaging_rejects_invalid_episode_indices(
+        self,
+        tmp_local_folder: str,
+        example_tasks: list[TaskData],
+        episode_data: EpisodeData,
+        match: str,
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_invalid_indices_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episode = ExplicitEpisodeDataPackaging(
+            gen_frame_num=1,
+            tasks=example_tasks[0:1],
+            episode_data=episode_data,
+        )
+        dataset_packaging = DatasetPackaging(
+            features=episode.features,
+            database_driver="sqlite",
+        )
+
+        with pytest.raises(ValueError, match=match):
+            dataset_packaging.packaging(
+                episodes=[episode],
+                dataset_path=dataset_dir,
+                fail_fast=True,
+            )
+
+    def test_episode_packaging_keeps_empty_episode_after_early_failure(
+        self,
+        tmp_local_folder: str,
+        example_tasks: list[TaskData],
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_skip_before_frame_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episodes = [
+            FailingEpisodePackaging(
+                gen_frame_num=1,
+                tasks=example_tasks[0:1],
+                error_message="skip before frame",
+            ),
+            DummyEpisodePackaging(
+                gen_frame_num=1,
+                tasks=example_tasks[0:1],
+            ),
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+        )
+
+        dataset_packaging.packaging(
+            episodes=episodes,
+            dataset_path=dataset_dir,
+            fail_fast=False,
+        )
+
+        dataset = RODataset(dataset_dir)
+        assert len(dataset) == 1
+        assert dataset.episode_num == 2
+        episode0 = dataset.get_meta(Episode, 0)
+        episode1 = dataset.get_meta(Episode, 1)
+        assert episode0 is not None
+        assert episode1 is not None
+        assert episode0.frame_num == 0
+        assert episode1.frame_num == 1
+        assert dataset[0]["episode_index"] == 1
+
+    def test_episode_packaging_keeps_partial_episode_after_late_failure(
+        self,
+        tmp_local_folder: str,
+        example_tasks: list[TaskData],
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_partial_late_failure_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episodes = [
+            LateFailingEpisodePackaging(
+                gen_frame_num=2,
+                tasks=example_tasks[0:1],
+                error_message="late frame failure",
+            )
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+        )
+
+        dataset_packaging.packaging(
+            episodes=episodes,
+            dataset_path=dataset_dir,
+            fail_fast=False,
+        )
+
+        dataset = RODataset(dataset_dir)
+        assert len(dataset) == 1
+        assert dataset.episode_num == 1
+        episode = dataset.get_meta(Episode, 0)
+        assert episode is not None
+        assert episode.frame_num == 1
+
+    def test_episode_packaging_cleans_partial_output_on_failure(
+        self,
+        tmp_local_folder: str,
+        example_tasks: list[TaskData],
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_cleanup_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episodes = [
+            DummyEpisodePackaging(
+                gen_frame_num=2,
+                tasks=example_tasks[0:1],
+            )
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+        )
+
+        def fail_complete(**_: object) -> None:
+            raise RuntimeError("complete dataset failure")
+
+        monkeypatch.setattr(
+            dataset_packaging,
+            "_complete_arrow_cache_as_dataset",
+            fail_complete,
+        )
+
+        with pytest.raises(RuntimeError, match="complete dataset failure"):
+            dataset_packaging.packaging(
+                episodes=episodes,
+                dataset_path=dataset_dir,
+            )
+
+        assert not os.path.exists(dataset_dir)
+        assert not os.path.exists(f"{dataset_dir}_meta.sqlite")
+
+    def test_repack_preserves_task_info(
+        self,
+        tmp_local_folder: str,
+        example_robots: list[RobotData],
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_repack_task_info_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        repack_dir = os.path.join(
+            tmp_local_folder,
+            "test_repack_task_info_target_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        tasks = [
+            TaskData(
+                name="pick_cube",
+                description="Pick up the cube.",
+                info={"source_task_id": "task-a"},
+            ),
+            TaskData(
+                name="pick_cube",
+                description="Pick up the cube.",
+                info={"source_task_id": "task-b"},
+            ),
+        ]
+        instructions = [
+            InstructionData(
+                name="instruction_a",
+                json_content={"instruction": "pick cube variant a"},
+            ),
+            InstructionData(
+                name="instruction_b",
+                json_content={"instruction": "pick cube variant b"},
+            ),
+        ]
+        episodes = [
+            DummyEpisodePackaging(
+                gen_frame_num=2,
+                robots=example_robots[0:1],
+                tasks=tasks[0:1],
+                instructions=instructions[0:1],
+            ),
+            DummyEpisodePackaging(
+                gen_frame_num=2,
+                robots=example_robots[0:1],
+                tasks=tasks[1:2],
+                instructions=instructions[1:2],
+            ),
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+        )
+        dataset_packaging.packaging(
+            episodes=episodes,
+            dataset_path=dataset_dir,
+        )
+        dataset = RODataset(dataset_path=dataset_dir, meta_index2meta=True)
+
+        repack_dataset(
+            source_dataset=dataset,
+            target_path=repack_dir,
+            force_overwrite=True,
+        )
+
+        repacked_dataset = RODataset(
+            dataset_path=repack_dir, meta_index2meta=True
+        )
+        assert repacked_dataset.task_num == 2
+        for idx in range(len(dataset)):
+            assert (
+                dataset[idx]["task"].info == repacked_dataset[idx]["task"].info
+            )
+            assert (
+                dataset[idx]["task"].md5 == repacked_dataset[idx]["task"].md5
+            )
 
 
 class TestDataset:

@@ -1013,7 +1013,7 @@ class RoboTwinRemoteBenchmarkBackendCfg(Config):
     num_parallel_envs: int = Field(default=1, ge=1)
     """Maximum number of remote RoboTwin environments in flight."""
 
-    rollout_timeout_s: float | None = Field(default=120.0, gt=0)
+    rollout_timeout_s: float | None = Field(default=1200.0, gt=0)
     """Per-call timeout for rollout/evaluate calls; ``None`` disables it."""
 
     reset_timeout_s: float | None = Field(default=1200.0, gt=0)

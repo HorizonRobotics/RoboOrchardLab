@@ -138,11 +138,14 @@ class _RayWaitStreamRefGenerator:
         *,
         ready_script: Sequence[bool] = (),
         complete_when_empty: bool = True,
+        finished_when_empty: bool = True,
     ) -> None:
         self._refs = list(refs)
         self._ready_script = list(ready_script)
         self._complete_when_empty = complete_when_empty
+        self._finished_when_empty = finished_when_empty
         self.wait_timeouts: list[float | None] = []
+        self.is_finished_calls = 0
         self.close_calls = 0
 
     def wait(self, timeout: float | None) -> bool:
@@ -150,6 +153,14 @@ class _RayWaitStreamRefGenerator:
         if self._ready_script:
             return self._ready_script.pop(0)
         return bool(self._refs) or self._complete_when_empty
+
+    def is_finished(self) -> bool:
+        self.is_finished_calls += 1
+        return (
+            self._finished_when_empty
+            and not self._refs
+            and not self._ready_script
+        )
 
     def __iter__(self) -> _RayWaitStreamRefGenerator:
         return self
@@ -300,8 +311,8 @@ def _make_remote_evaluator(
     monkeypatch: pytest.MonkeyPatch,
     actor: _ScriptedActor | Sequence[_ScriptedActor],
     *,
-    rollout_timeout_s: float | None = 120.0,
-    reset_timeout_s: float | None = 1200.0,
+    rollout_timeout_s: float | None = 1.0,
+    reset_timeout_s: float | None = 2.0,
     timeout_grace_retries: int = 1,
 ) -> tuple[PolicyEvaluatorRemote, _ScriptedRemoteClass]:
     remote_cls = _ScriptedRemoteClass(actor)
@@ -427,7 +438,7 @@ class TestPolicyEvaluatorRemoteStability:
         ]
         assert actor._export_recovery_snapshot.calls == []
         assert not hasattr(evaluator, "_remote_actor_snapshot")
-        assert remote_cls.get_timeouts[:1] == [1200.0]
+        assert remote_cls.get_timeouts[:1] == [2.0]
         assert evaluator.evaluate_episode(
             max_steps=5,
             env_reset_input={"seed": 7},
@@ -443,7 +454,7 @@ class TestPolicyEvaluatorRemoteStability:
             "rollout_stop_condition": evaluate_rollout_stop_condition,
         }
         assert len(actor.compute_metrics.calls) == 1
-        assert remote_cls.get_timeouts[-3:] == [1200.0, 120.0, 1200.0]
+        assert remote_cls.get_timeouts[-3:] == [2.0, 1.0, 2.0]
 
     def test_make_episode_evaluation_yields_remote_rollout_counts(
         self,
@@ -572,7 +583,7 @@ class TestPolicyEvaluatorRemoteStability:
         assert exc_info.value.cause_message == "policy act failed"
         assert actor.restored_metric_states == [actor.metric_state_response]
         assert actor.restored_snapshots == []
-        assert remote_cls.get_timeouts == [1200.0, 120.0, 1200.0]
+        assert remote_cls.get_timeouts == [2.0, 1.0, 2.0]
 
     def test_unsupported_generator_close_does_not_hide_episode_failure(
         self,
@@ -594,7 +605,7 @@ class TestPolicyEvaluatorRemoteStability:
         assert exc_info.value.cause_message == "rollout failed"
         assert remote_gen.close_calls == 1
         assert actor.restored_metric_states == [actor.metric_state_response]
-        assert remote_cls.get_timeouts == [1200.0, 120.0, 1200.0]
+        assert remote_cls.get_timeouts == [2.0, 1.0, 2.0]
 
     def test_compute_failure_rolls_back_metric_state(
         self,
@@ -619,10 +630,10 @@ class TestPolicyEvaluatorRemoteStability:
         assert actor.restored_metric_states == [actor.metric_state_response]
         assert actor.restored_snapshots == []
         assert remote_cls.get_timeouts == [
-            1200.0,
-            120.0,
-            1200.0,
-            1200.0,
+            2.0,
+            1.0,
+            2.0,
+            2.0,
         ]
 
     def test_compute_timeout_does_not_roll_back_metric_state(
@@ -645,10 +656,10 @@ class TestPolicyEvaluatorRemoteStability:
         assert actor.restored_metric_states == []
         assert actor.restored_snapshots == []
         assert remote_cls.get_timeouts == [
-            1200.0,
-            120.0,
-            1200.0,
-            1200.0,
+            2.0,
+            1.0,
+            2.0,
+            2.0,
         ]
 
     def test_metric_state_export_timeout_does_not_start_episode(
@@ -672,7 +683,7 @@ class TestPolicyEvaluatorRemoteStability:
         assert actor.make_episode_evaluation.calls == []
         assert actor.restored_metric_states == []
         assert actor.restored_snapshots == []
-        assert remote_cls.get_timeouts == [1200.0, 1200.0]
+        assert remote_cls.get_timeouts == [2.0, 2.0]
 
     def test_keyboard_interrupt_closes_actor(
         self,
@@ -722,7 +733,7 @@ class TestPolicyEvaluatorRemoteStability:
 
         assert actor.evaluate_episode.calls == []
         assert len(actor.make_episode_evaluation.calls) == 1
-        assert remote_cls.get_timeouts == [1200.0, 12.0, 1200.0]
+        assert remote_cls.get_timeouts == [2.0, 12.0, 2.0]
 
     def test_public_methods_accept_per_call_timeout_override(
         self,
@@ -745,9 +756,9 @@ class TestPolicyEvaluatorRemoteStability:
         evaluator.compute_metrics(timeout_s=7.5)
 
         assert remote_cls.get_timeouts == [
-            1200.0,
+            2.0,
             1.5,
-            1200.0,
+            2.0,
             2.5,
             3.5,
             4.5,
@@ -923,11 +934,11 @@ class TestPolicyEvaluatorRemoteStability:
         assert (
             str(exc_info.value)
             == "Remote policy evaluator evaluate_episode timed out after "
-            "2 consecutive 120.0s waits."
+            "2 consecutive 1.0s waits."
         )
         assert actor.restored_metric_states == []
         assert actor.restored_snapshots == []
-        assert remote_cls.get_timeouts == [1200.0, 120.0, 120.0]
+        assert remote_cls.get_timeouts == [2.0, 1.0, 1.0]
         assert getattr(evaluator, "_remote", None) is actor
 
     def test_stream_next_ref_timeout_maps_to_public_timeout_error(
@@ -938,6 +949,7 @@ class TestPolicyEvaluatorRemoteStability:
         stream = _RayWaitStreamRefGenerator(
             [],
             complete_when_empty=False,
+            finished_when_empty=False,
         )
         actor = _ScriptedActor(compute_response={"success_rate": 1.0})
         actor.make_episode_evaluation = _RemoteMethod(lambda **kwargs: stream)
@@ -960,7 +972,37 @@ class TestPolicyEvaluatorRemoteStability:
         assert actor.compute_metrics.calls == []
         assert actor.restored_metric_states == []
         assert actor.restored_snapshots == []
-        assert remote_cls.get_timeouts == [1200.0]
+        assert remote_cls.get_timeouts == [2.0]
+        assert getattr(evaluator, "_remote", None) is actor
+
+    def test_stream_next_ref_finished_after_unready_wait_completes_episode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install_fake_stream_wait(monkeypatch)
+        stream = _RayWaitStreamRefGenerator(
+            [],
+            complete_when_empty=False,
+            finished_when_empty=True,
+        )
+        actor = _ScriptedActor(compute_response={"success_rate": 1.0})
+        actor.make_episode_evaluation = _RemoteMethod(lambda **kwargs: stream)
+        evaluator, remote_cls = _make_remote_evaluator(
+            monkeypatch,
+            actor,
+            rollout_timeout_s=0.01,
+        )
+
+        assert evaluator.evaluate_episode(max_steps=5) == {"success_rate": 1.0}
+
+        assert stream.wait_timeouts == [0.01]
+        assert stream.is_finished_calls == 1
+        assert stream.close_calls == 1
+        assert actor.evaluate_episode.calls == []
+        assert len(actor.make_episode_evaluation.calls) == 1
+        assert actor.restored_metric_states == []
+        assert actor.restored_snapshots == []
+        assert remote_cls.get_timeouts == [2.0, 2.0]
         assert getattr(evaluator, "_remote", None) is actor
 
     def test_stream_next_ref_grace_wait_returns_completed_operation(
@@ -986,7 +1028,7 @@ class TestPolicyEvaluatorRemoteStability:
         assert stream.close_calls == 1
         assert actor.evaluate_episode.calls == []
         assert len(actor.make_episode_evaluation.calls) == 1
-        assert remote_cls.get_timeouts == [1200.0, 0.01, 1200.0]
+        assert remote_cls.get_timeouts == [2.0, 0.01, 2.0]
         assert getattr(evaluator, "_remote", None) is actor
 
     def test_timeout_grace_wait_returns_completed_operation(
@@ -1003,7 +1045,12 @@ class TestPolicyEvaluatorRemoteStability:
 
         assert actor.evaluate_episode.calls == []
         assert len(actor.make_episode_evaluation.calls) == 1
-        assert remote_cls.get_timeouts == [1200.0, 120.0, 120.0, 1200.0]
+        assert remote_cls.get_timeouts == [
+            2.0,
+            1.0,
+            1.0,
+            2.0,
+        ]
         assert getattr(evaluator, "_remote", None) is actor
 
     def test_timeout_grace_wait_can_be_disabled(
@@ -1022,7 +1069,7 @@ class TestPolicyEvaluatorRemoteStability:
         with pytest.raises(PolicyEvaluationRemoteTimeoutError):
             evaluator.evaluate_episode(max_steps=5)
 
-        assert remote_cls.get_timeouts == [1200.0, 120.0]
+        assert remote_cls.get_timeouts == [2.0, 1.0]
 
     def test_worker_lost_does_not_clear_actor_handle(
         self,
@@ -1049,7 +1096,7 @@ class TestPolicyEvaluatorRemoteStability:
     def test_as_remote_uses_remote_timeout_defaults(self) -> None:
         cfg = PolicyEvaluatorConfig().as_remote()
 
-        assert cfg.rollout_timeout_s == 120.0
+        assert cfg.rollout_timeout_s == 1200.0
         assert cfg.reset_timeout_s == 1200.0
 
     def test_as_remote_accepts_separate_reset_timeout(self) -> None:

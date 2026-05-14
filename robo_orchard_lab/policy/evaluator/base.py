@@ -696,7 +696,7 @@ class PolicyEvaluatorConfig(ClassConfig[PolicyEvaluator]):
         remote_class_config: RayRemoteClassConfig | None = None,
         ray_init_config: dict[str, Any] | None = None,
         check_init_timeout: int = 60,
-        rollout_timeout_s: float | None = 120.0,
+        rollout_timeout_s: float | None = 1200.0,
         reset_timeout_s: float | None = 1200.0,
         timeout_grace_retries: int = 1,
     ) -> PolicyEvaluatorRemoteConfig:
@@ -712,7 +712,7 @@ class PolicyEvaluatorConfig(ClassConfig[PolicyEvaluator]):
             check_init_timeout (int, optional): Timeout for remote actor
                 initialization checks. Default is 60.
             rollout_timeout_s (float | None, optional): Default remote
-                rollout timeout. Default is 120.0.
+                rollout timeout. Default is 1200.0.
             reset_timeout_s (float | None, optional): Default remote setup,
                 reset, recovery, and metric-call timeout. Default is 1200.0.
             timeout_grace_retries (int, optional): Extra timeout waits before

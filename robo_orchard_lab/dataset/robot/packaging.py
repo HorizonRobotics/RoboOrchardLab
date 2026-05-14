@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import shutil
 import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from typing import Any, Generator, Iterable
 
 import datasets as hg_datasets
 import fsspec
+from datasets.exceptions import DatasetGenerationError
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
 from typing_extensions import deprecated
@@ -79,9 +81,35 @@ class EpisodeMeta:
         self, index_state: DatasetIndexState, session: Session
     ) -> EpisodeMetaORM:
         """Get the transient ORM instance of the episode metadata."""
+        expected_index = index_state.last_episode_idx + 1
+        episode_index = self.episode.index
+        if episode_index is None:
+            if self.episode.prev_episode_index is not None:
+                raise ValueError(
+                    "EpisodeData.prev_episode_index requires "
+                    "EpisodeData.index to be set."
+                )
+            episode_index = expected_index
+        elif episode_index != expected_index:
+            raise ValueError(
+                "EpisodeData.index must match the next target episode "
+                f"index {expected_index}, got {episode_index}."
+            )
+
+        if self.episode.prev_episode_index is not None:
+            prev_episode_index = self.episode.prev_episode_index
+            if prev_episode_index < 0 or prev_episode_index >= episode_index:
+                raise ValueError(
+                    "EpisodeData.prev_episode_index must reference a "
+                    "previous target episode; got "
+                    f"{prev_episode_index} for episode {episode_index}."
+                )
+
+        episode_data = self.episode.__dict__.copy()
+        episode_data.pop("index")
         episode = Episode(
-            index=index_state.last_episode_idx + 1,
-            **self.episode.__dict__,
+            index=episode_index,
+            **episode_data,
         )
         robot = (
             self.robot.make_transient_orm(index_state, session=session)
@@ -237,7 +265,11 @@ class DatasetPackaging:
             return instruction
 
     def _make_packaging_generator(
-        self, episodes: Iterable[EpisodePackaging], db_path: str
+        self,
+        episodes: Iterable[EpisodePackaging],
+        db_path: str,
+        *,
+        fail_fast: bool,
     ):
         if os.path.exists(db_path):
             raise FileExistsError(
@@ -269,6 +301,8 @@ class DatasetPackaging:
 
                     yield frame
             except Exception as e:
+                if fail_fast:
+                    raise
                 warnings.warn(
                     f"Failed to generate frames for {episode}. "
                     f"Skipping this episode. Error: "
@@ -284,6 +318,8 @@ class DatasetPackaging:
                 if episode_meta is None:
                     continue
             except Exception as e:
+                if fail_fast:
+                    raise
                 warnings.warn(
                     f"Failed to generate episode metadata for {episode}. "
                     f"Skipping this episode.  Error: "
@@ -454,6 +490,7 @@ class DatasetPackaging:
         max_shard_size: str | int = "8GB",
         split: hg_datasets.Split | None = None,
         force_overwrite: bool = False,
+        fail_fast: bool = False,
     ):
         """Package the dataset and save it to the specified path.
 
@@ -476,6 +513,9 @@ class DatasetPackaging:
             force_overwrite (bool): If True, overwrite the existing dataset
                 at the specified path. If False, raise an error if the path
                 already exists. Default is False.
+            fail_fast (bool): If True, immediately raise the first episode
+                metadata or frame generation error instead of converting it to
+                a warning and skipping that episode. Default is False.
         """
 
         dataset_path = os.path.abspath(os.path.expanduser(dataset_path))
@@ -492,8 +532,6 @@ class DatasetPackaging:
                     "It will be overwritten."
                 )
                 # Clean up the existing dataset path
-                import shutil
-
                 shutil.rmtree(dataset_path, ignore_errors=True)
 
         self._index_state: DatasetIndexState = DatasetIndexState()
@@ -525,7 +563,9 @@ class DatasetPackaging:
 
         def generator():
             yield from self._make_packaging_generator(
-                episodes, db_path=db_path
+                episodes,
+                db_path=db_path,
+                fail_fast=fail_fast,
             )
 
         try:
@@ -554,7 +594,13 @@ class DatasetPackaging:
                 split=split,
             )
         except Exception as e:
-            raise e
+            if os.path.exists(dataset_path):
+                shutil.rmtree(dataset_path, ignore_errors=True)
+            if fail_fast and isinstance(e, DatasetGenerationError):
+                cause = e.__cause__
+                if cause is not None:
+                    raise cause
+            raise
 
         finally:
             # Clean up the temporary database file if it exists
@@ -589,6 +635,15 @@ class EpisodeData:
 
     info: dict[str, Any] | None = None
     """Additional information about the episode."""
+
+    index: int | None = None
+    """The target episode index.
+
+    If None, packaging assigns the next contiguous target episode index. If
+    set, it must match the next target episode index. This must be set when
+    prev_episode_index is set so the previous episode reference is explicitly
+    in target-index space.
+    """
 
 
 @dataclass
@@ -666,6 +721,15 @@ class TaskData:
     """The name of the task."""
     description: str | None = None
     """The description of the task."""
+    info: dict[str, Any] | None = None
+    """Additional task information.
+
+    ``info`` is part of the task identity. Empty dictionaries are normalized
+    to ``None`` so empty info and missing info do not create distinct tasks.
+    Non-empty values must be strict JSON objects: keys must be strings, values
+    must be JSON-compatible, and floats must be finite. Invalid values are
+    rejected before ORM storage or task identity hashing.
+    """
 
     def make_transient_orm(
         self, index_state: DatasetIndexState, session: Session | None
@@ -673,22 +737,33 @@ class TaskData:
         """Create a transient ORM instance of the task.
 
         If session is provided, it will check if the task already exists
-        in the database using its name and description. If it exists, it
-        will return the existing task instance, otherwise it will create a
-        new transient instance with the next index.
+        in the database using its semantic identity. If it exists, it will
+        return the existing task instance, otherwise it will create a new
+        transient instance with the next index.
 
         If session is None, it will create a new transient instance with the
         next index without checking the database.
 
         """
+        info = Task.normalize_info(self.info)
 
         def make_new():
-            ret = Task(index=index_state.last_task_idx + 1, **self.__dict__)
+            ret = Task(
+                index=index_state.last_task_idx + 1,
+                name=self.name,
+                description=self.description,
+                info=info,
+            )
             ret.update_md5()
             return ret
 
         if session is not None:
-            ret = Task.query_by_content_with_md5(session, **self.__dict__)
+            ret = Task.query_by_content_with_md5(
+                session,
+                name=self.name,
+                description=self.description,
+                info=info,
+            )
             if ret is not None:
                 make_transient(ret)
                 return ret

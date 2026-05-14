@@ -22,6 +22,7 @@ import fsspec
 import pytest
 import torch
 
+from robo_orchard_lab.dataset.datatypes import BatchCameraInfo
 from robo_orchard_lab.dataset.experimental.mcap.batch_decoder import (
     McapBatch2BatchCameraDataEncodedConfig,
     McapBatch2BatchJointStateConfig,
@@ -35,6 +36,9 @@ from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
     McapBatchFromBatchCameraDataEncodedConfig,
     McapBatchFromBatchJointStateConfig,
     McapBatchFromBatchPoseConfig,
+)
+from robo_orchard_lab.dataset.experimental.mcap.batch_encoder.camera import (
+    format_batch_camera_info,
 )
 from robo_orchard_lab.dataset.experimental.mcap.batch_split import (
     McapMessageBatch,
@@ -112,6 +116,37 @@ def example_msg_batch(example_reader: McapReader):
 
 
 class TestBatchFromDataDict:
+    def test_camera_calibration_uses_effective_intrinsic(self):
+        intrinsic_matrices = torch.tensor(
+            [[[100.0, 0.0, 3.0], [0.0, 80.0, 2.5], [0.0, 0.0, 1.0]]],
+            dtype=torch.float32,
+        )
+        transform_matrices = torch.tensor(
+            [[[0.5, 0.0, 1.0], [0.0, 0.4, 2.0], [0.0, 0.0, 1.0]]],
+            dtype=torch.float32,
+        )
+        camera_info = BatchCameraInfo(
+            image_shape=(2, 3),
+            frame_id="camera",
+            intrinsic_matrices=intrinsic_matrices,
+            transform_matrices=transform_matrices,
+        )
+
+        messages = format_batch_camera_info(
+            data=camera_info,
+            timestamps=[123],
+            calib_topic="/camera/calib",
+            tf_topic=None,
+        )
+
+        calibration = messages["/camera/calib"][0].data
+        expected_k = (transform_matrices @ intrinsic_matrices).reshape(-1)
+        assert torch.allclose(
+            torch.tensor(calibration.K, dtype=torch.float32),
+            expected_k,
+            atol=1e-6,
+        )
+
     @pytest.mark.parametrize(
         "decoder_configs, encoder_configs",
         [

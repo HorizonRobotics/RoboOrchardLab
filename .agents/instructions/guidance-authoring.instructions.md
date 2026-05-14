@@ -1,5 +1,5 @@
 ---
-description: Load these instructions when creating, editing, or reorganizing AGENTS.md files, .agents/instructions/*.md files, .agents/references/* assets, .agents/skills/* guidance, or .agents/templates/* assets in this repository.
+description: Load these instructions when creating, editing, or reorganizing AGENTS.md files, .agents/README.md, .agents/instructions/*.md files, .agents/references/* assets, .agents/skills/* guidance, or .agents/templates/* assets in this repository.
 ---
 
 # Guidance Authoring Instructions
@@ -21,6 +21,8 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - Keep `Quick Routing` limited to topics owned by this repository.
 - If `AGENTS.md` says a local `.agents/instructions/`, `.agents/references/`, `.agents/skills/`, or `.agents/templates/`
   tree exists, make sure the referenced paths actually exist.
+- Keep `.agents/README.md` aligned with local shared asset inventory when
+  adding, removing, moving, or substantially re-scoping shared assets.
 - Keep `source of truth` and `independent repository` wording consistent
   with the no-parent-fallback model.
 

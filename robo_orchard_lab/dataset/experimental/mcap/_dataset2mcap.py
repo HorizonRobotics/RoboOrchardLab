@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
 import fsspec
 from robo_orchard_schemas.action_msgs.instruction_pb2 import (
@@ -62,8 +62,13 @@ class EpisodeInfoTopics:
     """A dataclass to hold the topics for episode information."""
 
     robot_topic: str = "/robot_description/urdf"
+    """Topic for the robot description message."""
     task_topic: str = "/action/task"
+    """Topic for the task message."""
     instruction_topic: str = "/action/instruction"
+    """Topic for per-frame instruction messages."""
+    episode_info_topic: str = "/metadata/episode"
+    """Topic for one JSON message describing the exported episode."""
 
 
 class Dataset2Mcap:
@@ -156,6 +161,21 @@ class Dataset2Mcap:
             pub_time=pub_time,
         )
 
+    def _episode2json(self, episode: Episode) -> dict[str, Any]:
+        """Convert an Episode ORM object to JSON-compatible metadata."""
+
+        return {
+            "index": episode.index,
+            "robot_index": episode.robot_index,
+            "task_index": episode.task_index,
+            "prev_episode_index": episode.prev_episode_index,
+            "dataset_begin_index": episode.dataset_begin_index,
+            "frame_num": episode.frame_num,
+            "truncated": episode.truncated,
+            "success": episode.success,
+            "info": episode.info,
+        }
+
     def save_episode(
         self,
         target_path: str,
@@ -205,6 +225,13 @@ class Dataset2Mcap:
             )
 
         with fsspec.open(target_path, "wb") as f, McapWriter(f) as mcap_writer:  # type: ignore
+            mcap_writer.write_message(
+                topic=episode_info_topics.episode_info_topic,
+                message=self._episode2json(episode_info),
+                log_time=start_ts,
+                publish_time=start_ts,
+            )
+
             if robot_info is not None:
                 try:
                     robot_msg = self._robot2proto(

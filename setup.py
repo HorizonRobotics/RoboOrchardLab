@@ -233,7 +233,7 @@ if __name__ == "__main__":
         # Do not delete the line below, just comment it out and add the
         # new line.
         # "robo_orchard_core==0.4.0",
-        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@cac543eb8bdcd5bdb849b794fdb1bf4bf1b2dabb",
+        "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@a6e0ab724fdafc05246f2bebe012dc7e4f4bc569",
     ]
     # optional dependencies
     extras_require = {

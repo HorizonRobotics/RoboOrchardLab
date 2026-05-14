@@ -134,6 +134,17 @@ description: Load these instructions when modifying Python source files, tests, 
   separate input alias for runtime use.
 - Do not leave field annotations implying that normalized-away input types
   still remain available after validation.
+- Treat new pyright failures as potential runtime or contract bugs before
+  adding type-only workarounds. Prefer proving the runtime shape, narrowing
+  with explicit guards, protocols, validators, or helper boundaries, and
+  adding focused regression tests for suspicious dynamic data paths.
+- Do not use `cast(...)` merely to silence a pyright error. Use it only when
+  the runtime invariant has already been established nearby and cannot be
+  expressed through a clearer typed API.
+- When a typing fix changes import timing for generated code, plugin-loaded
+  code, protobuf schemas, or other registration-heavy modules, validate the
+  runtime import path. Static correctness is not enough for modules with
+  global registries or descriptor pools.
 
 ## Documentation and Comments
 

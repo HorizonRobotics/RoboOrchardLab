@@ -1,90 +1,43 @@
-# <Feature / Refactor Name> Design Draft
+# <Feature / Refactor Name> Design Notes
 
-## 1. Goal
+Use this as a prompt list, not a template. Keep only what helps; delete,
+merge, rename, or reorder freely.
 
-- <What changes>
-- <Why this is needed>
-- <What success looks like>
+## Core Prompts
 
-## 2. Non-Goals
+- Problem and success criteria:
+- Non-goals:
+- Current code facts and constraints:
+- Chosen approach:
+- Ownership and boundary decisions:
+- Public, compatibility, and internal contracts:
+- Failure, cleanup, timeout, or partial-output behavior:
+- Test boundary:
+- Open questions or user decisions:
 
-- <What this design intentionally does not solve>
+## Optional Prompts
 
-## 3. Execution Priority
+- Boundary split: `<layer>` owns `<responsibility>` and does not own
+  `<excluded responsibility>`.
+- Contract classification: `<API / type / schema>` is public,
+  developer-facing, compatibility-only, or internal; produced by `<owner>` and
+  consumed by `<consumer>`.
+- State ownership: `<state>` is owned by `<owner>`, modified by `<path>`, and
+  read through `<communication path>`.
+- Flow sketch: write pseudocode only for lifecycle, scheduler, retry,
+  callback, queue, or cleanup flow that prose may obscure.
+- Data mapping: `<source>` maps to `<target>` with `<conversion / unit /
+  encoding>`; `<field>` is intentionally excluded because `<reason>`.
+- Compatibility: `<old surface>` is kept, wrapped, deprecated, rejected, or
+  removed with `<behavior>`.
+- Validation: fast tests cover `<behavior>`; fakes replace `<dependency>`;
+  integration-only tests cover `<real boundary>`.
 
-Follow `.agents/references/design-doc-guideline.md#execution-priority`.
+## Domain Hints
 
-Known guidance conflicts or user decisions:
-
-- none yet
-
-## 4. Layer Boundaries
-
-| Layer | Owns | Does Not Own |
-| --- | --- | --- |
-| `<Layer>` | `<responsibility>` | `<excluded responsibility>` |
-
-## 5. Terminology
-
-| Term | Meaning | Notes |
-| --- | --- | --- |
-| `<term>` | `<definition>` | `<ambiguity / contrast>` |
-
-## 6. Public And Internal Contracts
-
-| Type / API | Visibility | Producer | Consumer |
-| --- | --- | --- | --- |
-| `<Name>` | public / developer-facing / internal | `<owner>` | `<consumer>` |
-
-Illegal states:
-
-- `<state that must not happen>`
-
-## 7. Core Flow
-
-```python
-def main_flow(...):
-    # Explain ownership and state transitions here.
-    ...
-```
-
-## 8. State Ownership
-
-| State | Owner | Modified By | Read By | Communication |
-| --- | --- | --- | --- | --- |
-| `<state>` | `<owner>` | `<callbacks / loop>` | `<consumer>` | `<queue / event / direct call>` |
-
-## 9. Failure And Cleanup Semantics
-
-- Failure classes:
-- Retry / continue-on-error:
-- Timeout semantics:
-- Partial result behavior:
-- Close / cancellation / KeyboardInterrupt:
-- Late callback / stale completion:
-
-## 10. Compatibility Strategy
-
-| Surface | Strategy | Behavior |
-| --- | --- | --- |
-| `<old API>` | keep / wrapper / deprecated no-op / explicit removal | `<details>` |
-
-## 11. Testing Boundary
-
-- Fast unit tests:
-- Fake / monkeypatch boundaries:
-- Integration-only tests:
-- Expensive tests excluded from default path:
-
-## 12. Plan Readiness Gate
-
-- [ ] Public/internal boundaries are stable.
-- [ ] Failure semantics are defined.
-- [ ] Compatibility strategy is explicit.
-- [ ] State ownership is clear.
-- [ ] Test boundary is clear.
-- [ ] No unresolved user decision blocks implementation.
-
-## 13. Open Questions
-
-- `<question>`
+- Lifecycle / remote / scheduler work usually needs ownership, state, cleanup,
+  timeout, cancellation, stale completion, and retry semantics.
+- Data / schema / converter work usually needs input format, target output,
+  field mapping, excluded fields, unit or timestamp semantics, and validation.
+- API migration work usually needs current behavior, target behavior,
+  compatibility strategy, migration path, and old/new surface tests.
