@@ -229,7 +229,7 @@ dataset_config = dict(
             ],
             right_finger_keys=["right_panda_rightfinger"],
             left_arm_joint_id=list(range(7)),
-            right_arm_joint_id=list(range(9, 15)),
+            right_arm_joint_id=list(range(9, 16)),
         ),
         T_base2world=[
             [0, -1, 0, 0],

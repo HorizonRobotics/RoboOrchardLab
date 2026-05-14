@@ -74,7 +74,6 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         load_depth=True,
         task_names=None,
         lazy_init=False,
-        num_episode=None,
         cam_names=None,
         default_space="base",
         lmdb_kwargs=None,
@@ -111,7 +110,6 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
             load_depth=load_depth,
             task_names=task_names,
             lazy_init=lazy_init,
-            num_episode=num_episode,
             dataset_name=dataset_name,
             **kwargs,
         )
@@ -129,6 +127,9 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
             ],
             'translation_vector': [0.4789254482265342, -0.016017166523894975, 1.0054549286501653]
         }
+
+    def _get_task_name(self, index_data):
+        return index_data.task_info["task_name"]
 
     def _load_images_consistent(self, cam_names, uuid, step_index, lmdb_index):
         """Load images with consistent 3-camera format."""

@@ -104,7 +104,6 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
         load_depth=True,
         task_names=None,
         lazy_init=False,
-        num_episode=None,
         cam_names=None,
         T_base2world=None,  # noqa: N803
         T_base2ego=None,  # noqa: N803
@@ -121,7 +120,6 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
             load_depth=load_depth,
             task_names=task_names,
             lazy_init=lazy_init,
-            num_episode=num_episode,
             **kwargs,
         )
         self.cam_names = cam_names

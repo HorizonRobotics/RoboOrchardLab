@@ -197,7 +197,7 @@ class BaseLmdbManipulationDataset(Dataset):
         load_depth (bool): Whether to load depth data. Default: True.
         task_names (Optional[Union[str, List[str]]]): List of task names to
             filter by. Default: None.
-        num_episode (Optional[int]): Maximum number of episodes to load.
+        num_episode_per_task (Optional[int]): Maximum num of episodes per task.
             Default: None.
         lazy_init (bool): If True, initialization is deferred until first
             access. Default: False.
@@ -217,7 +217,7 @@ class BaseLmdbManipulationDataset(Dataset):
         load_image: bool = True,
         load_depth: bool = True,
         task_names: Optional[Union[str, List[str]]] = None,
-        num_episode: Optional[int] = None,
+        num_episode_per_task: Optional[int] = None,
         lazy_init: bool = False,
         encoding_mode: str = "utf-8",
         dataset_name: str = "",
@@ -235,7 +235,7 @@ class BaseLmdbManipulationDataset(Dataset):
         self.load_image = load_image
         self.load_depth = load_depth
         self.task_names = task_names
-        self.num_episode_ = num_episode
+        self.num_episode_per_task = num_episode_per_task
         self.encoding_mode = encoding_mode
         self.dataset_name = dataset_name
         self.reset_step = reset_step
@@ -255,6 +255,9 @@ class BaseLmdbManipulationDataset(Dataset):
         ):
             return False
         return True
+
+    def _get_task_name(self, index_data):
+        return str(index_data.task_name)
 
     def _init_lmdb(self):
         if self.initialized:
@@ -279,6 +282,7 @@ class BaseLmdbManipulationDataset(Dataset):
         lmdb_indices = []
         episode_indices = []
         num_steps = []
+        task_names = []
         task_statistics = {
             "num_episode": {},
             "num_steps": {},
@@ -289,23 +293,41 @@ class BaseLmdbManipulationDataset(Dataset):
                 if episode_idx == "__len__":
                     continue
                 data = BaseIndexData.model_validate(idx_lmdb.get(episode_idx))
+                task_name = self._get_task_name(data)
 
                 if (self._check_valid(data)) and (
-                    self.num_episode_ is None
-                    or current_num_episode < self.num_episode_
+                    self.num_episode_per_task is None
+                    or task_statistics["num_episode"][task_name]
+                    < self.num_episode_per_task
                 ):
                     lmdb_indices.append(i)
                     episode_indices.append(episode_idx)
                     num_steps.append(data.num_steps)
+                    task_names.append(task_name)
                     current_num_episode += 1
 
-                    if data.task_name not in task_statistics["num_episode"]:
-                        task_statistics["num_episode"][data.task_name] = 0
-                        task_statistics["num_steps"][data.task_name] = 0
-                    task_statistics["num_episode"][data.task_name] += 1
-                    task_statistics["num_steps"][data.task_name] += (
-                        data.num_steps
-                    )
+                    if task_name not in task_statistics["num_episode"]:
+                        task_statistics["num_episode"][task_name] = 0
+                        task_statistics["num_steps"][task_name] = 0
+                    task_statistics["num_episode"][task_name] += 1
+                    task_statistics["num_steps"][task_name] += data.num_steps
+
+        (task_names, lmdb_indices, episode_indices, num_steps) = map(
+            list,
+            zip(
+                *sorted(
+                    zip(
+                        task_names,
+                        lmdb_indices,
+                        episode_indices,
+                        num_steps,
+                        strict=True,
+                    ),
+                    key=lambda x: x[0],
+                ),
+                strict=True,
+            ),
+        )
 
         self.lmdb_indices = lmdb_indices
         self.episode_indices = episode_indices

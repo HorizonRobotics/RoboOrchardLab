@@ -124,7 +124,6 @@ class DroidActionLmdbDataset(BaseLmdbManipulationDataset):
         interval=None,
         load_image=True,
         lazy_init=False,
-        num_episode=None,
         cam_names=None,
         load_ee_state=False,
         min_num_step=0,
@@ -140,7 +139,6 @@ class DroidActionLmdbDataset(BaseLmdbManipulationDataset):
             load_image=load_image,
             load_depth=False,
             lazy_init=lazy_init,
-            num_episode=num_episode,
             **kwargs,
         )
         self.cam_names = cam_names

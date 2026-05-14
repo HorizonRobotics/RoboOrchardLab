@@ -85,7 +85,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
         load_depth=True,
         task_names=None,
         lazy_init=False,
-        num_episode=None,
         cam_names=None,
         load_extrinsic=True,
         load_calibration=True,
@@ -104,7 +103,6 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             load_depth=load_depth,
             task_names=task_names,
             lazy_init=lazy_init,
-            num_episode=num_episode,
             **kwargs,
         )
         self.cam_names = cam_names
