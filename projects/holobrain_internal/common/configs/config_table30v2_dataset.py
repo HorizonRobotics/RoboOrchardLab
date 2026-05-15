@@ -88,7 +88,7 @@ dataset_config = dict(
             "./data/table30v2/lmdb/arx5/arrange_flowers",
             "./data/table30v2/lmdb/arx5/hang_the_cup",
             "./data/table30v2/lmdb/arx5/pick_out_the_green_blocks",
-            "./data/table30v2/lmdb/arx5/press_the_button",
+            # "./data/table30v2/lmdb/arx5/press_the_button",
             "./data/table30v2/lmdb/arx5/turn_on_the_light_switch",
             "./data/table30v2/lmdb/arx5/water_the_flowers",
             "./data/table30v2/lmdb/arx5/wipe_the_table",

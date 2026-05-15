@@ -81,6 +81,22 @@ config = dict(
 )
 
 
+# v8 4 layers
+# config.update(
+#     image_first=False,
+#     num_vlm_layers=4,
+#     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-04-14/14-55/bcloud-bj-zone1-645d7066dbf8/holobrain_pretrain_layer4_d80f1122_37ce_11f1_9a8c_0d9f0d21988e/output/checkpoints/checkpoint_40/model.safetensors",
+# )
+
+
+# v8 all layers
+# config.update(
+#     image_first=False,
+#     num_vlm_layers=None,
+#     checkpoint="http://tcloud-bj.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-04-20/21-29/tcloud-bj-06997fca5c06/holobrain_layerall_resume2nd_e48658e6_3cbc_11f1_9a8d_0d9f0d21988e/output/checkpoints/checkpoint_14/model.safetensors",
+# )
+
+
 # config.update(
 #     pretrain=True,
 #     max_step=200000,
@@ -233,6 +249,7 @@ def build_model(config):
                     dict(
                         type=TextTemplate,
                         with_subtask=config["training_with_subtask"],
+                        image_first=config.get("image_first", True),
                     ),
                 ],
             ),
