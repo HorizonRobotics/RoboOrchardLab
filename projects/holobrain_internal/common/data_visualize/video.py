@@ -14,10 +14,22 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+# ruff: noqa: E402, I001
+
 import argparse
 import json
 import logging
 import os
+import sys
+
+_THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+_COMMON_DIR = os.path.abspath(os.path.join(_THIS_DIR, os.pardir))
+_REPO_ROOT = os.path.abspath(
+    os.path.join(_COMMON_DIR, os.pardir, os.pardir, os.pardir)
+)
+for _path in (_COMMON_DIR, _REPO_ROOT):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from holobrain_utils import HolobrainVideoVisualizer, load_config
 

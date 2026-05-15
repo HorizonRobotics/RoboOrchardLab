@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HoloBrain Data Visualizer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f8;
+      --panel: #ffffff;
+      --text: #1f2933;
+      --muted: #667085;
+      --line: #d8dee8;
+      --accent: #1769aa;
+      --accent-dark: #0f4f82;
+      --danger: #b42318;
+      --shadow: 0 10px 28px rgba(31, 41, 51, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      padding: 16px 24px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 2px 14px rgba(31, 41, 51, 0.04);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns:
+        minmax(260px, 2.2fr)
+        minmax(132px, 0.9fr)
+        minmax(120px, 0.8fr)
+        minmax(120px, 0.8fr)
+        minmax(120px, 0.8fr)
+        minmax(104px, 0.5fr);
+      gap: 12px;
+      align-items: end;
+    }
+    .episode-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(60px, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+      max-width: 304px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    select, input, button, textarea {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font-size: 14px;
+    }
+    select, input, button {
+      height: 38px;
+      padding: 0 10px;
+    }
+    textarea {
+      height: 72px;
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.35;
+      padding: 8px 10px;
+      resize: vertical;
+    }
+    select:focus, input:focus, textarea:focus {
+      border-color: var(--accent);
+      outline: 2px solid rgba(23, 105, 170, 0.15);
+    }
+    button {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      background: var(--accent-dark);
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+      gap: 20px;
+      padding: 20px 24px 24px;
+    }
+    section {
+      min-width: 0;
+    }
+    .frame-wrap {
+      width: 100%;
+      min-height: 520px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #202938;
+      background: #111827;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    #frame {
+      max-width: 100%;
+      max-height: calc(100vh - 210px);
+      display: block;
+    }
+    .timeline {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr) 96px;
+      gap: 12px;
+      align-items: center;
+      margin-top: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 6px 18px rgba(31, 41, 51, 0.05);
+    }
+    input[type="range"] {
+      width: 100%;
+      padding: 0;
+    }
+    aside {
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+    .meta-title, .json-load {
+      display: grid;
+      gap: 10px;
+    }
+    .meta-title {
+      grid-template-columns: minmax(0, 1fr) 108px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .json-load {
+      grid-template-columns: minmax(0, 1fr) 88px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+    .meta-title h2 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.3;
+    }
+    .meta {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+      box-shadow: var(--shadow);
+    }
+    .meta dt {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      margin: 0 0 5px;
+    }
+    .meta dd {
+      margin: 0 0 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #edf0f4;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .meta dd:last-child {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+    #error {
+      color: var(--danger);
+      min-height: 20px;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    @media (max-width: 1100px) {
+      .controls {
+        grid-template-columns:
+          minmax(260px, 1.6fr)
+          minmax(132px, 1fr)
+          minmax(120px, 1fr);
+      }
+    }
+    @media (max-width: 900px) {
+      main {
+        grid-template-columns: 1fr;
+        padding: 14px;
+      }
+      .frame-wrap {
+        min-height: 360px;
+      }
+    }
+    @media (max-width: 640px) {
+      header {
+        padding: 14px;
+      }
+      .controls, .timeline {
+        grid-template-columns: 1fr;
+      }
+      .episode-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        max-width: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HoloBrain Data Visualizer</h1>
+    <div class="controls">
+      <label>Dataset
+        <select id="dataset">
+          __DATASET_OPTIONS__
+        </select>
+      </label>
+      <label>Mode
+        <select id="mode">
+          <option value="training">training</option>
+          <option value="validation">validation</option>
+        </select>
+      </label>
+      <label>Episode ID
+        <input id="episode" type="number" min="0" value="0">
+      </label>
+      <label>Vis Interval
+        <input id="visInterval" type="number" min="1" value="1">
+      </label>
+      <label>Highlight Joint Indices
+        <input id="highlightJointIndices" type="text" value="6,13">
+      </label>
+      <button id="load" type="button">Load</button>
+    </div>
+    <div class="episode-actions">
+      <button class="episode-jump" data-delta="-10">-10 Ep</button>
+      <button class="episode-jump" data-delta="-1">Prev</button>
+      <button class="episode-jump" data-delta="1">Next</button>
+      <button class="episode-jump" data-delta="10">+10 Ep</button>
+    </div>
+    <div id="error"></div>
+  </header>
+  <main>
+    <section>
+      <div class="frame-wrap">
+        <img id="frame" alt="Episode frame">
+      </div>
+      <div class="timeline">
+        <button id="play" disabled>Play</button>
+        <input id="seek" type="range" min="0" max="0" value="0" disabled>
+        <span id="position">0 / 0</span>
+      </div>
+    </section>
+    <aside>
+      <div class="meta">
+        <div class="meta-title">
+          <h2>Metadata</h2>
+          <button id="copyMeta" type="button" disabled>Copy JSON</button>
+        </div>
+        <div class="json-load">
+          <label>Load From JSON
+            <textarea id="metadataJson"></textarea>
+          </label>
+          <button id="loadMeta" type="button">Load</button>
+        </div>
+        <dl>
+          <dt>UUID</dt><dd id="uuid"></dd>
+          <dt>Instruction</dt><dd id="instruction"></dd>
+          <dt>Subtask</dt><dd id="subtask"></dd>
+          <dt>Step ID</dt><dd id="step">-</dd>
+        </dl>
+      </div>
+    </aside>
+  </main>
+  <script>
+    const datasetEl = document.getElementById("dataset");
+    const modeEl = document.getElementById("mode");
+    const episodeEl = document.getElementById("episode");
+    const visIntervalEl = document.getElementById("visInterval");
+    const highlightJointIndicesEl = document.getElementById(
+      "highlightJointIndices"
+    );
+    const loadEl = document.getElementById("load");
+    const copyMetaEl = document.getElementById("copyMeta");
+    const metadataJsonEl = document.getElementById("metadataJson");
+    const loadMetaEl = document.getElementById("loadMeta");
+    const jumpEls = Array.from(document.querySelectorAll(".episode-jump"));
+    const playEl = document.getElementById("play");
+    const seekEl = document.getElementById("seek");
+    const positionEl = document.getElementById("position");
+    const frameEl = document.getElementById("frame");
+    const errorEl = document.getElementById("error");
+    const metaEls = {
+      uuid: document.getElementById("uuid"),
+      instruction: document.getElementById("instruction"),
+      subtask: document.getElementById("subtask"),
+      step: document.getElementById("step"),
+    };
+
+    let episode = null;
+    let playing = false;
+    let loading = false;
+    let timer = null;
+    let loadingTimer = null;
+    let loadingStartMs = 0;
+    let currentObjectUrl = null;
+    let datasets = __INITIAL_DATASETS__;
+    let frameRequestId = 0;
+    let currentDataIndex = null;
+
+    function hasDatasetOptions() {
+      return datasetEl.options.length > 0 && datasetEl.value !== "";
+    }
+
+    function setLoading(nextLoading) {
+      loading = nextLoading;
+      loadEl.disabled = loading || !hasDatasetOptions();
+      copyMetaEl.disabled = loading || episode === null;
+      loadMetaEl.disabled = loading || !hasDatasetOptions();
+      datasetEl.disabled = loading;
+      modeEl.disabled = loading;
+      episodeEl.disabled = loading;
+      visIntervalEl.disabled = loading;
+      highlightJointIndicesEl.disabled = loading;
+      for (const button of jumpEls) {
+        button.disabled = loading;
+      }
+      if (loading) {
+        loadingStartMs = Date.now();
+        updateLoadingText();
+        if (loadingTimer !== null) {
+          clearInterval(loadingTimer);
+        }
+        loadingTimer = setInterval(updateLoadingText, 1000);
+      } else {
+        if (loadingTimer !== null) {
+          clearInterval(loadingTimer);
+          loadingTimer = null;
+        }
+        loadEl.textContent = "Load";
+      }
+    }
+
+    function updateLoadingText() {
+      const seconds = Math.max(
+        0,
+        Math.floor((Date.now() - loadingStartMs) / 1000)
+      );
+      loadEl.textContent = `Loading ${seconds}s`;
+    }
+
+    function setError(message) {
+      errorEl.textContent = message || "";
+    }
+
+    async function copyText(value) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+
+    function headerText(response, name) {
+      const value = response.headers.get(name);
+      return value === null ? "" : decodeURIComponent(value);
+    }
+
+    async function getJson(url) {
+      const response = await fetch(url);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || response.statusText);
+      }
+      return payload;
+    }
+
+    function selectedHighlightJointIndices() {
+      return highlightJointIndicesEl.value
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value !== "")
+        .join(",");
+    }
+
+    async function loadDatasets() {
+      const payload = await getJson("/api/datasets");
+      renderDatasets(payload.datasets || []);
+    }
+
+    function renderDatasets(nextDatasets) {
+      const selectedValue = datasetEl.value;
+      datasets = nextDatasets;
+      if (datasets.length === 0 && hasDatasetOptions()) {
+        loadEl.disabled = loading || !hasDatasetOptions();
+        return;
+      }
+      datasetEl.innerHTML = "";
+      for (const item of datasets) {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = datasetLabel(item);
+        datasetEl.appendChild(option);
+      }
+      if (
+        selectedValue &&
+        Array.from(datasetEl.options).some(
+          (option) => option.value === selectedValue
+        )
+      ) {
+        datasetEl.value = selectedValue;
+      }
+      loadEl.disabled = loading || !hasDatasetOptions();
+      if (!hasDatasetOptions()) {
+        setError("No datasets available.");
+      } else if (!loading) {
+        setError("");
+      }
+    }
+
+    function datasetLabel(item) {
+      const loadedModes = item.loaded_modes || [];
+      const loadedText = loadedModes.length === 0
+        ? "not loaded"
+        : `loaded: ${loadedModes.join("/")}`;
+      return `${item.name} (${loadedText})`;
+    }
+
+    function selectedDatasetInfo() {
+      const datasetId = Number(datasetEl.value);
+      return datasets.find((item) => item.id === datasetId);
+    }
+
+    function datasetByName(datasetName) {
+      return datasets.find((item) => item.name === datasetName);
+    }
+
+    function selectedDatasetName(datasetId) {
+      const dataset = selectedDatasetInfo();
+      if (dataset) return dataset.name;
+      const selectedOption = datasetEl.selectedOptions[0];
+      if (!selectedOption) return `#${datasetId}`;
+      return selectedOption.textContent.replace(/\s+\(.+\)$/, "");
+    }
+
+    function updateSelectedDatasetLabel(dataset) {
+      const option = datasetEl.querySelector(
+        `option[value="${dataset.dataset_id}"]`
+      );
+      if (!option) return;
+      option.textContent =
+        `${dataset.dataset_name} (${dataset.mode}: ` +
+        `${dataset.num_episodes} episodes)`;
+    }
+
+    function clampEpisodeId(value) {
+      let next = Math.max(0, value);
+      if (
+        episode &&
+        episode.dataset_id === Number(datasetEl.value) &&
+        episode.mode === modeEl.value
+      ) {
+        next = Math.min(next, Math.max(0, episode.num_episodes - 1));
+      }
+      return next;
+    }
+
+    function stopPlayback() {
+      playing = false;
+      playEl.textContent = "Play";
+      frameRequestId += 1;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    function updatePosition() {
+      const total = episode ? episode.num_frames : 0;
+      const current = total ? Number(seekEl.value) + 1 : 0;
+      positionEl.textContent = `${current} / ${total}`;
+    }
+
+    async function showFrame(offset) {
+      if (!episode) return false;
+      const requestId = ++frameRequestId;
+      const framePath =
+        `${episode.dataset_id}/${episode.episode_id}/${offset}`;
+      const response = await fetch(
+        `/api/frames/${framePath}?mode=${episode.mode}` +
+        `&vis_interval=${episode.interval}` +
+        `&highlight_joint_indices=${
+          encodeURIComponent(selectedHighlightJointIndices())
+        }`
+      );
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error || response.statusText);
+      }
+      const blob = await response.blob();
+      if (requestId !== frameRequestId) return false;
+      if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+      }
+      currentObjectUrl = URL.createObjectURL(blob);
+      frameEl.src = currentObjectUrl;
+      metaEls.step.textContent = response.headers.get("X-Step-Id") || "-";
+      currentDataIndex = Number(response.headers.get("X-Data-Index"));
+      copyMetaEl.disabled = false;
+      metaEls.instruction.textContent = headerText(response, "X-Instruction");
+      metaEls.subtask.textContent = headerText(response, "X-Subtask");
+      seekEl.value = String(offset);
+      updatePosition();
+      return true;
+    }
+
+    async function tick() {
+      if (!playing || !episode) return;
+      const current = Number(seekEl.value);
+      const next = (current + 1) % episode.num_frames;
+      try {
+        const frameApplied = await showFrame(next);
+        if (!playing || !frameApplied) return;
+        timer = setTimeout(tick, 1000 / episode.fps);
+      } catch (err) {
+        stopPlayback();
+        setError(err.message);
+      }
+    }
+
+    async function loadEpisode(episodeId, frameOffset = 0) {
+      stopPlayback();
+      setLoading(true);
+      try {
+        const datasetId = Number(datasetEl.value);
+        if (!Number.isInteger(datasetId)) {
+          throw new Error("Select a dataset.");
+        }
+        const mode = modeEl.value;
+        episodeId = clampEpisodeId(episodeId);
+        episodeEl.value = String(episodeId);
+        const visInterval = Math.max(1, Number(visIntervalEl.value) || 1);
+        visIntervalEl.value = String(visInterval);
+        const datasetName = selectedDatasetName(datasetId);
+        setError(
+          `Loading ${datasetName} (${mode}). ` +
+          "The first load can take a while."
+        );
+        episode = await getJson(
+          `/api/episodes/${datasetId}/${episodeId}?mode=${mode}` +
+          `&vis_interval=${visInterval}`
+        );
+        updateSelectedDatasetLabel(episode);
+        metaEls.uuid.textContent = episode.uuid;
+        metaEls.instruction.textContent = episode.instruction;
+        metaEls.subtask.textContent = episode.subtask;
+        metaEls.step.textContent = String(episode.first_step_id);
+        copyMetaEl.disabled = episode.num_frames === 0;
+        seekEl.max = String(Math.max(0, episode.num_frames - 1));
+        seekEl.value = "0";
+        seekEl.disabled = episode.num_frames === 0;
+        playEl.disabled = episode.num_frames === 0;
+        updatePosition();
+        if (episode.num_frames > 0) {
+          await showFrame(frameOffset);
+        }
+        if (episode.num_frames > 1 && frameOffset === 0) {
+          playing = true;
+          playEl.textContent = "Pause";
+          timer = setTimeout(tick, 1000 / episode.fps);
+        }
+        setError("");
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadEl.addEventListener("click", async () => {
+      await loadEpisode(Number(episodeEl.value));
+    });
+
+    function parseMetadataJson() {
+      try {
+        return JSON.parse(metadataJsonEl.value);
+      } catch (err) {
+        throw new Error(`Invalid JSON: ${err.message}`);
+      }
+    }
+
+    function requiredInteger(payload, key) {
+      const value = Number(payload[key]);
+      if (!Number.isInteger(value)) {
+        throw new Error(`${key} must be an integer.`);
+      }
+      return value;
+    }
+
+    async function loadFromMetadataJson() {
+      const payload = parseMetadataJson();
+      const datasetName = String(payload.dataset_name || "");
+      const dataset = datasetByName(datasetName);
+      if (!dataset) {
+        throw new Error(`Dataset not found: ${datasetName}`);
+      }
+      const episodeId = requiredInteger(payload, "episode_id");
+      const dataIndex = requiredInteger(payload, "data_index");
+      const visInterval = Math.max(1, Number(visIntervalEl.value) || 1);
+      const mode = payload.mode || modeEl.value;
+      datasetEl.value = String(dataset.id);
+      modeEl.value = mode;
+      episodeEl.value = String(episodeId);
+      visIntervalEl.value = String(visInterval);
+      const located = await getJson(
+        `/api/frames/${dataset.id}/${episodeId}/locate?mode=${mode}` +
+        `&vis_interval=${visInterval}&data_index=${dataIndex}`
+      );
+      await loadEpisode(episodeId, located.frame_offset);
+    }
+
+    copyMetaEl.addEventListener("click", async () => {
+      if (!episode) return;
+      const payload = {
+        dataset_name: episode.dataset_name,
+        mode: episode.mode,
+        uuid: metaEls.uuid.textContent,
+        episode_id: episode.episode_id,
+        step_id: metaEls.step.textContent,
+        data_index: currentDataIndex,
+      };
+      try {
+        await copyText(JSON.stringify(payload));
+        setError("Metadata copied.");
+      } catch (err) {
+        setError(`Failed to copy metadata: ${err.message}`);
+      }
+    });
+
+    loadMetaEl.addEventListener("click", async () => {
+      try {
+        await loadFromMetadataJson();
+        setError("");
+      } catch (err) {
+        setError(err.message);
+      }
+    });
+
+    for (const button of jumpEls) {
+      button.addEventListener("click", async () => {
+        const delta = Number(button.dataset.delta);
+        const current = Number(episodeEl.value) || 0;
+        await loadEpisode(current + delta);
+      });
+    }
+
+    playEl.addEventListener("click", () => {
+      if (!episode) return;
+      playing = !playing;
+      playEl.textContent = playing ? "Pause" : "Play";
+      if (playing) {
+        timer = setTimeout(tick, 1000 / episode.fps);
+      } else {
+        stopPlayback();
+      }
+    });
+
+    seekEl.addEventListener("input", async () => {
+      stopPlayback();
+      updatePosition();
+    });
+
+    seekEl.addEventListener("change", async () => {
+      setError("");
+      try {
+        await showFrame(Number(seekEl.value));
+      } catch (err) {
+        setError(err.message);
+      }
+    });
+
+    renderDatasets(datasets);
+    loadDatasets().catch((err) => {
+      setError(`Failed to load datasets: ${err.message}`);
+    });
+  </script>
+</body>
+</html>

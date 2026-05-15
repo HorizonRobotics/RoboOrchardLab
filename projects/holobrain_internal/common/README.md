@@ -162,10 +162,18 @@ RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_interna
 ```bash
 cd project/holobrain_internal/common
 
-python3 data_visualize.py \
+python3 data_visualize/video.py \
     --config configs/config_holobrain_common.py \
     --dataset_names horizon_beijing droid \
     $@
+```
+
+Start the interactive web app:
+```bash
+python3 data_visualize/app.py \
+    --config configs/config_holobrain_common.py \
+    --host 0.0.0.0 \
+    --port 13333
 ```
 
 # Docker image
