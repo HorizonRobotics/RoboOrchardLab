@@ -182,3 +182,54 @@ python3 data_visualize/app.py \
 
 - **Old version image (deprecated):**  
   `docker.hobot.cc/imagesys/robot_lab:ubuntu22.04-gcc11.4-py3.10-cuda11.8-torch241-robotwin2-20250918`
+
+
+# Do evaluation in RoboChallenge Benchmark
+## Prerequisites
+Before running the evaluation, make sure you have:
+- Cloned the `RoboChallengeInference` repo and set the path:
+```bash
+git clone https://github.com/RoboChallenge/RoboChallengeInference.git
+export ROBOCHALLENGE_INFERENCE_REPO=/path/to/RoboChallengeInference
+git switch -c cvpr remotes/origin/cvpr
+```
+
+## Run
+```bash
+export ROBOCHALLENGE_INFERENCE_REPO=/path/to/RoboChallengeInference_cvpr
+
+# Terminal 1
+cd "$ROBOCHALLENGE_INFERENCE_REPO/mock_server"
+python3 mock_robot_server.py
+
+
+# Terminal 2
+cd /path/to/robo_orchard_lab
+cd projects/holobrain_internal/common
+model_config=/path/to/model_config
+embodiment="arx5"  # dos_w1, ur5, aloha
+model_processor="table30v2_${embodiment}_processor"
+
+## local open-loop test
+python3 robochallenge_eval.py \
+  --model_config "${model_config}" \
+  --model_processor "${model_processor}" \
+  --instruction "${instruction}" \
+  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \
+  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \
+  --visualize_output_file ./test_${embodiment}.mp4 \
+  --mock
+
+## online evaluation
+user_token=<TOKEN>
+submission_id=<SUBMISSION_ID>
+
+python3 robochallenge_eval.py \
+  --user_token ${user_token} \
+  --submission_id ${submission_id} \
+  --model_config "${model_config}" \
+  --model_processor "${model_processor}" \
+  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \
+  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \
+  --visualize_output_file ./test_${embodiment}.mp4
+```
