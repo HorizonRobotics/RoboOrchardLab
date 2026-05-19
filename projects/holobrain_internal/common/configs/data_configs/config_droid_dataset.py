@@ -16,20 +16,7 @@
 
 from dataset_factory import train_dataset_register
 
-data_paths = [
-    "./data/droid/RAIL/success",
-    "./data/droid/REAL/success",
-    "./data/droid/AUTOLab/success",
-    "./data/droid/GuptaLab/success",
-    "./data/droid/IRIS/success",
-    "./data/droid/TRI/success",
-    "./data/droid/CLVR/success",
-    "./data/droid/ILIAD/success",
-    "./data/droid/IPRL/success",
-    "./data/droid/PennPAL/success",
-    "./data/droid/RPL/success",
-    # f"./data/droid/WEIRD/success",
-]
+DATA_TYPE = "droid"
 
 
 def build_transforms(config, mode):
@@ -221,10 +208,13 @@ def build_transforms(config, mode):
     return transforms
 
 
-@train_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
-    if "droid" not in dataset_names:
-        return {}
+def _build_dataset(
+    config,
+    dataset_name,
+    data_paths,
+    mode,
+    lazy_init=True,
+):
     assert mode == "training", "only support training mode"
 
     from robo_orchard_lab.dataset.droid.droid_lmdb_dataset import (
@@ -236,9 +226,26 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         paths=data_paths,
         transforms=transforms,
         lazy_init=lazy_init or mode != "training",
-        dataset_name="droid",
+        dataset_name=dataset_name,
         min_num_step=50,
         max_num_step=1000,
         reset_step=1000,
     )
-    return dict(droid=dataset)
+    return dataset
+
+
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    mode="training",
+    lazy_init=True,
+):
+    return _build_dataset(
+        config,
+        dataset_name=dataset_name,
+        data_paths=data_paths,
+        mode=mode,
+        lazy_init=lazy_init,
+    )

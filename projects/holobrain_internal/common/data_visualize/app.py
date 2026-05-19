@@ -19,6 +19,8 @@
 import argparse
 import copy
 import html
+import importlib
+import importlib.util
 import json
 import logging
 import os
@@ -30,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import BytesIO
 from math import ceil
+from types import ModuleType
 from typing import Any
 from urllib.parse import quote
 
@@ -210,11 +213,20 @@ def build_dataset_handles(
     config_path = resolve_config_path(config_path)
     config = load_config(config_path)
     cfg = copy.deepcopy(config.config)
-    training_names = list(cfg.get("training_datasets", []))
-    validation_names = list(cfg.get("validation_datasets", []))
     if dataset_names:
         names = list(dict.fromkeys(dataset_names))
     else:
+        training_names = _configured_dataset_names(
+            cfg,
+            config_key="training_datasets",
+            specs_attr="training_datasets",
+            required_specs=True,
+        )
+        validation_names = _configured_dataset_names(
+            cfg,
+            config_key="validation_datasets",
+            specs_attr="validation_datasets",
+        )
         names = sorted(
             set(training_names)
             | set(validation_names)
@@ -232,6 +244,71 @@ def build_dataset_handles(
         )
         for dataset_id, name in enumerate(names)
     ]
+
+
+def _configured_dataset_names(
+    cfg: dict[str, Any],
+    config_key: str,
+    specs_attr: str,
+    required_specs: bool = False,
+) -> list[str]:
+    dataset_specs = _load_dataset_specs(cfg, specs_attr, required_specs)
+    if not dataset_specs:
+        return []
+    names = [
+        _dataset_spec_name(dataset_spec) for dataset_spec in dataset_specs
+    ]
+    configured_names = cfg.get(config_key)
+    if configured_names is None:
+        return names
+    configured_names = list(configured_names)
+    available_names = set(names)
+    return [name for name in configured_names if name in available_names]
+
+
+def _load_dataset_specs(
+    cfg: dict[str, Any],
+    specs_attr: str,
+    required: bool = False,
+):
+    module_ref = cfg.get("dataset_specs")
+    if module_ref is None:
+        if required:
+            raise KeyError("`dataset_specs` must be provided.")
+        return None
+    if not isinstance(module_ref, str):
+        raise TypeError("`dataset_specs` must be a module reference string.")
+    spec_module = _load_module_from_ref(module_ref)
+    if not hasattr(spec_module, specs_attr):
+        if required:
+            raise AttributeError(
+                f"dataset specs module must define `{specs_attr}`."
+            )
+        return None
+    return getattr(spec_module, specs_attr)
+
+
+def _load_module_from_ref(module_ref: str) -> ModuleType:
+    if module_ref.endswith(".py") or os.path.exists(module_ref):
+        module_path = module_ref
+        if not os.path.isabs(module_path):
+            module_path = os.path.abspath(module_path)
+        spec = importlib.util.spec_from_file_location(
+            os.path.splitext(os.path.basename(module_path))[0],
+            module_path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Failed to load dataset specs: {module_ref}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return importlib.import_module(module_ref)
+
+
+def _dataset_spec_name(dataset_spec: dict[str, Any]) -> str:
+    if not isinstance(dataset_spec, dict):
+        raise TypeError("Dataset specs must be dict instances.")
+    return dataset_spec["dataset_name"]
 
 
 def create_app(

@@ -34,7 +34,7 @@
 
         "python3 behavior1k_eval.py \\",
         "   --model_path http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/qingze.wang-labs/plat_gpu/2026-03-18/10-15/bcloud-bj-zone1-920590a4a474/output/checkpoints/checkpoint_8/ \\",
-        "   --model_processor behavior1k_manipulation_processor \\",
+        "   --model_processor behavior1k_processor \\",
         "   --model_prefix model \\",
         "   --vlm_ckpt_dir /horizon-bucket/robot_lab2/users/qingze.wang/ckpt \\",
         "   --urdf_dir /horizon-bucket/robot_lab2/users/qingze.wang/urdf \\",

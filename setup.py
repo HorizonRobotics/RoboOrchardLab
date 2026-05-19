@@ -223,6 +223,7 @@ if __name__ == "__main__":
         "fsspec",
         "sortedcontainers",
         "numpydantic",
+        "click>=8.1.0,<=8.2.1",
         "ray[default]>=2.49.1",
         "pytorch-kinematics>=0.7.5",
         # Use git url to install the latest version.

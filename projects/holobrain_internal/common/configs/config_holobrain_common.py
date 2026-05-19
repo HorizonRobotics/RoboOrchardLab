@@ -33,52 +33,35 @@ config = dict(
     lr=1e-4,
     training_with_subtask=False,
     with_cot=False,
-    training_datasets=[
-        "robotwin1_0",
-        "robotwin2_0",
-        "robotwin2_0_ur5_wsg",
-        "robotwin2_0_arx_x5a",
-        "robotwin2_0_franka_panda",
-        # "robotwin2_0_piper",
-        "challenge",
-        "challenge_finetune",
-        "challenge_self_collect",
-        "horizon_beijing",
-        "horizon_beijing_piper_x",
-        "horizon_shanghai",
-        "agilex",
-        # "rh20t",
-        "agibot",
-        "droid",
-        "egodex",
-        "interna1_arx_lift2",
-        "interna1_agile_split_aloha",
-        # "interna1_genieg1",
-        # "isaac_pick_place",
-        "libero",
-        # "agibot_digit_challenge_task",
-        "table30v2",
-    ],
-    # validation_datasets=["horizon_beijing"],
-    deploy_datasets=[
-        "horizon_beijing",
-        "horizon_beijing_piper_x",
-        "horizon_shanghai",
-        "robotwin2_0",
-        "robotwin2_0_ur5_wsg",
-        "robotwin2_0_arx_x5a",
-        "robotwin2_0_franka_panda",
-        "isaac_pick_place",
-        "libero",
-        "agibot_digit_challenge",
-        "table30v2",
-    ],
+    dataset_specs="dataset_specs",
+    deploy_specs="deploy_specs",
     # vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
     num_vlm_layers=1,
     freeze_vlm=False,
     checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
 )
+
+
+"""
+Deprecated: Prefer defining dataset selection and sample weights in
+`dataset_specs.py`.
+`training_datasets` is kept only as an optional name filter for backward
+compatibility. If omitted, all training dataset specs from `dataset_specs`
+are used.
+`dataset_sample_weights` is deprecated. Prefer setting `sample_weight`
+directly in each dataset spec
+"""
+# config.update(
+#     training_datasets=[
+#         "robotwin2_0",
+#         "robotwin2_0_ur5_wsg",
+#     ],
+#     dataset_sample_weights=dict(
+#         robotwin2_0=3,
+#         robotwin2_0_ur5_wsg=1,
+#     ),
+# )
 
 
 # v8 4 layers
@@ -101,37 +84,6 @@ config = dict(
 #     pretrain=True,
 #     max_step=200000,
 #     num_workers=8,
-#     dataset_sample_weights=dict(
-#         robotwin1_0=0.8,
-#         robotwin2_0=3,
-#         robotwin2_0_ur5_wsg=1,
-#         robotwin2_0_arx_x5a=1,
-#         robotwin2_0_franka_panda=1,
-#         challenge=2,
-#         challenge_finetune=0.1,
-#         challenge_self_collect=0.15,
-#         horizon_beijing=8,
-#         horizon_beijing_piper_x=0.001,
-#         horizon_shanghai=8,
-#         agilex=12,
-#         agibot=10,
-#         droid=5,
-#         egodex=10,
-#         interna1_arx_lift2=10,
-#         interna1_agile_split_aloha=10,
-#         # interna1_genieg1,
-#         # isaac_pick_place,
-#         libero_goal=0.1,
-#         libero_object=0.1,
-#         libero_spatial=0.1,
-#         libero_10=0.2,
-#         # agibot_digit_challenge_task,
-#         behavior1k_manipulation=5,
-#         table30v2_ur5=2,
-#         table30v2_arx5=2,
-#         table30v2_aloha=2,
-#         table30v2_dos_w1=2,
-#     ),
 # )
 
 

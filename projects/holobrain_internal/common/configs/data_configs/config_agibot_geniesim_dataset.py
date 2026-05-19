@@ -20,8 +20,10 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
+DATA_TYPE = "agibot_geniesim"
+
 g2_kinematics_config = dict(
-    urdf="./urdf/G2_omnipicker.urdf",
+    urdf="./urdf/G2_omnipicker_no_warnings.urdf",
     arm_joint_id=[list(range(5, 12)), list(range(20, 27))],
     arm_link_keys=[
         [
@@ -64,35 +66,6 @@ g2_kinematics_config = dict(
 )
 
 cam_names = ["hand_left", "hand_right", "top_head"]
-
-dataset_paths = dict(
-    agibot_geniesim3_challenge_t0=[
-        "./data/arrow_dataset/AgiBotWorldChallenge-2026/2026_0318/open_door"
-    ],
-    agibot_geniesim3_challenge_t1=[
-        "./data/arrow_dataset/AgiBotWorldChallenge-2026/2026_0318/pour_workpiece"
-    ],
-    agibot_geniesim3_challenge_t2=[
-        "./data/arrow_dataset/AgiBotWorldChallenge-2026/2026_0318/sorting_packages_part*",
-    ],
-)
-
-
-def expand_ro_data_paths(patterns: list[str]) -> list[str]:
-    from glob import glob
-    from pathlib import Path
-
-    paths: list[str] = []
-    for pattern in patterns:
-        for matched in glob(pattern):
-            p = Path(matched)
-            if (p / "state.json").exists():
-                paths.append(str(p))
-            else:
-                for state in sorted(p.rglob("state.json")):
-                    if state.is_file():
-                        paths.append(str(state.parent))
-    return sorted(set(paths))
 
 
 def build_transforms(config, mode, calibration, kinematics_config=None):
@@ -316,73 +289,58 @@ def build_transforms(config, mode, calibration, kinematics_config=None):
     return transforms
 
 
-@train_dataset_register()
-@validation_dataset_register()
-def build_datasets(config, dataset_names, mode, **kwargs):
+@train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    mode,
+    **kwargs,
+):
     from robo_orchard_lab.dataset.agibot_geniesim.agibot_geniesim3_ro_dataset import (
         AgibotGenieSim3RODataset,
     )
     from robo_orchard_lab.utils.build import build
     from robo_orchard_lab.utils.misc import as_sequence
 
-    if "agibot_geniesim3_challenge" in dataset_names:
-        valid_dataset_paths = dataset_paths
-    else:
-        valid_dataset_paths = {
-            dataset_name: data_paths
-            for dataset_name, data_paths in dataset_paths.items()
-            if dataset_name in dataset_names
-        }
-
-    if not valid_dataset_paths:
-        return {}
-
-    datasets = {}
-    for data_name, data_paths in valid_dataset_paths.items():
-        transforms = build_transforms(
-            config,
-            mode,
-            calibration=None,
-            kinematics_config=g2_kinematics_config,
-        )
-        dataset = AgibotGenieSim3RODataset(
-            paths=expand_ro_data_paths(data_paths),
-            cam_names=cam_names,
-            target_columns=["joints", "actions"],
-            hist_steps=config["hist_steps"],
-            pred_steps=config["pred_steps"],
-            transforms=[build(x) for x in as_sequence(transforms)],
-            gripper_indices=[7, 15],
-            gripper_divisor=120.0,
-        )
-        datasets[data_name] = dataset
-
-    return datasets
+    transforms = build_transforms(
+        config,
+        mode,
+        calibration=None,
+        kinematics_config=g2_kinematics_config,
+    )
+    return AgibotGenieSim3RODataset(
+        paths=data_paths,
+        cam_names=cam_names,
+        target_columns=["joints", "actions"],
+        hist_steps=config["hist_steps"],
+        pred_steps=config["pred_steps"],
+        transforms=[build(x) for x in as_sequence(transforms)],
+        gripper_indices=[7, 15],
+        gripper_divisor=120.0,
+    )
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+@processor_register(DATA_TYPE)
+def build_processors(config, dataset_name, **kwargs):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    if "agibot_geniesim3_challenge" in dataset_names:
-        transforms = build_transforms(
-            config,
-            mode="deploy",
-            calibration=None,
-            kinematics_config=g2_kinematics_config,
+    transforms = build_transforms(
+        config,
+        mode="deploy",
+        calibration=None,
+        kinematics_config=g2_kinematics_config,
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            cam_names=cam_names,
+            transforms=transforms,
         )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth"],
-                valid_action_step=None,
-                cam_names=cam_names,
-                transforms=transforms,
-            )
-        )
-        processors["agibot_geniesim3_challenge"] = processor
-    return processors
+    )

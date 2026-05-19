@@ -16,15 +16,7 @@
 
 from dataset_factory import train_dataset_register
 
-data_paths = [
-    "./data/egodex/lmdb/part1",
-    "./data/egodex/lmdb/part2",
-    "./data/egodex/lmdb/part3",
-    "./data/egodex/lmdb/part4",
-    "./data/egodex/lmdb/part5",
-    "./data/egodex/lmdb/extra",
-    "./data/egodex/lmdb/test",
-]
+DATA_TYPE = "egodex"
 
 
 def build_transforms(config, mode):
@@ -134,10 +126,13 @@ def build_transforms(config, mode):
     return transforms
 
 
-@train_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
-    if "egodex" not in dataset_names:
-        return {}
+def _build_dataset(
+    config,
+    dataset_name,
+    data_paths,
+    mode,
+    lazy_init=True,
+):
     assert mode == "training", "only support training mode"
 
     from robo_orchard_lab.dataset.egodex.egodex_lmdb_dataset import (
@@ -149,7 +144,24 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         paths=data_paths,
         transforms=transforms,
         lazy_init=lazy_init or mode != "training",
-        dataset_name="egodex",
+        dataset_name=dataset_name,
         reset_step=1000,
     )
-    return dict(egodex=dataset)
+    return dataset
+
+
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    mode="training",
+    lazy_init=True,
+):
+    return _build_dataset(
+        config,
+        dataset_name=dataset_name,
+        data_paths=data_paths,
+        mode=mode,
+        lazy_init=lazy_init,
+    )

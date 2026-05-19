@@ -14,17 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from dataset_factory import train_dataset_register
+from dataset_factory import processor_register, train_dataset_register
+
+DATA_TYPE = "interna1"
 
 
 def get_dataset_lmdb_config():
-    from glob import glob
-
     dataset_lmdb_config = dict(
         interna1_arx_lift2=dict(
-            data_paths=glob(
-                "./data/InternData_A1_lmdb/ARX_Lift2/lmdb_dataset_ARX_Lift2*"
-            ),
             urdf="./urdf/InternData-A1_urdf/ARX_Lift2_fix/lift.urdf",
             cam_names=["hand_left", "hand_right", "head"],
             robot_type="ARX Lift-2",
@@ -32,17 +29,13 @@ def get_dataset_lmdb_config():
             load_extrinsic=True,
         ),
         interna1_agile_split_aloha=dict(
-            data_paths=glob(
-                "./data/InternData_A1_lmdb/AgileX_Split_Aloha/lmdb_dataset_AgileX_Split_Aloha*"
-            ),
-            urdf="./urdf/InternData-A1_urdf/AgileX_Split_Aloha_piper100/split_aloha_mid_360_with_piper.urdf",
+            urdf="./urdf/InternData-A1_urdf/AgileX_Split_Aloha_piper100/split_aloha_mid_360_with_piper.sanitized.urdf",
             cam_names=["hand_left", "hand_right", "head"],
             robot_type="AgileX Split Aloha",
             task_names=None,
             load_extrinsic=True,
         ),
         interna1_genieg1=dict(
-            data_paths=[],
             urdf="./urdf/InternData-A1_urdf/G1_120s/G1_120s.urdf",
             cam_names=["hand_left", "hand_right", "head"],
             robot_type="Genie-1",
@@ -413,78 +406,100 @@ def build_lmdb_transforms(
     return transforms
 
 
-@train_dataset_register()
-def build_lmdb_datasets(config, dataset_names, mode, lazy_init=True):
+def _build_lmdb_dataset(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    lazy_init=True,
+):
     from robo_orchard_lab.dataset.interna1 import (
         InternA1LmdbDataset,
     )
 
     dataset_lmdb_config = get_dataset_lmdb_config()
-    datasets = {}
-    for dataset_name, data_config in dataset_lmdb_config.items():
-        if dataset_name not in dataset_names:
-            continue
-        transforms = build_lmdb_transforms(
-            config,
-            mode,
-            urdf=data_config["urdf"],
-            robot_type=data_config["robot_type"],
-            calibration=data_config.get("calibration"),
-            depth_restore=config.get("depth_restore", False),
-            do_calib_to_ext=not data_config.get("load_extrinsic", False),
-        )
-        if isinstance(data_config["data_paths"], list):
-            data_config["data_paths"].sort()
-        dataset = InternA1LmdbDataset(
-            paths=data_config["data_paths"],
-            lazy_init=lazy_init or mode != "training",
-            transforms=transforms,
-            dataset_name=dataset_name,
-            cam_names=data_config["cam_names"],
-            task_names=data_config.get("task_names"),
-            load_extrinsic=data_config.get("load_extrinsic", False),
-            load_calibration=data_config.get("load_calibration", False),
-            hist_steps=config["hist_steps"],
-            pred_steps=config["pred_steps"],
-            reset_step=200,
-        )
-        datasets[dataset_name] = dataset
-
-    return datasets
+    data_config = dataset_lmdb_config[setting_type]
+    transforms = build_lmdb_transforms(
+        config,
+        mode,
+        urdf=data_config["urdf"],
+        robot_type=data_config["robot_type"],
+        calibration=data_config.get("calibration"),
+        depth_restore=config.get("depth_restore", False),
+        do_calib_to_ext=not data_config.get("load_extrinsic", False),
+    )
+    if isinstance(data_paths, list):
+        data_paths = sorted(data_paths)
+    return InternA1LmdbDataset(
+        paths=data_paths,
+        lazy_init=lazy_init or mode != "training",
+        transforms=transforms,
+        dataset_name=dataset_name,
+        cam_names=data_config["cam_names"],
+        task_names=data_config.get("task_names"),
+        load_extrinsic=data_config.get("load_extrinsic", False),
+        load_calibration=data_config.get("load_calibration", False),
+        hist_steps=config["hist_steps"],
+        pred_steps=config["pred_steps"],
+        reset_step=200,
+    )
 
 
-def build_processors(config, dataset_names):
+@train_dataset_register(DATA_TYPE)
+def build_lmdb_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode="training",
+    lazy_init=True,
+):
+    return _build_lmdb_dataset(
+        config,
+        dataset_name=dataset_name,
+        data_paths=data_paths,
+        setting_type=setting_type,
+        mode=mode,
+        lazy_init=lazy_init,
+    )
+
+
+def _build_processor(config, setting_type):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
     dataset_lmdb_config = get_dataset_lmdb_config()
-    processors = {}
-    for dataset_name, data_config in dataset_lmdb_config.items():
-        if dataset_name not in dataset_names:
-            continue
+    data_config = dataset_lmdb_config[setting_type]
+    transforms = build_lmdb_transforms(
+        config,
+        mode="deploy",
+        urdf=data_config["urdf"],
+        robot_type=data_config["robot_type"],
+        calibration=data_config.get("calibration"),
+        depth_restore=config.get("depth_restore", False),
+        do_calib_to_ext=True,
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            cam_names=data_config["cam_names"],
+            transforms=transforms,
+        )
+    )
 
-        transforms = build_lmdb_transforms(
-            config,
-            mode="deploy",
-            urdf=data_config["urdf"],
-            robot_type=data_config["robot_type"],
-            calibration=data_config.get("calibration"),
-            depth_restore=config.get("depth_restore", False),
-            do_calib_to_ext=True,
-        )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth"],
-                valid_action_step=None,
-                cam_names=data_config["cam_names"],
-                transforms=transforms,
-            )
-        )
-        processors[dataset_name] = processor
-    return processors
+
+@processor_register(DATA_TYPE)
+def build_processors(
+    config,
+    dataset_name,
+    setting_type,
+):
+    return _build_processor(config, setting_type=setting_type)
 
 
 # build_datasets = build_arrow_datasets

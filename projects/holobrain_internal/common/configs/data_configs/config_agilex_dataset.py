@@ -22,6 +22,8 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
+DATA_TYPE = "agilex"
+
 default_calibrations = dict(
     challenge=dict(
         front={
@@ -221,61 +223,8 @@ default_calibrations = dict(
 )
 
 
-def get_data_paths(dataset_name):
-    from glob import glob
-
-    data_paths = []
-    if dataset_name == "challenge":
-        patterns = [
-            "./data/challenge/倒水*/*",
-            "./data/challenge/叠毛巾*/叠毛巾-白黑格纹/*",
-            "./data/challenge/叠毛巾*/叠毛巾517mm*",
-            "./data/challenge/叠盘子*/*",
-            "./data/challenge/叠短裤*/*",
-            "./data/challenge/盖笔帽*/*",
-        ]
-    elif dataset_name == "horizon_beijing":
-        patterns = [
-            "./data/horizon_beijing/xuewu.lin-empty_cup_place",
-            "./data/horizon_beijing/xuewu.lin-collect_bottles",
-            "./data/horizon_beijing/xuewu.lin-collect_bottles-20250707-v2",
-            "./data/horizon_beijing/xuewu.lin-place_to_slot",
-            "./data/horizon_beijing/xuewu.lin-place_to_slot-20250709",
-            "./data/horizon_beijing/xuewu.lin-two_fold_towel-20250710",
-            "./data/horizon_beijing/xuewu.lin-two_fold_towel-20250712",
-            "./data/horizon_beijing/zhixu.zhao-*",
-            "./data/horizon_beijing/*-place_objects_to_basket-*",
-            "./data/horizon_beijing/*-fold_paper_box-*",
-        ]
-    elif dataset_name == "horizon_shanghai":
-        patterns = [
-            "./data/horizon_shanghai/*-empty_cup_place-*",
-            "./data/horizon_shanghai/*-place_shoe-*",
-            "./data/horizon_shanghai/*-place_to_slot-*",
-            "./data/horizon_shanghai/*-put_bottles_dustbin-*",
-            "./data/horizon_shanghai/*-stack_block_two-*",
-            "./data/horizon_shanghai/*-stack_bowls_three-*",
-            "./data/horizon_shanghai/*-two_fold_towel-*",
-            "./data/horizon_shanghai/*-fold_clothes-*",
-            "./data/horizon_shanghai/*-flatten_clothes-*",
-            "./data/horizon_shanghai/*-place_object_to_location-*",
-        ]
-    elif dataset_name == "agilex":
-        patterns = ["./data/agilex/lmdb/*"]
-    elif dataset_name == "horizon_beijing_piper_x":
-        patterns = ["./data/horizon_beijing/*-piper_x-*-*"]
-    else:
-        raise ValueError
-    for pattern in patterns:
-        data_paths.extend(glob(pattern))
-    data_paths = list(set(data_paths))
-    data_paths.sort()
-    return data_paths
-
-
 dataset_config = dict(
     challenge=dict(
-        data_paths=lambda: get_data_paths("challenge"),
         default_calibration=default_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm_old.urdf",
         cam_names=["left", "right", "front"],
@@ -284,37 +233,29 @@ dataset_config = dict(
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "challenge").hex[:4], 16),
     ),
     challenge_finetune=dict(
-        data_paths=["./data/challenge/finetune"],
         default_calibration=default_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
     ),
     challenge_self_collect=dict(
-        data_paths=[
-            "./data/challenge/agilex_data_0527_plates_stack",
-            "./data/challenge/agilex_data_0525",
-        ],
         default_calibration=default_calibrations["challenge"],
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_beijing=dict(
-        data_paths=lambda: get_data_paths("horizon_beijing"),
         default_calibration=default_calibrations["horizon_beijing"],
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_shanghai=dict(
-        data_paths=lambda: get_data_paths("horizon_shanghai"),
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_beijing_piper_x=dict(
-        data_paths=lambda: get_data_paths("horizon_beijing_piper_x"),
         default_calibration=default_calibrations["horizon_piper_x_435"],
         urdf="./urdf/piper_x_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
@@ -323,7 +264,6 @@ dataset_config = dict(
     ),
     # Agilex External Dataset
     agilex=dict(
-        data_paths=lambda: get_data_paths("agilex"),
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "mid"],
         task_names=[
@@ -665,9 +605,16 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-@validation_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
+@train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
+def build_dataset(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    lazy_init=True,
+):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
     )
@@ -675,78 +622,95 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         InstructionReader,
     )
 
-    datasets = {}
-    for dataset_name, data_config in dataset_config.items():
-        if dataset_name not in dataset_names:
-            continue
-        transforms = build_transforms(
-            config,
-            mode,
-            urdf=data_config["urdf"],
-            default_calibration=data_config.get("default_calibration"),
-            depth_restore=config.get("depth_restore", False),
-            do_calib_to_ext=not data_config.get("load_extrinsic", False),
-        )
-        instruction_reader = InstructionReader(
-            paths=[
-                "./data/instructions_v2/agilex",
-                "./data/instructions_v2/challenge",
-            ]
-        )
-        data_paths = data_config["data_paths"]
-        if callable(data_paths):
-            data_paths = data_paths()
-        dataset = HorizonManipulationLmdbDataset(
-            paths=data_paths,
-            lazy_init=lazy_init or mode != "training",
-            transforms=transforms,
-            dataset_name=dataset_name,
-            cam_names=data_config["cam_names"],
-            task_names=data_config.get("task_names"),
-            load_extrinsic=data_config.get("load_extrinsic", False),
-            load_calibration=data_config.get("load_calibration", False),
-            instruction_reader=instruction_reader,
-            flag=data_config.get(
-                "flag",
-                int(uuid.uuid5(uuid.NAMESPACE_DNS, "agilex").hex[:4], 16),
-            ),
-            hist_steps=config["hist_steps"],
-            pred_steps=config["pred_steps"],
-            reset_step=500,
-        )
-        datasets[dataset_name] = dataset
-
-    return datasets
+    data_config = dataset_config[setting_type]
+    transforms = build_transforms(
+        config,
+        mode,
+        urdf=data_config["urdf"],
+        default_calibration=data_config.get("default_calibration"),
+        depth_restore=config.get("depth_restore", False),
+        do_calib_to_ext=not data_config.get("load_extrinsic", False),
+    )
+    instruction_reader = InstructionReader(
+        paths=[
+            "./data/instructions_v2/agilex",
+            "./data/instructions_v2/challenge",
+        ]
+    )
+    if callable(data_paths):
+        data_paths = data_paths()
+    return HorizonManipulationLmdbDataset(
+        paths=data_paths,
+        lazy_init=lazy_init or mode != "training",
+        transforms=transforms,
+        dataset_name=dataset_name,
+        cam_names=data_config["cam_names"],
+        task_names=data_config.get("task_names"),
+        load_extrinsic=data_config.get("load_extrinsic", False),
+        load_calibration=data_config.get("load_calibration", False),
+        instruction_reader=instruction_reader,
+        flag=data_config.get(
+            "flag",
+            int(uuid.uuid5(uuid.NAMESPACE_DNS, "agilex").hex[:4], 16),
+        ),
+        hist_steps=config["hist_steps"],
+        pred_steps=config["pred_steps"],
+        reset_step=500,
+    )
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+def _build_processor(config, setting_type):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    for dataset_name, data_config in dataset_config.items():
-        if dataset_name not in dataset_names:
-            continue
+    data_config = dataset_config[setting_type]
+    transforms = build_transforms(
+        config,
+        mode="deploy",
+        urdf=data_config["urdf"],
+        default_calibration=data_config.get("default_calibration"),
+        depth_restore=config.get("depth_restore", False),
+        do_calib_to_ext=True,
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            cam_names=data_config["cam_names"],
+            transforms=transforms,
+        )
+    )
 
-        transforms = build_transforms(
-            config,
-            mode="deploy",
-            urdf=data_config["urdf"],
-            default_calibration=data_config.get("default_calibration"),
-            depth_restore=config.get("depth_restore", False),
-            do_calib_to_ext=True,
+
+@processor_register(DATA_TYPE)
+def build_processors(
+    config,
+    dataset_name,
+    setting_type,
+):
+    from robo_orchard_lab.models.holobrain import (
+        HoloBrainProcessor,
+        HoloBrainProcessorCfg,
+    )
+
+    data_config = dataset_config[setting_type]
+    transforms = build_transforms(
+        config,
+        mode="deploy",
+        urdf=data_config["urdf"],
+        default_calibration=data_config.get("default_calibration"),
+        depth_restore=config.get("depth_restore", False),
+        do_calib_to_ext=True,
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            cam_names=data_config["cam_names"],
+            transforms=transforms,
         )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth"],
-                valid_action_step=None,
-                cam_names=data_config["cam_names"],
-                transforms=transforms,
-            )
-        )
-        processors[dataset_name] = processor
-    return processors
+    )

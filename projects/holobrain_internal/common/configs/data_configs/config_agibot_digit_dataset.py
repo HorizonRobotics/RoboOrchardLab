@@ -20,6 +20,8 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
+DATA_TYPE = "agibot_digit"
+
 
 def parse_arrow_dirs(base_dir: str, limit: int = -1) -> list[str]:
     from pathlib import Path
@@ -154,41 +156,6 @@ g1_kinematics_config = dict(
         "body_link2",
     ],
 )
-
-adc_anno_results_dir = "./data/arrow/agibot_digit_challenge/adc_anno_results"
-dataset_paths = dict(
-    agibot_digit_challenge_task0=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/pack_in_the_supermarket",
-    ],
-    agibot_digit_challenge_task1=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/clear_table_in_the_restaurant",
-    ],
-    agibot_digit_challenge_task2=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/stamp_the_seal",
-    ],
-    agibot_digit_challenge_task3=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/restock_supermarket_items",
-    ],
-    agibot_digit_challenge_task4=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/clear_the_countertop_waste",
-    ],
-    agibot_digit_challenge_task5=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/open_drawer_and_store_items",
-    ],
-    agibot_digit_challenge_task6=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/make_a_sandwich",
-    ],
-    agibot_digit_challenge_task7=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/heat_the_food_in_the_microwave",
-    ],
-    agibot_digit_challenge_task8=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/pack_moving_objects_from_conveyor",
-    ],
-    agibot_digit_challenge_task9=[
-        "./data/arrow/agibot_digit_challenge/2026_0125_lite/pickup_items_from_the_freezer",
-    ],
-)
-
 
 def build_transforms(
     config,
@@ -421,9 +388,16 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-@validation_dataset_register()
-def build_datasets(config, dataset_names, mode="training", **kwargs):
+@train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    adc_anno_results_dir,
+    mode="training",
+    **kwargs,
+):
 
     from torchvision.transforms import Compose
 
@@ -433,18 +407,6 @@ def build_datasets(config, dataset_names, mode="training", **kwargs):
     )
     from robo_orchard_lab.utils.build import build
     from robo_orchard_lab.utils.misc import as_sequence
-
-    if "agibot_digit_challenge" in dataset_names:
-        valid_dataset_paths = dataset_paths
-    else:
-        valid_dataset_paths = {
-            name: paths
-            for name, paths in dataset_paths.items()
-            if name in dataset_names
-        }
-
-    if not valid_dataset_paths:
-        return {}
 
     adc_anno_results = load_adc_anno_results(adc_anno_results_dir)
     transforms = build_transforms(
@@ -457,111 +419,53 @@ def build_datasets(config, dataset_names, mode="training", **kwargs):
     )
     composed_transforms = Compose([build(x) for x in as_sequence(transforms)])
 
-    datasets = {}
-    for data_name, data_paths in valid_dataset_paths.items():
-        resolved_paths = []
-        for path in data_paths:
-            resolved_paths.extend(parse_arrow_dirs(path))
+    resolved_paths = []
+    for path in data_paths:
+        resolved_paths.extend(parse_arrow_dirs(path))
 
-        ro_datasets = []
-        for data_path in resolved_paths:
-            ro_dataset = RODataset(
-                dataset_path=data_path, meta_index2meta=False
-            )
-            ro_dataset.frame_dataset = ro_dataset.frame_dataset.with_format(
-                type="numpy",
-                columns=[
-                    "joint_state",
-                    "joint_action",
-                    "joint_raw_frame_index",
-                    "camera_intrinsics/middle",
-                    "camera_intrinsics/left",
-                    "camera_intrinsics/right",
-                ],
-                output_all_columns=True,
-            )
-            ro_dataset.set_transform(composed_transforms)
-            ro_datasets.append(ro_dataset)
+    ro_datasets = []
+    for data_path in resolved_paths:
+        ro_dataset = RODataset(dataset_path=data_path, meta_index2meta=False)
+        ro_dataset.frame_dataset = ro_dataset.frame_dataset.with_format(
+            type="numpy",
+            columns=[
+                "joint_state",
+                "joint_action",
+                "joint_raw_frame_index",
+                "camera_intrinsics/middle",
+                "camera_intrinsics/left",
+                "camera_intrinsics/right",
+            ],
+            output_all_columns=True,
+        )
+        ro_dataset.set_transform(composed_transforms)
+        ro_datasets.append(ro_dataset)
 
-        assert len(ro_datasets) > 0, f"No datasets found for {data_name}"
-
-        dataset = ConcatRODataset(ro_datasets)
-        datasets[data_name] = dataset
-
-    return datasets
+    assert len(ro_datasets) > 0, f"No datasets found for {dataset_name}"
+    return ConcatRODataset(ro_datasets)
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+@processor_register(DATA_TYPE)
+def build_processors(config, dataset_name, **kwargs):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    if "agibot_digit_challenge" in dataset_names:
-        transforms = build_transforms(
-            config,
-            mode="deploy",
-            cam_names=cam_names,
-            kinematics_config=g1_kinematics_config,
-            scale_shift=scale_shift,
-        )
-
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth"],
-                valid_action_step=None,
-                transforms=transforms,
-                cam_names=cam_names,
-            )
-        )
-        processors["agibot_digit_challenge"] = processor
-
-    return processors
-
-
-if __name__ == "__main__":
-
-    import logging
-
-    from robo_orchard_lab.dataset.robot.dataset_visualizer import (
-        RODatasetVisualizer,
-    )
-
-    logger = logging.getLogger(__file__)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d - %(message)s",
-        force=True,
-    )
-
-    config = dict(
-        hist_steps=1,
-        pred_steps=64,
-        training_datasets=["agibot_digit_challenge_task0"],
-    )
-
-    datasets = build_datasets(
+    transforms = build_transforms(
         config,
-        dataset_names=config["training_datasets"],
-        mode="training",
+        mode="deploy",
+        cam_names=cam_names,
+        kinematics_config=g1_kinematics_config,
+        scale_shift=scale_shift,
     )
 
-    for idx, dataset in enumerate(datasets):
-        print("concat dataset len:", len(dataset))
-        dataset = dataset.datasets[0]  # type: ignore
-        vis = RODatasetVisualizer(dataset, ee_indices=(7, 15))
-        ep_idxes = [0, 50, 90]
-        for ep_idx in ep_idxes:
-            output_dir = "./vis_agibot_digit"
-            print(f"Visualizing episode {ep_idx} to {output_dir}")
-            vis.visualize_episode(
-                episode_index=ep_idx,
-                output_dir=output_dir,
-                fps=10,
-                interval=10,
-                with_frame_idx=True,
-                with_valid_mask=True,
-            )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            transforms=transforms,
+            cam_names=cam_names,
+        )
+    )

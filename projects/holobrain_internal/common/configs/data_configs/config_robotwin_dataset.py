@@ -16,8 +16,11 @@
 
 from dataset_factory import processor_register, train_dataset_register
 
+DATA_TYPE = "robotwin"
+
+
 dataset_config = dict(
-    robotwin1_0=dict(
+    aloha_v1=dict(
         kinematics_config=dict(
             urdf="./urdf/arx5/arx5_description_isaac.urdf",
         ),
@@ -26,9 +29,6 @@ dataset_config = dict(
             [1, 0, 0, -0.65],
             [0, 0, 1, 0],
             [0, 0, 0, 1],
-        ],
-        paths=[
-            "./data/robotwin1.0",
         ],
         scale_shift=[
             [1.12735104, -0.11648428],
@@ -54,7 +54,7 @@ dataset_config = dict(
             "head_camera",
         ],
     ),
-    robotwin2_0=dict(
+    aloha_v2=dict(
         kinematics_config=dict(
             urdf="./urdf/arx5/arx5_description_isaac.urdf",
         ),
@@ -63,19 +63,6 @@ dataset_config = dict(
             [1, 0, 0, -0.65],
             [0, 0, 1, 0],
             [0, 0, 0, 1],
-        ],
-        paths=[
-            "./data/robotwin2.0/aloha_agilex_demo_clean",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part1",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part2",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part3",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part4",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part5",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part6",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part7",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part8",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part9",
-            "./data/robotwin2.0/agilex_demo_randomized_500_part10",
         ],
         scale_shift=[
             [1.12735104, -0.11648428],
@@ -101,7 +88,7 @@ dataset_config = dict(
             "head_camera",
         ],
     ),
-    robotwin2_0_ur5_wsg=dict(
+    ur5_wsg=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_ur5_wsg.urdf",
             left_arm_link_keys=[
@@ -131,9 +118,6 @@ dataset_config = dict(
             [0, 0, 1, 0.65],
             [0, 0, 0, 1],
         ],
-        paths=[
-            "./data/robotwin2.0/ur5_wsg_demo_clean",
-        ],
         scale_shift=[
             [2.400281548500061, -0.1310516595840454],
             [1.445511817932129, -1.445511817932129],
@@ -153,7 +137,7 @@ dataset_config = dict(
         num_joint=14,
         cam_names=["left_camera", "right_camera", "head_camera"],
     ),
-    robotwin2_0_arx_x5a=dict(
+    arx_x5a=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_arx_x5a.urdf",
             left_arm_link_keys=[
@@ -183,9 +167,6 @@ dataset_config = dict(
             [0, 0, 1, 0.784],
             [0, 0, 0, 1],
         ],
-        paths=[
-            "./data/robotwin2.0/arx-x5_demo_clean",
-        ],
         scale_shift=[
             [1.593699038028717, -0.07424229383468628],
             [1.5048249727115035, 1.4888149732723832],
@@ -205,7 +186,7 @@ dataset_config = dict(
         num_joint=14,
         cam_names=["left_camera", "right_camera", "head_camera"],
     ),
-    robotwin2_0_franka_panda=dict(
+    franka_panda=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_panda.urdf",
             left_arm_link_keys=[
@@ -237,9 +218,6 @@ dataset_config = dict(
             [0, 0, 1, 0.75],
             [0, 0, 0, 1],
         ],
-        paths=[
-            "./data/robotwin2.0/franka-panda_demo_clean",
-        ],
         scale_shift=[
             [2.6311211585998535, 0.1413583755493164],
             [1.761036455631256, 0.0017635226249694824],
@@ -261,7 +239,7 @@ dataset_config = dict(
         num_joint=16,
         cam_names=["left_camera", "right_camera", "head_camera"],
     ),
-    robotwin2_0_piper=dict(
+    piper=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_piper.urdf",
             left_arm_link_keys=[
@@ -290,10 +268,6 @@ dataset_config = dict(
             [1, 0, 0, -0.45],
             [0, 0, 1, 0.75],
             [0, 0, 0, 1],
-        ],
-        paths=[
-            "./data/robotwin2.0/aloha_piper_27tasks_clean_200",
-            "./data/robotwin2.0/aloha_piper_27tasks_noise_300",
         ],
         scale_shift=[
             [1.2148041427135468, -0.5527651607990265],
@@ -513,68 +487,85 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
+def _build_dataset(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    lazy_init=True,
+):
     from robo_orchard_lab.dataset.robotwin.robotwin_lmdb_dataset import (
         RoboTwinLmdbDataset,
     )
 
-    datasets = {}
-    for dataset_name, data_config in dataset_config.items():
-        if (
-            "robotwin" not in dataset_names
-            and dataset_name not in dataset_names
-        ):
-            continue
-        transforms = build_transforms(
-            config,
-            mode,
-            data_config["kinematics_config"],
-            data_config["T_base2world"],
-            data_config["scale_shift"],
-            data_config["num_joint"],
-        )
-        dataset = RoboTwinLmdbDataset(
-            paths=dataset_config[dataset_name]["paths"],
-            task_names=config.get("task_names"),
-            lazy_init=lazy_init or mode != "training",
-            transforms=transforms,
-            dataset_name=dataset_name,
-            cam_names=data_config["cam_names"],
-            reset_step=1000,
-        )
-        datasets[dataset_name] = dataset
-    return datasets
+    transforms = build_transforms(
+        config,
+        mode,
+        dataset_config[setting_type]["kinematics_config"],
+        dataset_config[setting_type]["T_base2world"],
+        dataset_config[setting_type]["scale_shift"],
+        dataset_config[setting_type]["num_joint"],
+    )
+    return RoboTwinLmdbDataset(
+        paths=data_paths,
+        task_names=config.get("task_names"),
+        lazy_init=lazy_init or mode != "training",
+        transforms=transforms,
+        dataset_name=dataset_name,
+        cam_names=dataset_config[setting_type]["cam_names"],
+        reset_step=1000,
+    )
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode="training",
+    lazy_init=True,
+):
+    return _build_dataset(
+        config,
+        dataset_name=dataset_name,
+        data_paths=data_paths,
+        setting_type=setting_type,
+        mode=mode,
+        lazy_init=lazy_init,
+    )
+
+
+def _build_processor(config, setting_type):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    for dataset_name, data_config in dataset_config.items():
-        if dataset_name not in dataset_names:
-            continue
+    transforms = build_transforms(
+        config,
+        "deploy",
+        dataset_config[setting_type]["kinematics_config"],
+        dataset_config[setting_type]["T_base2world"],
+        dataset_config[setting_type]["scale_shift"],
+        dataset_config[setting_type]["num_joint"],
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            transforms=transforms,
+            cam_names=dataset_config[setting_type]["cam_names"],
+        )
+    )
 
-        transforms = build_transforms(
-            config,
-            "deploy",
-            data_config["kinematics_config"],
-            data_config["T_base2world"],
-            data_config["scale_shift"],
-            data_config["num_joint"],
-        )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth"],
-                valid_action_step=None,
-                transforms=transforms,
-                cam_names=data_config["cam_names"],
-            )
-        )
-        processors[dataset_name] = processor
-    return processors
+
+@processor_register(DATA_TYPE)
+def build_processors(
+    config,
+    dataset_name,
+    setting_type,
+):
+    return _build_processor(config, setting_type=setting_type)

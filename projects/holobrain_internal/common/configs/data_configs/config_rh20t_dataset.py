@@ -17,8 +17,10 @@
 
 from dataset_factory import train_dataset_register
 
+DATA_TYPE = "rh20t"
+
 kinematics_config = dict(
-    cfg1=dict(
+    flexiv=dict(
         urdf="./urdf/rh20t/flexiv/robot_pvt3.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
@@ -56,7 +58,7 @@ kinematics_config = dict(
             ]
         ],
     ),
-    cfg2=dict(
+    flexiv_v2=dict(
         urdf="./urdf/rh20t/flexiv/robot_pvt3.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
@@ -94,7 +96,7 @@ kinematics_config = dict(
             ]
         ],
     ),
-    cfg3=dict(
+    ur5=dict(
         urdf="./urdf/rh20t/ur5/urdf/ur5.urdf",
         arm_joint_id=[list(range(6))],
         arm_link_keys=[
@@ -131,7 +133,7 @@ kinematics_config = dict(
             ]
         ],
     ),
-    cfg4=dict(
+    ur5_v2=dict(
         urdf="./urdf/rh20t/ur5/urdf/ur5.urdf",
         arm_joint_id=[list(range(6))],
         arm_link_keys=[
@@ -171,7 +173,7 @@ kinematics_config = dict(
             ]
         ],
     ),
-    cfg5=dict(
+    franka=dict(
         urdf="./urdf/rh20t/franka/franka_womaterial.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
@@ -213,7 +215,7 @@ kinematics_config = dict(
             ]
         ],
     ),
-    cfg6=dict(
+    kuka=dict(
         urdf="./urdf/rh20t/kuka/model.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
@@ -254,7 +256,7 @@ kinematics_config = dict(
             ]
         ],
     ),
-    cfg7=dict(
+    kuka_v2=dict(
         urdf="./urdf/rh20t/kuka/model.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
@@ -299,7 +301,7 @@ kinematics_config = dict(
 
 
 scale_shift_config = dict(
-    cfg1=dict(
+    flexiv=dict(
         scale_shift=[
             [1.8854153972405654, 0.12018490846340468],
             [1.3257280804894187, -0.3932210423729636],
@@ -311,7 +313,7 @@ scale_shift_config = dict(
             [0.0475, 0.0475],
         ],
     ),
-    cfg2=dict(
+    flexiv_v2=dict(
         scale_shift=[
             [1.8854153972405654, 0.12018490846340468],
             [1.3257280804894187, -0.3932210423729636],
@@ -323,7 +325,7 @@ scale_shift_config = dict(
             [0.0475, 0.0475],
         ],
     ),
-    cfg3=dict(
+    ur5=dict(
         scale_shift=[
             [1.0607173832563253, -0.28546532071553743],
             [0.9490752716859181, -1.3848951955636342],
@@ -334,7 +336,7 @@ scale_shift_config = dict(
             [0.055, 0.055],
         ]
     ),
-    cfg4=dict(
+    ur5_v2=dict(
         scale_shift=[
             [1.0607173832563253, -0.28546532071553743],
             [0.9490752716859181, -1.3848951955636342],
@@ -345,7 +347,7 @@ scale_shift_config = dict(
             [0.055, 0.055],
         ]
     ),
-    cfg5=dict(
+    franka=dict(
         scale_shift=[
             [0.7346614707052761, -0.047866176420455486],
             [0.992782645312074, 0.2626264762012926],
@@ -357,7 +359,7 @@ scale_shift_config = dict(
             [0.04041, 0.040400000000000005],
         ]
     ),
-    cfg6=dict(
+    kuka=dict(
         scale_shift=[
             [0.8286045863166479, -0.013757557099485895],
             [0.7971857621181788, 0.6024209452866816],
@@ -369,7 +371,7 @@ scale_shift_config = dict(
             [0.0425, 0.0425],
         ]
     ),
-    cfg7=dict(
+    kuka_v2=dict(
         scale_shift=[
             [0.8286045863166479, -0.013757557099485895],
             [0.7971857621181788, 0.6024209452866816],
@@ -381,38 +383,6 @@ scale_shift_config = dict(
             [0.0425, 0.0425],
         ]
     ),
-)
-
-data_paths = dict(
-    cfg1=[
-        "./data/rh20t/RH20T_cfg1/shard_000",
-        "./data/rh20t/RH20T_cfg1/shard_001",
-        "./data/rh20t/RH20T_cfg1/shard_002",
-        "./data/rh20t/RH20T_cfg1/shard_004",
-    ],
-    cfg2=[
-        "./data/rh20t/RH20T_cfg2/shard_000",
-        "./data/rh20t/RH20T_cfg2/shard_001",
-    ],
-    cfg3=[
-        "./data/rh20t/RH20T_cfg3/shard_000",
-    ],
-    cfg4=[
-        "./data/rh20t/RH20T_cfg4/shard_000",
-        "./data/rh20t/RH20T_cfg4/shard_001",
-        "./data/rh20t/RH20T_cfg4/shard_002",
-    ],
-    cfg5=[
-        "./data/rh20t/RH20T_cfg5/shard_000",
-        "./data/rh20t/RH20T_cfg5/shard_001",
-    ],
-    cfg6=[
-        "./data/rh20t/RH20T_cfg6/shard_000",
-        "./data/rh20t/RH20T_cfg6/shard_001",
-    ],
-    cfg7=[
-        "./data/rh20t/RH20T_cfg7/shard_000",
-    ],
 )
 
 
@@ -560,8 +530,15 @@ def build_transforms(config, mode, scale_shift, kinematics_config):
     return transforms
 
 
-@train_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    lazy_init=True,
+):
     assert mode == "training", "only support training mode"
     from robo_orchard_lab.dataset.horizon_manipulation import (
         RH20TManipulationDataset,
@@ -570,29 +547,20 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         InstructionReader,
     )
 
-    datasets = {}
-    for dataset_name, paths in data_paths.items():
-        if (
-            "rh20t" not in dataset_names
-            and f"rh20t-{dataset_name}" not in dataset_names
-        ):
-            continue
-        transforms = build_transforms(
-            config,
-            mode,
-            scale_shift_config[dataset_name],
-            kinematics_config[dataset_name],
-        )
-        instruction_reader = InstructionReader(
-            paths="./data/instructions_v2/rh20t"
-        )
-        dataset = RH20TManipulationDataset(
-            paths=paths,
-            lazy_init=lazy_init or mode != "training",
-            transforms=transforms,
-            dataset_name=f"rh20t-{dataset_name}",
-            num_views=3,
-            instruction_reader=instruction_reader,
-        )
-        datasets[f"rh20t-{dataset_name}"] = dataset
-    return datasets
+    transforms = build_transforms(
+        config,
+        mode,
+        scale_shift_config[setting_type],
+        kinematics_config[setting_type],
+    )
+    instruction_reader = InstructionReader(
+        paths="./data/instructions_v2/rh20t"
+    )
+    return RH20TManipulationDataset(
+        paths=data_paths,
+        lazy_init=lazy_init or mode != "training",
+        transforms=transforms,
+        dataset_name=dataset_name,
+        num_views=3,
+        instruction_reader=instruction_reader,
+    )

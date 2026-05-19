@@ -14,16 +14,15 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import glob
 import logging
-import os
-from pathlib import Path
 
 import numpy as np
 import torch
 from dataset_factory import train_dataset_register
 
 logger = logging.getLogger(__name__)
+
+DATA_TYPE = "agibot"
 
 
 kinematics_config = dict(
@@ -84,83 +83,6 @@ agibot_scale_shift = [
     [0.076923081, 0.274950588],  # joint_lift_body
 ]
 
-
-# 打包失败的数据。包括1. 缺少外参；2. 缺少某个摄像头数据；3. tar包不完整。
-failed_task_id = [
-    580,
-    608,
-    679,
-    790,
-    710,
-    622,
-    660,
-    735,
-    549,
-    705,
-    753,
-    536,
-    578,
-    730,
-    782,
-    554,
-    731,
-    727,
-    475,
-    620,
-    749,
-]
-
-# 灵巧手数据，先排除在外。
-dexterous_hands_task_ids = [
-    475,
-    536,
-    547,
-    548,
-    549,
-    554,
-    577,
-    578,
-    591,
-    595,
-    608,
-    620,
-    622,
-    660,
-    679,
-    705,
-    710,
-    727,
-    730,
-    731,
-    749,
-    753,
-]
-
-data_root = "./data/agibot/AgiBotWorld-Beta-250412-2496da_lmdb_20250723"
-task_dirs = list(Path(data_root).glob("*/"))
-invalid_task_ids = set(failed_task_id + dexterous_hands_task_ids)
-
-valid_task_dirs = []
-for task_dir in task_dirs:
-    task_name = int(task_dir.name)
-    if task_name in invalid_task_ids:
-        continue
-    valid_task_dirs.append(task_dir)
-valid_task_dirs.sort()
-
-data_paths = {}
-for task_dir in valid_task_dirs:
-    data_paths[f"agibot_{task_dir.name}"] = []
-    for data_dir in task_dir.glob("shard_*/"):
-        content = os.listdir(data_dir)
-        valid_flag = True
-        for x in ["image", "meta", "depth", "index"]:
-            if x not in content:
-                valid_flag = False
-                break
-        if valid_flag:
-            data_paths[f"agibot_{task_dir.name}"].append(data_dir)
-    data_paths[f"agibot_{task_dir.name}"].sort()
 
 
 def build_transforms(config):
@@ -334,10 +256,12 @@ def build_transforms(config):
     ]
 
 
-@train_dataset_register()
+@train_dataset_register(DATA_TYPE)
 def build_datasets(
     config,
-    dataset_names,
+    dataset_name,
+    data_paths,
+    instruction_path,
     lazy_init=True,
     lmdb_kwargs=None,
     mode="training",
@@ -351,36 +275,18 @@ def build_datasets(
         InstructionReader,
     )
 
+    if callable(data_paths):
+        data_paths = data_paths()
+
     transforms = build_transforms(config)
-    instruction_reader = InstructionReader(
-        paths="./data/instructions_v2/agibot",
+    instruction_reader = InstructionReader(paths=instruction_path)
+    dataset = AgiBotLmdbDataset(
+        paths=data_paths,
+        lazy_init=lazy_init,
+        transforms=transforms,
+        cam_names=None,
+        dataset_name=dataset_name,
+        instruction_reader=instruction_reader,
+        reset_step=500,
     )
-    if "agibot" in dataset_names:
-        all_data_paths = []
-        for data_path in data_paths.values():
-            all_data_paths.extend(data_path)
-        agibot_dataset = AgiBotLmdbDataset(
-            paths=all_data_paths,
-            lazy_init=lazy_init,
-            transforms=transforms,
-            cam_names=None,
-            dataset_name="agibot",
-            instruction_reader=instruction_reader,
-            reset_step=500,
-        )
-        train_datasets = dict(agibot=agibot_dataset)
-    else:
-        train_datasets = {}
-        for name, data_path in data_paths.items():
-            if name not in dataset_names:
-                continue
-            agibot_dataset = AgiBotLmdbDataset(
-                paths=data_path,
-                lazy_init=lazy_init,
-                transforms=transforms,
-                cam_names=None,
-                dataset_name=name,
-                instruction_reader=instruction_reader,
-            )
-            train_datasets[name] = agibot_dataset
-    return train_datasets
+    return dataset

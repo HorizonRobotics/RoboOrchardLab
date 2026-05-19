@@ -19,6 +19,8 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
+DATA_TYPE = "table30_ro"
+
 cam_names = ["wrist_left", "wrist_right", "high"]
 
 kinematics_config = dict(
@@ -43,19 +45,6 @@ kinematics_config = dict(
         ],
     ],
     finger_keys=[["left_link7"], ["right_link7"]],
-)
-
-
-dataset_paths = dict(
-    table30_aloha_ro=[
-        "./data/arrow/20260305_01/table30/make_vegetarian_sandwich",
-        "./data/arrow/20260305_01/table30/clean_dining_table",
-        "./data/arrow/20260305_01/table30/pour_fries_into_plate",
-        "./data/arrow/20260305_01/table30/put_opener_in_drawer",
-        "./data/arrow/20260305_01/table30/stack_bowls",
-        "./data/arrow/20260305_01/table30/turn_on_faucet",
-        "./data/arrow/20260305_01/table30/plug_in_network_cable",
-    ],
 )
 
 
@@ -345,42 +334,32 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-@validation_dataset_register()
-def build_datasets(config, dataset_names, mode, **kwargs):
+@train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    mode,
+    **kwargs,
+):
     from robo_orchard_lab.dataset.robo_challenge import (
         Table30RODataset,
     )
     from robo_orchard_lab.utils.build import build
     from robo_orchard_lab.utils.misc import as_sequence
 
-    if "table30" in dataset_names:
-        valid_dataset_paths = dataset_paths
-    else:
-        valid_dataset_paths = {
-            dataset_name: data_paths
-            for dataset_name, data_paths in dataset_paths.items()
-            if dataset_name in dataset_names
-        }
-
-    if not valid_dataset_paths:
-        return {}
-
-    datasets = {}
-    for data_name, data_paths in valid_dataset_paths.items():
-        transforms = build_transforms(
-            config,
-            mode,
-            kinematics_config=kinematics_config,
-            depth_restore=config.get("depth_restore", False),
-        )
-        datasets[data_name] = Table30RODataset(
-            paths=expand_ro_data_paths(data_paths),
-            cam_names=cam_names,
-            target_columns=["joints", "actions"],
-            hist_steps=config["hist_steps"],
-            pred_steps=config["pred_steps"],
-            transforms=[build(x) for x in as_sequence(transforms)],
-        )
-
-    return datasets
+    transforms = build_transforms(
+        config,
+        mode,
+        kinematics_config=kinematics_config,
+        depth_restore=config.get("depth_restore", False),
+    )
+    return Table30RODataset(
+        paths=expand_ro_data_paths(data_paths),
+        cam_names=cam_names,
+        target_columns=["joints", "actions"],
+        hist_steps=config["hist_steps"],
+        pred_steps=config["pred_steps"],
+        transforms=[build(x) for x in as_sequence(transforms)],
+    )

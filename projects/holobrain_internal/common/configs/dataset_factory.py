@@ -14,142 +14,267 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-
+import importlib
+import importlib.util
 import logging
 import threading
+from pathlib import Path
+from types import ModuleType
 from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 _REGISTRY_LOCK = threading.Lock()
 REGISTERED = False
-TRAIN_DATASET_BUILD_FUNCS = set()
-VALIDATION_DATASET_BUILD_FUNCS = set()
-PROCESSOR_BUILD_FUNCS = set()
+
+TRAIN_DATASET_BUILD_FUNCS: dict[str, Callable] = {}
+VALIDATION_DATASET_BUILD_FUNCS: dict[str, Callable] = {}
+PROCESSOR_BUILD_FUNCS: dict[str, Callable] = {}
 
 
-def train_dataset_register():
-    # No lock needed: decorators are called during module import, which is
-    # always triggered from within apply_dataset_register while holding
-    # _REGISTRY_LOCK — acquiring it again here would deadlock.
+def _register_func(registry: dict[str, Callable], data_type: str):
+    if not data_type:
+        raise ValueError("`data_type` must be provided when registering.")
+
     def decorator(func: Callable):
-        TRAIN_DATASET_BUILD_FUNCS.add(func)
+        registry[data_type] = func
         return func
 
     return decorator
 
 
-def validation_dataset_register():
-    def decorator(func: Callable):
-        VALIDATION_DATASET_BUILD_FUNCS.add(func)
-        return func
-
-    return decorator
+def train_dataset_register(data_type: str):
+    return _register_func(TRAIN_DATASET_BUILD_FUNCS, data_type=data_type)
 
 
-def processor_register():
-    def decorator(func: Callable):
-        PROCESSOR_BUILD_FUNCS.add(func)
-        return func
+def validation_dataset_register(data_type: str):
+    return _register_func(VALIDATION_DATASET_BUILD_FUNCS, data_type=data_type)
 
-    return decorator
+
+def processor_register(data_type: str):
+    return _register_func(PROCESSOR_BUILD_FUNCS, data_type=data_type)
 
 
 def apply_dataset_register():
     global REGISTERED
-    # Fast path: no lock needed for the first read.
     if REGISTERED:
         return
     with _REGISTRY_LOCK:
-        # Second check inside the lock to handle concurrent callers.
         if REGISTERED:
             return
-        import config_agibot_dataset  # noqa: F401
-        import config_agibot_digit_dataset  # noqa: F401
-        import config_agibot_geniesim_dataset  # noqa: F401
-        import config_agilex_dataset  # noqa: F401
-        import config_agilex_ro_dataset  # noqa: F401
-        import config_behavior_dataset  # noqa: F401
-        import config_droid_dataset  # noqa: F401
-        import config_egodex_dataset  # noqa: F401
-        import config_interna1_dataset  # noqa: F401
-        import config_isaac_dataset  # noqa: F401
-        import config_libero_dataset  # noqa: F401
-        import config_rh20t_dataset  # noqa: F401
-        import config_robotwin_dataset  # noqa: F401
-        import config_table30_ro_dataset  # noqa: F401
-        import config_table30v2_dataset  # noqa: F401
-
+        importlib.import_module("data_configs")
         REGISTERED = True
+
+
+def _load_module_from_ref(module_ref: str) -> ModuleType:
+    module_path = Path(module_ref)
+    if module_ref.endswith(".py") or module_path.exists():
+        if not module_path.is_absolute():
+            module_path = module_path.resolve()
+        spec = importlib.util.spec_from_file_location(
+            module_path.stem, module_path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Failed to load dataset specs: {module_ref}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return importlib.import_module(module_ref)
+
+
+def _load_dataset_specs_from_config(
+    config: dict,
+    config_key: str,
+    attr_name: str,
+    required: bool = False,
+):
+    module_ref = config.get(config_key)
+    if module_ref is None:
+        if required:
+            raise KeyError(f"`{config_key}` must be provided.")
+        return None
+    if not isinstance(module_ref, str):
+        raise TypeError(
+            f"`{config_key}` must be a module reference string or None."
+        )
+
+    spec_module = _load_module_from_ref(module_ref)
+    if not hasattr(spec_module, attr_name):
+        raise AttributeError(f"{config_key} module must define `{attr_name}`.")
+    return getattr(spec_module, attr_name)
+
+
+def _load_dataset_specs_from_module_ref(
+    module_ref: str,
+    attr_name: str,
+    required: bool = False,
+):
+    spec_module = _load_module_from_ref(module_ref)
+    if not hasattr(spec_module, attr_name):
+        if required:
+            raise AttributeError(
+                f"dataset specs module must define `{attr_name}`."
+            )
+        return None
+    return getattr(spec_module, attr_name)
+
+
+def _resolve_data_paths(data_paths):
+    return data_paths() if callable(data_paths) else data_paths
+
+
+def _finalize_dataset_sample_weights(
+    config: dict,
+    dataset_names: list[str],
+    dataset_sample_weights: dict | None,
+):
+    if dataset_sample_weights is None or len(dataset_sample_weights) == 0:
+        return
+    missing = [
+        name for name in dataset_names if name not in dataset_sample_weights
+    ]
+    if missing:
+        logger.warning(
+            "dataset_sample_weights is missing keys for the following "
+            "datasets: %s. Available keys: %s",
+            missing,
+            list(dataset_sample_weights.keys()),
+        )
+        raise KeyError(f"dataset_sample_weights missing keys: {missing}")
+    config["dataset_sample_weights"] = [
+        dataset_sample_weights[name] for name in dataset_names
+    ]
+
+
+def _build_typed_datasets(
+    config: dict,
+    dataset_specs: list[dict],
+    registry: dict[str, Callable],
+    mode: str,
+    lazy_init: bool = False,
+):
+    datasets = {}
+    dataset_names = []
+    for dataset_spec in dataset_specs:
+        if not isinstance(dataset_spec, dict):
+            raise TypeError("Dataset specs must be dict instances.")
+
+        dataset_spec = dataset_spec.copy()
+        dataset_type = dataset_spec.pop("dataset_type")
+        dataset_name = dataset_spec["dataset_name"]
+        if (
+            (mode == "training")
+            and ("training_datasets" in config)
+            and (dataset_name not in config["training_datasets"])
+        ):
+            continue
+        if (
+            (mode == "validation")
+            and ("validation_datasets" in config)
+            and (dataset_name not in config["validation_datasets"])
+        ):
+            continue
+
+        if "data_paths" in dataset_spec:
+            dataset_spec["data_paths"] = _resolve_data_paths(
+                dataset_spec["data_paths"]
+            )
+        build_func = registry.get(dataset_type)
+        if build_func is None:
+            raise KeyError(
+                f"Dataset type `{dataset_type}` has not been registered."
+            )
+        datasets[dataset_name] = build_func(
+            config,
+            mode=mode,
+            lazy_init=lazy_init,
+            **dataset_spec,
+        )
+        if not hasattr(datasets[dataset_name], "dataset_name"):
+            datasets[dataset_name].dataset_name = dataset_name
+        dataset_names.append(dataset_name)
+    return datasets, dataset_names
 
 
 def build_training_dataset(config, lazy_init=False):
     from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
 
     apply_dataset_register()
-    datasets = {}
-    for build_func in TRAIN_DATASET_BUILD_FUNCS:
-        datasets.update(
-            build_func(
-                config,
-                config["training_datasets"],
-                mode="training",
-                lazy_init=lazy_init,
-            )
-        )
-    dataset_names = list(datasets.keys())
-    dataset_names.sort()
-    dataset = ConcatDatasetWithFlag(
+    training_datasets = _load_dataset_specs_from_module_ref(
+        config["dataset_specs"],
+        attr_name="training_datasets",
+        required=True,
+    )
+
+    dataset_sample_weights = config.get("dataset_sample_weights", {})
+    normalized_specs = []
+    for dataset_spec in training_datasets:
+        dataset_spec = dataset_spec.copy()
+        dataset_name = dataset_spec["dataset_name"]
+        sample_weight = dataset_spec.pop("sample_weight", None)
+        if sample_weight is not None:
+            dataset_sample_weights[dataset_name] = sample_weight
+        normalized_specs.append(dataset_spec)
+
+    datasets, dataset_names = _build_typed_datasets(
+        config,
+        normalized_specs,
+        TRAIN_DATASET_BUILD_FUNCS,
+        mode="training",
+        lazy_init=lazy_init,
+    )
+    _finalize_dataset_sample_weights(
+        config,
+        dataset_names,
+        dataset_sample_weights,
+    )
+    return ConcatDatasetWithFlag(
         datasets=[datasets[name] for name in dataset_names]
     )
-    if isinstance(config.get("dataset_sample_weights"), dict):
-        missing = [
-            name
-            for name in dataset_names
-            if name not in config["dataset_sample_weights"]
-        ]
-        if missing:
-            logger.warning(
-                "dataset_sample_weights is missing keys for the following "
-                "datasets: %s. Available keys: %s",
-                missing,
-                list(config["dataset_sample_weights"].keys()),
-            )
-            raise KeyError(f"dataset_sample_weights missing keys: {missing}")
-        config["dataset_sample_weights"] = [
-            config["dataset_sample_weights"][name] for name in dataset_names
-        ]
-    return dataset
 
 
 def build_validation_dataset(config, lazy_init=False):
     from robo_orchard_lab.dataset.dataset_wrapper import ConcatDatasetWithFlag
 
     apply_dataset_register()
-    datasets = {}
-    for build_func in VALIDATION_DATASET_BUILD_FUNCS:
-        datasets.update(
-            build_func(
-                config,
-                config.get("validation_datasets", []),
-                mode="validation",
-                lazy_init=lazy_init,
-            )
-        )
-    if len(datasets) == 0:
+    validation_datasets = _load_dataset_specs_from_module_ref(
+        config["dataset_specs"],
+        attr_name="validation_datasets",
+    )
+    if not validation_datasets:
         return None
-    else:
-        dataset_names = list(datasets.keys())
-        dataset_names.sort()
-        dataset = ConcatDatasetWithFlag(
-            datasets=[datasets[name] for name in dataset_names]
-        )
-        return dataset
+
+    datasets, dataset_names = _build_typed_datasets(
+        config,
+        validation_datasets,
+        VALIDATION_DATASET_BUILD_FUNCS,
+        mode="validation",
+        lazy_init=lazy_init,
+    )
+    return ConcatDatasetWithFlag(
+        datasets=[datasets[name] for name in dataset_names]
+    )
 
 
 def build_processors(config):
     apply_dataset_register()
+    deploy_datasets = _load_dataset_specs_from_config(
+        config,
+        config_key="deploy_specs",
+        attr_name="deploy_datasets",
+    )
+    if not deploy_datasets:
+        return {}
+
     processors = {}
-    for build_func in PROCESSOR_BUILD_FUNCS:
-        processors.update(build_func(config, config["deploy_datasets"]))
+    for dataset_spec in deploy_datasets:
+        dataset_spec = dataset_spec.copy()
+        dataset_type = dataset_spec.pop("dataset_type")
+        dataset_name = dataset_spec["dataset_name"]
+        build_func = PROCESSOR_BUILD_FUNCS.get(dataset_type)
+        if build_func is None:
+            raise KeyError(
+                f"Dataset type `{dataset_type}` has not been registered."
+            )
+        processors[dataset_name] = build_func(config, **dataset_spec)
     return processors

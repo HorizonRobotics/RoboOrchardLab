@@ -90,28 +90,32 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
             dataset_sample_weights = [
                 x / sum_weights for x in dataset_sample_weights
             ]
-            sample_ratio_width = len("sample_ratio")
-            frame_ratio_width = len("frame_ratio")
-            length_width = len("length")
-            log_info = (
-                "\ndataset sample weights: "
-                f"\n{'datasetname': >32}: sample_ratio [frame_ratio] [length]"
-            )
-            for i, dataset in enumerate(self.data_source.datasets):
+        sample_ratio_width = len("sample_ratio")
+        frame_ratio_width = len("frame_ratio")
+        length_width = len("length")
+        log_info = (
+            "\ndataset sample weights: "
+            f"\n{'datasetname': >32}: sample_ratio [frame_ratio] [length]"
+        )
+        for i, dataset in enumerate(self.data_source.datasets):
+            frame_ratio = f"{len(dataset) / len(flags) * 100:.2f}%"
+            if dataset_sample_weights is not None:
                 sample_ratio = f"{dataset_sample_weights[i] * 100:.2f}%"
-                frame_ratio = f"{len(dataset) / len(flags) * 100:.2f}%"
-                log_info += (
-                    f"\n|-{getattr(dataset, 'dataset_name', 'unnamed'):->30}"
-                    f": {sample_ratio:>{sample_ratio_width}}"
-                    f" [{frame_ratio:>{frame_ratio_width}}]"
-                    f" [{len(dataset):>{length_width}}]"
-                )
+            else:
+                sample_ratio = frame_ratio
+
             log_info += (
-                f"\n└-{'total':->30}: {f'{100:.2f}%':>{sample_ratio_width}}"
-                f" [{f'{100:.2f}%':>{frame_ratio_width}}]"
-                f" [{len(flags):>{length_width}}]"
+                f"\n├-{getattr(dataset, 'dataset_name', 'unnamed'):->30}"
+                f": {sample_ratio:>{sample_ratio_width}}"
+                f" [{frame_ratio:>{frame_ratio_width}}]"
+                f" [{len(dataset):>{length_width}}]"
             )
-            logger.info(log_info)
+        log_info += (
+            f"\n└-{'total':->30}: {f'{100:.2f}%':>{sample_ratio_width}}"
+            f" [{f'{100:.2f}%':>{frame_ratio_width}}]"
+            f" [{len(flags):>{length_width}}]"
+        )
+        logger.info(log_info)
         self.dataset_sample_weights = dataset_sample_weights
         self.reset()
 

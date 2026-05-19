@@ -21,42 +21,10 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
+DATA_TYPE = "agilex_ro"
+
 dataset_config = dict(
     grasp_anything_ro=dict(
-        data_paths=[
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_10_29_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_10_30_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_10_31_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_03_xuewu_lin",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_03_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_04_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_05_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_06_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_07_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_10_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_11_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_12_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_13_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_14_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_17_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_18_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_19_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_20_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_21_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_24_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_25_xuewu_lin",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_25_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_26_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_27_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_11_28_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_12_01_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_12_02_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_12_03_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_12_04_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2025_12_05_xuewu_lin",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_2026_01_09_zhixu_zhao",
-            "./data/arrow/horizon_beijing/place_objects_to_basket_demo_2025_11_25_zhixu_zhao",
-        ],
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=["left", "right", "middle"],
     ),
@@ -366,9 +334,16 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-@validation_dataset_register()
-def build_datasets(config, dataset_names, mode, **kwargs):
+@train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    **kwargs,
+):
     from torchvision.transforms import Compose
 
     from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
@@ -387,38 +362,30 @@ def build_datasets(config, dataset_names, mode, **kwargs):
         pred_steps=config["pred_steps"],
     )
 
-    datasets = {}
-    for data_name, data_config in dataset_config.items():
-        if data_name not in dataset_names:
-            continue
+    data_config = dataset_config[setting_type]
+    transforms = build_transforms(
+        config,
+        mode,
+        cam_names=data_config["cam_names"],
+        urdf=data_config["urdf"],
+        depth_restore=config.get("depth_restore", False),
+    )
+    composed_transforms = Compose([build(x) for x in as_sequence(transforms)])
 
-        transforms = build_transforms(
-            config,
-            mode,
-            cam_names=data_config["cam_names"],
-            urdf=data_config["urdf"],
-            depth_restore=config.get("depth_restore", False),
+    ro_datasets = []
+    for data_path in data_paths:
+        ro_dataset = ROMultiRowDataset(
+            dataset_path=data_path,
+            row_sampler=row_sampler,
         )
-        composed_transforms = Compose(
-            [build(x) for x in as_sequence(transforms)]
-        )
+        ro_dataset.set_transform(composed_transforms)
+        ro_datasets.append(ro_dataset)
 
-        ro_datasets = []
-        for data_path in data_config["data_paths"]:
-            ro_dataset = ROMultiRowDataset(
-                dataset_path=data_path,
-                row_sampler=row_sampler,
-            )
-            ro_dataset.set_transform(composed_transforms)
-            ro_datasets.append(ro_dataset)
+    assert len(ro_datasets) > 0, f"No datasets found for {dataset_name}"
 
-        assert len(ro_datasets) > 0, f"No datasets found for {data_name}"
-
-        dataset = ConcatRODataset(ro_datasets)
-        dataset.flag = data_config.get(
-            "flag",
-            int(uuid.uuid5(uuid.NAMESPACE_DNS, "agilex").hex[:4], 16),
-        )
-        datasets[data_name] = dataset
-
-    return datasets
+    dataset = ConcatRODataset(ro_datasets)
+    dataset.flag = data_config.get(
+        "flag",
+        int(uuid.uuid5(uuid.NAMESPACE_DNS, "agilex").hex[:4], 16),
+    )
+    return dataset

@@ -16,12 +16,7 @@
 
 from dataset_factory import processor_register, train_dataset_register
 
-data_paths = dict(
-    libero_goal="./data/libero/lmdb_goal_abs",
-    libero_object="./data/libero/lmdb_object_abs",
-    libero_spatial="./data/libero/lmdb_spatial_abs",
-    libero_10="./data/libero/lmdb_10_abs",
-)
+DATA_TYPE = "libero"
 
 cam_names = ["eye_in_hand", "agentview"]
 
@@ -229,55 +224,71 @@ def build_transforms(config, mode):
     return transforms
 
 
-@train_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
+def _build_dataset(
+    config,
+    dataset_name,
+    data_path,
+    mode,
+    lazy_init=True,
+):
     import uuid
 
     from robo_orchard_lab.dataset.libero.libero_lmdb_dataset import (
         LiberoLmdbDataset,
     )
 
-    datasets = {}
-    for dataset_name, data_path in data_paths.items():
-        if "libero" not in dataset_names and dataset_name not in dataset_names:
-            continue
-        transforms = build_transforms(
-            config,
-            mode,
-        )
-        dataset = LiberoLmdbDataset(
-            paths=data_path,
-            lazy_init=lazy_init or mode != "training",
-            transforms=transforms,
-            cam_names=cam_names,
-            dataset_name=dataset_name,
-            flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "libero").hex[:4], 16),
-        )
-        datasets[dataset_name] = dataset
-    return datasets
+    transforms = build_transforms(
+        config,
+        mode,
+    )
+    return LiberoLmdbDataset(
+        paths=data_path,
+        lazy_init=lazy_init or mode != "training",
+        transforms=transforms,
+        cam_names=cam_names,
+        dataset_name=dataset_name,
+        flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "libero").hex[:4], 16),
+    )
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    mode="training",
+    lazy_init=True,
+):
+    return _build_dataset(
+        config,
+        dataset_name=dataset_name,
+        data_path=data_paths,
+        mode=mode,
+        lazy_init=lazy_init,
+    )
+
+
+def _build_processor(config):
     from robo_orchard_lab.models.holobrain.processor import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    if "libero" in dataset_names:
-        transforms = build_transforms(
-            config,
-            "deploy",
+    transforms = build_transforms(
+        config,
+        "deploy",
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth"],
+            valid_action_step=None,
+            transforms=transforms,
+            cam_names=cam_names,
         )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth"],
-                valid_action_step=None,
-                transforms=transforms,
-                cam_names=cam_names,
-            )
-        )
-        processors["libero"] = processor
-    return processors
+    )
+
+
+@processor_register(DATA_TYPE)
+def build_processors(config, dataset_name, **kwargs):
+    return _build_processor(config)

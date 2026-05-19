@@ -16,13 +16,10 @@
 
 from dataset_factory import processor_register, train_dataset_register
 
+DATA_TYPE = "isaac"
+
 dataset_config = dict(
     isaac_pick_place=dict(
-        data_paths=[
-            "/horizon-bucket/robot_lab/users/mengao.zhao/dataset/pick_place_arrow/stack_block_two_seed0-499",  # noqa: E501
-            "/horizon-bucket/robot_lab/users/mengao.zhao/dataset/pick_place_arrow/place_mouse_pad_seed0-499",  # noqa: E501
-            "/horizon-bucket/robot_lab/users/mengao.zhao/dataset/pick_place_arrow/place_lemon_plate_seed0-499",  # noqa: E501
-        ],
         urdf="./urdf/piper_description_dualarm_new.urdf",
         cam_names=[
             "left_hand_camera",
@@ -346,8 +343,15 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    lazy_init=True,
+):
     assert mode == "training", "only support training mode"
     from robo_orchard_lab.dataset.robot.dataset import (
         ConcatRODataset,
@@ -357,70 +361,47 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
         EpisodeSamplerConfig,
     )
 
-    datasets = {}
-    for dataset_name, data_config in dataset_config.items():
-        if (
-            "isaac_pick_place" not in dataset_names
-            and dataset_name not in dataset_names
-        ):
-            continue
+    data_config = dataset_config[setting_type]
+    transforms = build_transforms(config, mode, urdf=data_config["urdf"])
 
-        # build transforms
-        transforms = build_transforms(config, mode, urdf=data_config["urdf"])
+    joint_sampler = EpisodeSamplerConfig(target_columns=["joints", "actions"])
 
-        # build dataset sampler
-        joint_sampler = EpisodeSamplerConfig(
-            target_columns=["joints", "actions"]
+    dataset_list = []
+    for data_path in data_paths:
+        print(f"Loading arrow dataset from {data_path}...")
+        arrow_dataset = ROMultiRowDataset(
+            dataset_path=data_path, row_sampler=joint_sampler
         )
-
-        # build dataset
-        dataset_list = []
-        for data_path in data_config["data_paths"]:
-            print(f"Loading arrow dataset from {data_path}...")
-            arrow_dataset = ROMultiRowDataset(
-                dataset_path=data_path, row_sampler=joint_sampler
-            )
-            arrow_dataset.set_transform(transforms)
-            dataset_list.append(arrow_dataset)
-        dataset = ConcatRODataset(dataset_list)
-        datasets[dataset_name] = dataset
-
-        # viz_arrow_dataset(dataset)
-
-    return datasets
+        arrow_dataset.set_transform(transforms)
+        dataset_list.append(arrow_dataset)
+    return ConcatRODataset(dataset_list)
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+@processor_register(DATA_TYPE)
+def build_processors(config, dataset_name, setting_type, **kwargs):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    for dataset_name, data_config in dataset_config.items():
-        if dataset_name not in dataset_names:
-            continue
-
-        transforms = build_transforms(
-            config,
-            mode="deploy",
-            urdf=data_config["urdf"],
-            calibration=False,
-            depth_restore=False,
-            do_calib_to_ext=False,
+    data_config = dataset_config[setting_type]
+    transforms = build_transforms(
+        config,
+        mode="deploy",
+        urdf=data_config["urdf"],
+        calibration=False,
+        depth_restore=False,
+        do_calib_to_ext=False,
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=config["with_depth_loss"],
+            valid_action_step=None,
+            cam_names=data_config["cam_names"],
+            transforms=transforms,
         )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=config["with_depth_loss"],
-                valid_action_step=None,
-                cam_names=data_config["cam_names"],
-                transforms=transforms,
-            )
-        )
-        processors[dataset_name] = processor
-    return processors
+    )
 
 
 def viz_arrow_dataset(dataset):

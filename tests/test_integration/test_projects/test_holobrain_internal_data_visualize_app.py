@@ -301,9 +301,28 @@ def test_index_script_has_valid_javascript(tmp_path):
 
 def test_build_dataset_handles_lists_all_configured_dataset_candidates(
     monkeypatch,
+    tmp_path,
 ):
+    specs_path = tmp_path / "dataset_specs.py"
+    specs_path.write_text(
+        "\n".join(
+            [
+                "training_datasets = [",
+                "    {'dataset_type': 'fake', 'dataset_name': 'train_a'},",
+                "    {'dataset_type': 'fake', 'dataset_name': 'train_b'},",
+                "]",
+                "validation_datasets = [",
+                "    {'dataset_type': 'fake', 'dataset_name': 'val_c'},",
+                "    {'dataset_type': 'fake', 'dataset_name': 'val_d'},",
+                "]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
     class _FakeConfig:
         config = {
+            "dataset_specs": str(specs_path),
             "training_datasets": ["train_a"],
             "validation_datasets": ["val_c"],
             "deploy_datasets": ["deploy_b"],
@@ -329,6 +348,45 @@ def test_build_dataset_handles_lists_all_configured_dataset_candidates(
         "train_a",
         "val_c",
     ]
+
+
+def test_build_dataset_handles_uses_all_dataset_specs_when_unfiltered(
+    monkeypatch,
+    tmp_path,
+):
+    specs_path = tmp_path / "dataset_specs.py"
+    specs_path.write_text(
+        "\n".join(
+            [
+                "training_datasets = [",
+                "    {'dataset_type': 'fake', 'dataset_name': 'train_a'},",
+                "    {'dataset_type': 'fake', 'dataset_name': 'train_b'},",
+                "]",
+                "validation_datasets = None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakeConfig:
+        config = {"dataset_specs": str(specs_path)}
+
+        @staticmethod
+        def build_training_dataset(_config):
+            return None
+
+        @staticmethod
+        def build_validation_dataset(_config):
+            return None
+
+    _install_config(monkeypatch, _FakeConfig)
+
+    handles = app_module.build_dataset_handles(
+        "fake_config.py",
+        dataset_names=None,
+    )
+
+    assert [handle.name for handle in handles] == ["train_a", "train_b"]
 
 
 def test_build_dataset_handles_uses_explicit_dataset_names_as_candidates(

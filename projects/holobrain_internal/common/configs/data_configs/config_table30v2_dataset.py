@@ -24,6 +24,8 @@ from dataset_factory import (
     validation_dataset_register,
 )
 
+DATA_TYPE = "table30v2"
+
 dataset_config = dict(
     ur5=dict(
         kinematics=dict(
@@ -49,11 +51,6 @@ dataset_config = dict(
             [0.401934, 1.577625],  # joint4
             [3.112092, 0.398812],  # joint5
             [0.042500, 0.042500],  # gripper
-        ],
-        data_paths=[
-            "./data/table30v2/lmdb/ur5/arrange_fruits",
-            "./data/table30v2/lmdb/ur5/item_classification",
-            "./data/table30v2/lmdb/ur5/shred_paper",
         ],
         cam_names=["cam_arm", "cam_global"],
         ee_link=[["tool0"]],
@@ -83,15 +80,6 @@ dataset_config = dict(
             [1.453422, 0.020791],  # joint4
             [1.998360, -0.000381],  # joint5
             [0.043551, 0.043694],  # gripper
-        ],
-        data_paths=[
-            "./data/table30v2/lmdb/arx5/arrange_flowers",
-            "./data/table30v2/lmdb/arx5/hang_the_cup",
-            "./data/table30v2/lmdb/arx5/pick_out_the_green_blocks",
-            # "./data/table30v2/lmdb/arx5/press_the_button",
-            "./data/table30v2/lmdb/arx5/turn_on_the_light_switch",
-            "./data/table30v2/lmdb/arx5/water_the_flowers",
-            "./data/table30v2/lmdb/arx5/wipe_the_table",
         ],
         cam_names=["cam_arm", "cam_side", "cam_global"],
         cam_ee_joint_indices=dict(cam_arm=6),
@@ -136,19 +124,6 @@ dataset_config = dict(
             [2.990137, 0.013127],  # right_joint5
             [0.054850, 0.052250],  # right_gripper
         ],
-        data_paths=[
-            "./data/table30v2/lmdb/aloha/put_the_books_back",
-            "./data/table30v2/lmdb/aloha/stamp_positioning",
-            "./data/table30v2/lmdb/aloha/wipe_the_blackboard",
-            "./data/table30v2/lmdb/aloha/scoop_with_a_small_spoon",
-            # hard tasks
-            "./data/table30v2/lmdb/aloha/lint_roller_remove_dirt",
-            "./data/table30v2/lmdb/aloha/pack_the_items",
-            "./data/table30v2/lmdb/aloha/pack_the_toothbrush_holder",
-            "./data/table30v2/lmdb/aloha/paint_jam",
-            "./data/table30v2/lmdb/aloha/put_the_pencil_case_into_the_schoolbag",
-            "./data/table30v2/lmdb/aloha/wrap_with_a_soft_cloth",
-        ],
         cam_ee_joint_indices=dict(cam_left_wrist=5, cam_right_wrist=12),
         cam_names=["cam_left_wrist", "cam_right_wrist", "cam_high"],
     ),
@@ -191,19 +166,6 @@ dataset_config = dict(
             [1.794461, 0.013924],  # right_joint4
             [3.013848, 0.001907],  # right_joint5
             [0.036022, 0.035387],  # right_gripper
-        ],
-        data_paths=[
-            "./data/table30v2/lmdb/dos_w1/fold_the_clothes",
-            "./data/table30v2/lmdb/dos_w1/stack_bowls",
-            "./data/table30v2/lmdb/dos_w1/hold_the_tray_with_both_hands",
-            "./data/table30v2/lmdb/dos_w1/place_objects_into_desk_drawer",
-            "./data/table30v2/lmdb/dos_w1/tidy_up_the_makeup_table",
-            "./data/table30v2/lmdb/dos_w1/put_in_pen_container",
-            # hard tasks
-            "./data/table30v2/lmdb/dos_w1/put_the_shoes_back",
-            "./data/table30v2/lmdb/dos_w1/sweep_the_trash",
-            "./data/table30v2/lmdb/dos_w1/tie_a_knot",
-            "./data/table30v2/lmdb/dos_w1/untie_the_shoelaces",
         ],
         cam_ee_joint_indices=dict(cam_left_wrist=6, cam_right_wrist=13),
         cam_names=["cam_left_wrist", "cam_right_wrist", "cam_high"],
@@ -485,9 +447,18 @@ def build_transforms(
     return transforms
 
 
-@train_dataset_register()
-@validation_dataset_register()
-def build_datasets(config, dataset_names, mode, lazy_init=True):
+def _load_camera_parameters():
+    return json.load(open(camera_parameters_file))
+
+
+def _build_dataset(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode,
+    lazy_init=True,
+):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
     )
@@ -495,95 +466,97 @@ def build_datasets(config, dataset_names, mode, lazy_init=True):
     use_default_camera_parameters = True
     load_extrinsic = use_default_camera_parameters and False
     load_calibration = not (load_extrinsic or use_default_camera_parameters)
-    datasets = {}
-
-    camera_parameters = None
-
-    for dataset_name, data_config in dataset_config.items():
-        if (
-            "table30v2" not in dataset_names
-            and f"table30v2_{dataset_name}" not in dataset_names
-        ):
-            continue
-        if camera_parameters is None and use_default_camera_parameters:
-            camera_parameters = json.load(open(camera_parameters_file))
-        if use_default_camera_parameters:
-            default_calibration = camera_parameters["calibration"][
-                dataset_name
-            ]
-            default_intrinsic = [
-                camera_parameters["intrinsic"][dataset_name][cam_name]
-                for cam_name in data_config["cam_names"]
-            ]
-        transforms = build_transforms(
-            config,
-            mode,
-            data_config["cam_names"],
-            data_config["scale_shift"],
-            data_config["kinematics"],
-            do_calib_to_ext=not load_extrinsic,
-            cam_ee_joint_indices=data_config["cam_ee_joint_indices"],
-            ee_link=data_config.get("ee_link"),
-            default_calibration=default_calibration,
-            default_intrinsic=default_intrinsic,
-        )
-        dataset = HorizonManipulationLmdbDataset(
-            paths=data_config["data_paths"],
-            cam_names=data_config["cam_names"],
-            lazy_init=lazy_init or mode != "training",
-            transforms=transforms,
-            dataset_name=f"table30v2_{dataset_name}",
-            load_depth=False,
-            load_calibration=load_calibration,
-            load_extrinsic=load_extrinsic,
-        )
-        datasets[f"table30v2_{dataset_name}"] = dataset
-    return datasets
+    data_config = dataset_config[setting_type]
+    camera_parameters = _load_camera_parameters()
+    default_calibration = camera_parameters["calibration"][setting_type]
+    default_intrinsic = [
+        camera_parameters["intrinsic"][setting_type][cam_name]
+        for cam_name in data_config["cam_names"]
+    ]
+    transforms = build_transforms(
+        config,
+        mode,
+        data_config["cam_names"],
+        data_config["scale_shift"],
+        data_config["kinematics"],
+        do_calib_to_ext=not load_extrinsic,
+        cam_ee_joint_indices=data_config["cam_ee_joint_indices"],
+        ee_link=data_config.get("ee_link"),
+        default_calibration=default_calibration,
+        default_intrinsic=default_intrinsic,
+    )
+    return HorizonManipulationLmdbDataset(
+        paths=data_paths,
+        cam_names=data_config["cam_names"],
+        lazy_init=lazy_init or mode != "training",
+        transforms=transforms,
+        dataset_name=dataset_name,
+        load_depth=False,
+        load_calibration=load_calibration,
+        load_extrinsic=load_extrinsic,
+    )
 
 
-@processor_register()
-def build_processors(config, dataset_names):
+@train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
+def build_datasets(
+    config,
+    dataset_name,
+    data_paths,
+    setting_type,
+    mode="training",
+    lazy_init=True,
+):
+    return _build_dataset(
+        config,
+        dataset_name=dataset_name,
+        data_paths=data_paths,
+        setting_type=setting_type,
+        mode=mode,
+        lazy_init=lazy_init,
+    )
+
+
+def _build_processor(config, setting_type):
     from robo_orchard_lab.models.holobrain import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
     )
 
-    processors = {}
-    camera_parameters = None
-    for dataset_name, data_config in dataset_config.items():
-        if (
-            "table30v2" not in dataset_names
-            and f"table30v2_{dataset_name}" not in dataset_names
-        ):
-            continue
+    data_config = dataset_config[setting_type]
+    camera_parameters = _load_camera_parameters()
+    default_calibration = camera_parameters["calibration"][setting_type]
+    default_intrinsic = [
+        camera_parameters["intrinsic"][setting_type][cam_name]
+        for cam_name in data_config["cam_names"]
+    ]
+    transforms = build_transforms(
+        config,
+        "deploy",
+        data_config["cam_names"],
+        data_config["scale_shift"],
+        data_config["kinematics"],
+        do_calib_to_ext=True,
+        cam_ee_joint_indices=data_config["cam_ee_joint_indices"],
+        ee_link=data_config.get("ee_link"),
+        default_calibration=default_calibration,
+        default_intrinsic=default_intrinsic,
+    )
+    return HoloBrainProcessor(
+        HoloBrainProcessorCfg(
+            load_image=True,
+            load_depth=False,
+            valid_action_step=None,
+            cam_names=data_config["cam_names"],
+            transforms=transforms,
+        )
+    )
 
-        if camera_parameters is None:
-            camera_parameters = json.load(open(camera_parameters_file))
-        default_calibration = camera_parameters["calibration"][dataset_name]
-        default_intrinsic = [
-            camera_parameters["intrinsic"][dataset_name][cam_name]
-            for cam_name in data_config["cam_names"]
-        ]
-        transforms = build_transforms(
-            config,
-            "deploy",
-            data_config["cam_names"],
-            data_config["scale_shift"],
-            data_config["kinematics"],
-            do_calib_to_ext=True,
-            cam_ee_joint_indices=data_config["cam_ee_joint_indices"],
-            ee_link=data_config.get("ee_link"),
-            default_calibration=default_calibration,
-            default_intrinsic=default_intrinsic,
-        )
-        processor = HoloBrainProcessor(
-            HoloBrainProcessorCfg(
-                load_image=True,
-                load_depth=False,
-                valid_action_step=None,
-                cam_names=data_config["cam_names"],
-                transforms=transforms,
-            )
-        )
-        processors[f"table30v2_{dataset_name}"] = processor
-    return processors
+
+@processor_register(DATA_TYPE)
+def build_processors(
+    config,
+    dataset_name,
+    setting_type,
+):
+    return _build_processor(config, setting_type=setting_type)
