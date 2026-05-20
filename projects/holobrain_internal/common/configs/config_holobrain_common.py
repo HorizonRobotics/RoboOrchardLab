@@ -155,10 +155,13 @@ def build_model(config):
         num_output_layers=2,
         out_dim=state_dims,
     )
-    with_mobile = config.get("with_mobile", False)
+
+    mobile_traj_state_dims = config.get("mobile_traj_state_dims", 0)
+    with_mobile = mobile_traj_state_dims > 0
+
     if with_mobile:
         mobile_head = copy.deepcopy(head)
-        mobile_head.update(out_dim=2)
+        mobile_head.update(out_dim=mobile_traj_state_dims)
     else:
         mobile_head = None
 
@@ -304,6 +307,7 @@ def build_model(config):
                     state_dims=state_dims,
                     embed_dims=embed_dims,
                     with_mobile=with_mobile,
+                    mobile_traj_state_dims=mobile_traj_state_dims,
                     training_noise_scheduler=dict(
                         type=DDPMScheduler,
                         num_train_timesteps=1000,

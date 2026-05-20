@@ -145,7 +145,7 @@ class HoloBrainActionLoss(nn.Module):
         if target is None:
             loss_mobile = self._fake_loss(pred)
         else:
-            self._loss_func(pred, target, weight, **kwargs)
+            loss_mobile = self._loss_func(pred, target, weight, **kwargs)
         return {"loss_mobile": loss_mobile}
 
     def _loss_func(

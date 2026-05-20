@@ -17,7 +17,11 @@
 import logging
 
 import numpy as np
-from dataset_factory import processor_register, train_dataset_register
+from dataset_factory import (
+    processor_register,
+    train_dataset_register,
+    validation_dataset_register,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +117,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
 
     joint_mask = (
         # torso
-        [True] * 3
-        + [False]
+        [True] * 4
         +
         # left arm
         [True] * 7
@@ -129,7 +132,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
         joint_mask=joint_mask,
     )
 
-    resize = dict(type=Resize, dst_wh=config.get("dst_wh", (476, 476)))
+    resize = dict(type=Resize, dst_wh=config.get("dst_wh", (336, 336)))
     to_tensor = dict(type=ToTensor)
     ego_to_cam = dict(type=MoveEgoToCam)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
@@ -196,14 +199,19 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
         )
         transforms.insert(0, state_sampling)
 
-        joint_noise = dict(type=JointStateNoise, noise_range=[-0.02, 0.02])
+        joint_noise = dict(
+            type=JointStateNoise, noise_range=[-0.02, 0.02], add_to_pred=True
+        )
         transforms.insert(1, joint_noise)
 
         camera_mask = dict(type=CameraMask, max_masks=3)
         transforms.insert(2, camera_mask)
 
-        joint_state_loss_weights = [1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
-        loss_weights = np.array([[joint_state_loss_weights] * 20]).tolist()
+        joint_state_loss_weights = [1.0, 0, 0, 0, 0, 0, 0, 0]
+        ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
+        loss_weights = np.array([[joint_state_loss_weights] * 20])
+        ee_indices = [11, 19]
+        loss_weights[:, ee_indices] = ee_state_loss_weights
         add_loss_weight = dict(
             type=AddItems,
             state_loss_weights=loss_weights,
@@ -236,6 +244,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
 
 
 @train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
 def build_datasets(
     config,
     dataset_name,

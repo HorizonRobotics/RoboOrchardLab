@@ -265,7 +265,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
                 depth = cv2.imdecode(
                     depth, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_UNCHANGED
                 )
-                depth = depth / 1000.0 / 10.0
+                depth = depth / 1000.0
                 depths.append(depth)
 
         if self.load_image:

@@ -701,7 +701,10 @@ class R1ProDualArmKinematics:
         ]
         joint_relative_pos = []
         for i, single_arm_joint_id_a in enumerate(arm_joint_id):
-            joint_ids_a = torch.arange(len(single_arm_joint_id_a))
+            num_joints = len(single_arm_joint_id_a)
+            joint_ids_a = torch.arange(num_joints)
+            if i == 0:
+                joint_ids_a = joint_ids_a.flip(0)
             joint_relative_pos_per_arm = []
             for j, single_arm_joint_id_b in enumerate(arm_joint_id):
                 if j == i:
@@ -712,6 +715,9 @@ class R1ProDualArmKinematics:
                         -(len(single_arm_joint_id_b) + 1),
                         -1,
                     )
+                    if j == 0:
+                        joint_ids_b = joint_ids_b.flip(0)
+
                 joint_relative_pos_per_arm.append(
                     torch.abs(joint_ids_a[:, None] - joint_ids_b)
                 )
