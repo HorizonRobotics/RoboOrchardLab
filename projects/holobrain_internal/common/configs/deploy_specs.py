@@ -59,10 +59,10 @@ DEPLOY_DATASETS = [
     ),
     dict(dataset_type="libero", dataset_name="libero"),
     dict(dataset_type="agibot_digit", dataset_name="agibot_digit_challenge"),
-    # dict(
-    #     dataset_type='agibot_geniesim',
-    #     dataset_name='agibot_geniesim3_challenge',
-    # ),
+    dict(
+        dataset_type="agibot_geniesim",
+        dataset_name="agibot_geniesim3_challenge",
+    ),
     dict(
         dataset_type="behavior",
         dataset_name="behavior1k",

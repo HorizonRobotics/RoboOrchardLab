@@ -59,7 +59,10 @@ def main(args):
             for ep_idx in range(0, dataset.num_episode, args.episode_interval):
                 vis(ep_idx, args.workspace, args.vis_mode, **args.kwargs)
                 num_vis += 1
-                if args.max_episode is not None and num_vis > args.max_episode:
+                if (
+                    args.max_episode is not None
+                    and num_vis >= args.max_episode
+                ):
                     break
         else:
             while True:

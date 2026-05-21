@@ -69,6 +69,11 @@ def main(args):
     _model = ModelMixin.load_model(model_path, load_impl="native")
     logger.info("Reload model successfully.")
 
+    for dataset_name, processor in processors.items():
+        processor_name = f"{dataset_name}_processor.json"
+        processor.save(model_path, processor_name)
+        logger.info(f"Export {processor_name} into model dir successfully.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

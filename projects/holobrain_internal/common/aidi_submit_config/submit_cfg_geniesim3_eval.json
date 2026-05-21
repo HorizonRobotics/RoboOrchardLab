@@ -1,0 +1,37 @@
+{
+    "job_name": "eval_geniesim3_holobrain",
+    "workspace_folder": "submit/holobrain",
+    "docker_image": "hub.hobot.cc/auto/robot_lab/jiawei03.li/open_source_cloud:0.0.8",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "gpu_per_worker": 1,
+    "wall_time": 14400,
+    "cmd": [
+        "ulimit -n 65536",
+        "export SIM_ASSETS=/horizon-bucket/robot_lab2/users/jiawei03.li-labs/data/GenieSimAssets",
+        "export ROS_DISTRO=jazzy",
+        "export ISAACSIM_HOME=/isaac-sim",
+        "export SIM_REPO_ROOT=/geniesim/main",
+        "export ENABLE_SIM=1",
+        "export ROS_VERSION=2",
+        "export ROS_PYTHON_VERSION=3",
+        "export ROS_LOCALHOST_ONLY=1",
+        "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
+        "export ROS_CMD_DISTRO=jazzy",
+        "export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib",
+        "if [ -f /isaac-sim/setup_ros_env.sh ]; then . /isaac-sim/setup_ros_env.sh; fi",
+        "ln -sfn $SIM_ASSETS /geniesim/main/source/geniesim/assets",
+        "cd /geniesim/main",
+        "rm -rf /geniesim/main/source/geniesim/config/*",
+        "cp -r /geniesim/main/source/geniesim/config_record/* /geniesim/main/source/geniesim/config/",
+        "rm /geniesim/main/source/geniesim/config/icra_clean_the_desktop.yaml",
+        "rm /geniesim/main/source/geniesim/config_record/icra_scoop_popcorn.yaml",
+        "bash ./scripts/run_icra_tasks.sh --infer-host 10.34.8.77:8999 --record-output-dir /job_data/geniesim3_eval_record_videos"
+    ],
+    "to_upload": [
+    ],
+    "job_password": "1227",
+    "queue_name": "project-5090-robot-lab-debug-bcloud-bj",
+    "project_id": "horizon-labs"
+}

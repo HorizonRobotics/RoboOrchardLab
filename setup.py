@@ -214,6 +214,7 @@ if __name__ == "__main__":
         "huggingface_hub",
         "cloudpickle",
         "pyzstd",
+        "websockets>=10.0",
         # metric
         "torchmetrics>=1.6",
         "datasets>=4.0.0",

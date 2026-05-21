@@ -64,7 +64,12 @@ class ArrowDataParse:
         gripper_indices=None,
         gripper_divisor=1.0,
     ):
-        """Initialize the ManipulationRODataset."""
+        """Initialize the ManipulationRODataset.
+
+        GenieSim3 stores observed gripper states in the raw actuator range
+        while action grippers are already normalized. ``gripper_divisor``
+        therefore applies only to ``joints`` and not to ``actions``.
+        """
         self.cam_names = cam_names
         self.load_image = load_image
         self.load_depth = load_depth
@@ -151,7 +156,10 @@ class ArrowDataParse:
             assert data[cam_name].pose.parent_frame_id in (
                 "world",
                 "base_link",
-            ), f"Unexpected parent_frame_id: {data[cam_name].pose.parent_frame_id}"
+            ), (
+                "Unexpected parent_frame_id: "
+                f"{data[cam_name].pose.parent_frame_id}"
+            )
             extrinsic = np.linalg.inv(
                 data[cam_name].pose.as_Transform3D_M().get_matrix()[0].numpy()
             )
@@ -174,6 +182,9 @@ class ArrowDataParse:
             data.update(self.get_extrinsic(data))
         data["step_index"] = data["frame_index"]
         data["step_index_in_chunk"] = self.hist_steps - 1
+        data["step_index_in_raw"] = data.get(
+            "raw_frame_index", data["frame_index"]
+        )
         data["task_name"] = data["task"].name
         ep_info = data["episode"].info
         data["uuid"] = ep_info.get("uuid") if ep_info else data["task"].name
@@ -192,6 +203,8 @@ class AgibotGenieSim3RODataset(TorchDataset):
         hist_steps: Number of historical steps in each chunk.
         pred_steps: Number of prediction steps in each chunk.
         cam_names: List of camera names to load data from.
+        pred_interval: Future sampling stride for prediction steps in packed
+            kept samples after the packer has filtered frames. Default is 1.
         depth_scale: Scale factor for depth data. Default is 1000.
         load_image: Whether to load image data. Default is True.
         load_depth: Whether to load depth data. Default is True.
@@ -207,6 +220,7 @@ class AgibotGenieSim3RODataset(TorchDataset):
         hist_steps: int,
         pred_steps: int,
         cam_names: list[str],
+        pred_interval: int = 1,
         depth_scale: int = 1000,
         load_image: bool = True,
         load_depth: bool = True,
@@ -216,10 +230,14 @@ class AgibotGenieSim3RODataset(TorchDataset):
         gripper_divisor: float = 1.0,
     ):
         assert len(paths) > 0, "paths must not be empty"
+        assert isinstance(pred_interval, int) and pred_interval >= 1, (
+            "pred_interval must be an integer >= 1"
+        )
         row_sampler = EpisodeChunkSamplerConfig(
             target_columns=target_columns,
             hist_steps=hist_steps,
             pred_steps=pred_steps,
+            pred_interval=pred_interval,
         )
         datasets = [
             ROMultiRowDataset(

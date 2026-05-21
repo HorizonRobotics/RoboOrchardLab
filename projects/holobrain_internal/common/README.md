@@ -158,6 +158,46 @@ python3 libero_eval.py \
 RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_libero_eval.json # Adjust relevant config parameters accordingly
 ```
 
+# Do evaluation in GenieSim3 Envs
+GenieSim3 evaluation requires two steps:
+
+1. Start the model inference server locally.
+2. Submit an AIDI job to start the simulation environment.
+
+## Start model server
+
+Start the model inference server with an exported checkpoint. 
+
+`model_dir` can
+be either a local checkpoint directory or a remote PFS URL, for example:
+- local dir: `./workspace/model`
+- aidi link: `http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/.../output/checkpoints/checkpoint_20`
+
+```bash
+cd projects/holobrain_internal/common
+
+model_dir="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/.../output/checkpoints/checkpoint_20"
+
+python3 geniesim3_inference_server.py --model_dir "${model_dir}"
+```
+
+After startup, copy the address printed by the server log:
+`10.34.8.77:8999`
+
+```text
+...
+Connect with one of these websocket URLs: (--infer-host)
+  ws://10.34.8.77:8999
+```
+
+## Start simulation env
+Update `--infer-host` in `submit_cfg_geniesim3_eval.json` with the address
+from the model server log, without the `ws://` prefix:
+
+```bash
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_geniesim3_eval.json
+```
+
 ## Data visualization
 ```bash
 cd project/holobrain_internal/common

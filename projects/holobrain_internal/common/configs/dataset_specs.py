@@ -169,12 +169,18 @@ TRAINING_DATASETS = [
     ),
     dict(
         dataset_type="agibot_geniesim",
-        dataset_name="agibot_geniesim",
-        data_paths=lambda: _glob_sorted(
-            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/2026_0318/open_door/*",
-            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/2026_0318/pour_workpiece/*",
-            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/2026_0318/sorting_packages_part*/*",
-        ),
+        dataset_name="agibot_geniesim3_challenge",
+        data_paths=[
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/hold_pot",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/open_door",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/place_block_into_box",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/clean_the_desktop*",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/pour_workpiece",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/scoop_popcorn*",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/sorting_packages_part*",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/stock_and_straighten_shelf*",
+            f"{DATA_BASE}/arrow_dataset/AgiBotWorldChallenge-2026/Reasoning2Action-Sim/take_wrong_item_shelf",
+        ],
     ),
     # ================ droid ===================
     dict(
@@ -492,7 +498,7 @@ filter_list = [
     "horizon_shanghai",
     "agilex",
     "agibot",
-    "agibot_geniesim",
+    "agibot_geniesim3_challenge",
     "droid",
     "egodex",
     "interna1_arx_lift2",
@@ -535,7 +541,7 @@ dataset_sample_weights = dict(
     horizon_shanghai=8,
     agilex=12,
     agibot=10,
-    agibot_geniesim=2,
+    agibot_geniesim3_challenge=2,
     droid=5,
     egodex=10,
     interna1_arx_lift2=10,
