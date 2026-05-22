@@ -139,6 +139,47 @@
       background: var(--panel);
       box-shadow: 0 6px 18px rgba(31, 41, 51, 0.05);
     }
+    .joint-plot {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 6px 18px rgba(31, 41, 51, 0.05);
+      overflow: hidden;
+    }
+    .joint-plot-title {
+      padding: 10px 12px;
+      border-bottom: 1px solid #edf0f4;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #jointPlot {
+      width: 100%;
+      height: 260px;
+      display: block;
+    }
+    .axis, .zero-line {
+      stroke: #aab3c2;
+      stroke-width: 1;
+    }
+    .grid-line {
+      stroke: #edf0f4;
+      stroke-width: 1;
+    }
+    .joint-label {
+      fill: var(--muted);
+      font-size: 11px;
+    }
+    .legend-label {
+      fill: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .empty-plot {
+      fill: var(--muted);
+      font-size: 13px;
+    }
     input[type="range"] {
       width: 100%;
       padding: 0;
@@ -275,6 +316,10 @@
         <input id="seek" type="range" min="0" max="0" value="0" disabled>
         <span id="position">0 / 0</span>
       </div>
+      <div class="joint-plot">
+        <div class="joint-plot-title">Joint State</div>
+        <svg id="jointPlot" role="img" aria-label="Joint angle curves"></svg>
+      </div>
     </section>
     <aside>
       <div class="meta">
@@ -314,6 +359,7 @@
     const seekEl = document.getElementById("seek");
     const positionEl = document.getElementById("position");
     const frameEl = document.getElementById("frame");
+    const jointPlotEl = document.getElementById("jointPlot");
     const errorEl = document.getElementById("error");
     const metaEls = {
       uuid: document.getElementById("uuid"),
@@ -328,10 +374,13 @@
     let timer = null;
     let loadingTimer = null;
     let loadingStartMs = 0;
-    let currentObjectUrl = null;
     let datasets = __INITIAL_DATASETS__;
     let frameRequestId = 0;
     let currentDataIndex = null;
+    const plotColors = [
+      "#1769aa", "#b42318", "#067647", "#b54708",
+      "#7a5af8", "#0086c9", "#c11574", "#4e5ba6"
+    ];
 
     function hasDatasetOptions() {
       return datasetEl.options.length > 0 && datasetEl.value !== "";
@@ -514,36 +563,170 @@
       positionEl.textContent = `${current} / ${total}`;
     }
 
+    function plotPoint(step, angle, bounds, width, height, pad) {
+      const xSpan = Math.max(1, bounds.maxStep - bounds.minStep);
+      const ySpan = Math.max(1e-9, bounds.maxAngle - bounds.minAngle);
+      return [
+        pad.left + ((step - bounds.minStep) / xSpan) *
+          (width - pad.left - pad.right),
+        pad.top + ((bounds.maxAngle - angle) / ySpan) *
+          (height - pad.top - pad.bottom),
+      ];
+    }
+
+    function jointSeries(joints) {
+      for (const joint of joints) {
+        joint.color = plotColors[joint.index % plotColors.length];
+        for (const kind of ["hist", "pred"]) {
+          if (!joint[kind]) continue;
+          joint[kind].series = {
+            name: `j${joint.index} ${kind}`,
+            jointIndex: joint.index,
+            color: joint.color,
+            kind,
+            steps: joint[kind].steps,
+            angles: joint[kind].angles,
+          };
+        }
+      }
+      return joints.flatMap((joint) => [
+        joint.hist?.series,
+        joint.pred?.series,
+      ]).filter(Boolean);
+    }
+
+    function renderJointPlot(payload) {
+      const width = Math.max(360, jointPlotEl.clientWidth || 720);
+      const joints = payload.joints || [];
+      const height = 300;
+      const legendRows = Math.ceil(Math.max(1, joints.length) / 2);
+      const legendHeight = 28 + legendRows * 20;
+      const pad = {
+        left: 52,
+        right: 18,
+        top: legendHeight + 12,
+        bottom: 34,
+      };
+      const series = jointSeries(joints);
+      jointPlotEl.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      if (series.length === 0) {
+        jointPlotEl.innerHTML =
+          `<text class="empty-plot" x="${width / 2}" y="${height / 2}" ` +
+          `text-anchor="middle">No joint state</text>`;
+        return;
+      }
+
+      const steps = series.flatMap((item) => item.steps);
+      const angles = series.flatMap((item) => item.angles);
+      const bounds = {
+        minStep: Math.min(...steps),
+        maxStep: Math.max(...steps),
+        minAngle: Math.min(...angles),
+        maxAngle: Math.max(...angles),
+      };
+      if (bounds.minAngle === bounds.maxAngle) {
+        bounds.minAngle -= 1;
+        bounds.maxAngle += 1;
+      }
+
+      const left = pad.left;
+      const right = width - pad.right;
+      const top = pad.top;
+      const bottom = height - pad.bottom;
+      let html = "";
+      html += `<text class="joint-label" x="${left}" y="18">` +
+        `hist: + marker, pred: line</text>`;
+      joints.forEach((joint, index) => {
+        const colWidth = Math.max(150, (right - left) / 2);
+        const x = left + (index % 2) * colWidth;
+        const y = 42 + Math.floor(index / 2) * 20;
+        html += `<line x1="${x}" y1="${y - 5}" x2="${x + 22}" ` +
+          `y2="${y - 5}" stroke="${joint.color}" stroke-width="2"></line>`;
+        html += `<line x1="${x + 8}" y1="${y - 5}" x2="${x + 14}" ` +
+          `y2="${y - 5}" stroke="${joint.color}" stroke-width="2"></line>`;
+        html += `<line x1="${x + 11}" y1="${y - 8}" x2="${x + 11}" ` +
+          `y2="${y - 2}" stroke="${joint.color}" stroke-width="2"></line>`;
+        html += `<text class="legend-label" x="${x + 30}" y="${y}">` +
+          `joint ${joint.index}</text>`;
+      });
+      for (let i = 0; i <= 4; i += 1) {
+        const y = top + ((bottom - top) * i) / 4;
+        html += `<line class="grid-line" x1="${left}" y1="${y}" ` +
+          `x2="${right}" y2="${y}"></line>`;
+      }
+      html += `<line class="axis" x1="${left}" y1="${bottom}" ` +
+        `x2="${right}" y2="${bottom}"></line>`;
+      html += `<line class="axis" x1="${left}" y1="${top}" ` +
+        `x2="${left}" y2="${bottom}"></line>`;
+      if (bounds.minStep <= 0 && bounds.maxStep >= 0) {
+        const [x0] = plotPoint(0, bounds.minAngle, bounds, width, height, pad);
+        html += `<line class="zero-line" x1="${x0}" y1="${top}" ` +
+          `x2="${x0}" y2="${bottom}"></line>`;
+        html += `<text class="joint-label" x="${x0 + 4}" ` +
+          `y="${bottom + 18}">0</text>`;
+      }
+      html += `<text class="joint-label" x="${left}" y="${bottom + 18}">` +
+        `${bounds.minStep}</text>`;
+      html += `<text class="joint-label" x="${right}" y="${bottom + 18}" ` +
+        `text-anchor="end">${bounds.maxStep}</text>`;
+      html += `<text class="joint-label" x="8" y="${top + 4}">` +
+        `${bounds.maxAngle.toFixed(3)}</text>`;
+      html += `<text class="joint-label" x="8" y="${bottom}">` +
+        `${bounds.minAngle.toFixed(3)}</text>`;
+
+      series.forEach((item, index) => {
+        const points = item.steps.map((step, idx) => {
+          const [x, y] = plotPoint(
+            step, item.angles[idx], bounds, width, height, pad
+          );
+          return {x, y};
+        });
+        if (item.kind === "pred") {
+          html += `<polyline points="${points.map((point) =>
+            `${point.x.toFixed(2)},${point.y.toFixed(2)}`
+          ).join(" ")}" fill="none" stroke="${item.color}" ` +
+            `stroke-width="2"></polyline>`;
+          return;
+        }
+        points.forEach((point) => {
+          html += `<line x1="${(point.x - 4).toFixed(2)}" ` +
+            `y1="${point.y.toFixed(2)}" ` +
+            `x2="${(point.x + 4).toFixed(2)}" ` +
+            `y2="${point.y.toFixed(2)}" stroke="${item.color}" ` +
+            `stroke-width="2"></line>`;
+          html += `<line x1="${point.x.toFixed(2)}" ` +
+            `y1="${(point.y - 4).toFixed(2)}" ` +
+            `x2="${point.x.toFixed(2)}" ` +
+            `y2="${(point.y + 4).toFixed(2)}" stroke="${item.color}" ` +
+            `stroke-width="2"></line>`;
+        });
+      });
+      jointPlotEl.innerHTML = html;
+    }
+
     async function showFrame(offset) {
       if (!episode) return false;
       const requestId = ++frameRequestId;
       const framePath =
         `${episode.dataset_id}/${episode.episode_id}/${offset}`;
-      const response = await fetch(
-        `/api/frames/${framePath}?mode=${episode.mode}` +
+      const payload = await getJson(
+        `/api/frame_data/${framePath}?mode=${episode.mode}` +
         `&vis_interval=${episode.interval}` +
         `&highlight_joint_indices=${
           encodeURIComponent(selectedHighlightJointIndices())
         }`
       );
-      if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.error || response.statusText);
-      }
-      const blob = await response.blob();
       if (requestId !== frameRequestId) return false;
-      if (currentObjectUrl) {
-        URL.revokeObjectURL(currentObjectUrl);
-      }
-      currentObjectUrl = URL.createObjectURL(blob);
-      frameEl.src = currentObjectUrl;
-      metaEls.step.textContent = response.headers.get("X-Step-Id") || "-";
-      currentDataIndex = Number(response.headers.get("X-Data-Index"));
+      frameEl.src = `data:image/jpeg;base64,${payload.image}`;
+      metaEls.step.textContent = String(payload.step_id);
+      currentDataIndex = Number(payload.data_index);
       copyMetaEl.disabled = false;
-      metaEls.instruction.textContent = headerText(response, "X-Instruction");
-      metaEls.subtask.textContent = headerText(response, "X-Subtask");
+      metaEls.uuid.textContent = payload.uuid;
+      metaEls.instruction.textContent = payload.instruction;
+      metaEls.subtask.textContent = payload.subtask;
       seekEl.value = String(offset);
       updatePosition();
+      renderJointPlot(payload.joint_state || {joints: []});
       return true;
     }
 
@@ -704,6 +887,16 @@
     });
 
     seekEl.addEventListener("change", async () => {
+      setError("");
+      try {
+        await showFrame(Number(seekEl.value));
+      } catch (err) {
+        setError(err.message);
+      }
+    });
+
+    highlightJointIndicesEl.addEventListener("change", async () => {
+      if (!episode) return;
       setError("");
       try {
         await showFrame(Number(seekEl.value));

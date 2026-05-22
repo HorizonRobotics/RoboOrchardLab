@@ -17,6 +17,7 @@
 # ruff: noqa: E402, I001
 
 import argparse
+import base64
 import copy
 import html
 import importlib
@@ -421,6 +422,32 @@ def create_app(
         )
 
         return _frame_response(cached)
+
+    @app.route(
+        "/api/frame_data/<int:dataset_id>/<int:episode_id>/<int:frame_offset>"
+    )
+    def get_frame_data(dataset_id: int, episode_id: int, frame_offset: int):
+        try:
+            handle, mode, vis_interval = load_request_dataset(dataset_id)
+            highlight_joint_indices = _request_highlight_joint_indices()
+            payload = _frame_data_payload(
+                handle,
+                mode,
+                episode_id,
+                frame_offset,
+                vis_interval,
+                highlight_joint_indices,
+            )
+        except (IndexError, UnknownDatasetError) as exc:
+            return _json_error(str(exc), 404)
+        except (UnsupportedDatasetModeError, ValueError) as exc:
+            return _json_error(str(exc), 400)
+        except Exception as exc:
+            logger.exception("Failed to load joint states")
+            return _json_error(str(exc), 500)
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/frames/<int:dataset_id>/<int:episode_id>/locate")
     def locate_frame(dataset_id: int, episode_id: int):
@@ -835,19 +862,14 @@ def _episode_metadata(
     if end <= start:
         raise IndexError(f"Episode id {episode_id} is empty.")
     num_frames = _frame_count(start, end, interval)
-    first_index = start + 1 if num_frames > 0 else start
-    with handle.lock:
-        first_frame = dataset[first_index]
     return {
         "dataset_id": handle.dataset_id,
         "dataset_name": handle.name,
         "mode": mode,
         "episode_id": episode_id,
-        "uuid": str(first_frame.get("uuid", "")),
-        "instruction": _string_value(first_frame.get("text", "")),
-        "subtask": _string_value(
-            first_frame.get("subtask", first_frame.get("subtask_text", ""))
-        ),
+        "uuid": "",
+        "instruction": "",
+        "subtask": "",
         "num_frames": num_frames,
         "num_episodes": _episode_count(dataset),
         "fps": fps,
@@ -911,6 +933,88 @@ def _cached_or_render_frame(
     )
     frame_cache.put(cache_key, rendered)
     return rendered
+
+
+def _frame_data_payload(
+    handle: DatasetHandle,
+    mode: str,
+    episode_id: int,
+    frame_offset: int,
+    interval: int,
+    highlight_joint_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    dataset = _loaded_dataset(handle, mode)
+    visualizer = handle.visualizers.get(mode, handle.visualizer)
+    assert dataset is not None
+    assert visualizer is not None
+    start, end = _episode_range(dataset, episode_id)
+    dataset_index = _dataset_index(start, end, frame_offset, interval)
+    with handle.lock:
+        raw_frame = dataset[dataset_index]
+    rendered = visualizer._render_frame(
+        HolobrainDataFeature.from_dict(raw_frame),
+        ee_indices=highlight_joint_indices,
+    )
+    return {
+        "image": base64.b64encode(_encode_jpeg(rendered)).decode("ascii"),
+        "step_id": _episode_step_id(frame_offset, interval),
+        "uuid": str(raw_frame.get("uuid", "")),
+        "instruction": _string_value(raw_frame.get("text", "")),
+        "subtask": _string_value(
+            raw_frame.get("subtask", raw_frame.get("subtask_text", ""))
+        ),
+        "data_index": dataset_index,
+        "joint_state": _joint_state_payload_from_frame(
+            raw_frame,
+            highlight_joint_indices,
+        ),
+    }
+
+
+def _joint_state_payload_from_frame(
+    raw_frame: dict[str, Any],
+    highlight_joint_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    hist = _robot_state_angle(raw_frame.get("hist_robot_state"))
+    pred = _robot_state_angle(raw_frame.get("pred_robot_state"))
+    if hist is None and pred is None:
+        return {"joints": []}
+
+    num_joint = next(arr.shape[1] for arr in (hist, pred) if arr is not None)
+    for joint_index in highlight_joint_indices:
+        if joint_index < 0 or joint_index >= num_joint:
+            raise ValueError(f"Joint index {joint_index} is out of range.")
+
+    joints = []
+    for joint_index in highlight_joint_indices:
+        item = {"index": joint_index}
+        if hist is not None:
+            item["hist"] = {
+                "steps": list(range(1 - hist.shape[0], 1)),
+                "angles": hist[:, joint_index].tolist(),
+            }
+        if pred is not None:
+            item["pred"] = {
+                "steps": list(range(1, pred.shape[0] + 1)),
+                "angles": pred[:, joint_index].tolist(),
+            }
+        joints.append(item)
+    return {"joints": joints}
+
+
+def _robot_state_angle(value: Any) -> np.ndarray | None:
+    if value is None:
+        return None
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    arr = np.asarray(value)
+    if arr.ndim != 3 or arr.shape[2] < 1:
+        raise ValueError(
+            "robot_state must have shape [num_step, num_joint, feature]."
+        )
+    return arr[:, :, 0].astype(float, copy=False)
 
 
 def _frame_response(frame: EncodedFrame) -> Response:

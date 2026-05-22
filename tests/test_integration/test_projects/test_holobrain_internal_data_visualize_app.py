@@ -57,6 +57,14 @@ app_module = _load_app_module()
 
 def _frame_payload(episode_idx, index, *, dataset_name=None, step_index=None):
     label = dataset_name if dataset_name is not None else str(episode_idx)
+    hist_robot_state = np.zeros((3, 4, 8), dtype=np.float64)
+    pred_robot_state = np.zeros((2, 4, 8), dtype=np.float64)
+    for step in range(hist_robot_state.shape[0]):
+        for joint in range(hist_robot_state.shape[1]):
+            hist_robot_state[step, joint, 0] = index + step * 0.1 + joint
+    for step in range(pred_robot_state.shape[0]):
+        for joint in range(pred_robot_state.shape[1]):
+            pred_robot_state[step, joint, 0] = index + 1 + step * 0.1 + joint
     return {
         "uuid": f"uuid-{label}",
         "text": f"instruction-{label}-{index}",
@@ -64,6 +72,8 @@ def _frame_payload(episode_idx, index, *, dataset_name=None, step_index=None):
         "step_index": index * 10 if step_index is None else step_index,
         "imgs": np.zeros((1, 2, 2, 3), dtype=np.uint8),
         "depths": np.zeros((1, 2, 2), dtype=np.float32),
+        "hist_robot_state": hist_robot_state,
+        "pred_robot_state": pred_robot_state,
     }
 
 
@@ -80,6 +90,16 @@ class _FakeDataset:
     def __getitem__(self, index):
         episode_idx = 0 if index < self._ranges[1][0] else 1
         return _frame_payload(episode_idx, index)
+
+
+class _CountingDataset(_FakeDataset):
+    def __init__(self):
+        super().__init__()
+        self.getitem_count = 0
+
+    def __getitem__(self, index):
+        self.getitem_count += 1
+        return super().__getitem__(index)
 
 
 class _FakeSingleEpisodeDataset:
@@ -528,9 +548,11 @@ def test_lazy_dataset_selector_can_expand_to_multiple_datasets():
     frame_response = client.get("/api/frames/0/1/0")
 
     assert episode_response.status_code == 200
-    assert episode_response.get_json()["uuid"] == "uuid-second"
     assert frame_response.status_code == 200
     assert frame_response.headers["X-Step-Id"] == "1"
+    assert unquote(frame_response.headers["X-Instruction"]) == (
+        "instruction-second-1"
+    )
 
 
 def test_lazy_dataset_selector_accepts_datasets_without_num_episode():
@@ -552,9 +574,11 @@ def test_lazy_dataset_selector_accepts_datasets_without_num_episode():
     frame_response = client.get("/api/frames/0/1/0")
 
     assert episode_response.status_code == 200
-    assert episode_response.get_json()["uuid"] == "uuid-second"
     assert frame_response.status_code == 200
     assert frame_response.headers["X-Data-Index"] == "3"
+    assert unquote(frame_response.headers["X-Instruction"]) == (
+        "instruction-second-1"
+    )
 
 
 def test_lazy_dataset_selector_wraps_episode_index_datasets():
@@ -623,9 +647,9 @@ def test_episode_endpoint_returns_metadata():
         "dataset_name": "fake_dataset",
         "mode": "training",
         "episode_id": 1,
-        "uuid": "uuid-1",
-        "instruction": "instruction-1-6",
-        "subtask": "subtask-1-6",
+        "uuid": "",
+        "instruction": "",
+        "subtask": "",
         "num_frames": 2,
         "num_episodes": 2,
         "fps": 12,
@@ -664,6 +688,52 @@ def test_frame_endpoint_rejects_invalid_highlight_joint_indices():
     response = client.get("/api/frames/0/1/1?highlight_joint_indices=1,a")
 
     _assert_error_response(response, 400)
+
+
+def test_frame_data_endpoint_returns_image_metadata_and_joint_state_once():
+    dataset = _CountingDataset()
+    client = _make_client(
+        handle=_make_handle(
+            dataset=dataset,
+            datasets={"training": dataset},
+        )
+    )
+
+    response = client.get("/api/frame_data/0/1/1?highlight_joint_indices=1,3")
+
+    assert response.status_code == 200
+    assert dataset.getitem_count == 1
+    payload = response.get_json()
+    assert payload["image"]
+    assert payload["step_id"] == 2
+    assert payload["uuid"] == "uuid-1"
+    assert payload["instruction"] == "instruction-1-7"
+    assert payload["subtask"] == "subtask-1-7"
+    assert payload["data_index"] == 7
+    assert payload["joint_state"]["joints"] == [
+        {
+            "index": 1,
+            "hist": {
+                "steps": [-2, -1, 0],
+                "angles": [8.0, 8.1, 8.2],
+            },
+            "pred": {
+                "steps": [1, 2],
+                "angles": [9.0, 9.1],
+            },
+        },
+        {
+            "index": 3,
+            "hist": {
+                "steps": [-2, -1, 0],
+                "angles": [10.0, 10.1, 10.2],
+            },
+            "pred": {
+                "steps": [1, 2],
+                "angles": [11.0, 11.1],
+            },
+        },
+    ]
 
 
 def test_frame_locate_endpoint_returns_offset_for_data_index():
