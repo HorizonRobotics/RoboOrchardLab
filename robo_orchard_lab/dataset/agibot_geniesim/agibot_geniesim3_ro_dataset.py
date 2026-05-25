@@ -47,18 +47,18 @@ class ArrowDataParse:
             Default is False.
         transforms (list[dict] or dict, optional): List of transformations to
             apply to the data.
-        depth_scale (float): Scale factor for depth data. Default is 1000.
+        depth_scales (list[float]): Scale factors aligned with ``cam_names``.
         **kwargs: Additional arguments for the base RODataset class.
     """
 
     def __init__(
         self,
         cam_names: list[str],
+        depth_scales: list[float],
         load_image=True,
         load_depth=True,
         load_extrinsic=True,
         load_ee_state=False,
-        depth_scale=1000,
         use_detailed_instruction=False,
         hist_steps=1,
         gripper_indices=None,
@@ -75,7 +75,11 @@ class ArrowDataParse:
         self.load_depth = load_depth
         self.load_extrinsic = load_extrinsic
         self.load_ee_state = load_ee_state
-        self.depth_scale = depth_scale
+        assert len(depth_scales) == len(cam_names), (
+            "depth_scales must align with cam_names: "
+            f"{len(depth_scales)} != {len(cam_names)}"
+        )
+        self.depth_scales = depth_scales
         self.use_detailed_instruction = use_detailed_instruction
         self.hist_steps = hist_steps
         self.gripper_indices = gripper_indices or []
@@ -92,7 +96,9 @@ class ArrowDataParse:
     def get_depths(self, data, default_shape):
         """Parse depth images from the data."""
         depths = []
-        for cam_name in self.cam_names:
+        for cam_name, scale in zip(
+            self.cam_names, self.depth_scales, strict=True
+        ):
             feature_name = f"{cam_name}_depth"
             if feature_name in data and data[feature_name]:
                 depth_buffer = data[feature_name].sensor_data[0]
@@ -105,7 +111,7 @@ class ArrowDataParse:
             assert (
                 decoded_depth is not None
             ), f"Failed to decode depth for {cam_name}"
-            depth = decoded_depth / self.depth_scale
+            depth = decoded_depth / scale
             depths.append(depth)
         return {"depths": depths}
 
@@ -203,9 +209,9 @@ class AgibotGenieSim3RODataset(TorchDataset):
         hist_steps: Number of historical steps in each chunk.
         pred_steps: Number of prediction steps in each chunk.
         cam_names: List of camera names to load data from.
+        depth_scales: Scale factors aligned with ``cam_names``.
         pred_interval: Future sampling stride for prediction steps in packed
             kept samples after the packer has filtered frames. Default is 1.
-        depth_scale: Scale factor for depth data. Default is 1000.
         load_image: Whether to load image data. Default is True.
         load_depth: Whether to load depth data. Default is True.
         load_extrinsic: Whether to load camera extrinsic data.
@@ -220,8 +226,8 @@ class AgibotGenieSim3RODataset(TorchDataset):
         hist_steps: int,
         pred_steps: int,
         cam_names: list[str],
+        depth_scales: list[float],
         pred_interval: int = 1,
-        depth_scale: int = 1000,
         load_image: bool = True,
         load_depth: bool = True,
         load_extrinsic: bool = True,
@@ -249,7 +255,7 @@ class AgibotGenieSim3RODataset(TorchDataset):
         ]
         arrow_parser = ArrowDataParse(
             cam_names=cam_names,
-            depth_scale=depth_scale,
+            depth_scales=depth_scales,
             hist_steps=hist_steps,
             load_image=load_image,
             load_depth=load_depth,

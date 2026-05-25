@@ -193,6 +193,26 @@ def test_get_actions_returns_geniesim_action_shape():
     assert actions.dtype == np.float32
 
 
+def test_inference_server_parse_args_accepts_explicit_use_depth_bool():
+    from geniesim3_inference_server import parse_args, str2bool
+
+    assert parse_args([]).use_depth is False
+    assert parse_args(["--use_depth", "true"]).use_depth is True
+    assert parse_args(["--use_depth", "false"]).use_depth is False
+    assert parse_args(["--use_depth", "True"]).use_depth is True
+    assert parse_args(["--use_depth", "False"]).use_depth is False
+    assert parse_args(["--use_depth", "1"]).use_depth is True
+    assert parse_args(["--use_depth", "0"]).use_depth is False
+    assert str2bool(True) is True
+
+
+def test_inference_server_parse_args_rejects_no_use_depth_flag():
+    from geniesim3_inference_server import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(["--no-use_depth"])
+
+
 def test_http_model_dir_downloads_checkpoint_and_links_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

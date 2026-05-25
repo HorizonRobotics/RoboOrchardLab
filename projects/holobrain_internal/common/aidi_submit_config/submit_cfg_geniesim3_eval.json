@@ -24,6 +24,7 @@
         "  --model_prefix model \\",
         "  --host ${HOLOBRAIN_INFER_HOST} \\",
         "  --port ${HOLOBRAIN_INFER_PORT} \\",
+        "  --use_depth false \\",
         "  > ${HOLOBRAIN_LOG_DIR}/geniesim3_inference_server.log 2>&1 &",
         "echo $! > ${HOLOBRAIN_LOG_DIR}/geniesim3_inference_server.pid",
         "/opt/holobrain/bin/holobrain_geniesim3_start_infer",

@@ -79,6 +79,7 @@ g2_deploy_camera_kinematics_config = {
 }
 
 cam_names = ["hand_left", "hand_right", "top_head"]
+depth_scales = [10000.0, 10000.0, 1000.0]
 
 
 def expand_ro_data_paths(patterns: list[str]) -> list[str]:
@@ -360,6 +361,7 @@ def build_datasets(
     return AgibotGenieSim3RODataset(
         paths=expand_ro_data_paths(data_paths),
         cam_names=cam_names,
+        depth_scales=depth_scales,
         target_columns=["joints", "actions"],
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],

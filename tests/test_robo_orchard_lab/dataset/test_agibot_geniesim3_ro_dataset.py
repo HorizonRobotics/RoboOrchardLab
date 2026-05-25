@@ -30,9 +30,38 @@ def _joint_item(values: np.ndarray) -> SimpleNamespace:
     return SimpleNamespace(position=np.asarray(values, dtype=np.float64)[None])
 
 
+def _depth_item(values: np.ndarray) -> SimpleNamespace:
+    import cv2
+
+    ok, buffer = cv2.imencode(".png", values.astype(np.uint16))
+    assert ok
+    return SimpleNamespace(sensor_data=[buffer.tobytes()])
+
+
+def test_geniesim3_depth_scales_align_with_camera_names():
+    hand_depth = np.array([[10000]], dtype=np.uint16)
+    head_depth = np.array([[1000]], dtype=np.uint16)
+    parser = agibot_geniesim3_ro_dataset.ArrowDataParse(
+        cam_names=["hand_left", "top_head"],
+        depth_scales=[10000.0, 1000.0],
+    )
+
+    parsed = parser.get_depths(
+        {
+            "hand_left_depth": _depth_item(hand_depth),
+            "top_head_depth": _depth_item(head_depth),
+        },
+        default_shape=(1, 1),
+    )
+
+    np.testing.assert_allclose(parsed["depths"][0], [[1.0]])
+    np.testing.assert_allclose(parsed["depths"][1], [[1.0]])
+
+
 def test_geniesim3_gripper_units_stay_normalized_after_master_sampling():
     parser = agibot_geniesim3_ro_dataset.ArrowDataParse(
         cam_names=[],
+        depth_scales=[],
         load_image=False,
         load_depth=False,
         load_extrinsic=False,

@@ -147,6 +147,17 @@ Unpacker = functools.partial(msgpack.Unpacker, object_hook=_unpack_array)
 unpackb = functools.partial(msgpack.unpackb, object_hook=_unpack_array)
 
 
+def str2bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.lower()
+    if normalized in ("yes", "true", "t", "y", "1"):
+        return True
+    if normalized in ("no", "false", "f", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 class HoloBrainGenieSim3WebsocketServer:
     """Serve HoloBrain GenieSim3 inference over the websocket protocol."""
 
@@ -236,7 +247,7 @@ class HoloBrainGenieSim3WebsocketServer:
             await asyncio.Future()
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Serve HoloBrain GenieSim3 inference over WebSocket."
     )
@@ -258,9 +269,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--valid_action_step", type=int, default=32)
     parser.add_argument("--sampling_ratio", type=float, default=1.0)
     parser.add_argument("--gripper_limit", type=float, default=1.0)
-    parser.add_argument("--use_depth", action=argparse.BooleanOptionalAction)
-    parser.set_defaults(use_depth=False)
-    return parser.parse_args()
+    parser.add_argument("--use_depth", type=str2bool, default=False)
+    return parser.parse_args(argv)
 
 
 def build_deploy_config(args: argparse.Namespace) -> dict[str, Any]:
