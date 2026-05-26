@@ -295,8 +295,7 @@ async def main() -> None:
     log_basic_config(
         level=logging.INFO,
         format=(
-            "%(asctime)s %(levelname)s %(filename)s:%(lineno)d | "
-            "%(message)s"
+            "%(asctime)s %(levelname)s %(filename)s:%(lineno)d | %(message)s"
         ),
     )
     logger.info("Deploy config:\n%s", json.dumps(deploy_cfg, indent=4))

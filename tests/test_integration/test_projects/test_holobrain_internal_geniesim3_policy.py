@@ -242,9 +242,7 @@ def test_http_model_dir_downloads_checkpoint_and_links_resources(
     monkeypatch.setattr(
         geniesim3_deploy, "DEFAULT_MODEL_CACHE_DIR", str(cache_dir)
     )
-    monkeypatch.setattr(
-        geniesim3_deploy, "download_file", fake_download_file
-    )
+    monkeypatch.setattr(geniesim3_deploy, "download_file", fake_download_file)
     monkeypatch.setattr(
         geniesim3_deploy.HoloBrainProcessor,
         "load",
@@ -257,9 +255,7 @@ def test_http_model_dir_downloads_checkpoint_and_links_resources(
     )
 
     cfg = HoloBrainGenieSim3PolicyCfg(
-        model_dir=(
-            "http://host/user/run/output/checkpoints/checkpoint_9/"
-        ),
+        model_dir=("http://host/user/run/output/checkpoints/checkpoint_9/"),
         model_processor="agibot_geniesim3_challenge_processor",
     )
     HoloBrainGenieSim3Policy(cfg=cfg)

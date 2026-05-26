@@ -297,7 +297,7 @@ class BaseLmdbManipulationDataset(Dataset):
 
                 if (self._check_valid(data)) and (
                     self.num_episode_per_task is None
-                    or task_statistics["num_episode"][task_name]
+                    or task_statistics["num_episode"].get(task_name, 0)
                     < self.num_episode_per_task
                 ):
                     lmdb_indices.append(i)
