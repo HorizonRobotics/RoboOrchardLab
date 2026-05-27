@@ -208,22 +208,39 @@ class MessageConverterFactory(ClassInitFromConfigMixin):
     def __init__(self, cfg: MessageConverterFactoryConfig):
         self._cfg = cfg
 
-    def convert_for(
-        self, schema_name: str
-    ) -> Callable[[Any], Iterator[Any]] | None:
-        """Get the converter implementation for the schema name.
+    def converter_for(self, name: str) -> MessageConverter | None:
+        """Create the converter implementation for one configured name.
 
         Args:
-            schema_name: The schema name to get the decoder for.
+            name: Converter lookup name. Callers choose the namespace; for
+                example, decoders may use schema names while writers may use
+                topic names.
 
         Returns:
-            The converter impl for the schema name.
+            The configured converter implementation, or None when no
+            converter is configured for ``name``.
         """
-        converter_cfg = self._cfg.converters.get(schema_name, None)
+        converter_cfg = self._cfg.converters.get(name, None)
         if converter_cfg is None:
             return None
 
-        converter_impl = converter_cfg()
+        return converter_cfg()
+
+    def convert_for(self, name: str) -> Callable[[Any], Iterator[Any]] | None:
+        """Get a conversion callable for one configured name.
+
+        Args:
+            name: Converter lookup name. Callers choose the namespace; for
+                example, decoders may use schema names while writers may use
+                topic names.
+
+        Returns:
+            A callable conversion wrapper, or None when no converter is
+            configured for ``name``.
+        """
+        converter_impl = self.converter_for(name)
+        if converter_impl is None:
+            return None
 
         def convert_impl(data: Any) -> Iterator[Any]:
             yield from converter_impl.__call__(data)

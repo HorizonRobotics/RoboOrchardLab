@@ -60,9 +60,35 @@ __all__ = [
     "InstructionData",
     "EpisodeMeta",
     "DataFrame",
+    "normalize_local_dataset_path",
 ]
 
 dataset_format_version = "0.1.0"
+
+
+def normalize_local_dataset_path(
+    dataset_path: str | os.PathLike[str],
+) -> str:
+    """Normalize a local RODataset output path for packaging.
+
+    This helper is the shared path boundary for `DatasetPackaging` callers.
+    It accepts local filesystem `str` and `os.PathLike[str]` inputs, rejects
+    URI-style paths before local normalization, then returns an expanded
+    absolute path string.
+    """
+
+    dataset_path_str = os.fspath(dataset_path)
+    if not isinstance(dataset_path_str, str):
+        raise TypeError("dataset_path must be a string or os.PathLike[str].")
+    if "://" in dataset_path_str:
+        raise ValueError(
+            "DatasetPackaging only supports local filesystem dataset_path. "
+            f"URI paths are not supported: {dataset_path_str!r}."
+        )
+    return os.path.abspath(os.path.expanduser(dataset_path_str))
+
+
+_normalize_local_dataset_path = normalize_local_dataset_path
 
 
 @dataclass
@@ -484,7 +510,7 @@ class DatasetPackaging:
     def packaging(
         self,
         episodes: Iterable[EpisodePackaging],
-        dataset_path: str,
+        dataset_path: str | os.PathLike[str],
         dataset_info: hg_datasets.DatasetInfo | None = None,
         writer_batch_size: int = 1024,
         max_shard_size: str | int = "8GB",
@@ -497,17 +523,18 @@ class DatasetPackaging:
         Args:
             episodes (Iterable[EpisodePackaging]): An iterable of episode
                 packaging instances.
-            dataset_path (str): The path to save the packaged dataset.
+            dataset_path (str | os.PathLike[str]): Local filesystem path to
+                save the packaged dataset. URI paths such as `s3://...` are
+                not supported.
             dataset_info (hg_datasets.DatasetInfo | None): Information about
                 the dataset, such as description, citation, and homepage.
                 If None, use the default dataset info.
             writer_batch_size (int): The batch size for writing the arrow file.
                 This may affect the performance of packaging or reading the
                 dataset later. Default is 1024.
-            max_shard_size (str | int | None): The maximum size of each shard.
-                If None, no sharding will be applied. This can be a string
-                like '10GB' or an integer representing the size in bytes.
-                default is "500MB".
+            max_shard_size (str | int): The maximum size of each shard. This
+                can be a string like '10GB' or an integer representing the
+                size in bytes. Default is "8GB".
             split (hg_datasets.Split | None): The split of the dataset.
                 If None, use "train" as the default split.
             force_overwrite (bool): If True, overwrite the existing dataset
@@ -518,7 +545,7 @@ class DatasetPackaging:
                 a warning and skipping that episode. Default is False.
         """
 
-        dataset_path = os.path.abspath(os.path.expanduser(dataset_path))
+        dataset_path = normalize_local_dataset_path(dataset_path)
 
         if os.path.exists(dataset_path):
             if not force_overwrite:

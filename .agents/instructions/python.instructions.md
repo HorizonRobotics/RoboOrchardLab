@@ -40,6 +40,22 @@ description: Load these instructions when modifying Python source files, tests, 
 - Keep private persistence, validation, conversion, and compatibility helpers
   after public API definitions unless a local file pattern or readability need
   clearly justifies an earlier placement.
+- Before final validation for any touched Python module, run a focused layout
+  and public-surface pass:
+  - keep module order aligned with local convention: license header, module
+    docstring, future/imports, `__all__`, constants/config, public classes
+    and public functions, then private helpers
+  - verify every new or changed public class/function has a caller-facing
+    docstring that explains the task and contract; use Google-style `Args:`,
+    `Returns:`, and `Raises:` when inputs, outputs, or failures are not
+    obvious
+  - document adapter-only parameters on public callback, registry, plugin, or
+    entry point functions even when the implementation does not inspect them
+  - keep `__all__` curated and avoid exporting helper, compatibility, or
+    adapter symbols unless they are intended public API
+  - re-check helper granularity and inline single-use forwarding helpers
+    unless they mark a real boundary such as validation, lazy optional
+    dependency loading, entry point discovery, lifecycle, or error translation
 
 ## Helper Granularity
 

@@ -25,8 +25,6 @@ import pytest
 from robo_orchard_lab.dataset.datatypes import BatchCameraDataEncoded
 from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
     McapBatchEncoderConfig,
-    McapBatchFromBatchCameraDataEncodedConfig,
-    McapBatchFromBatchJointStateConfig,
 )
 from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
 from robo_orchard_lab.dataset.experimental.mcap.reader import (
@@ -39,6 +37,9 @@ from robo_orchard_lab.dataset.experimental.mcap.writer import (
 )
 from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.db_orm import Episode
+from robo_orchard_lab.dataset.robotwin.to_mcap import (
+    default_dataset_to_mcap_config,
+)
 
 
 @pytest.fixture(scope="module")
@@ -53,28 +54,7 @@ def robotwin_dataset(ROBO_ORCHARD_TEST_WORKSPACE: str):
 
 @pytest.fixture(scope="module")
 def robotwin_dataset2mcap_cfg():
-    config: dict[str, McapBatchEncoderConfig] = {
-        "joints": McapBatchFromBatchJointStateConfig(
-            target_topic="/observation/robot_state/joints",
-        ),
-    }
-    for camera_name in [
-        "front_camera",
-        "head_camera",
-        "left_camera",
-        "right_camera",
-    ]:
-        config[camera_name] = McapBatchFromBatchCameraDataEncodedConfig(
-            calib_topic=f"/observation/cameras/{camera_name}/calib",
-            image_topic=f"/observation/cameras/{camera_name}/image",
-            tf_topic=f"/observation/cameras/{camera_name}/tf",
-        )
-        config[f"{camera_name}_depth"] = (
-            McapBatchFromBatchCameraDataEncodedConfig(
-                image_topic=f"/observation/cameras/{camera_name}/depth",
-            )
-        )
-    return config
+    return default_dataset_to_mcap_config()
 
 
 class TestDataset2Mcap:
@@ -193,5 +173,5 @@ class TestDict2Mcap:
         dict2mcap = Dict2Mcap()
         dict2mcap.save_to_mcap(
             data=data_dict,
-            mcap_path=target_path,
+            mcap=target_path,
         )

@@ -73,6 +73,11 @@ boundaries, and the main execution path understandable.
 - During architecture review, prefer identifying abstractions that can be
   deleted, merged, or downgraded to compatibility-only before proposing new
   abstractions.
+- When extracting shared logic from multiple callers, centralize only the
+  stable semantic operation. Keep caller-owned boundary work such as runtime
+  adaptation, flatten/unflatten, label reconstruction, layout plumbing, and
+  domain-specific orchestration at the caller boundary unless that whole
+  contract is truly shared.
 - If multiple callers still have to remember local policy after adopting a
   shared helper, that policy likely still belongs in the local layer.
 
@@ -157,6 +162,8 @@ boundaries, and the main execution path understandable.
 - Does each layer have one clear responsibility?
 - Is the shared layer limited to genuinely reusable primitives rather than
   caller-local orchestration?
+- Does a proposed shared helper own stable semantics rather than caller
+  boundary plumbing?
 - Does each abstraction remove real complexity instead of turning policy into
   callbacks, indirection, or parameter plumbing?
 - Can any new abstraction be deleted, merged into an existing seam, or

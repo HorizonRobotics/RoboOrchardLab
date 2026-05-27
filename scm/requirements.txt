@@ -60,6 +60,7 @@ setuptools>=77.0.3,<80.0.0
 numpy<2
 
 # ray
+click>=8.1.0,<=8.2.1
 ray[default]
 
 # lerobot dataset dependency

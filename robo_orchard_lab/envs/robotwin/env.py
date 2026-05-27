@@ -950,13 +950,17 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         )
 
     def _get_endpose_frame_ids(self) -> tuple[str, str]:
-        """Return RoboTwin's runtime end-effector frame names.
+        """Return the frame names reused for RoboTwin raw endpose edges.
 
-        Raw ``ret["endpose"]`` values come from RoboTwin's EE pose helpers.
-        Reuse the corresponding EE child-link names reported by the runtime
-        robot object, namely ``self._task.robot.left_ee.child_link`` and
-        ``self._task.robot.right_ee.child_link``, instead of hardcoding
-        embodiment-specific frame IDs locally.
+        Raw ``ret["endpose"]`` values come from RoboTwin's processed
+        ``get_*_ee_pose()`` helpers. They are world-frame RoboTwin EE
+        control-pose vectors, not unmodified child-link poses or TCP poses.
+        For the currently supported combined dual-arm embodiments these
+        control poses numerically align with the runtime EE child-link frame
+        used by the URDF FK helper, so the env reuses
+        ``self._task.robot.left_ee.child_link`` and
+        ``self._task.robot.right_ee.child_link`` as the child-frame IDs
+        instead of inventing another compatibility-only frame name.
         """
         try:
             return (
@@ -977,10 +981,21 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         When ``joint_action["vector"]`` is available, this method adds
         joint-derived world-frame EEF transforms and renames their child
         frames to ``left_eef_from_joint`` / ``right_eef_from_joint`` to avoid
-        colliding with RoboTwin's runtime EE frame names. When raw
-        ``ret["endpose"]`` is available, it adds another pair of world-frame
-        transforms that keep the runtime EE child-link names reported by the
-        RoboTwin robot object.
+        colliding with RoboTwin's runtime EE frame names. These FK edges come
+        from the supported combined dual-arm URDF and represent the same
+        current RoboTwin EE control-frame convention that the env exposes to
+        callers.
+
+        When raw ``ret["endpose"]`` is available, this method adds another
+        pair of world-frame transforms from RoboTwin's processed
+        ``get_*_ee_pose()`` values and keeps the runtime EE child-link names
+        reported by the RoboTwin robot object. For the currently supported
+        embodiments these raw endpose vectors are expected to numerically
+        match the joint-derived FK edges within tolerance, even though
+        RoboTwin computes them through its own compatibility helper instead of
+        exposing an unmodified runtime link pose. Treat that equality as a
+        supported-layout assumption for the current embodiments, not as a
+        generic guarantee for arbitrary future RoboTwin embodiments.
         """
         tf_edges: list[BatchFrameTransform] = []
 

@@ -37,6 +37,10 @@ Local agent asset index lives in `.agents/README.md`.
   `.agents/templates/design-doc-scaffold.md`
 - Policy, rollout boundary, or `act(...)` / `reset(...)` contract changes:
   `.agents/references/policy-guideline.md`
+- Transformers upgrade, generation/cache migration, tokenizer/chat-template
+  compatibility, or repository-owned wrapper compatibility:
+  `.agents/references/transformers-upgrade-guideline.md` and
+  `.agents/references/model-loading-guideline.md`
 - Shared model-loading surfaces, `TorchModelRef`,
   `HFPretrainedModelRef`, `TorchModelLoadConfig`, or `hf://` compatibility:
   `.agents/references/model-loading-guideline.md`
@@ -59,6 +63,10 @@ Local agent asset index lives in `.agents/README.md`.
 - RODataset metadata schema, `Task.info`, `InstructionData.json_content`,
   `EpisodeData.info`, metadata parsing, or metadata export:
   `.agents/references/rodataset-metadata-guideline.md`
+- Experimental MCAP export, `Dict2Mcap`, `Dataset2Mcap`,
+  `FoxgloveMcapWriter`, `FoxgloveEncoder`, `StampedMessage` topic maps,
+  converter contracts, or Pydantic JSON topics:
+  `.agents/references/mcap-guideline.md`
 - RODataset repack, `repack_dataset`, `RODatasetRepackTransform`,
   `re_packing/`, frame selection, transform failure semantics, or
   previous-episode remapping:

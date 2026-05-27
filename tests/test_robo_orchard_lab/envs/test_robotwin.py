@@ -696,6 +696,14 @@ class TestRoboTwinEnv:
         assert obs_robot.md5
 
     def test_endpose_in_obs_when_enabled(self):
+        """Current supported RoboTwin embodiments align raw endpose with FK.
+
+        RoboTwin's raw ``endpose`` values come from its processed
+        ``get_*_ee_pose()`` helpers rather than from an unmodified runtime
+        link pose. For the currently supported combined dual-arm embodiment
+        conventions, those values are still expected to numerically match the
+        URDF joint-FK helper within a small tolerance.
+        """
         env = RoboTwinEnv(
             RoboTwinEnvCfg(
                 task_name="place_object_basket",

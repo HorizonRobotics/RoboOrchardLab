@@ -16,8 +16,12 @@
 
 import os
 
+import cv2
 import fsspec
+import numpy as np
 import pytest
+from foxglove_schemas_protobuf.RawImage_pb2 import RawImage
+from google.protobuf.timestamp import from_nanoseconds
 from robo_orchard_core.utils.torch_utils import make_device
 
 from robo_orchard_lab.dataset.experimental.mcap.batch_split import (
@@ -40,6 +44,75 @@ from robo_orchard_lab.dataset.experimental.mcap.reader import (
     MakeIterMsgArgs,
     McapReader,
 )
+
+
+def _decode_compressed_image(data: bytes) -> np.ndarray:
+    decoded = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert decoded is not None
+    return decoded
+
+
+def test_raw_image_to_compressed_image_preserves_rgb_channel_order() -> None:
+    from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
+        RawImage2CompressedImageConfig,
+    )
+
+    raw = RawImage(
+        timestamp=from_nanoseconds(1),
+        frame_id="front",
+        width=2,
+        height=1,
+        encoding="rgb8",
+        step=8,
+        data=bytes([255, 0, 0, 0, 255, 0, 99, 99]),
+    )
+
+    compressed = RawImage2CompressedImageConfig(format="png")().convert(raw)
+    decoded = _decode_compressed_image(compressed.data)
+
+    assert compressed.format == "png"
+    assert compressed.frame_id == "front"
+    assert decoded.tolist() == [[[0, 0, 255], [0, 255, 0]]]
+
+
+def test_raw_image_to_compressed_image_preserves_bgr_channel_order() -> None:
+    from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
+        RawImage2CompressedImageConfig,
+    )
+
+    raw = RawImage(
+        timestamp=from_nanoseconds(1),
+        frame_id="front",
+        width=2,
+        height=1,
+        encoding="bgr8",
+        step=8,
+        data=bytes([0, 0, 255, 0, 255, 0, 99, 99]),
+    )
+
+    compressed = RawImage2CompressedImageConfig(format="png")().convert(raw)
+    decoded = _decode_compressed_image(compressed.data)
+
+    assert decoded.tolist() == [[[0, 0, 255], [0, 255, 0]]]
+
+
+def test_raw_image_to_compressed_image_rejects_float_raw_images() -> None:
+    from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
+        RawImage2CompressedImageConfig,
+    )
+
+    raw = RawImage(
+        timestamp=from_nanoseconds(1),
+        frame_id="front",
+        width=1,
+        height=1,
+        encoding="32FC1",
+        step=4,
+        data=np.array([1.0], dtype=np.float32).tobytes(),
+    )
+
+    with pytest.raises(ValueError, match="32FC1"):
+        RawImage2CompressedImageConfig(format="png")().convert(raw)
 
 
 @pytest.fixture(scope="module")

@@ -62,6 +62,11 @@ Choose only the topics that materially affect safe use:
   from the menu above.
 - Key classes should usually open with user-facing purpose and fit before
   ownership or lifecycle details.
+- For public classes whose constructor arguments define caller-facing
+  configuration or behavior, document those arguments in the class docstring
+  or public field attribute docs instead of a separate `__init__` docstring.
+  Reserve `__init__` docstrings for rare cases where construction itself has
+  distinct caller-visible behavior not already covered by the class contract.
 - Resource-owning or stateful classes usually need lifecycle/state language.
 - Public wrapper or adapter classes should make the ownership boundary clear.
 

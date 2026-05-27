@@ -17,6 +17,7 @@ import os
 import random
 import string
 import tempfile
+from pathlib import Path
 from typing import Generator
 
 import datasets as hg_datasets
@@ -422,8 +423,38 @@ class TestDatasetPackaging:
         )
         dataset_packaging.packaging(
             episodes=episodes,
-            dataset_path=dataset_dir,
+            dataset_path=Path(dataset_dir),
         )
+
+    def test_packaging_rejects_uri_dataset_path(self):
+        episode = DummyEpisodePackaging(gen_frame_num=1)
+        dataset_packaging = DatasetPackaging(
+            features=episode.features,
+            database_driver="sqlite",
+        )
+
+        with pytest.raises(ValueError, match="URI paths are not supported"):
+            dataset_packaging.packaging(
+                episodes=[episode],
+                dataset_path="s3://bucket/ro_dataset",
+            )
+
+    def test_packaging_path_normalization_accepts_pathlike_and_colon_paths(
+        self,
+    ):
+        from robo_orchard_lab.dataset.robot.packaging import (
+            normalize_local_dataset_path,
+        )
+
+        assert normalize_local_dataset_path(
+            Path("relative_ro_dataset")
+        ) == os.path.abspath("relative_ro_dataset")
+        assert normalize_local_dataset_path("dataset:v1") == os.path.abspath(
+            "dataset:v1"
+        )
+        assert normalize_local_dataset_path(
+            "C:/tmp/ro_dataset"
+        ) == os.path.abspath("C:/tmp/ro_dataset")
 
     def test_episode_packaging_fail_fast(
         self,

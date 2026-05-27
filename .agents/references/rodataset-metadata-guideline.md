@@ -3,6 +3,20 @@
 Use this reference when adding or reviewing RODataset metadata schema,
 metadata persistence, metadata parsing, or metadata export behavior.
 
+## Dataset Packaging Path Contract
+
+- `DatasetPackaging` output paths are local filesystem paths. Normalize them
+  through `normalize_local_dataset_path` before deriving metadata DB, Arrow,
+  lock, cache, or cleanup paths.
+- Reject URI-style paths before `abspath`, `Path.resolve`, or other local
+  normalization so remote-looking inputs cannot be rewritten into local pseudo
+  paths.
+- Preserve local filesystem compatibility for `str | os.PathLike[str]`, local
+  names containing `:`, and Windows-style `C:/...` paths. Do not use URL
+  scheme parsing alone as the local-or-remote discriminator.
+- When this path contract changes, update `DatasetPackaging.packaging`
+  docstrings and any wrapper, CLI, or settings validation in the same change.
+
 ## Canonical Schema Ownership
 
 - Keep canonical metadata schema models in

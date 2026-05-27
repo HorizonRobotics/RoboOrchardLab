@@ -14,13 +14,11 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-"""Default MCAP encoder configs for Libero RODatasets."""
+"""Default MCAP encoder configs for RoboTwin RODatasets."""
 
 from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
     McapBatchEncoderConfig,
     McapBatchFromBatchCameraDataEncodedConfig,
-    McapBatchFromBatchFrameTransformConfig,
-    McapBatchFromBatchFrameTransformGraphConfig,
     McapBatchFromBatchJointStateConfig,
 )
 
@@ -31,10 +29,10 @@ __all__ = [
 
 
 def default_dataset_to_mcap_config() -> dict[str, McapBatchEncoderConfig]:
-    """Create the default Libero dataset to MCAP encoder config.
+    """Create the default RoboTwin dataset to MCAP encoder config.
 
     Returns:
-        dict[str, McapBatchEncoderConfig]: Encoder configs keyed by Libero
+        dict[str, McapBatchEncoderConfig]: Encoder configs keyed by RoboTwin
             RODataset column names.
     """
     config: dict[str, McapBatchEncoderConfig] = {
@@ -42,46 +40,37 @@ def default_dataset_to_mcap_config() -> dict[str, McapBatchEncoderConfig]:
             target_topic="/observation/robot_state/joints",
         ),
     }
-    config["action_goal_eef"] = McapBatchFromBatchFrameTransformConfig(
-        target_topic="/action/goal_eef",
-    )
-
     for camera_name in [
-        "agentview",
-        "robot0_eye_in_hand",
+        "front_camera",
+        "head_camera",
+        "left_camera",
+        "right_camera",
     ]:
-        config[f"{camera_name}_image"] = (
-            McapBatchFromBatchCameraDataEncodedConfig(
-                calib_topic=f"/observation/cameras/{camera_name}/calib",
-                image_topic=f"/observation/cameras/{camera_name}/image",
-                tf_topic=f"/observation/cameras/{camera_name}/tf",
-            )
+        config[camera_name] = McapBatchFromBatchCameraDataEncodedConfig(
+            calib_topic=f"/observation/cameras/{camera_name}/calib",
+            image_topic=f"/observation/cameras/{camera_name}/image",
+            tf_topic=f"/observation/cameras/{camera_name}/tf",
         )
-        # since depth and rgb using the same camera info, we only need to
-        # add depth topic here
         config[f"{camera_name}_depth"] = (
             McapBatchFromBatchCameraDataEncodedConfig(
                 image_topic=f"/observation/cameras/{camera_name}/depth",
             )
         )
-    config["tf_world"] = McapBatchFromBatchFrameTransformGraphConfig(
-        target_topic="/tf",
-    )
     return config
 
 
 def dataset_to_mcap_config(
     dataset: object,
 ) -> dict[str, McapBatchEncoderConfig]:
-    """Create the Libero MCAP config for preset entry point loading.
+    """Create the RoboTwin MCAP config for preset entry point loading.
 
     Args:
         dataset (object): Dataset object passed by the dataset2mcap preset
-            contract. The default Libero topic mapping is schema-fixed, so
+            contract. The default RoboTwin topic mapping is schema-fixed, so
             this value is not inspected.
 
     Returns:
-        dict[str, McapBatchEncoderConfig]: Encoder configs keyed by Libero
+        dict[str, McapBatchEncoderConfig]: Encoder configs keyed by RoboTwin
             RODataset column names.
     """
     del dataset

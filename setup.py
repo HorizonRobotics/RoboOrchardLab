@@ -224,6 +224,7 @@ if __name__ == "__main__":
         "fsspec",
         "sortedcontainers",
         "numpydantic",
+        "click>=8.1.0,<=8.2.1",
         "ray[default]>=2.49.1",
         "pytorch-kinematics>=0.7.5",
         # Use git url to install the latest version.
@@ -361,4 +362,12 @@ if __name__ == "__main__":
         version=get_version(),
         install_requires=install_requires,
         extras_require=extras_require,
+        entry_points={
+            "robo_orchard_datasets.dataset2mcap_presets": [
+                "robotwin=robo_orchard_lab.dataset.robotwin.to_mcap:"
+                "dataset_to_mcap_config",
+                "libero=robo_orchard_lab.dataset.libero.to_mcap:"
+                "dataset_to_mcap_config",
+            ],
+        },
     )

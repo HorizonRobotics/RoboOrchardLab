@@ -43,10 +43,12 @@ description: Load these instructions when preparing a fresh local development en
   ```
 
 - Otherwise, create a project-local virtual environment with system site
-  packages:
+  packages and verify the selected interpreter immediately:
 
   ```bash
   python -m venv .venv --system-site-packages
+  .venv/bin/python -c "import sys; print(sys.executable)"
+  .venv/bin/pip --version
   ```
 
 - When using a project-local virtual environment, use explicit
@@ -55,6 +57,14 @@ description: Load these instructions when preparing a fresh local development en
   ```bash
   .venv/bin/python -V
   .venv/bin/pip -V
+  ```
+
+- If the selected environment does not provide a new enough pip for the
+  editable install path, upgrade pip inside that environment before
+  installing the package:
+
+  ```bash
+  .venv/bin/python -m pip install --upgrade pip
   ```
 
 - Treat the shared workspace-root `.venv` as the default development path
@@ -75,12 +85,38 @@ description: Load these instructions when preparing a fresh local development en
   explicit Python executable. For a project-local `.venv`, for example:
 
   ```bash
-  .venv/bin/python -m pip install -e .
+  .venv/bin/python -m pip install --config-settings editable_mode=compat -e .
   ```
 
-- Install extra development dependencies only when needed by the task. Use
-  repository sources of truth such as `Makefile`, `pyproject.toml`, and
-  `scm/requirements.txt`.
+- If repeated `make` calls need to target the same `.venv` without shell
+  activation, copy `.env.example` to `.env` and align `PIP` with that
+  environment instead of relying on whichever `pip` happens to be on PATH.
+  For a project-local `.venv`, for example:
+
+  ```make
+  PIP=.venv/bin/pip
+  ```
+- Install extra development dependencies only when needed by the task. For a
+  project-local `.venv`, common development tooling is:
+
+  ```bash
+  .venv/bin/python -m pip install -r scm/requirements.txt
+  .venv/bin/pre-commit install
+  ```
+
+- If the task needs the LeRobot integration that the package's default
+  `make dev-env` target also installs unconditionally, add:
+
+  ```bash
+  .venv/bin/python -m pip install "lerobot>=0.4.0" --no-deps
+  ```
+
+- When the user explicitly wants the package's default dev setup rather than
+  the smaller manual sequence above, prefer `make dev-env` with `PIP`
+  aligned to the selected environment.
+
+- Use repository sources of truth such as `Makefile`, `pyproject.toml`, and
+  `scm/requirements.txt` when adapting that sequence.
 
 ## Cache and Data Expectations
 

@@ -14,31 +14,22 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""Dataset-level MCAP export helpers."""
+
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import fsspec
-from robo_orchard_schemas.action_msgs.instruction_pb2 import (
-    InstructionStamped as PbInstructionStamped,
-)
-from robo_orchard_schemas.action_msgs.task_pb2 import (
-    TaskStamped as PbTaskStamped,
-)
-from robo_orchard_schemas.robot_msgs.robot_desc_pb2 import RobotDesc
 
 from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
     McapBatchEncoderConfig,
     McapBatchEncoders,
 )
+from robo_orchard_lab.dataset.experimental.mcap.dict2mcap import Dict2Mcap
 from robo_orchard_lab.dataset.experimental.mcap.foxglove_writer import (
     FoxgloveMcapWriter as McapWriter,
 )
 from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
-from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
-    FromInstructionConfig,
-    FromRobotConfig,
-    FromTaskConfig,
-)
 from robo_orchard_lab.dataset.robot.columns import (
     PreservedIndexColumns,
     PreservedIndexColumnsKeys,
@@ -72,109 +63,12 @@ class EpisodeInfoTopics:
 
 
 class Dataset2Mcap:
-    """A class to save the RoboOrchard dataset to an MCAP file.
-
-    TODO: To be refactored to use dict2mcap for flexibility and modularity!
-    """
+    """A class to save the RoboOrchard dataset to an MCAP file."""
 
     def __init__(self, dataset: RODataset):
+        """Create an exporter for a RoboOrchard dataset."""
+
         self.dataset = dataset
-
-    def _robot2proto(
-        self, robot: Robot, log_time: int, pub_time: int | None = None
-    ) -> StampedMessage[RobotDesc]:
-        """Convert a Robot object to a URDF protobuf message.
-
-        Args:
-            robot (Robot): The Robot object to convert.
-            log_time (int): The log time in nanoseconds.
-            pub_time (int | None): The publication time in nanoseconds, if
-                available.
-
-        Returns:
-            StampedMessage[RobotDesc]: The converted RobotDesc
-                protobuf message.
-        """
-        to_mcap_msg = FromRobotConfig()()
-        return StampedMessage(
-            data=to_mcap_msg.convert(robot),
-            log_time=log_time,
-            pub_time=pub_time,
-        )
-
-    def _task2proto(
-        self,
-        task: Task,
-        timestamp: int,
-        log_time: int,
-        pub_time: int | None = None,
-    ) -> StampedMessage[PbTaskStamped]:
-        """Convert a Task object to a TaskStamped protobuf message.
-
-        Args:
-            task (Task): The Task object to convert.
-            timestamp (int): The timestamp in nanoseconds.
-            log_time (int): The log time in nanoseconds.
-            pub_time (int | None): The publication time in nanoseconds, if
-                available.
-
-        Returns:
-            StampedMessage[PbTaskStamped]: The converted TaskStamped
-                protobuf message.
-        """
-        to_mcap_msg = FromTaskConfig()()
-        data = to_mcap_msg.convert(task)
-        data.timestamp.FromNanoseconds(timestamp)
-        return StampedMessage(
-            data=data,
-            log_time=log_time,
-            pub_time=pub_time,
-        )
-
-    def _instruction2proto(
-        self,
-        instruction: Instruction,
-        timestamp: int,
-        log_time: int,
-        pub_time: int | None = None,
-    ) -> StampedMessage[PbInstructionStamped]:
-        """Convert an Instruction object to a InstructionStamped message.
-
-        Args:
-            instruction (Instruction): The Instruction object to convert.
-            timestamp (int): The timestamp in nanoseconds.
-            log_time (int): The log time in nanoseconds.
-            pub_time (int | None): The publication time in nanoseconds, if
-                available.
-
-        Returns:
-            StampedMessage[PbInstructionStamped]: The converted
-                InstructionStamped protobuf message.
-        """
-        to_mcap_msg = FromInstructionConfig()()
-        data = to_mcap_msg.convert(instruction)
-        data.timestamp.FromNanoseconds(timestamp)
-
-        return StampedMessage(
-            data=data,
-            log_time=log_time,
-            pub_time=pub_time,
-        )
-
-    def _episode2json(self, episode: Episode) -> dict[str, Any]:
-        """Convert an Episode ORM object to JSON-compatible metadata."""
-
-        return {
-            "index": episode.index,
-            "robot_index": episode.robot_index,
-            "task_index": episode.task_index,
-            "prev_episode_index": episode.prev_episode_index,
-            "dataset_begin_index": episode.dataset_begin_index,
-            "frame_num": episode.frame_num,
-            "truncated": episode.truncated,
-            "success": episode.success,
-            "info": episode.info,
-        }
 
     def save_episode(
         self,
@@ -182,7 +76,7 @@ class Dataset2Mcap:
         episode_index: int,
         encoder_cfg: Mapping[str, McapBatchEncoderConfig],
         episode_info_topics: EpisodeInfoTopics | None = None,
-    ):
+    ) -> None:
         """Save the episode data to an MCAP file.
 
         Args:
@@ -202,12 +96,15 @@ class Dataset2Mcap:
             raise ValueError(f"Episode with index {episode_index} not found.")
         to_mcap_msg_batch = McapBatchEncoders(encoder_cfg)
         robot_info = (
-            self.dataset.get_meta(Robot, episode_info.robot_index)
+            cast(
+                Robot,
+                self.dataset.get_meta(Robot, episode_info.robot_index),
+            )
             if episode_info.robot_index is not None
             else None
         )
         task_info = (
-            self.dataset.get_meta(Task, episode_info.task_index)
+            cast(Task, self.dataset.get_meta(Task, episode_info.task_index))
             if episode_info.task_index is not None
             else None
         )
@@ -224,46 +121,35 @@ class Dataset2Mcap:
                 "has been properly indexed with timestamps."
             )
 
-        with fsspec.open(target_path, "wb") as f, McapWriter(f) as mcap_writer:  # type: ignore
-            mcap_writer.write_message(
-                topic=episode_info_topics.episode_info_topic,
-                message=self._episode2json(episode_info),
-                log_time=start_ts,
-                publish_time=start_ts,
-            )
+        dict2mcap = Dict2Mcap()
 
-            if robot_info is not None:
-                try:
-                    robot_msg = self._robot2proto(
-                        robot_info,
+        with fsspec.open(target_path, "wb") as f, McapWriter(f) as mcap_writer:  # type: ignore
+            metadata_topic_map: dict[str, list[StampedMessage[Any]]] = {
+                episode_info_topics.episode_info_topic: [
+                    StampedMessage(
+                        data=episode_info,
                         log_time=start_ts,
                         pub_time=start_ts,
                     )
-                    mcap_writer.write_message(
-                        topic=episode_info_topics.robot_topic,
-                        message=robot_msg.data,
-                        log_time=robot_msg.log_time,
-                        publish_time=robot_msg.pub_time,
+                ]
+            }
+            if robot_info is not None:
+                metadata_topic_map[episode_info_topics.robot_topic] = [
+                    StampedMessage(
+                        data=robot_info,
+                        log_time=start_ts,
+                        pub_time=start_ts,
                     )
-                except NotImplementedError as e:
-                    print(
-                        f"Skipping robot description for episode "
-                        f"{episode_index}: {e}"
-                    )
-
+                ]
             if task_info is not None:
-                task_msg = self._task2proto(
-                    task_info,
-                    timestamp=start_ts,
-                    log_time=start_ts,
-                    pub_time=start_ts,
-                )
-                mcap_writer.write_message(
-                    topic=episode_info_topics.task_topic,
-                    message=task_msg.data,
-                    log_time=task_msg.log_time,
-                    publish_time=task_msg.pub_time,
-                )
+                metadata_topic_map[episode_info_topics.task_topic] = [
+                    StampedMessage(
+                        data=task_info,
+                        log_time=start_ts,
+                        pub_time=start_ts,
+                    )
+                ]
+            dict2mcap.save_to_mcap(metadata_topic_map, mcap=mcap_writer)
 
             for idx in range(begin, end):
                 frame = self.dataset.frame_dataset[idx]
@@ -284,19 +170,15 @@ class Dataset2Mcap:
                     if preserved_index_columns.instruction_index is not None
                     else None
                 )
+                topic_map: dict[str, list[StampedMessage[Any]]] = {}
                 if instruction_info is not None:
-                    instruction_msg = self._instruction2proto(
-                        instruction_info,
-                        timestamp=ts_min,
-                        log_time=ts_min,
-                        pub_time=ts_min,
-                    )
-                    mcap_writer.write_message(
-                        topic=episode_info_topics.instruction_topic,
-                        message=instruction_msg.data,
-                        log_time=instruction_msg.log_time,
-                        publish_time=instruction_msg.pub_time,
-                    )
+                    topic_map[episode_info_topics.instruction_topic] = [
+                        StampedMessage(
+                            data=instruction_info,
+                            log_time=ts_min,
+                            pub_time=ts_min,
+                        )
+                    ]
 
                 # encode the frame data
                 msg_batch = to_mcap_msg_batch.format_batch(
@@ -305,10 +187,5 @@ class Dataset2Mcap:
                 for topic, msgs in msg_batch.items():
                     if len(msgs) == 0:
                         continue
-                    for msg in msgs:
-                        mcap_writer.write_message(
-                            topic=topic,
-                            message=msg.data,
-                            log_time=msg.log_time,
-                            publish_time=msg.pub_time,
-                        )
+                    topic_map.setdefault(topic, []).extend(msgs)
+                dict2mcap.save_to_mcap(topic_map, mcap=mcap_writer)

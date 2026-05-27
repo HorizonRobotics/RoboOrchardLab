@@ -15,6 +15,11 @@ description: Load these instructions when creating, updating, or validating test
   that capability in the test and skip when unavailable instead of making
   the default test phase fail for environment reasons.
 - Use mocks or monkeypatch only when the test target is isolated assembly logic and real dependencies are not part of the behavior under test.
+- For import-lightweight smoke tests that manipulate `sys.modules`, prefer a
+  subprocess when the module graph includes Pydantic models, registries,
+  schema classes, protobuf descriptors, or other identity-sensitive globals.
+  Avoid popping already-imported complex modules in the same pytest process
+  used by behavioral tests.
 - For process-backed or external-binary integrations, prefer one real
   integration path that proves the happy path against the actual dependency
   and separate narrow fake or monkeypatched tests for failure paths that are
@@ -27,6 +32,10 @@ description: Load these instructions when creating, updating, or validating test
 - When a wrapper or adapter exposes both raw data and derived data for the
   same contract, test both the assembly logic and at least one end-to-end
   consistency path between the raw and derived representations.
+- When extracting shared behavior from existing callers, test the shared unit
+  directly and at least one caller boundary path that proves metadata
+  reconstruction, pass-through branches, or other caller-owned context still
+  survives the refactor.
 - For frame or transform adapters, prefer one narrow unit test that checks the
   naming and graph assembly rules and one integration-style test that checks
   numerical consistency against the real runtime source.

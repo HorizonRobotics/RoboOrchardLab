@@ -14,21 +14,17 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
-import json
+from typing import Any, Generic, TypeVar
 
+from pydantic import BaseModel, ConfigDict, field_serializer
 from robo_orchard_core.utils.config import ClassType
-from robo_orchard_schemas.action_msgs.instruction_pb2 import InstructionStamped
-from robo_orchard_schemas.action_msgs.task_pb2 import TaskStamped
-from robo_orchard_schemas.robot_msgs.robot_desc_pb2 import (
-    RobotDesc,
-    RobotDescFormat,
-)
 
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
     MessageConverterConfig,
     MessageConverterStateless,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
+    Episode,
     Instruction,
     Robot,
     RobotDescriptionFormat,
@@ -36,70 +32,112 @@ from robo_orchard_lab.dataset.robot.db_orm import (
 )
 
 __all__ = [
+    "FromEpisode",
+    "FromEpisodeConfig",
+    "FromInstruction",
+    "FromInstructionConfig",
     "FromRobot",
     "FromRobotConfig",
     "FromTask",
     "FromTaskConfig",
-    "FromInstruction",
-    "FromInstructionConfig",
 ]
 
 
-class FromRobot(MessageConverterStateless[Robot, RobotDesc]):
+TOrm = TypeVar("TOrm")
+TModel = TypeVar("TModel", bound=BaseModel)
+
+
+class _OrmMcapMetadata(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+        use_enum_values=True,
+    )
+
+    @field_serializer("md5", when_used="json", check_fields=False)
+    def _serialize_md5(self, value: bytes | None) -> str | None:
+        return None if value is None else value.hex()
+
+
+class _RobotMcapMetadata(_OrmMcapMetadata):
+    index: int
+    name: str
+    content: str | None
+    content_format: RobotDescriptionFormat | None
+    md5: bytes
+
+
+class _TaskMcapMetadata(_OrmMcapMetadata):
+    index: int
+    name: str
+    description: str | None
+    info: dict[str, Any] | None
+    md5: bytes
+
+
+class _InstructionMcapMetadata(_OrmMcapMetadata):
+    index: int
+    name: str | None
+    json_content: dict[str, Any] | None
+    md5: bytes
+
+
+class _EpisodeMcapMetadata(_OrmMcapMetadata):
+    index: int
+    robot_index: int | None
+    task_index: int | None
+    prev_episode_index: int | None
+    dataset_begin_index: int
+    frame_num: int
+    truncated: bool | None
+    success: bool | None
+    info: dict[str, Any] | None
+
+
+class _FromOrmToMcapMetadata(
+    MessageConverterStateless[TOrm, TModel],
+    Generic[TOrm, TModel],
+):
+    """Convert a SQLAlchemy ORM row into its Pydantic MCAP payload."""
+
+    def __init__(self, model_type: type[TModel]) -> None:
+        self._model_type = model_type
+
+    def convert(self, data: TOrm) -> TModel:
+        return self._model_type.model_validate(data)
+
+
+class FromRobot(_FromOrmToMcapMetadata[Robot, _RobotMcapMetadata]):
     cfg: FromRobotConfig
 
     def __init__(self, cfg: FromRobotConfig):
         self.cfg = cfg
-
-    def convert(self, data: Robot) -> RobotDesc:
-        content = "" if data.content is None else data.content
-        if data.content_format == RobotDescriptionFormat.URDF:
-            content_fmt = RobotDescFormat.URDF
-        elif data.content_format == RobotDescriptionFormat.MJCF:
-            content_fmt = RobotDescFormat.MJCF
-        else:
-            raise NotImplementedError(
-                f"Robot {data.name} has unsupported description format: "
-                f"{data.content_format}. Supported formats are: "
-                f"{RobotDescriptionFormat.URDF} and "
-                f"{RobotDescriptionFormat.MJCF}."
-            )
-
-        return RobotDesc(
-            format=content_fmt,
-            content=content,
-        )
+        super().__init__(_RobotMcapMetadata)
 
 
-class FromTask(MessageConverterStateless[Task, TaskStamped]):
+class FromTask(_FromOrmToMcapMetadata[Task, _TaskMcapMetadata]):
     cfg: FromTaskConfig
 
     def __init__(self, cfg: FromTaskConfig):
         self.cfg = cfg
-
-    def convert(self, data: Task) -> TaskStamped:
-        return TaskStamped(
-            names=[data.name],
-            descriptions=[data.description] if data.description else [],
-        )
+        super().__init__(_TaskMcapMetadata)
 
 
 class FromInstruction(
-    MessageConverterStateless[Instruction, InstructionStamped]
+    _FromOrmToMcapMetadata[Instruction, _InstructionMcapMetadata]
 ):
     cfg: FromInstructionConfig
 
     def __init__(self, cfg: FromInstructionConfig):
         self.cfg = cfg
+        super().__init__(_InstructionMcapMetadata)
 
-    def convert(self, data: Instruction) -> InstructionStamped:
-        instruction = data
-        return InstructionStamped(
-            names=[instruction.name] if instruction.name else [],
-            descriptions=[
-                json.dumps(instruction.json_content, ensure_ascii=False)
-            ],
-        )
+
+class FromEpisode(_FromOrmToMcapMetadata[Episode, _EpisodeMcapMetadata]):
+    cfg: FromEpisodeConfig
+
+    def __init__(self, cfg: FromEpisodeConfig):
+        self.cfg = cfg
+        super().__init__(_EpisodeMcapMetadata)
 
 
 class FromRobotConfig(MessageConverterConfig[FromRobot]):
@@ -112,3 +150,7 @@ class FromTaskConfig(MessageConverterConfig[FromTask]):
 
 class FromInstructionConfig(MessageConverterConfig[FromInstruction]):
     class_type: ClassType[FromInstruction] = FromInstruction
+
+
+class FromEpisodeConfig(MessageConverterConfig[FromEpisode]):
+    class_type: ClassType[FromEpisode] = FromEpisode

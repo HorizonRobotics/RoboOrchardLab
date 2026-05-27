@@ -80,12 +80,10 @@ class AddNoiseToJointsState(
 
 
 class AddNoiseToJointsStateConfig(
-    DictTransformConfig[AddNoiseToJointsState[NoiseConfigT_co]],
+    DictTransformConfig[AddNoiseToJointsState],
     Generic[NoiseConfigT_co],
 ):
-    class_type: ClassType[AddNoiseToJointsState[NoiseConfigT_co]] = (
-        AddNoiseToJointsState
-    )
+    class_type: ClassType[AddNoiseToJointsState] = AddNoiseToJointsState
 
     noise: NoiseConfigT_co
 

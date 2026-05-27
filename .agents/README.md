@@ -27,6 +27,8 @@ or planning shapes in `templates/`.
   `references/dict-transform-guideline.md`,
   `references/processor-guideline.md`, and
   `references/model-loading-guideline.md`.
+- Transformers upgrade and compatibility:
+  `references/transformers-upgrade-guideline.md`.
 - Policy, evaluation, and benchmark workflows:
   `references/policy-guideline.md`,
   `references/policy-evaluator-guideline.md`, and
@@ -39,6 +41,8 @@ or planning shapes in `templates/`.
   `references/rodataset-metadata-guideline.md`,
   `references/rodataset-repack-guideline.md`, and
   `references/rodataset-upgrade-guideline.md`.
+- Experimental MCAP export:
+  `references/mcap-guideline.md`.
 - Naming conventions:
   `references/spatial-transform-and-matrix-naming-guideline.md`.
 
