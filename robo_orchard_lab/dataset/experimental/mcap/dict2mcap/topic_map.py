@@ -26,13 +26,33 @@ from robo_orchard_lab.dataset.experimental.mcap.foxglove_writer import (
 from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
 
 __all__ = [
+    "Dict2McapWriteSummary",
+    "LogTimeBounds",
     "TopicStampedMessage",
     "flatten_input_order_records",
+    "summarize_records",
     "write_records",
 ]
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class LogTimeBounds:
+    """Min and max final-record log time in nanoseconds."""
+
+    min_log_time: int
+    max_log_time: int
+
+
+@dataclass(frozen=True, slots=True)
+class Dict2McapWriteSummary:
+    """Lightweight summary of final records written to MCAP."""
+
+    record_count: int
+    topics: tuple[str, ...]
+    log_time_bounds: LogTimeBounds | None
+
+
+@dataclass(slots=True)
 class TopicStampedMessage:
     """One final MCAP topic plus a stamped message in input order."""
 
@@ -66,29 +86,72 @@ def flatten_input_order_records(
             idx += 1
 
 
+class _RecordSummaryAccumulator:
+    def __init__(self) -> None:
+        self._record_count = 0
+        self._topics: list[str] = []
+        self._seen_topics: set[str] = set()
+        self._min_log_time: int | None = None
+        self._max_log_time: int | None = None
+
+    def add(self, record: TopicStampedMessage) -> None:
+        self._record_count += 1
+        if record.topic not in self._seen_topics:
+            self._seen_topics.add(record.topic)
+            self._topics.append(record.topic)
+        log_time = record.message.log_time
+        if log_time is None:
+            return
+        self._min_log_time = (
+            log_time
+            if self._min_log_time is None
+            else min(self._min_log_time, log_time)
+        )
+        self._max_log_time = (
+            log_time
+            if self._max_log_time is None
+            else max(self._max_log_time, log_time)
+        )
+
+    def finish(self) -> Dict2McapWriteSummary:
+        bounds = (
+            None
+            if self._min_log_time is None or self._max_log_time is None
+            else LogTimeBounds(
+                min_log_time=self._min_log_time,
+                max_log_time=self._max_log_time,
+            )
+        )
+        return Dict2McapWriteSummary(
+            record_count=self._record_count,
+            topics=tuple(self._topics),
+            log_time_bounds=bounds,
+        )
+
+
+def summarize_records(
+    records: Iterable[TopicStampedMessage],
+) -> Dict2McapWriteSummary:
+    """Summarize already-converted final MCAP records."""
+    accumulator = _RecordSummaryAccumulator()
+    for record in records:
+        accumulator.add(record)
+    return accumulator.finish()
+
+
 def write_records(
     records: Iterable[TopicStampedMessage],
     mcap_writer: McapWriter,
-) -> tuple[int | None, int | None]:
-    """Write final records and return the min/max log time seen."""
-
-    min_log_time: int | None = None
-    max_log_time: int | None = None
+) -> Dict2McapWriteSummary:
+    """Write final records and return a lightweight write summary."""
+    accumulator = _RecordSummaryAccumulator()
     for record in records:
-        log_time = record.message.log_time
         mcap_writer.write_message(
             topic=record.topic,
             message=record.message.data,
-            log_time=log_time,
+            log_time=record.message.log_time,
             publish_time=record.message.pub_time,
         )
-        if log_time is None:
-            continue
-        min_log_time = (
-            log_time if min_log_time is None else min(min_log_time, log_time)
-        )
-        max_log_time = (
-            log_time if max_log_time is None else max(max_log_time, log_time)
-        )
+        accumulator.add(record)
 
-    return min_log_time, max_log_time
+    return accumulator.finish()

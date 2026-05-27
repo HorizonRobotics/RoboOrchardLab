@@ -21,7 +21,12 @@ from typing import Any
 import pytest
 import torch
 
+import robo_orchard_lab.dataset.experimental.mcap.dict2mcap as dict2mcap_api
 from robo_orchard_lab.dataset.datatypes import BatchCameraData, ImageMode
+from robo_orchard_lab.dataset.experimental.mcap.dict2mcap.topic_map import (
+    TopicStampedMessage,
+    summarize_records,
+)
 from robo_orchard_lab.dataset.experimental.mcap.foxglove_writer import (
     FoxgloveMcapWriter as McapWriter,
 )
@@ -34,9 +39,21 @@ from robo_orchard_lab.dataset.experimental.mcap.topics import (
 )
 from robo_orchard_lab.dataset.experimental.mcap.writer import (
     Dict2Mcap,
+    Dict2McapWriteSummary,
+    LogTimeBounds,
     StampedMessage,
     ToMcapMessageFactory,
 )
+
+
+def test_dict2mcap_package_public_api_stays_small() -> None:
+    assert set(dict2mcap_api.__all__) == {
+        "Dict2Mcap",
+        "Dict2McapWriteSummary",
+        "LogTimeBounds",
+        "StampedMessage",
+        "ToMcapMessageFactory",
+    }
 
 
 def _read_topics_and_log_times(path: Path) -> list[tuple[str, int]]:
@@ -68,11 +85,70 @@ def test_save_to_mcap_writes_input_order_without_log_time_merge(
         "/earlier": [StampedMessage(data={"value": "earlier"}, log_time=10)],
     }
 
-    Dict2Mcap().save_to_mcap(data, mcap=path)
+    summary = Dict2Mcap().save_to_mcap(data, mcap=path)
 
     assert _read_topics_and_log_times(path) == [
         ("/later", 20),
         ("/earlier", 10),
+    ]
+    assert summary == Dict2McapWriteSummary(
+        record_count=2,
+        topics=("/later", "/earlier"),
+        log_time_bounds=LogTimeBounds(min_log_time=10, max_log_time=20),
+    )
+
+
+def test_iter_records_and_write_records_share_lightweight_summary() -> None:
+    class FakeMcapWriter:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def write_message(self, **kwargs: Any) -> None:
+            self.messages.append(kwargs)
+
+    records = (
+        TopicStampedMessage(
+            topic="/alpha",
+            idx=0,
+            message=StampedMessage(data={"value": 1}, log_time=10),
+        ),
+        TopicStampedMessage(
+            topic="/beta",
+            idx=1,
+            message=StampedMessage(data={"value": 2}, log_time=None),
+        ),
+        TopicStampedMessage(
+            topic="/alpha",
+            idx=2,
+            message=StampedMessage(data={"value": 3}, log_time=15),
+        ),
+    )
+
+    expected = Dict2McapWriteSummary(
+        record_count=3,
+        topics=("/alpha", "/beta"),
+        log_time_bounds=LogTimeBounds(min_log_time=10, max_log_time=15),
+    )
+    writer = FakeMcapWriter()
+
+    assert summarize_records(records) == expected
+    assert Dict2Mcap().write_records(records, writer) == expected
+    assert [(msg["topic"], msg["log_time"]) for msg in writer.messages] == [
+        ("/alpha", 10),
+        ("/beta", None),
+        ("/alpha", 15),
+    ]
+
+
+def test_iter_records_is_public_source_conversion_boundary() -> None:
+    records = list(
+        Dict2Mcap().iter_records(
+            {"/topic": [StampedMessage(data={"value": 1}, log_time=1)]}
+        )
+    )
+
+    assert [(record.topic, record.message.log_time) for record in records] == [
+        ("/topic", 1)
     ]
 
 
