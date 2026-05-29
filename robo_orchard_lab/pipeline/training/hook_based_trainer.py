@@ -38,7 +38,10 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
     PipelineHooks,
     PipelineHooksConfig,
 )
-from robo_orchard_lab.pipeline.hooks.optimizer import OptimizerHookConfig
+from robo_orchard_lab.pipeline.hooks.optimizer import (
+    OptimizerHookConfig,
+    _validate_manual_lr_scheduler_step,
+)
 from robo_orchard_lab.pipeline.hooks.validation import ValidationHookConfig
 from robo_orchard_lab.processing.step_processor import BatchStepProcessorMixin
 from robo_orchard_lab.utils.accelerate import (
@@ -309,6 +312,8 @@ class HookBasedTrainer:
         self.model: torch.nn.Module = self.model
         self.optimizer: AcceleratedOptimizer = self.optimizer
         self.lr_scheduler: AcceleratedScheduler = self.lr_scheduler
+        # OptimizerHook owns scheduler stepping for this trainer.
+        _validate_manual_lr_scheduler_step(self.lr_scheduler)
 
         self.trainer_progress_state = TrainerProgressState()
         accelerator.register_for_checkpointing(self.trainer_progress_state)

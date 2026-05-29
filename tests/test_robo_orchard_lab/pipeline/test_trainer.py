@@ -823,7 +823,10 @@ def dummy_trainer():
 
     optimizer = SGD(params=model.parameters(), lr=0.01)
     lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
-    accelerator = Accelerator(device_placement=True)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
     batch_processor = DummyBatchProcessor()
 
     trainer = HookBasedTrainer(
@@ -843,10 +846,35 @@ def test_trainer_initialization(dummy_trainer):
     assert dummy_trainer.max_epoch == 1
 
 
+def test_hook_based_trainer_rejects_scheduler_coupled_accelerator():
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(device_placement=True)
+
+    with pytest.raises(
+        ValueError,
+        match="step_scheduler_with_optimizer=False",
+    ):
+        HookBasedTrainer(
+            model=model,
+            dataloader=dataloader,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            accelerator=accelerator,
+            batch_processor=DummyBatchProcessor(),
+            max_epoch=1,
+        )
+
+
 def test_hook_based_trainer_prepares_iterable_dataloader_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
     accelerator = Accelerator(
+        step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(
             use_seedable_sampler=True,
             dispatch_batches=False,
@@ -893,6 +921,7 @@ def test_hook_based_trainer_early_break_cleans_accelerate_dataloader_state(
     monkeypatch: pytest.MonkeyPatch,
 ):
     accelerator = Accelerator(
+        step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(
             use_seedable_sampler=True,
             dispatch_batches=False,

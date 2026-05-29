@@ -15,6 +15,8 @@
 # permissions and limitations under the License.
 from __future__ import annotations
 
+from accelerate.scheduler import AcceleratedScheduler
+
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
     PipelineHookArgs,
@@ -65,11 +67,28 @@ class OptimizerHook(PipelineHooks):
             raise ValueError(
                 "Learning rate scheduler is not set in the hook arguments."
             )
+        _validate_manual_lr_scheduler_step(hook_args.lr_scheduler)
         # Perform the optimization step
         hook_args.optimizer.step()
-        hook_args.lr_scheduler.step()
+        if hook_args.accelerator.sync_gradients:
+            hook_args.lr_scheduler.step()
         hook_args.optimizer.zero_grad()
 
 
 class OptimizerHookConfig(PipelineHooksConfig[OptimizerHook]):
     class_type: type[OptimizerHook] = OptimizerHook
+
+
+def _validate_manual_lr_scheduler_step(
+    lr_scheduler: AcceleratedScheduler,
+) -> None:
+    if (
+        isinstance(lr_scheduler, AcceleratedScheduler)
+        and lr_scheduler.step_with_optimizer
+    ):
+        raise ValueError(
+            "HookBasedTrainer manually steps the learning rate scheduler in "
+            "OptimizerHook, but the prepared scheduler is coupled to "
+            "optimizer stepping by Accelerate. Create Accelerator with "
+            "step_scheduler_with_optimizer=False when using HookBasedTrainer."
+        )
