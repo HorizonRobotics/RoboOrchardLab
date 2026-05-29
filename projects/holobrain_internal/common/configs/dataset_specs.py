@@ -198,8 +198,10 @@ TRAINING_DATASETS = [
     dict(
         dataset_type="agibot",
         dataset_name="agibot",
-        data_paths=lambda: _glob_sorted(f"{DATA_BASE}/agibot/valid_lmdbs/*"),
-        instruction_path=f"{DATA_BASE}/instructions_v2/agibot",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/agibot/agibot_filter_static_1e-3/*shard*"
+        ),
+        instruction_path=f"{DATA_BASE}/agibot/agibot_filter_static_1e-3/instruction",
     ),
     dict(
         dataset_type="agibot_geniesim",
@@ -221,17 +223,17 @@ TRAINING_DATASETS = [
         dataset_type="droid",
         dataset_name="droid",
         data_paths=[
-            f"{DATA_BASE}/droid/RAIL/success",
-            f"{DATA_BASE}/droid/REAL/success",
-            f"{DATA_BASE}/droid/AUTOLab/success",
-            f"{DATA_BASE}/droid/GuptaLab/success",
-            f"{DATA_BASE}/droid/IRIS/success",
-            f"{DATA_BASE}/droid/TRI/success",
-            f"{DATA_BASE}/droid/CLVR/success",
-            f"{DATA_BASE}/droid/ILIAD/success",
-            f"{DATA_BASE}/droid/IPRL/success",
-            f"{DATA_BASE}/droid/PennPAL/success",
-            f"{DATA_BASE}/droid/RPL/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/RAIL/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/REAL/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/AUTOLab/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/GuptaLab/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/IRIS/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/TRI/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/CLVR/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/ILIAD/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/IPRL/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/PennPAL/success",
+            f"{DATA_BASE}/droid_filter_static_0.01/RPL/success",
         ],
     ),
     # ================ egodex ===================
