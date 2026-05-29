@@ -137,6 +137,23 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             idx = np.random.randint(len(instruction))
             instruction = instruction[idx]
         result["text"] = instruction
+
+        subtask = result.get("subtask")
+        if isinstance(subtask, (list, tuple)):
+            idx = np.random.randint(len(subtask))
+            subtask = subtask[idx]
+        if subtask is not None:
+            result["subtask"] = subtask
+
+        if (
+            result.get("subtask_end_index") is not None
+            and data.get("num_steps_per_shard") is not None
+        ):
+            result["subtask_end_index"] = self._get_step_index_in_shard(
+                data["step_index"],
+                data["num_steps_per_shard"],
+                result["subtask_end_index"],
+            )
         return result
 
     def get_depths(self, lmdb_index, data):
@@ -219,6 +236,21 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
                 results.extend(x)
             return results
 
+    def _get_step_index_in_shard(
+        self, step_index, num_steps_per_shard, retrival_index=None
+    ):
+        shard_index = step_index // num_steps_per_shard
+        step_index_in_shard = step_index % num_steps_per_shard
+        if (
+            self.hist_steps is not None
+            and step_index_in_shard < self.hist_steps - 1
+            and shard_index != 0
+        ):
+            step_index_in_shard += num_steps_per_shard
+        if retrival_index is not None:
+            step_index_in_shard += retrival_index - step_index
+        return step_index_in_shard
+
     def _get_meta_with_shard(
         self, lmdb_index, uuid, key, step_index, num_steps_per_shard
     ):
@@ -247,10 +279,8 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             ]
         else:
             next_shard = None
-        if pre_shard is not None:
-            step_index_in_shard += len(pre_shard)
         data = self._concat_shards(pre_shard, current_shard, next_shard)
-        return data, step_index_in_shard
+        return data
 
     def get_joint_state(self, lmdb_index, data):
         num_steps_per_shard = data["num_steps_per_shard"]
@@ -264,7 +294,11 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             ]
             step_index_in_shard = data["step_index"]
         else:
-            joint_state, step_index_in_shard = self._get_meta_with_shard(
+            step_index_in_shard = self._get_step_index_in_shard(
+                data["step_index"],
+                num_steps_per_shard,
+            )
+            joint_state = self._get_meta_with_shard(
                 lmdb_index,
                 uuid,
                 "observation/robot_state/joint_positions",
@@ -277,7 +311,7 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
                 "observation/robot_state/master_joint_positions",
                 data["step_index"],
                 num_steps_per_shard,
-            )[0]
+            )
         results = {
             "joint_state": np.array(joint_state),
             "step_index_in_shard": step_index_in_shard,

@@ -250,6 +250,28 @@ class ArrowDataParse:
         return data
 
 
+class TruncatedTrajectoryBySubtask:
+    def __init__(self, keys=("joint_state", "ee_state")):
+        self.keys = keys
+
+    def __call__(self, data):
+        subtask_end_index = data.get("subtask_end_index")
+        if subtask_end_index is None:
+            return data
+        for key in self.keys:
+            self._truncate(data, key, subtask_end_index)
+        data["text"] = data.pop("subtask")
+        data["subtask"] = ""
+        return data
+
+    def _truncate(self, data, key, subtask_end_index):
+        if data.get(key) is None:
+            return
+        if len(data[key]) - 1 <= subtask_end_index:
+            return
+        data[key][subtask_end_index:] = data[key][subtask_end_index]
+
+
 class MoveEgoToCam:
     def __init__(self, cam_idx=-1):
         self.cam_idx = cam_idx

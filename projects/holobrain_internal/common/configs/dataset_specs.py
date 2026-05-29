@@ -96,12 +96,18 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/challenge/叠短裤*/*",
             f"{DATA_BASE}/challenge/盖笔帽*/*",
         ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
     ),
     dict(
         dataset_type="agilex",
         dataset_name="challenge_finetune",
         setting_type="challenge_finetune",
         data_paths=[f"{DATA_BASE}/challenge/finetune"],
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
     ),
     dict(
         dataset_type="agilex",
@@ -111,6 +117,22 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/challenge/agilex_data_0527_plates_stack",
             f"{DATA_BASE}/challenge/agilex_data_0525",
         ],
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_grasp_anything",
+        setting_type="horizon_beijing",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/horizon_beijing/*-place_objects_to_basket-*",
+        ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+            f"{DATA_BASE}/instructions_v2/horizon_piper_grasp_anything_2025",
+        ],
+        truncated_subtask=True,
     ),
     dict(
         dataset_type="agilex",
@@ -125,9 +147,12 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_beijing/xuewu.lin-two_fold_towel-20250710",
             f"{DATA_BASE}/horizon_beijing/xuewu.lin-two_fold_towel-20250712",
             f"{DATA_BASE}/horizon_beijing/zhixu.zhao-*",
-            f"{DATA_BASE}/horizon_beijing/*-place_objects_to_basket-*",
             f"{DATA_BASE}/horizon_beijing/*-fold_paper_box-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_objects_to_basket-*",
         ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
     ),
     dict(
         dataset_type="agilex",
@@ -136,6 +161,9 @@ TRAINING_DATASETS = [
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_beijing/*-piper_x-*-*"
         ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
     ),
     dict(
         dataset_type="agilex",
@@ -153,12 +181,18 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-flatten_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-place_object_to_location-*",
         ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
     ),
     dict(
         dataset_type="agilex",
         dataset_name="agilex",
         setting_type="agilex",
         data_paths=lambda: _glob_sorted(f"{DATA_BASE}/agilex/lmdb/*"),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
     ),
     # ================ agibot ===================
     dict(
@@ -496,6 +530,7 @@ filter_list = [
     "horizon_beijing",
     "horizon_beijing_piper_x",
     "horizon_shanghai",
+    "horizon_grasp_anything",
     "agilex",
     "agibot",
     "agibot_geniesim3_challenge",
@@ -537,6 +572,7 @@ dataset_sample_weights = dict(
     challenge_finetune=0.1,
     challenge_self_collect=0.15,
     horizon_beijing=8,
+    horizon_grasp_anything=2,
     horizon_beijing_piper_x=0.001,
     horizon_shanghai=8,
     agilex=12,

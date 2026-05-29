@@ -58,31 +58,43 @@ class BaseIndexData(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+StepTag = Union[str, List[str]]
+
+
 class StepLevelTags(BaseModel):
     """Base data structure for step level tags, such as subtask and skill.
 
     The subtask data is a list of (end_step, tag) tuples, where:
     - end_step: The last step index of this subtask (exclusive)
-    - tag: Text tag for that step range
+    - tag: Text tag or a list of text tag variants for that step range
 
     Data Structure Examples:
         [(100, "Grasp the red block."), (200, "Place the red block.")]
+        [(100, ["Grasp the red block.", "Pick up the red block."])]
         [(100, "Pick"), (200, "Place")]
     """
 
-    data: List[Tuple[int, str]]
+    data: List[Tuple[int, StepTag]]
     BLANK_VALUES: ClassVar[frozenset[str]] = frozenset(
         ["none", "null", "None", ""]
     )
 
     def get_step_tag(self, step_index):
-        idx = bisect.bisect_left(self.data, (step_index, ""))
+        end_steps = [end_step for end_step, _ in self.data]
+        idx = bisect.bisect_left(end_steps, step_index)
         if idx >= len(self.data):
             return None
+        end_index = self.data[idx][0]
         subtask = self.data[idx][1]
-        if subtask in self.BLANK_VALUES:
+        if isinstance(subtask, str):
+            if subtask in self.BLANK_VALUES:
+                return None
+            return subtask, end_index
+
+        subtask = [item for item in subtask if item not in self.BLANK_VALUES]
+        if len(subtask) == 0:
             return None
-        return subtask
+        return subtask, end_index
 
 
 class InstructionReader:
@@ -147,15 +159,27 @@ class InstructionReader:
 
         if step_index is not None:
             subtask = None
+            subtask_end_index = None
             for lmdb in self.lmdbs:
                 subtask = lmdb[f"{prefix}/subtask"]
                 if subtask is not None:
                     break
             if subtask is not None:
-                subtask = StepLevelTags(data=subtask).get_step_tag(step_index)
+                subtask_info = StepLevelTags(data=subtask).get_step_tag(
+                    step_index
+                )
+                if subtask_info is None:
+                    subtask = None
+                else:
+                    subtask, subtask_end_index = subtask_info
         else:
             subtask = None
-        return {"instruction": instruction, "subtask": subtask}
+            subtask_end_index = None
+        return {
+            "instruction": instruction,
+            "subtask": subtask,
+            "subtask_end_index": subtask_end_index,
+        }
 
 
 class BaseLmdbManipulationDataset(Dataset):

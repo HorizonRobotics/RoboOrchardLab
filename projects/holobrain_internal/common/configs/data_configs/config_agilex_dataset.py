@@ -296,6 +296,7 @@ def build_transforms(
     default_calibration=None,
     depth_restore=False,
     do_calib_to_ext=False,
+    truncated_subtask=False,
 ):
     import numpy as np
 
@@ -316,6 +317,7 @@ def build_transforms(
         Resize,
         SimpleStateSampling,
         ToTensor,
+        TruncatedTrajectoryBySubtask,
         UnsqueezeBatch,
     )
     from robo_orchard_lab.transforms import ValueSampling
@@ -464,6 +466,10 @@ def build_transforms(
         ],
     )
     if mode == "training":
+        if truncated_subtask:
+            truncated_subtask = TruncatedTrajectoryBySubtask()
+        else:
+            truncated_subtask = IdentityTransform()
         item_selection = dict(
             type=ItemSelection,
             keys=[
@@ -517,6 +523,7 @@ def build_transforms(
             noise_range=(0.04, 0.04, 0.04, 0.015, 0.015, 0.015),
         )
         transforms = [
+            truncated_subtask,
             depth_restoration,
             add_data_relative_items,
             value_sampling,
@@ -613,7 +620,9 @@ def build_dataset(
     data_paths,
     setting_type,
     mode,
+    instruction_paths=None,
     lazy_init=True,
+    truncated_subtask=False,
 ):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
@@ -630,13 +639,12 @@ def build_dataset(
         default_calibration=data_config.get("default_calibration"),
         depth_restore=config.get("depth_restore", False),
         do_calib_to_ext=not data_config.get("load_extrinsic", False),
+        truncated_subtask=truncated_subtask,
     )
-    instruction_reader = InstructionReader(
-        paths=[
-            "./data/instructions_v2/agilex",
-            "./data/instructions_v2/challenge",
-        ]
-    )
+    if instruction_paths is not None:
+        instruction_reader = InstructionReader(paths=instruction_paths)
+    else:
+        instruction_reader = None
     if callable(data_paths):
         data_paths = data_paths()
     return HorizonManipulationLmdbDataset(
