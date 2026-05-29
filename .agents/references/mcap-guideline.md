@@ -66,6 +66,11 @@ Use this reference when changing experimental MCAP export code, including
 
 - Pydantic v2 `BaseModel` support is a final writer capability, not a
   `Dict2Mcap` default converter.
+- When a caller already has a Pydantic `BaseModel` for a JSON topic, pass the
+  model object through `StampedMessage.data` instead of pre-dumping it to a
+  `dict`. The typed model preserves schema generation and topic-kind
+  consistency until the writer boundary; an early `model_dump(...)` degrades
+  the message to schemaless JSON and can hide missing fields or shape drift.
 - Create Pydantic JSON channels from the model class serialization schema and
   reject `RootModel` or any model whose top-level serialization JSON schema is
   not an object.
