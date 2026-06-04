@@ -143,6 +143,31 @@ boundaries, and the main execution path understandable.
   place helpers, registries, compatibility types, and errors in the narrowest
   module that owns them.
 
+## Framework And Runtime Hook Overrides
+
+Treat overrides of upstream framework, runtime, or library hooks as
+architecture boundaries, not ordinary method overrides.
+
+This applies to lifecycle hooks, generation hooks, cache or mask hooks,
+compile hooks, collation hooks, serialization hooks, export writer callbacks,
+and similar entrypoints whose call timing and parameter conventions are owned
+by an upstream framework.
+
+- Identify the upstream caller and call timing.
+- Explain why the local code needs an override instead of the upstream
+  default behavior.
+- Prefer an intercept-and-delegate shape over copying upstream implementation
+  logic. Local code should own only the semantic delta.
+- Make parameter ownership explicit: which inputs are consumed locally, which
+  are intentionally dropped, and which are passed through to upstream helpers.
+- Check for same-name, different-meaning fields across the local wrapper and
+  upstream framework. Semantic isolation should be explicit and tested.
+- Keep upstream behavior as the source of truth for unchanged
+  responsibilities such as slicing, cache lifecycle, mask shape conventions,
+  or serialization details.
+- Test the hook contract directly, including delegated kwargs and semantic
+  isolation, rather than only testing that a happy path runs.
+
 ## Evolvability, Validation, And Readability
 
 - Prefer structures where a new caller, backend, or domain variant can be
@@ -173,6 +198,8 @@ boundaries, and the main execution path understandable.
   semantics unique?
 - Are compatibility surfaces and public exports limited to intentionally
   supported caller commitments?
+- Are framework or runtime hook overrides limited to the local semantic delta,
+  with upstream-owned behavior delegated back to the framework?
 - Would adding one more caller, backend, or domain variant mostly require
   local policy changes rather than duplicated orchestration?
 - Are validation hooks and tests aligned with the true boundaries of the
