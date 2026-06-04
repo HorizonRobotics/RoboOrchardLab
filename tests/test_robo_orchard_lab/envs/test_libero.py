@@ -14,7 +14,11 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
+from pydantic import BaseModel
 from robo_orchard_core.datatypes import (
     BatchCameraData,
     BatchFrameTransform,
@@ -32,7 +36,17 @@ from robo_orchard_core.utils.math import (
 )
 from robosuite.controllers.osc import OperationalSpaceController
 
-from robo_orchard_lab.envs.libero import LiberoEvalEnv, LiberoEvalEnvCfg
+from robo_orchard_lab.envs.libero import (
+    LiberoEnv,
+    LiberoEvalEnv,
+    LiberoEvalEnvCfg,
+)
+from robo_orchard_lab.envs.libero.env import (
+    LiberoObservationMetaPayload,
+)
+from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+    assert_mcap_compatible_pydantic_schema,
+)
 
 pytestmark = pytest.mark.sim_env
 
@@ -71,6 +85,55 @@ def dummy_libero_eval_env_formatted():
 
 
 class TestLiberoEvalEnv:
+    @pytest.mark.parametrize(
+        "model_type",
+        [
+            LiberoObservationMetaPayload,
+        ],
+    )
+    def test_mcap_pydantic_schemas_are_compatible(
+        self,
+        model_type: type[BaseModel],
+    ) -> None:
+        assert_mcap_compatible_pydantic_schema(model_type)
+
+    def test_get_mcap_action_sidecars_returns_empty_without_simulator(self):
+        env = object.__new__(LiberoEnv)
+        env._last_obs = {}
+
+        assert (
+            LiberoEnv.get_mcap_action_sidecars(
+                env,
+                np.zeros(7, dtype=np.float32),
+                anchor_log_time_ns=123,
+            )
+            == {}
+        )
+
+    def test_get_mcap_obs_exports_typed_meta_payload(self):
+        env = object.__new__(LiberoEnv)
+        env.cfg = SimpleNamespace(
+            suite_name="libero_10",
+            task_id=0,
+            use_action_type="orchard_osc",
+        )
+        env._task = SimpleNamespace(language="pick up the cup")
+        env._last_obs = {}
+        env._last_obs_step_index = 0
+
+        messages = LiberoEnv.get_mcap_obs(
+            env,
+            topic_prefix="rollout/observation",
+            anchor_log_time_ns=123,
+        )
+
+        meta = messages["rollout/observation/meta"][0].data
+        assert isinstance(meta, LiberoObservationMetaPayload)
+        assert meta.suite_name == "libero_10"
+        assert meta.task_id == 0
+        assert meta.task_language == "pick up the cup"
+        assert meta.use_action_type == "orchard_osc"
+
     def test_libero_eval_env_step(
         self, dummy_libero_eval_env: LiberoEvalEnv
     ) -> None:

@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 import torch
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 import robo_orchard_lab.envs.robotwin.env as robotwin_env
 from robo_orchard_lab.dataset.datatypes import (
@@ -43,6 +43,9 @@ from robo_orchard_lab.envs.robotwin.env import (
     ROBOTWIN_VIDEO_PIXEL_FORMAT,
     RoboTwinEnv,
     RoboTwinEnvCfg,
+    RoboTwinEpisodeInstructionsPayload,
+    RoboTwinObservationInstructionPayload,
+    RoboTwinObservationMetaPayload,
 )
 from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinEEF,
@@ -50,6 +53,9 @@ from robo_orchard_lab.envs.robotwin.kinematics import (
 )
 from robo_orchard_lab.envs.state import ENV_STATE_SCOPE_KEY, EnvStateScope
 from robo_orchard_lab.utils.video import VideoWriter
+from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+    assert_mcap_compatible_pydantic_schema,
+)
 
 pytestmark = pytest.mark.sim_env
 
@@ -393,6 +399,20 @@ def dummy_env_without_expert_check():
 
 
 class TestRoboTwinEnv:
+    @pytest.mark.parametrize(
+        "model_type",
+        [
+            RoboTwinEpisodeInstructionsPayload,
+            RoboTwinObservationInstructionPayload,
+            RoboTwinObservationMetaPayload,
+        ],
+    )
+    def test_mcap_pydantic_schemas_are_compatible(
+        self,
+        model_type: type[BaseModel],
+    ) -> None:
+        assert_mcap_compatible_pydantic_schema(model_type)
+
     def test_logger_manager_does_not_duplicate_when_it_owns_handlers(self):
         manager_logger = robotwin_env._logger_manager.get_logger()
 
@@ -591,6 +611,46 @@ class TestRoboTwinEnv:
         assert first_robot.md5
         assert second["left"] is first_robot
 
+    def test_get_mcap_obs_exports_typed_json_payloads(self, monkeypatch):
+        robot = SimpleNamespace(
+            is_dual_arm=True,
+            left_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+            right_entity_origion_pose=_make_fake_sapien_pose((0.0, 0.0, 0.0)),
+        )
+        env = _make_reset_stub_env(monkeypatch, robot=robot)
+        env.cfg.action_type = "qpos"
+        env._instructions = {
+            "episode_index": 0,
+            "seen": ["demo instruction"],
+            "unseen": ["pick"],
+        }
+        env._eval_chosen_instruction = "pick"
+        env._last_obs = {}
+        env._last_obs_step_index = 0
+
+        messages = env.get_mcap_obs(
+            topic_prefix="rollout/observation",
+            anchor_log_time_ns=123,
+        )
+
+        instruction = messages["rollout/observation/instruction"][0].data
+        assert isinstance(instruction, RoboTwinObservationInstructionPayload)
+        assert instruction.instructions is not None
+        assert not isinstance(instruction.instructions, str)
+        assert instruction.instructions.episode_index == 0
+        assert instruction.instructions.seen == ["demo instruction"]
+        assert instruction.instructions.unseen == ["pick"]
+        assert instruction.eval_chosen_instruction == "pick"
+        assert_mcap_compatible_pydantic_schema(
+            RoboTwinObservationInstructionPayload
+        )
+
+        meta = messages["rollout/observation/meta"][0].data
+        assert isinstance(meta, RoboTwinObservationMetaPayload)
+        assert meta.task_name == "robotwin_dummy_task"
+        assert meta.action_type == "qpos"
+        assert meta.seed == 1
+
     def test_format_obs_adds_joint_and_endpose_tfs(self, monkeypatch):
         robot = SimpleNamespace(
             is_dual_arm=True,
@@ -787,6 +847,125 @@ class TestRoboTwinEnv:
             env.step([0.0] * 16)
 
         take_action.assert_not_called()
+
+    def test_get_mcap_action_sidecars_exports_ee_targets_without_simulator(
+        self,
+    ):
+        env = object.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(action_type="ee")
+        env._last_obs = {"step": 3}
+        env._last_obs_step_index = 3
+        action = np.array(
+            [
+                1.0,
+                2.0,
+                3.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                4.0,
+                5.0,
+                6.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            dtype=np.float32,
+        )
+
+        messages = RoboTwinEnv.get_mcap_action_sidecars(
+            env,
+            action,
+            anchor_log_time_ns=123,
+        )
+
+        msg = messages["rollout/next_action/eef_tf"][0]
+        assert msg.log_time == 123
+        tf_list = msg.data.as_state().tf_list
+        assert [tf.parent_frame_id for tf in tf_list] == ["world", "world"]
+        assert [tf.child_frame_id for tf in tf_list] == [
+            "left_eef_target_from_env_action_next_action",
+            "right_eef_target_from_env_action_next_action",
+        ]
+        assert [tf.timestamps for tf in tf_list] == [[123], [123]]
+        torch.testing.assert_close(
+            tf_list[0].xyz,
+            torch.tensor([[1.0, 2.0, 3.0]]),
+        )
+        torch.testing.assert_close(
+            tf_list[1].xyz,
+            torch.tensor([[4.0, 5.0, 6.0]]),
+        )
+
+    def test_get_mcap_action_sidecars_uses_explicit_frame_suffix(self):
+        """Frame ids use caller-provided suffix, not topic-prefix parsing."""
+        env = object.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(action_type="ee")
+        env._last_obs = {"step": 3}
+        env._last_obs_step_index = 3
+        action = np.array(
+            [
+                1.0,
+                2.0,
+                3.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                4.0,
+                5.0,
+                6.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            dtype=np.float32,
+        )
+
+        next_msg = RoboTwinEnv.get_mcap_action_sidecars(
+            env,
+            action,
+            topic_prefix="rollout/next_action",
+            anchor_log_time_ns=123,
+        )["rollout/next_action/eef_tf"][0]
+        last_msg = RoboTwinEnv.get_mcap_action_sidecars(
+            env,
+            action,
+            topic_prefix="rollout/custom_action",
+            anchor_log_time_ns=123,
+            frame_id_suffix="last_action",
+        )["rollout/custom_action/eef_tf"][0]
+
+        next_child_ids = [
+            tf.child_frame_id for tf in next_msg.data.as_state().tf_list
+        ]
+        last_child_ids = [
+            tf.child_frame_id for tf in last_msg.data.as_state().tf_list
+        ]
+        assert next_child_ids == [
+            "left_eef_target_from_env_action_next_action",
+            "right_eef_target_from_env_action_next_action",
+        ]
+        assert last_child_ids == [
+            "left_eef_target_from_env_action_last_action",
+            "right_eef_target_from_env_action_last_action",
+        ]
+        assert set(next_child_ids).isdisjoint(last_child_ids)
+
+    def test_get_mcap_action_sidecars_returns_empty_for_qpos(self):
+        env = object.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(action_type="qpos")
+        env._last_obs = {"step": 0}
+        env._last_obs_step_index = 0
+
+        assert RoboTwinEnv.get_mcap_action_sidecars(env, np.zeros(14)) == {}
 
     def test_step_rejects_after_finalize_until_reset(self) -> None:
         env, take_action = _make_step_stub_env(action_type="qpos")

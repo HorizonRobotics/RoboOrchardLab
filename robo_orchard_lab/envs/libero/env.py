@@ -23,8 +23,12 @@ import numpy as np
 import torch
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
+from pydantic import BaseModel, ConfigDict
 from robo_orchard_core.datatypes import (
+    BatchCameraData,
     BatchFrameTransform,
+    BatchFrameTransformGraph,
+    BatchJointsState,
     BatchTransform3D,
 )
 from robo_orchard_core.envs.task import TaskInfo
@@ -41,7 +45,15 @@ from robosuite.environments.base import MujocoEnv
 from robosuite.utils.binding_utils import MjSim
 from typing_extensions import Literal
 
-from robo_orchard_lab.envs.base import EnvBase, EnvBaseCfg, EnvStepReturn
+from robo_orchard_lab.dataset.experimental.mcap.messages import (
+    StampedMessage,
+)
+from robo_orchard_lab.envs.base import (
+    EnvBase,
+    EnvBaseCfg,
+    EnvStepReturn,
+    EnvToMcapProtocol,
+)
 from robo_orchard_lab.envs.libero.obs import (
     get_camera_data,
     get_joints,
@@ -83,6 +95,23 @@ __all__ = [
     "LiberoEvalEnvCfg",
     "LiberoSuiteName",
 ]
+
+
+class LiberoObservationMetaPayload(BaseModel):
+    """Episode metadata exported with one Libero observation frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    """Payload schema version for MCAP compatibility checks."""
+    suite_name: LiberoSuiteName
+    """Libero benchmark suite name for the active task."""
+    task_id: int
+    """Task id within ``suite_name``."""
+    task_language: str | None = None
+    """Natural-language task instruction from Libero, if available."""
+    use_action_type: str | None = None
+    """Configured action adapter mode used by the env."""
 
 
 @dataclass
@@ -148,7 +177,16 @@ def get_libero_task(suite_name: str, task_id: int) -> LiberoTask:
     )
 
 
-class LiberoEnv(EnvBase):
+class LiberoEnv(EnvBase, EnvToMcapProtocol):
+    """Libero simulator wrapped with the orchard env interface.
+
+    The wrapper normalizes Libero observations into orchard datatypes when
+    configured, converts optional orchard target-EEF actions into Libero OSC
+    controls, and exposes optional MCAP export methods for the latest
+    reset/step observation. ``get_mcap_obs()`` reads the cached policy-facing
+    observation and does not force another simulator snapshot.
+    """
+
     cfg: LiberoEnvCfg
 
     def __init__(self, cfg: LiberoEnvCfg) -> None:
@@ -162,6 +200,7 @@ class LiberoEnv(EnvBase):
         self._task_bddl_file = libero_task.task_bddl_file
         self._last_action: np.ndarray | None = None
         self._last_obs: dict | None = None
+        self._last_obs_step_index: int | None = None
 
         env = OffScreenRenderEnv(
             bddl_file_name=libero_task.task_bddl_file,
@@ -235,8 +274,14 @@ class LiberoEnv(EnvBase):
         self._last_action = action
 
         _, reward, done, info = self._env.step(action)
+        obs = self._get_obs(force_update=True)
+        self._last_obs_step_index = (
+            0
+            if self._last_obs_step_index is None
+            else self._last_obs_step_index + 1
+        )
         return LiberoEnvStepReturn(
-            observations=self._get_obs(force_update=True),
+            observations=obs,
             rewards=reward,
             terminated=bool(done),
             truncated=None,
@@ -367,7 +412,205 @@ class LiberoEnv(EnvBase):
             self._env.check_success()
             self._env._post_process()
         self._last_action = None
-        return self._get_obs(force_update=True), {}
+        obs = self._get_obs(force_update=True)
+        self._last_obs_step_index = 0
+        return obs, {}
+
+    def step_index_to_log_time_ns(self, step_index: int) -> int:
+        """Map a Libero rollout step index to MCAP log time.
+
+        Libero rollout MCAP uses ``control_timestep`` as the logical env
+        clock, so step 0 maps to 0 ns and later steps advance by that control
+        interval.
+
+        Args:
+            step_index (int): Non-negative logical env step index.
+
+        Returns:
+            int: MCAP log time in nanoseconds.
+
+        Raises:
+            ValueError: If ``step_index`` is negative.
+        """
+        if step_index < 0:
+            raise ValueError("step_index must be non-negative.")
+        return int(round(step_index * self.control_timestep * 1_000_000_000))
+
+    def get_mcap_obs(
+        self,
+        *,
+        topic_prefix: str = "observation",
+        anchor_log_time_ns: int | None = None,
+    ) -> dict[str, list[StampedMessage[Any]]]:
+        """Export the latest reset/step observation as MCAP messages.
+
+        This method converts ``self._last_obs``, which is maintained by the
+        last successful ``reset(...)`` or ``step(...)`` call. It does not call
+        ``_get_obs(force_update=True)`` and therefore does not force a new
+        simulator observation snapshot.
+        Camera, joint, TF, and episode metadata messages are emitted under
+        ``topic_prefix`` when those fields are present in the cached
+        observation. TF messages preserve the policy-facing frame IDs and
+        update only their timestamps to the selected MCAP log-time anchor.
+
+        Args:
+            topic_prefix (str, optional): Topic prefix for emitted observation
+                topics. Default is ``"observation"``.
+            anchor_log_time_ns (int | None, optional): Explicit MCAP log-time
+                anchor in nanoseconds. When omitted, the env derives the
+                anchor from the latest cached observation step. Default is
+                None.
+
+        Returns:
+            dict[str, list[StampedMessage[Any]]]: Final-topic MCAP messages
+            for the cached Libero observation.
+
+        Raises:
+            RuntimeError: If no latest observation or logical step is
+                available.
+            ValueError: If ``topic_prefix`` is empty after normalization.
+        """
+        if self._last_obs is None:
+            raise RuntimeError(
+                "LiberoEnv has no latest observation. Call reset() or step() "
+                "before get_mcap_obs()."
+            )
+        obs = self._last_obs
+        if anchor_log_time_ns is not None:
+            log_time = int(anchor_log_time_ns)
+        elif self._last_obs_step_index is not None:
+            log_time = self.step_index_to_log_time_ns(
+                self._last_obs_step_index
+            )
+        else:
+            raise RuntimeError(
+                "LiberoEnv has no logical step for latest observation. "
+                "Pass anchor_log_time_ns explicitly."
+            )
+        prefix = topic_prefix.rstrip("/")
+        if not prefix:
+            raise ValueError("topic_prefix must not be empty.")
+        messages: dict[str, list[StampedMessage[Any]]] = {}
+
+        for key, value in obs.items():
+            if isinstance(value, BatchCameraData):
+                timestamps = [log_time] * value.batch_size
+                messages[f"{prefix}/cameras/{key}"] = [
+                    StampedMessage(
+                        data=value.model_copy(
+                            update={"timestamps": timestamps}
+                        ),
+                        log_time=log_time,
+                        pub_time=log_time,
+                    )
+                ]
+
+        joints = obs.get("joints")
+        if isinstance(joints, BatchJointsState):
+            timestamps = [log_time] * joints.batch_size
+            messages[f"{prefix}/joints"] = [
+                StampedMessage(
+                    data=joints.model_copy(update={"timestamps": timestamps}),
+                    log_time=log_time,
+                    pub_time=log_time,
+                )
+            ]
+
+        tf_world = obs.get("tf_world")
+        if isinstance(tf_world, BatchFrameTransformGraph):
+            tf_state = tf_world.as_state()
+            if tf_state.tf_list:
+                messages[f"{prefix}/tf"] = [
+                    StampedMessage(
+                        data=BatchFrameTransformGraph(
+                            tf_list=[
+                                tf.model_copy(
+                                    update={
+                                        "timestamps": [log_time]
+                                        * tf.batch_size
+                                    }
+                                )
+                                for tf in tf_state.tf_list
+                            ],
+                            bidirectional=tf_state.bidirectional,
+                            static_tf=tf_state.static_tf,
+                        ),
+                        log_time=log_time,
+                        pub_time=log_time,
+                    )
+                ]
+        elif isinstance(tf_world, dict):
+            stamped_tfs = [
+                tf.model_copy(
+                    update={"timestamps": [log_time] * tf.batch_size}
+                )
+                for tf in tf_world.values()
+                if isinstance(tf, BatchFrameTransform)
+            ]
+            if stamped_tfs:
+                messages[f"{prefix}/tf"] = [
+                    StampedMessage(
+                        data=BatchFrameTransformGraph(stamped_tfs),
+                        log_time=log_time,
+                        pub_time=log_time,
+                    )
+                ]
+
+        messages[f"{prefix}/meta"] = [
+            StampedMessage(
+                data=LiberoObservationMetaPayload(
+                    suite_name=self.cfg.suite_name,
+                    task_id=self.cfg.task_id,
+                    task_language=getattr(self._task, "language", None),
+                    use_action_type=self.cfg.use_action_type,
+                ),
+                log_time=log_time,
+                pub_time=log_time,
+            )
+        ]
+        return messages
+
+    def get_mcap_action_sidecars(
+        self,
+        action: Any,
+        *,
+        topic_prefix: str = "rollout/next_action",
+        anchor_log_time_ns: int | None = None,
+        frame_id_suffix: str | None = "next_action",
+    ) -> dict[str, list[StampedMessage[Any]]]:
+        """Export sidecars for the action about to be passed to step().
+
+        The current Libero MCAP contract records the raw next action in the
+        rollout recorder. Libero action-to-EEF target sidecars are not
+        exported here yet, so supported callers receive an empty map.
+
+        Args:
+            action (Any): Action value about to be passed to ``step(action)``.
+            topic_prefix (str, optional): Topic prefix reserved for emitted
+                action sidecar topics. Default is ``"rollout/next_action"``.
+            anchor_log_time_ns (int | None, optional): Reserved explicit MCAP
+                log-time anchor in nanoseconds. Default is None.
+            frame_id_suffix (str | None, optional): Reserved suffix for
+                frame-bearing action sidecars. Default is ``"next_action"``.
+
+        Returns:
+            dict[str, list[StampedMessage[Any]]]: Always an empty map until
+            Libero action-to-target sidecars are added.
+
+        Raises:
+            RuntimeError: If no latest observation is available.
+            ValueError: If ``topic_prefix`` is empty after normalization.
+        """
+        del action, anchor_log_time_ns, frame_id_suffix
+        if self._last_obs is None:
+            raise RuntimeError(
+                "LiberoEnv has no latest observation. Call reset() or step() "
+                "before get_mcap_action_sidecars()."
+            )
+        prefix = topic_prefix.rstrip("/")
+        if not prefix:
+            raise ValueError("topic_prefix must not be empty.")
+        return {}
 
     @property
     def num_envs(self) -> int:

@@ -34,14 +34,24 @@ from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
 from robo_orchard_lab.dataset.datatypes import (
+    BatchCameraData,
     BatchFrameTransform,
     BatchFrameTransformGraph,
+    BatchJointsState,
+)
+from robo_orchard_lab.dataset.experimental.mcap.messages import (
+    StampedMessage,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Robot,
     RobotDescriptionFormat,
 )
-from robo_orchard_lab.envs.base import EnvBase, EnvBaseCfg, EnvStepReturn
+from robo_orchard_lab.envs.base import (
+    EnvBase,
+    EnvBaseCfg,
+    EnvStepReturn,
+    EnvToMcapProtocol,
+)
 from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinEEF,
     RoboTwinJointsToEEF,
@@ -78,7 +88,11 @@ logger = _logger_manager.get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
 RoboTwinObsType: TypeAlias = dict[str, Any] | None
-__all__ = ["RoboTwinEnvStepReturn", "RoboTwinEnv", "RoboTwinEnvCfg"]
+__all__ = [
+    "RoboTwinEnvStepReturn",
+    "RoboTwinEnv",
+    "RoboTwinEnvCfg",
+]
 
 LEFT_EEF_FROM_JOINT_FRAME_ID = "left_eef_from_joint"
 RIGHT_EEF_FROM_JOINT_FRAME_ID = "right_eef_from_joint"
@@ -98,6 +112,55 @@ class RoboTwinEnvStepReturn(EnvStepReturn[RoboTwinObsType, bool]):
     """Whether the episode was truncated due to reaching the step limit."""
 
 
+class RoboTwinEpisodeInstructionsPayload(BaseModel):
+    """Instruction candidates generated for one RoboTwin episode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_index: int | None = None
+    """Episode index used by RoboTwin instruction generation, if available."""
+    seen: list[str] = Field(default_factory=list)
+    """Instruction candidates sampled from RoboTwin's seen split."""
+    unseen: list[str] = Field(default_factory=list)
+    """Instruction candidates sampled from RoboTwin's unseen split."""
+
+
+class RoboTwinObservationInstructionPayload(BaseModel):
+    """Instruction metadata exported with one RoboTwin observation frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    """Payload schema version for MCAP compatibility checks."""
+    instructions: RoboTwinEpisodeInstructionsPayload | None = None
+    """Instruction candidates attached to the current RoboTwin episode."""
+    eval_chosen_instruction: str | None = None
+    """Single instruction selected by eval-mode rollout logic, if any."""
+
+
+class RoboTwinObservationMetaPayload(BaseModel):
+    """Episode metadata exported with one RoboTwin observation frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    """Payload schema version for MCAP compatibility checks."""
+    task_name: str
+    """RoboTwin task name for the active episode."""
+    action_type: Literal["qpos", "ee"]
+    """RoboTwin action mode used by the active episode."""
+    episode_id: int
+    """Configured episode id for the rollout."""
+    seed: int
+    """Actual runtime seed after eval-mode resolution and retries."""
+    start_seed: int
+    """Caller-facing start seed stored on the env config."""
+    resolved_start_seed: int
+    """Eval-mode-normalized start seed before retry offset is applied."""
+    offset_seed: int
+    """Env-local retry offset added to ``resolved_start_seed``."""
+
+
 # State.config owns task_name, start seed, and episode_id; this payload keeps
 # only post-reset runtime values that cannot be derived from config.
 class _RoboTwinPostResetStatePayload(BaseModel):
@@ -107,13 +170,17 @@ class _RoboTwinPostResetStatePayload(BaseModel):
     scope: Literal[EnvStateScope.POST_RESET]
     offset_seed: int = Field(ge=0)
     task_config: dict[str, Any]
-    instructions: Any = None
+    instructions: RoboTwinEpisodeInstructionsPayload | None = None
     eval_chosen_instruction: str | None = None
     post_reset_state_available: bool = True
     episode_finalized: bool = False
 
 
-class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
+class RoboTwinEnv(
+    EnvBase[RoboTwinObsType, bool],
+    StatefulEnvMixin,
+    EnvToMcapProtocol,
+):
     """RoboTwin environment wrapped with the orchard env interface.
 
     This class adapts RoboTwin tasks to the ``robo_orchard_core`` env API.
@@ -136,6 +203,10 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
       RoboTwin stores this dual-arm descriptor under the ``"left"`` key by
       convention; that is a RoboTwin compatibility contract, not an env bug.
     - ``get_obs_robots()``: return observation-facing robot metadata.
+    - ``get_mcap_obs()``: export the latest reset/step observation as typed
+      MCAP topic messages without re-sampling RoboTwin.
+    - ``get_mcap_action_sidecars(action)``: export optional MCAP sidecars for
+      the action that is about to be passed to ``step(action)``.
     - ``current_seed`` / ``instructions`` / ``num_envs``: runtime properties
       exposed by the wrapper.
 
@@ -165,10 +236,12 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         self._task = cast("Base_Task", None)
         self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
         self._offset_seed = 0
-        self._instructions: Any = None
+        self._instructions: dict[str, object] | None = None
         self._eval_chosen_instruction: str | None = None
         self._episode_finalized = True
         self._post_reset_state_available = False
+        self._last_obs: dict[str, Any] | None = None
+        self._last_obs_step_index: int | None = None
         self._joints_to_eef_transform: RoboTwinJointsToEEF | None = None
         self._cached_obs_robots: dict[str, Robot] | None = None
         self._video_writer = VideoWriter(
@@ -273,7 +346,7 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         return self._offset_seed
 
     @property
-    def instructions(self) -> dict | None | str:
+    def instructions(self) -> dict[str, object] | None | str:
         """The instructions for the environment.
 
         This property is only valid if the environment is initialized
@@ -338,6 +411,8 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         payload = self._restore_post_reset_state(state, activate=False)
         obs = self._format_obs(self._task.get_obs())
         info = self._get_info()
+        self._last_obs = obs
+        self._last_obs_step_index = 0
         self._post_reset_state_available = payload.post_reset_state_available
         self._episode_finalized = payload.episode_finalized
         return obs, info
@@ -394,7 +469,11 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         self.cfg = cfg
         self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
         self._offset_seed = payload.offset_seed
-        self._instructions = payload.instructions
+        self._instructions = (
+            None
+            if payload.instructions is None
+            else payload.instructions.model_dump(mode="json")
+        )
         self._eval_chosen_instruction = payload.eval_chosen_instruction
         self._task = task
         self._joints_to_eef_transform = None
@@ -555,9 +634,15 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
 
         raw_obs = self._task.get_obs()
         self._write_video_frame(raw_obs)
+        obs = self._format_obs(raw_obs)
+        self._last_obs = obs
+        last_obs_step_index = getattr(self, "_last_obs_step_index", None)
+        self._last_obs_step_index = (
+            0 if last_obs_step_index is None else last_obs_step_index + 1
+        )
 
         return RoboTwinEnvStepReturn(
-            observations=self._format_obs(raw_obs),
+            observations=obs,
             rewards=self._task.eval_success,
             terminated=terminated,
             truncated=truncated,
@@ -739,10 +824,294 @@ class RoboTwinEnv(EnvBase[RoboTwinObsType, bool], StatefulEnvMixin):
         except Exception:
             self._stop_video_recording()
             raise
+        self._last_obs = obs
+        self._last_obs_step_index = 0 if obs is not None else None
         self._post_reset_state_available = True
         self._episode_finalized = False
 
         return obs, info
+
+    def step_index_to_log_time_ns(self, step_index: int) -> int:
+        """Map a RoboTwin rollout step index to MCAP log time.
+
+        RoboTwin rollout MCAP uses the video frame rate as the logical env
+        clock, so step 0 maps to 0 ns and later steps advance by
+        ``1 / ROBOTWIN_VIDEO_FPS`` seconds.
+
+        Args:
+            step_index (int): Non-negative logical env step index.
+
+        Returns:
+            int: MCAP log time in nanoseconds.
+
+        Raises:
+            ValueError: If ``step_index`` is negative.
+        """
+        if step_index < 0:
+            raise ValueError("step_index must be non-negative.")
+        return int(round(step_index * 1_000_000_000 / ROBOTWIN_VIDEO_FPS))
+
+    def get_mcap_obs(
+        self,
+        *,
+        topic_prefix: str = "observation",
+        anchor_log_time_ns: int | None = None,
+    ) -> dict[str, list[StampedMessage[Any]]]:
+        """Export the latest reset/step observation as MCAP messages.
+
+        This method converts the observation cached by the last successful
+        ``reset(...)``, ``reset_from_state(...)``, or ``step(...)`` call. It
+        does not call RoboTwin ``get_obs()`` and therefore cannot create a
+        simulator snapshot that differs from the policy-facing observation.
+        Camera, joint, TF, instruction, episode metadata, and robot metadata
+        messages are emitted under ``topic_prefix`` when those fields are
+        present in the cached observation. TF messages preserve the
+        policy-facing frame IDs and update only their timestamps to the
+        selected MCAP log-time anchor.
+
+        Args:
+            topic_prefix (str, optional): Topic prefix for emitted observation
+                topics. Default is ``"observation"``.
+            anchor_log_time_ns (int | None, optional): Explicit MCAP log-time
+                anchor in nanoseconds. When omitted, the env derives the
+                anchor from the latest cached observation step. Default is
+                None.
+
+        Returns:
+            dict[str, list[StampedMessage[Any]]]: Final-topic MCAP messages
+            for the cached RoboTwin observation.
+
+        Raises:
+            RuntimeError: If no latest observation or logical step is
+                available.
+            ValueError: If ``topic_prefix`` is empty after normalization.
+        """
+        if self._last_obs is None:
+            raise RuntimeError(
+                "RoboTwinEnv has no latest observation. Call reset(), "
+                "reset_from_state(), or step() before get_mcap_obs()."
+            )
+        obs = self._last_obs
+        if anchor_log_time_ns is not None:
+            log_time = int(anchor_log_time_ns)
+        elif self._last_obs_step_index is not None:
+            log_time = self.step_index_to_log_time_ns(
+                self._last_obs_step_index
+            )
+        else:
+            raise RuntimeError(
+                "RoboTwinEnv has no logical step for latest observation. "
+                "Pass anchor_log_time_ns explicitly."
+            )
+        prefix = topic_prefix.rstrip("/")
+        if not prefix:
+            raise ValueError("topic_prefix must not be empty.")
+        messages: dict[str, list[StampedMessage[Any]]] = {}
+
+        cameras = obs.get("cameras") or {}
+        for camera_name, camera_streams in cameras.items():
+            for stream_name, camera_data in camera_streams.items():
+                if not isinstance(camera_data, BatchCameraData):
+                    continue
+                topic = f"{prefix}/cameras/{camera_name}/{stream_name}"
+                timestamps = [log_time] * camera_data.batch_size
+                messages[topic] = [
+                    StampedMessage(
+                        data=camera_data.model_copy(
+                            update={"timestamps": timestamps}
+                        ),
+                        log_time=log_time,
+                        pub_time=log_time,
+                    )
+                ]
+
+        joints = obs.get("joints")
+        if isinstance(joints, BatchJointsState):
+            timestamps = [log_time] * joints.batch_size
+            messages[f"{prefix}/joints"] = [
+                StampedMessage(
+                    data=joints.model_copy(update={"timestamps": timestamps}),
+                    log_time=log_time,
+                    pub_time=log_time,
+                )
+            ]
+
+        tf_graph = obs.get("tf")
+        if isinstance(tf_graph, BatchFrameTransformGraph):
+            tf_state = tf_graph.as_state()
+            if tf_state.tf_list:
+                messages[f"{prefix}/tf"] = [
+                    StampedMessage(
+                        data=BatchFrameTransformGraph(
+                            tf_list=[
+                                tf.model_copy(
+                                    update={
+                                        "timestamps": [log_time]
+                                        * tf.batch_size
+                                    }
+                                )
+                                for tf in tf_state.tf_list
+                            ],
+                            bidirectional=tf_state.bidirectional,
+                            static_tf=tf_state.static_tf,
+                        ),
+                        log_time=log_time,
+                        pub_time=log_time,
+                    )
+                ]
+
+        instruction = RoboTwinObservationInstructionPayload(
+            instructions=self._instructions,
+            eval_chosen_instruction=(
+                None
+                if self._eval_chosen_instruction is None
+                else str(self._eval_chosen_instruction)
+            ),
+        )
+        if (
+            instruction.instructions is not None
+            or instruction.eval_chosen_instruction is not None
+        ):
+            messages[f"{prefix}/instruction"] = [
+                StampedMessage(
+                    data=instruction,
+                    log_time=log_time,
+                    pub_time=log_time,
+                )
+            ]
+
+        messages[f"{prefix}/meta"] = [
+            StampedMessage(
+                data=RoboTwinObservationMetaPayload(
+                    task_name=self.cfg.task_name,
+                    action_type=self.cfg.action_type,
+                    episode_id=self.cfg.episode_id,
+                    seed=self.current_seed,
+                    start_seed=self.start_seed,
+                    resolved_start_seed=self.resolved_start_seed,
+                    offset_seed=self.offset_seed,
+                ),
+                log_time=log_time,
+                pub_time=log_time,
+            )
+        ]
+
+        robots = obs.get("robots")
+        if isinstance(robots, dict):
+            for robot_name, robot in robots.items():
+                if isinstance(robot_name, str) and isinstance(robot, Robot):
+                    messages[f"{prefix}/meta/robots/{robot_name}"] = [
+                        StampedMessage(
+                            data=robot,
+                            log_time=log_time,
+                            pub_time=log_time,
+                        )
+                    ]
+
+        return messages
+
+    def get_mcap_action_sidecars(
+        self,
+        action: Any,
+        *,
+        topic_prefix: str = "rollout/next_action",
+        anchor_log_time_ns: int | None = None,
+        frame_id_suffix: str | None = "next_action",
+    ) -> dict[str, list[StampedMessage[Any]]]:
+        """Export sidecars for the action about to be passed to step().
+
+        For RoboTwin ``action_type="ee"``, the action is already a pair of
+        world-frame end-effector targets with layout
+        ``[left_xyz, left_quat_wxyz, left_gripper, right_xyz,
+        right_quat_wxyz, right_gripper]``. This method records the left and
+        right targets as a ``BatchFrameTransformGraph`` under
+        ``{topic_prefix}/eef_tf``. Both transforms use ``"world"`` as
+        ``parent_frame_id`` and child frame IDs
+        ``left_eef_target_from_env_action_{frame_id_suffix}`` and
+        ``right_eef_target_from_env_action_{frame_id_suffix}`` when a suffix
+        is provided. Other action types currently rely on the raw action
+        payload only and return an empty map.
+
+        Args:
+            action (Any): Action value about to be passed to ``step(action)``.
+            topic_prefix (str, optional): Topic prefix for emitted action
+                sidecar topics. Default is ``"rollout/next_action"``.
+            anchor_log_time_ns (int | None, optional): Explicit MCAP log-time
+                anchor in nanoseconds. When omitted, the env derives the
+                anchor from the latest cached observation step. Default is
+                None.
+            frame_id_suffix (str | None, optional): Suffix appended to target
+                child frame IDs. Default is ``"next_action"``.
+
+        Returns:
+            dict[str, list[StampedMessage[Any]]]: Final-topic MCAP sidecars.
+            Returns an empty map for non-EE action mode or unsupported action
+            shape.
+
+        Raises:
+            RuntimeError: If no latest observation or logical step is
+                available.
+            ValueError: If ``topic_prefix`` is empty after normalization.
+        """
+        if self._last_obs is None:
+            raise RuntimeError(
+                "RoboTwinEnv has no latest observation. Call reset(), "
+                "reset_from_state(), or step() before "
+                "get_mcap_action_sidecars()."
+            )
+        prefix = topic_prefix.rstrip("/")
+        if not prefix:
+            raise ValueError("topic_prefix must not be empty.")
+        if self.cfg.action_type != "ee":
+            return {}
+        if anchor_log_time_ns is not None:
+            log_time = int(anchor_log_time_ns)
+        elif self._last_obs_step_index is not None:
+            log_time = self.step_index_to_log_time_ns(
+                self._last_obs_step_index
+            )
+        else:
+            raise RuntimeError(
+                "RoboTwinEnv has no logical step for latest observation. "
+                "Pass anchor_log_time_ns explicitly."
+            )
+
+        action_array = np.asarray(action, dtype=np.float32)
+        if action_array.ndim != 1 or action_array.shape[0] != 16:
+            return {}
+        left_child_frame_id = "left_eef_target_from_env_action"
+        right_child_frame_id = "right_eef_target_from_env_action"
+        if frame_id_suffix:
+            left_child_frame_id = f"{left_child_frame_id}_{frame_id_suffix}"
+            right_child_frame_id = f"{right_child_frame_id}_{frame_id_suffix}"
+
+        left_tf = self._pose_vector_to_tf(
+            action_array[:7],
+            child_frame_id=left_child_frame_id,
+        )
+        right_tf = self._pose_vector_to_tf(
+            action_array[8:15],
+            child_frame_id=right_child_frame_id,
+        )
+        tf_graph = BatchFrameTransformGraph(
+            [
+                left_tf.model_copy(
+                    update={"timestamps": [log_time] * left_tf.batch_size}
+                ),
+                right_tf.model_copy(
+                    update={"timestamps": [log_time] * right_tf.batch_size}
+                ),
+            ]
+        )
+        return {
+            f"{prefix}/eef_tf": [
+                StampedMessage(
+                    data=tf_graph,
+                    log_time=log_time,
+                    pub_time=log_time,
+                )
+            ]
+        }
 
     def _joints2ee_pose(self, joints: np.ndarray) -> RoboTwinEEF:
         """Convert joint positions to world-frame end-effector transforms.

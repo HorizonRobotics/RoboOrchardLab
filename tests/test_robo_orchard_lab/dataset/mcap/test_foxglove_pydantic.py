@@ -27,6 +27,9 @@ from robo_orchard_lab.dataset.experimental.mcap.foxglove import create_channel
 from robo_orchard_lab.dataset.experimental.mcap.foxglove_writer import (
     FoxgloveMcapWriter,
 )
+from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
+    dataset_meta,
+)
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
     MessageConverterConfig,
     MessageConverterFactoryConfig,
@@ -36,6 +39,9 @@ from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
 from robo_orchard_lab.dataset.experimental.mcap.reader import (
     MakeIterMsgArgs,
     McapReader,
+)
+from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+    assert_mcap_compatible_pydantic_schema,
 )
 
 
@@ -146,6 +152,18 @@ def test_create_channel_uses_pydantic_serialization_schema() -> None:
     assert json.loads(schema.data.decode("utf-8")) == (
         _PydanticPayload.model_json_schema(mode="serialization", by_alias=True)
     )
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    [
+        dataset_meta._RobotMcapMetadata,
+    ],
+)
+def test_schema_fixed_pydantic_payloads_are_mcap_compatible(
+    model_type: type[BaseModel],
+) -> None:
+    assert_mcap_compatible_pydantic_schema(model_type)
 
 
 def test_encoder_preserves_pydantic_model_until_writer_boundary() -> None:

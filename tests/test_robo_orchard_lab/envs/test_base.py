@@ -20,6 +20,7 @@ from robo_orchard_lab.envs.base import (
     EnvBase,
     EnvBaseCfg,
     EnvStepReturn,
+    EnvToMcapProtocol,
     EpisodeFinalizableEnvProtocol,
     finalize_env_episode,
 )
@@ -46,6 +47,31 @@ class _PlainEnv:
     pass
 
 
+class _McapEnv:
+    def step_index_to_log_time_ns(self, step_index: int) -> int:
+        return step_index
+
+    def get_mcap_obs(
+        self,
+        *,
+        topic_prefix: str = "observation",
+        anchor_log_time_ns: int | None = None,
+    ) -> dict:
+        del topic_prefix, anchor_log_time_ns
+        return {}
+
+    def get_mcap_action_sidecars(
+        self,
+        action,
+        *,
+        topic_prefix: str = "rollout/next_action",
+        anchor_log_time_ns: int | None = None,
+        frame_id_suffix: str | None = "next_action",
+    ) -> dict:
+        del action, topic_prefix, anchor_log_time_ns, frame_id_suffix
+        return {}
+
+
 def test_env_base_reexports_core_env_types() -> None:
     assert EnvBase.__name__ == "EnvBase"
     assert EnvBaseCfg.__name__ == "EnvBaseCfg"
@@ -56,6 +82,10 @@ def test_episode_finalizable_protocol_accepts_structural_implementation() -> (
     None
 ):
     assert isinstance(_FinalizableEnv(), EpisodeFinalizableEnvProtocol)
+
+
+def test_env_to_mcap_protocol_accepts_structural_implementation() -> None:
+    assert isinstance(_McapEnv(), EnvToMcapProtocol)
 
 
 def test_finalize_env_episode_calls_supported_env() -> None:
