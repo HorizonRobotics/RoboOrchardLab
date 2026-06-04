@@ -29,6 +29,10 @@ class _NestedPayload(BaseModel):
 
 
 class _CompatiblePayload(BaseModel):
+    value: str | None = None
+
+
+class _NullableNestedPayload(BaseModel):
     nested: _NestedPayload | None = None
 
 
@@ -44,13 +48,14 @@ class _DictAnyPayload(BaseModel):
     value: dict[str, Any]
 
 
-def test_helper_accepts_nullable_single_model_alternative() -> None:
+def test_helper_accepts_nullable_single_scalar_alternative() -> None:
     assert_mcap_compatible_pydantic_schema(_CompatiblePayload)
 
 
 @pytest.mark.parametrize(
     ("model_type", "match"),
     [
+        (_NullableNestedPayload, "anyOf.*concrete type"),
         (_UnsupportedUnionPayload, "anyOf.*exactly one non-null"),
         (_AnyPayload, "untyped schema"),
         (_DictAnyPayload, "unconstrained object schema"),

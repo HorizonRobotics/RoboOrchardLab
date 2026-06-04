@@ -132,7 +132,9 @@ class RoboTwinObservationInstructionPayload(BaseModel):
 
     schema_version: Literal[1] = 1
     """Payload schema version for MCAP compatibility checks."""
-    instructions: RoboTwinEpisodeInstructionsPayload | None = None
+    instructions: RoboTwinEpisodeInstructionsPayload = Field(
+        default_factory=RoboTwinEpisodeInstructionsPayload
+    )
     """Instruction candidates attached to the current RoboTwin episode."""
     eval_chosen_instruction: str | None = None
     """Single instruction selected by eval-mode rollout logic, if any."""
@@ -960,18 +962,22 @@ class RoboTwinEnv(
                     )
                 ]
 
-        instruction = RoboTwinObservationInstructionPayload(
-            instructions=self._instructions,
-            eval_chosen_instruction=(
-                None
-                if self._eval_chosen_instruction is None
-                else str(self._eval_chosen_instruction)
-            ),
-        )
         if (
-            instruction.instructions is not None
-            or instruction.eval_chosen_instruction is not None
+            self._instructions is not None
+            or self._eval_chosen_instruction is not None
         ):
+            instruction = RoboTwinObservationInstructionPayload(
+                instructions=(
+                    RoboTwinEpisodeInstructionsPayload()
+                    if self._instructions is None
+                    else self._instructions
+                ),
+                eval_chosen_instruction=(
+                    None
+                    if self._eval_chosen_instruction is None
+                    else str(self._eval_chosen_instruction)
+                ),
+            )
             messages[f"{prefix}/instruction"] = [
                 StampedMessage(
                     data=instruction,

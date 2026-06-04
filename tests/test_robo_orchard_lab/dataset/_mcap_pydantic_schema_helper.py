@@ -129,6 +129,16 @@ def _iter_schema_issues(
                     "anyOf must have exactly one non-null alternative",
                 )
             )
+        elif not (
+            isinstance(non_null_alternatives[0], Mapping)
+            and non_null_alternatives[0].get("type") is not None
+        ):
+            issues.append(
+                _SchemaIssue(
+                    f"{path}.anyOf",
+                    "anyOf non-null alternatives must define a concrete type",
+                )
+            )
 
     additional_properties = schema.get("additionalProperties")
     if additional_properties is True:
