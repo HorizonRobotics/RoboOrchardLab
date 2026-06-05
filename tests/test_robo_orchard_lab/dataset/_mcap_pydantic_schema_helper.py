@@ -71,7 +71,7 @@ def assert_mcap_compatible_pydantic_schema(
     """Assert that a Pydantic model's JSON schema is safe for MCAP readers."""
 
     schema = model_type.model_json_schema(mode="serialization", by_alias=True)
-    issues = list(_iter_schema_issues(schema, "$"))
+    issues = list(_iter_schema_issues(schema, "$", root_schema=schema))
     if schema.get("type") != "object":
         issues.insert(
             0,
@@ -95,6 +95,8 @@ def assert_mcap_compatible_pydantic_schema(
 def _iter_schema_issues(
     schema: object,
     path: str,
+    *,
+    root_schema: Mapping[str, object],
 ) -> list[_SchemaIssue]:
     if isinstance(schema, bool):
         if schema:
@@ -131,7 +133,10 @@ def _iter_schema_issues(
             )
         elif not (
             isinstance(non_null_alternatives[0], Mapping)
-            and non_null_alternatives[0].get("type") is not None
+            and _schema_has_concrete_type(
+                non_null_alternatives[0],
+                root_schema=root_schema,
+            )
         ):
             issues.append(
                 _SchemaIssue(
@@ -170,6 +175,7 @@ def _iter_schema_issues(
                     _iter_schema_issues(
                         child_schema,
                         f"{path}.{key}.{child_name}",
+                        root_schema=root_schema,
                     )
                 )
 
@@ -178,7 +184,13 @@ def _iter_schema_issues(
             continue
         if key == "additionalProperties" and schema[key] is True:
             continue
-        issues.extend(_iter_schema_issues(schema[key], f"{path}.{key}"))
+        issues.extend(
+            _iter_schema_issues(
+                schema[key],
+                f"{path}.{key}",
+                root_schema=root_schema,
+            )
+        )
 
     for key in sorted(_SCHEMA_LIST_KEYS):
         value = schema.get(key)
@@ -188,7 +200,42 @@ def _iter_schema_issues(
                     _iter_schema_issues(
                         child_schema,
                         f"{path}.{key}[{index}]",
+                        root_schema=root_schema,
                     )
                 )
 
     return issues
+
+
+def _schema_has_concrete_type(
+    schema: Mapping[str, object],
+    *,
+    root_schema: Mapping[str, object],
+) -> bool:
+    if schema.get("type") is not None:
+        return True
+
+    ref = schema.get("$ref")
+    if not isinstance(ref, str):
+        return False
+    resolved_schema = _resolve_local_ref(root_schema, ref)
+    return (
+        isinstance(resolved_schema, Mapping)
+        and resolved_schema.get("type") is not None
+    )
+
+
+def _resolve_local_ref(
+    root_schema: Mapping[str, object],
+    ref: str,
+) -> object | None:
+    if not ref.startswith("#/"):
+        return None
+
+    current: object = root_schema
+    for raw_part in ref[2:].split("/"):
+        if not isinstance(current, Mapping):
+            return None
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        current = current.get(part)
+    return current

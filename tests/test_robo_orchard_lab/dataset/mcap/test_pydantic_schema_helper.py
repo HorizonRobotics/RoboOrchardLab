@@ -52,10 +52,13 @@ def test_helper_accepts_nullable_single_scalar_alternative() -> None:
     assert_mcap_compatible_pydantic_schema(_CompatiblePayload)
 
 
+def test_helper_accepts_nullable_nested_model_alternative() -> None:
+    assert_mcap_compatible_pydantic_schema(_NullableNestedPayload)
+
+
 @pytest.mark.parametrize(
     ("model_type", "match"),
     [
-        (_NullableNestedPayload, "anyOf.*concrete type"),
         (_UnsupportedUnionPayload, "anyOf.*exactly one non-null"),
         (_AnyPayload, "untyped schema"),
         (_DictAnyPayload, "unconstrained object schema"),
