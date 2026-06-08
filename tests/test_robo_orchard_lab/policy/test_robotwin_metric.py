@@ -26,6 +26,7 @@ from robo_orchard_lab.policy.evaluator.benchmark import (
     BenchmarkResult,
 )
 from robo_orchard_lab.policy.evaluator.benchmark.robotwin import (
+    ROBOTWIN_TASKS_50,
     SEM_TASKS_16,
     SuccessRateInfo,
     SuccessRateMetric,
@@ -141,6 +142,18 @@ def test_sem_tasks_16_keeps_expected_task_subset() -> None:
     assert len(SEM_TASKS_16) == 16
     assert "adjust_bottle" in SEM_TASKS_16
     assert "stack_bowls_three" in SEM_TASKS_16
+    assert set(SEM_TASKS_16).issubset(ROBOTWIN_TASKS_50)
+
+
+def test_robotwin_tasks_50_keeps_expected_full_task_set() -> None:
+    assert len(ROBOTWIN_TASKS_50) == 50
+    assert len(set(ROBOTWIN_TASKS_50)) == 50
+    assert all(
+        task_name == task_name.lower() for task_name in ROBOTWIN_TASKS_50
+    )
+    assert all("-" not in task_name for task_name in ROBOTWIN_TASKS_50)
+    assert "click_alarmclock" in ROBOTWIN_TASKS_50
+    assert "move_pillbottle_pad" in ROBOTWIN_TASKS_50
 
 
 def test_package_root_exports_only_stable_benchmark_entrypoints() -> None:

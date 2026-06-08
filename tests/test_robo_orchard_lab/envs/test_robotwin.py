@@ -262,6 +262,7 @@ def _make_state_stub_env(
         check_expert=False,
         check_task_init=False,
         task_config_path=str(task_config_path),
+        patch_curobo_base_transform=False,
     )
     env = RoboTwinEnv(cfg)
     env._offset_seed = 2
@@ -419,6 +420,73 @@ class TestRoboTwinEnv:
         if manager_logger.handlers:
             assert manager_logger.propagate is False
 
+    def test_init_ensures_curobo_base_transform_patch(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        task_config_path = tmp_path / "task_config.yml"
+        task_config_path.write_text("{}\n", encoding="utf-8")
+        monkeypatch.setattr(
+            RoboTwinEnvCfg,
+            "__post_init__",
+            lambda self: None,
+        )
+        prepare_calls: list[RoboTwinEnvCfg] = []
+        monkeypatch.setattr(
+            robotwin_env,
+            "prepare_robotwin_runtime_for_cfg",
+            lambda cfg: prepare_calls.append(cfg),
+            raising=False,
+        )
+        cfg = RoboTwinEnvCfg(
+            task_name="robotwin_dummy_task",
+            action_type="ee",
+            check_expert=False,
+            check_task_init=False,
+            task_config_path=str(task_config_path),
+        )
+
+        env = RoboTwinEnv(cfg)
+
+        assert prepare_calls == [cfg]
+        env.close()
+
+    def test_create_task_uses_runtime_setup_facade(
+        self,
+        monkeypatch,
+    ):
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(
+            task_name="robotwin_dummy_task",
+            get_task_config_for_seed=lambda runtime_seed: {
+                "seed": runtime_seed,
+            },
+        )
+        env._resolved_start_seed = 100
+        env._offset_seed = 2
+        task = SimpleNamespace()
+        setup_calls: list[tuple[object, object, dict[str, object]]] = []
+        monkeypatch.setattr(robotwin_env, "in_robotwin_workspace", nullcontext)
+        monkeypatch.setattr(
+            robotwin_env,
+            "create_task_from_name",
+            lambda task_name: task,
+        )
+        monkeypatch.setattr(
+            robotwin_env,
+            "setup_robotwin_demo_with_runtime_guards",
+            lambda cfg, setup_task, task_config: setup_calls.append(
+                (cfg, setup_task, task_config)
+            ),
+            raising=False,
+        )
+
+        created_task = env._create_task()
+
+        assert created_task is task
+        assert setup_calls == [(env.cfg, task, {"seed": 102})]
+
     def test_check_expert_logs_retry_summary_without_per_seed_warning(
         self,
         monkeypatch,
@@ -505,6 +573,44 @@ class TestRoboTwinEnv:
             failure,
         )
         logger.error.assert_not_called()
+
+    def test_check_expert_traj_guard_failure_preserves_original_error(
+        self,
+        monkeypatch,
+    ):
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env.cfg = SimpleNamespace(
+            action_type="ee",
+            patch_curobo_base_transform=True,
+            task_name="robotwin_dummy_task",
+            get_task_config_for_seed=lambda runtime_seed: {
+                "seed": runtime_seed,
+            },
+        )
+        env._resolved_start_seed = 100
+        env._offset_seed = 2
+        task = SimpleNamespace(
+            robot=SimpleNamespace(communication_flag=True),
+            setup_demo=MagicMock(),
+            play_once=MagicMock(),
+            close_env=MagicMock(side_effect=RuntimeError("close failed")),
+        )
+        monkeypatch.setattr(robotwin_env, "in_robotwin_workspace", nullcontext)
+        monkeypatch.setattr(
+            robotwin_env,
+            "create_task_from_name",
+            lambda task_name: task,
+        )
+
+        with pytest.raises(
+            robotwin_env.RoboTwinCuroboPatchUnsupportedError,
+            match="communication_flag",
+        ):
+            env._check_expert_traj()
+
+        task.setup_demo.assert_called_once_with(seed=102, render_freq=0)
+        task.play_once.assert_not_called()
+        task.close_env.assert_called_once_with(clear_cache=True)
 
     def test_joints2ee_pose_uses_arm_joints_only(self, monkeypatch):
         env = RoboTwinEnv.__new__(RoboTwinEnv)
@@ -1497,6 +1603,39 @@ class TestRoboTwinEnv:
         assert info["seed"] == 3
         assert info["offset_seed"] == 2
         assert info["source"] == "restored"
+
+    def test_reset_from_state_uses_state_cfg_for_curobo_patch_guard(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        env, _, created_tasks = _make_state_stub_env(monkeypatch, tmp_path)
+        env._instructions = None
+        state = env.get_state()
+        env.cfg.patch_curobo_base_transform = False
+        state.config.action_type = "ee"
+        state.config.patch_curobo_base_transform = True
+        prepare_values: list[bool] = []
+        setup_calls: list[tuple[bool, object]] = []
+        monkeypatch.setattr(
+            robotwin_env,
+            "prepare_robotwin_runtime_for_cfg",
+            lambda cfg: prepare_values.append(cfg.patch_curobo_base_transform),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            robotwin_env,
+            "setup_robotwin_demo_with_runtime_guards",
+            lambda cfg, task, task_config: setup_calls.append(
+                (cfg.patch_curobo_base_transform, task)
+            ),
+            raising=False,
+        )
+
+        env.reset_from_state(state)
+
+        assert prepare_values == [True]
+        assert setup_calls == [(True, created_tasks[0])]
 
     def test_reset_from_state_restores_lifecycle_flags_from_state(
         self,

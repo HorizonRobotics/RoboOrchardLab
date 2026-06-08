@@ -34,7 +34,7 @@ from projects.holobrain.policy.robotwin_policy import (  # noqa: E402
     HoloBrainRoboTwinPolicy,
     HoloBrainRoboTwinPolicyCfg,
 )
-from robo_orchard_lab.envs.robotwin.env import (  # noqa: E402
+from robo_orchard_lab.envs.robotwin.workspace import (  # noqa: E402
     config_robotwin_path,
 )
 from robo_orchard_lab.models.holobrain.pipeline import (  # noqa: E402

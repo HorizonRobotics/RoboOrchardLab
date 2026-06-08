@@ -90,6 +90,19 @@ class TestRoboTwinEnvCfg:
 
         assert loaded_cfg.class_type is RoboTwinEnv
         assert loaded_cfg == cfg
+        assert loaded_cfg.patch_curobo_base_transform is True
+
+    def test_patch_curobo_base_transform_defaults_to_enabled(
+        self, robotwin_task_config_assets: Path
+    ):
+        cfg = RoboTwinEnvCfg(
+            task_name="place_object_basket",
+            check_expert=False,
+            check_task_init=False,
+            task_config_path=str(robotwin_task_config_assets),
+        )
+
+        assert cfg.patch_curobo_base_transform is True
 
     def test_eval_mode_keeps_cfg_seed_as_start_seed(
         self, robotwin_task_config_assets: Path

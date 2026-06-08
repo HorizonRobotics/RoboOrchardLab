@@ -16,11 +16,8 @@
 
 from __future__ import annotations
 import copy
-import functools
 import importlib
 import os
-import sys
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence, TypeAlias, cast
 
@@ -52,6 +49,11 @@ from robo_orchard_lab.envs.base import (
     EnvStepReturn,
     EnvToMcapProtocol,
 )
+from robo_orchard_lab.envs.robotwin.curobo_base_patch import (
+    RoboTwinCuroboPatchUnsupportedError,
+    prepare_robotwin_runtime_for_cfg,
+    setup_robotwin_demo_with_runtime_guards,
+)
 from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinEEF,
     RoboTwinJointsToEEF,
@@ -60,10 +62,15 @@ from robo_orchard_lab.envs.robotwin.obs import (
     get_joints,
     get_observation_cams,
 )
+from robo_orchard_lab.envs.robotwin.workspace import (
+    config_robotwin_path,
+    in_robotwin_workspace,
+)
 from robo_orchard_lab.envs.sapien import sapien_pose_to_orchard
 from robo_orchard_lab.envs.state import EnvStateScope, StatefulEnvMixin
 from robo_orchard_lab.utils.state import (
     State,
+    state2obj,
     validate_recovery_state,
 )
 from robo_orchard_lab.utils.video import (
@@ -235,6 +242,7 @@ class RoboTwinEnv(
 
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
+        prepare_robotwin_runtime_for_cfg(self.cfg)
         self._task = cast("Base_Task", None)
         self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
         self._offset_seed = 0
@@ -444,27 +452,31 @@ class RoboTwinEnv(
             )
 
         payload = _RoboTwinPostResetStatePayload.model_validate(
-            state.state
+            state2obj(state.state)
         ).model_copy(deep=True)
         cfg = copy.deepcopy(state.config)
+        prepare_robotwin_runtime_for_cfg(cfg)
 
         task: Base_Task | None = None
+        with in_robotwin_workspace():
+            task = create_task_from_name(cfg.task_name)
+            setup_robotwin_demo_with_runtime_guards(
+                cfg,
+                task,
+                payload.task_config,
+            )
+        if task is None:
+            raise RuntimeError("RoboTwin task creation returned None.")
         try:
-            with in_robotwin_workspace():
-                task = create_task_from_name(cfg.task_name)
-                task.setup_demo(**payload.task_config)  # type: ignore
-            if task is None:
-                raise RuntimeError("RoboTwin task creation returned None.")
             self._assert_supported_robot_layout(task)
         except Exception:
-            if task is not None:
-                try:
-                    task.close_env(clear_cache=True)
-                except Exception:
-                    logger.exception(
-                        "Failed to close staged RoboTwin task after State "
-                        "restore validation failed."
-                    )
+            try:
+                task.close_env(clear_cache=True)
+            except Exception:
+                logger.exception(
+                    "Failed to close staged RoboTwin task after State "
+                    "restore validation failed."
+                )
             raise
 
         self.close(clear_cache=True)
@@ -496,7 +508,11 @@ class RoboTwinEnv(
             task_config = self.cfg.get_task_config_for_seed(
                 runtime_seed=self.current_seed
             )
-            task.setup_demo(**task_config)  # type: ignore
+            setup_robotwin_demo_with_runtime_guards(
+                self.cfg,
+                task,
+                task_config,
+            )
             return task
 
     def _check_expert_traj(self) -> tuple[Base_Task | None, bool]:
@@ -514,8 +530,26 @@ class RoboTwinEnv(
             )
             config["render_freq"] = 0
             try:
-                task.setup_demo(**config)  # type: ignore
+                setup_robotwin_demo_with_runtime_guards(
+                    self.cfg,
+                    task,
+                    config,
+                )
+            except RoboTwinCuroboPatchUnsupportedError:
+                raise
+            except Exception as e:
+                logger.debug(
+                    "RoboTwin expert trajectory check failed while playing "
+                    "task config: task=%s seed=%s error=%s",
+                    self.cfg.task_name,
+                    self.current_seed,
+                    e,
+                )
+                return task, False
+            try:
                 task.play_once()  # type: ignore
+            except RoboTwinCuroboPatchUnsupportedError:
+                raise
             except Exception as e:
                 logger.debug(
                     "RoboTwin expert trajectory check failed while playing "
@@ -526,7 +560,13 @@ class RoboTwinEnv(
                 )
                 return task, False
             finally:
-                task.close_env()
+                try:
+                    task.close_env()
+                except Exception:
+                    logger.exception(
+                        "Failed to close RoboTwin task after expert "
+                        "trajectory check."
+                    )
 
         success: bool = task.plan_success and task.check_success()  # type: ignore
         return task, success
@@ -777,7 +817,11 @@ class RoboTwinEnv(
             task_config = self.cfg.get_task_config_for_seed(
                 runtime_seed=self.current_seed
             )
-            self._task.setup_demo(**task_config)  # type: ignore
+            setup_robotwin_demo_with_runtime_guards(
+                self.cfg,
+                self._task,
+                task_config,
+            )
         self._assert_supported_robot_layout()
         # Reset the FK helper before formatting the first observation so the
         # returned post-reset EEF edges always reflect the current episode.
@@ -1737,6 +1781,17 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     These overrides are applied after `_update_task_config()` finishes.
     """
 
+    patch_curobo_base_transform: bool = True
+    """Whether to patch RoboTwin Curobo target poses into base-link frame.
+
+    RoboTwin's Curobo wrapper applies `planner.frame_bias` as a translation
+    only. For `action_type="ee"`, the default patch preserves RoboTwin's
+    action surface while applying the full fixed transform from the RoboTwin
+    entity frame to the Curobo `base_link`. Set this to False only when
+    intentionally comparing against the original RoboTwin behavior in a fresh
+    Python process where the class-level patch has not yet been installed.
+    """
+
     def __post_init__(self):
         if self.task_config_path is None:
             robo_twin_root = config_robotwin_path()
@@ -1997,31 +2052,6 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
         task_args["is_test"] = self.eval_mode
 
         return task_args
-
-
-@functools.lru_cache(maxsize=1)
-def config_robotwin_path() -> str:
-    robo_twin_path = os.environ.get("RoboTwin_PATH", default=None)
-    if robo_twin_path is None:
-        raise ValueError(
-            "RoboTwin_PATH environment variable is not set. "
-            "Please set it to the path of the RoboTwin package."
-        )
-    if robo_twin_path not in sys.path:
-        sys.path.append(robo_twin_path)
-    return robo_twin_path
-
-
-@contextmanager
-def in_robotwin_workspace():
-    """Context manager to temporarily change the `cwd` to the RoboTwin root."""
-    robotwin_root = config_robotwin_path()
-    original_cwd = os.getcwd()
-    os.chdir(robotwin_root)
-    try:
-        yield
-    finally:
-        os.chdir(original_cwd)
 
 
 def create_task_from_name(task_name: str) -> Base_Task:

@@ -37,10 +37,8 @@ from robo_orchard_lab.envs.robotwin import (
     RoboTwinEnvCfg,
     RoboTwinEnvStepReturn,
 )
-from robo_orchard_lab.envs.robotwin.env import (
-    EVAL_INSTRUCTION_NUM,
-    config_robotwin_path,
-)
+from robo_orchard_lab.envs.robotwin.env import EVAL_INSTRUCTION_NUM
+from robo_orchard_lab.envs.robotwin.workspace import config_robotwin_path
 from robo_orchard_lab.policy.base import PolicyConfig, PolicyMixin
 from robo_orchard_lab.policy.evaluator.base import PolicyEvaluatorConfig
 from robo_orchard_lab.policy.evaluator.benchmark.backend import (
@@ -63,6 +61,10 @@ from robo_orchard_lab.policy.evaluator.benchmark.core import (
     BenchmarkResult,
     BenchmarkTerminalEvent,
 )
+from robo_orchard_lab.policy.evaluator.benchmark.robotwin_tasks import (
+    ROBOTWIN_TASKS_50,
+    SEM_TASKS_16,
+)
 from robo_orchard_lab.policy.evaluator.metric_contracts import (
     EvaluatorMetrics,
 )
@@ -74,32 +76,13 @@ __all__ = [
     "RoboTwinBenchmarkEvaluatorCfg",
     "RoboTwinLocalBenchmarkBackendCfg",
     "RoboTwinRemoteBenchmarkBackendCfg",
+    "ROBOTWIN_TASKS_50",
     "SEM_TASKS_16",
     "SuccessRateInfo",
     "SuccessRateMetric",
 ]
 
 logger = LoggerManager().get_child(__name__)
-
-
-SEM_TASKS_16 = (
-    "adjust_bottle",
-    "beat_block_hammer",
-    "blocks_ranking_rgb",
-    "blocks_ranking_size",
-    "dump_bin_bigbin",
-    "handover_mic",
-    "lift_pot",
-    "move_pillbottle_pad",
-    "open_laptop",
-    "open_microwave",
-    "place_cans_plasticbox",
-    "place_dual_shoes",
-    "place_empty_cup",
-    "rotate_qrcode",
-    "stack_blocks_three",
-    "stack_bowls_three",
-)
 
 
 @dataclass
