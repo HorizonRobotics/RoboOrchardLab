@@ -17,6 +17,17 @@ recommended destinations. Edit guidance files only when the user explicitly
 asks to apply the changes, or when the request already clearly asks to update
 local guidance.
 
+For long-running, resumed, or heavily iterative tasks, evaluate the whole
+current conversation when identifying distillation candidates. Include design
+decisions, review feedback, debugging outcomes, implementation corrections,
+validation choices, and git workflow lessons instead of only inspecting the
+latest design note or code diff.
+
+When reporting candidates from a broad session, classify them by intended
+asset type, such as instruction/workflow rule, reference/guideline,
+template/scaffold, implementation-validated follow-up, or task-local detail
+that should stay out of shared guidance.
+
 ## Candidate Dimensions
 
 Consider each of these dimensions before deciding that there is nothing

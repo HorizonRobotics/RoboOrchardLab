@@ -106,6 +106,11 @@ description: Load these instructions when modifying Python source files, tests, 
   package-specific guidance and keep repository-owned imports on the
   defining submodule instead of treating the compatibility export as the
   preferred new entrypoint.
+- Before replacing `__getattr__` lazy exports or other dynamic import shims
+  for IDE friendliness, identify why the dynamic import exists, such as
+  optional dependencies, import cost, circular imports, or registration side
+  effects. Preserve the lazy path when that purpose is still valid, and add
+  `TYPE_CHECKING` imports for static visibility when helpful.
 
 ## Spatial Transform And Matrix Naming
 

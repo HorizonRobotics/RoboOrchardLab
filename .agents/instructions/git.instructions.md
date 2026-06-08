@@ -39,6 +39,11 @@ description: Load these instructions when working with git history, commit messa
 ## Branch Workflow
 
 - Default target branch is `master` unless the user or repository workflow says otherwise.
+- Before starting nontrivial feature or refactor implementation, verify the
+  current branch. Do not develop directly on `master` or another protected
+  target branch unless the user explicitly asks for that. If a reviewed
+  design or checkpoint must be kept before switching, preserve only that
+  agreed scope, then create or switch to the task branch before code edits.
 - Branch from the latest remote target branch, not a stale local copy.
 - If continuing an existing in-scope branch is clearly intended, stay on it; otherwise create a fresh task branch.
 - Do not append unrelated work to an existing feature branch or open review by default.

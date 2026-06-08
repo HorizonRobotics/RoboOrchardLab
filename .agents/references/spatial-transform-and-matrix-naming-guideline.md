@@ -33,6 +33,13 @@ Legacy names such as `T_world2cam` may be kept only for compatibility. When kept
 Repository scope:
 - The preferred forms in this guideline apply to repository-owned code.
 - For external libraries, third-party APIs, protocol fields, dataset schemas, or compatibility layers, follow the external convention at the boundary and map it locally before translating to repository-preferred names.
+- For external pose conventions such as URDF `origin rpy`, preserve the
+  external rotation semantics at the boundary. URDF roll/pitch/yaw is
+  fixed-axis and composes as `Rz(yaw) @ Ry(pitch) @ Rx(roll)` for column-vector
+  matrices; do not pass `rpy` directly to an intrinsic `XYZ` Euler helper
+  unless that helper documents the same fixed-axis convention. Add a
+  non-degenerate roll+pitch+yaw regression test when bridging these
+  conventions.
 
 Matrix and composition conventions for repository-owned transform types:
 - For `Transform3D_M`, `BatchTransform3D`, and `BatchFrameTransform`, transform matrices are interpreted as acting on homogeneous column vectors.

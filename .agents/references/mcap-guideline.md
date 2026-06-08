@@ -17,6 +17,13 @@ Use this reference when changing experimental MCAP export code, including
 - After converter expansion, ordering and watermark decisions must be based on
   final emitted MCAP messages, not only on wrapper source
   `StampedMessage.log_time`.
+- When multiple source domains emit TF frames into one MCAP, namespace derived
+  frame ids by their source domain instead of reusing raw runtime names.
+  Processor-input images, rollout observations, and action sidecars should not
+  publish identical `child_frame_id` values unless they describe the same
+  physical frame from the same source. Treat duplicate child frames from
+  different topics as a visualization correctness bug because later TF edges
+  can overwrite earlier ones.
 
 ## Converter Ownership
 
@@ -81,6 +88,14 @@ Use this reference when changing experimental MCAP export code, including
   registry: exact protobuf class, exact Pydantic model class, and schemaless
   JSON are distinct topic kinds. Plain `dict` and `list` messages remain one
   schemaless JSON kind and may mix on the same topic.
+- For Pydantic models consumed by Foxglove or other MCAP readers, avoid field
+  types that serialize to unsupported or ambiguous JSON schema shapes. In
+  particular, do not use `Any` for model fields that become MCAP topic schema;
+  Pydantic may emit `anyOf` schemas that Foxglove rejects.
+- When adding or changing a Pydantic model used as an MCAP topic payload, cover
+  it with the shared schema-compatibility helper and at least one writer or
+  encoder test that proves the schema can be registered for the intended
+  topic.
 - Do not add a local JSON schema fingerprint or shape validator unless a
   future task explicitly changes JSON compatibility ownership.
 

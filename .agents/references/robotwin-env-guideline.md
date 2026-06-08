@@ -83,6 +83,17 @@ episode orchestration, use `.agents/references/policy-evaluator-guideline.md`.
 - Document RoboTwin compatibility conventions near the public API when they
   are observable, such as combined dual-arm metadata stored under a RoboTwin
   compatibility key.
+- For compatibility fixes that patch external RoboTwin runtime behavior
+  without modifying RoboTwin source, keep the patch installation at the env or
+  demo-setup boundary. Avoid scattering the same patch across reset, task
+  setup, planner calls, and script entrypoints. If the patch mutates
+  process-wide classes, document the fresh-process requirement for disabling
+  or comparing against original RoboTwin behavior.
+- When adapting Curobo pose frames, parse fixed transforms from the same
+  runtime artifacts RoboTwin passes to Curobo, such as the Curobo yml and URDF,
+  instead of duplicating offsets in RoboOrchard config. Validate that legacy
+  translation-only fields, such as `planner.frame_bias`, remain consistent
+  with the parsed transform.
 - Add focused tests for State capture availability, payload validation,
   mismatched `class_type`, bad State not closing the current task, restore
   avoiding retry logic, and `reset_from_state(...)` observation/info parity.

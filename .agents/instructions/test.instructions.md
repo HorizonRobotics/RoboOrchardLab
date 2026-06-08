@@ -88,6 +88,10 @@ description: Load these instructions when creating, updating, or validating test
   pytest scope is broad enough that parallelism will materially reduce
   turnaround time, prefer the repository's canonical test entrypoints or an
   explicit worker count that fits the target instead of `-n auto`.
+- Do not run simulator, env-rollout, GPU-memory-sensitive, or hardware-backed
+  tests under pytest parallelism by default. Keep those tests serial unless
+  the task or repository guidance confirms the resource budget and isolation
+  are sufficient.
 - When running repository tests, disable `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` unless the task explicitly requires proxy access.
 - For tests that spawn `accelerate launch`, `torchrun`, or similar
   distributed subprocesses under xdist, do not use a probe-and-release

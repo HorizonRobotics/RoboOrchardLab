@@ -65,6 +65,12 @@ Use this package shape unless a domain needs a stronger local split:
 Compatibility shims may remain at older module paths, but new domain
 benchmark implementations should live in the package.
 
+For domain benchmark task-name collections, keep one canonical source in the
+domain benchmark package instead of duplicating tuples across evaluator,
+metric, and script modules. Expose the constant only from intentional domain
+entrypoints, and add a regression check against the upstream or local task
+inventory when that inventory is available.
+
 ## Backend And Driver Contract
 
 A generic backend should not require downstream subclassing when callbacks or
