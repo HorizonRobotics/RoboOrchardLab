@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
@@ -99,14 +100,31 @@ class PipelineHookArgs:
     lr_scheduler: Optional[AcceleratedScheduler] = None
     batch: Optional[Any] = None
     model_outputs: Optional[ModelOutput] = None
-    reduce_loss: Optional[torch.Tensor] = None
-    """The average loss across all processes, if applicable.
+    reduced_backward_loss: Optional[torch.Tensor] = None
+    """The average backward loss across all processes, if applicable.
 
-    If the model output loss, the loss will be reduced (averaged)
-    across all processes after the forward pass. So the value is
-    different from the loss returned by the model, which is the
-    loss for the current process only for backward computation.
+    When the batch processor returns a loss for backward computation, this
+    field stores the detached mean of that loss across all processes after
+    backward has run. This value is distinct from model-output loss entries,
+    which may include auxiliary or diagnostic losses.
     """
+
+    @property
+    def reduce_loss(self) -> Optional[torch.Tensor]:
+        """Deprecated alias for :attr:`reduced_backward_loss`.
+
+        Returns:
+            Optional[torch.Tensor]: The detached reduced backward loss, if it
+            was computed for the current step.
+        """
+
+        warnings.warn(
+            "PipelineHookArgs.reduce_loss is deprecated and read-only; "
+            "use PipelineHookArgs.reduced_backward_loss instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.reduced_backward_loss
 
     def copy_with_updates(self, **kwargs):
         """Create a copy of the current instance with updated attributes.

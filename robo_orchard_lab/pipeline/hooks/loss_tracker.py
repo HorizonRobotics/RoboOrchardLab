@@ -76,7 +76,7 @@ class LossTracker(PipelineHooks):
             assert isinstance(loss, torch.Tensor), f"Loss {k} is not a tensor."
 
             reduced_loss: torch.Tensor = accelerator.reduce(
-                loss, reduction="mean"
+                loss.detach(), reduction="mean"
             )  # type: ignore
             if reduced_loss.numel() != 1:
                 logger.warning(

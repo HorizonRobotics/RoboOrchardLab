@@ -84,7 +84,7 @@ def mock_hook_args(mock_accelerator, mock_dataloader):
         max_epoch=10,
         optimizer=cast(Any, optimizer),
         model_outputs=None,
-        reduce_loss=torch.tensor(0.0),
+        reduced_backward_loss=torch.tensor(0.0),
     )
 
 

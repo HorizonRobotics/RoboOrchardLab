@@ -420,7 +420,7 @@ def test_simple_step_processor_with_io_processor():
     assert isinstance(hook_args.model_outputs, torch.Tensor)
     assert torch.equal(hook_args.batch, torch.tensor([[1.0, 2.0]]))
     assert torch.equal(hook_args.model_outputs, expected_outputs)
-    assert hook_args.reduce_loss is None
+    assert hook_args.reduced_backward_loss is None
 
 
 def test_simple_step_processor_with_envelope_io_processor():
@@ -613,7 +613,7 @@ def test_simple_step_processor_pre_process_error_keeps_hook_args_clean():
     assert isinstance(hook_args.batch, torch.Tensor)
     assert torch.equal(hook_args.batch, original_batch)
     assert hook_args.model_outputs is None
-    assert hook_args.reduce_loss is None
+    assert hook_args.reduced_backward_loss is None
 
 
 @pytest.mark.parametrize(
@@ -673,25 +673,38 @@ def test_simple_step_processor_post_process_handles_boundary_batches(
         assert io_processor.post_outputs[0] is None
         assert model_outputs["model_input"] is None
         assert model_outputs["model_outputs"] is None
-    assert hook_args.reduce_loss is None
+    assert hook_args.reduced_backward_loss is None
 
 
-def test_simple_step_processor_reduces_loss_in_multi_process_path(
+def test_simple_step_processor_reduces_backward_loss_after_backward(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """Backward loss reduction runs after backward with a detached tensor."""
+
     accelerator = Accelerator(device_placement=True)
     monkeypatch.setattr(accelerator.state, "num_processes", 2)
-    reduce_calls: list[tuple[torch.Tensor, str]] = []
+    event_order: list[str] = []
+    backward_calls: list[torch.Tensor] = []
+    reduce_calls: list[tuple[torch.Tensor, str, bool]] = []
+
+    def fake_backward(loss: torch.Tensor):
+        event_order.append("backward")
+        backward_calls.append(loss)
 
     def fake_reduce(loss: torch.Tensor, reduction: str = "mean"):
-        reduce_calls.append((loss.clone(), reduction))
+        event_order.append("reduce")
+        reduce_calls.append((loss.clone(), reduction, loss.requires_grad))
         return loss / 2
 
+    monkeypatch.setattr(accelerator, "backward", fake_backward)
     monkeypatch.setattr(accelerator, "reduce", fake_reduce)
 
     step_processor = SimpleStepProcessor.from_callable(
-        lambda model, batch: (model(batch), torch.tensor(4.0)),
-        need_backward=False,
+        lambda model, batch: (
+            model(batch),
+            torch.tensor(4.0, requires_grad=True),
+        ),
+        need_backward=True,
         io_processor=AddTensorIOProcessor(
             AddTensorIOProcessorCfg(pre_add=1.0, post_add=3.0)
         ),
@@ -708,16 +721,34 @@ def test_simple_step_processor_reduces_loss_in_multi_process_path(
         model=lambda batch: batch * 2,
     )
 
+    assert event_order == ["backward", "reduce"]
+    assert len(backward_calls) == 1
     assert len(reduce_calls) == 1
     assert reduce_calls[0][1] == "mean"
     assert torch.equal(reduce_calls[0][0], torch.tensor(4.0))
+    assert reduce_calls[0][2] is False
     assert isinstance(hook_args.model_outputs, torch.Tensor)
-    assert hook_args.reduce_loss is not None
+    assert hook_args.reduced_backward_loss is not None
     assert torch.equal(
         hook_args.model_outputs,
         torch.tensor([[7.0, 9.0]], dtype=torch.float32),
     )
-    assert torch.equal(hook_args.reduce_loss, torch.tensor(2.0))
+    assert torch.equal(hook_args.reduced_backward_loss, torch.tensor(2.0))
+
+
+def test_pipeline_hook_args_reduce_loss_is_deprecated_read_only():
+    """The legacy reduce_loss alias warns on read and cannot be assigned."""
+
+    hook_args = PipelineHookArgs(
+        accelerator=Accelerator(device_placement=True),
+        reduced_backward_loss=torch.tensor(2.0),
+    )
+
+    with pytest.warns(DeprecationWarning, match="reduced_backward_loss"):
+        assert torch.equal(hook_args.reduce_loss, torch.tensor(2.0))
+
+    with pytest.raises(AttributeError):
+        hook_args.reduce_loss = torch.tensor(3.0)
 
 
 def test_legacy_batch_processor_facade_only_exports_legacy_names():

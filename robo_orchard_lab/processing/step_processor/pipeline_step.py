@@ -93,7 +93,7 @@ class BatchStepProcessorMixin(ABC):
     ) -> None:
         """Execute the batch processing pipeline.
 
-        The processed outputs and reduced loss, if any, are stored in
+        The processed outputs and reduced backward loss, if any, are stored in
         ``on_batch_hook_args`` for downstream hooks and loop logic.
 
         Args:
@@ -102,7 +102,7 @@ class BatchStepProcessorMixin(ABC):
             on_batch_hook_args (PipelineHookArgs): Workspace for the current
                 batch. Before the call it should at least contain
                 ``accelerator`` and ``batch``. After the call it contains
-                ``model_outputs`` and ``reduce_loss``.
+                ``model_outputs`` and ``reduced_backward_loss``.
             model (Callable): The model function or callable.
         """
         pass
@@ -288,9 +288,9 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
 
         This method wires the processor into the hook lifecycle. It optionally
         pre-processes the raw batch, runs the ``on_model_forward`` hook scope
-        around :meth:`forward`, reduces the loss across processes when needed,
-        optionally runs the ``on_model_backward`` hook scope, and writes the
-        final outputs back into ``on_batch_hook_args``.
+        around :meth:`forward`, optionally runs the ``on_model_backward`` hook
+        scope, reduces the detached backward loss across processes when
+        needed, and writes the final outputs back into ``on_batch_hook_args``.
 
         Args:
             pipeline_hooks (PipelineHooks): Hook container used to wrap forward
@@ -298,7 +298,7 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             on_batch_hook_args (PipelineHookArgs): Workspace for the current
                 batch. Before the call it should at least provide
                 ``accelerator`` and ``batch``. After the call it stores
-                ``model_outputs`` and ``reduce_loss``.
+                ``model_outputs`` and ``reduced_backward_loss``.
             model (Callable): The model function or callable.
 
         Raises:
@@ -336,12 +336,8 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 outputs = raw_outputs
 
             on_forward_hook_args.model_outputs = outputs
-            reduce_loss: torch.Tensor | None = loss
-            if accelerator.num_processes > 1 and loss is not None:
-                reduce_loss = accelerator.reduce(loss, reduction="mean")  # type: ignore[arg-type]
 
-            on_forward_hook_args.reduce_loss = reduce_loss
-
+        reduced_backward_loss: torch.Tensor | None = None
         if self.need_backward:
             if loss is None:
                 raise LossNotProvidedError()
@@ -351,13 +347,21 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 arg=on_batch_hook_args.copy_with_updates(
                     batch=model_input,
                     model_outputs=outputs,
-                    reduce_loss=reduce_loss,
+                    reduced_backward_loss=reduced_backward_loss,
                 ),
             ) as on_backward_hook_args:
                 on_backward_hook_args.accelerator.backward(loss)
+                reduced_backward_loss = loss.detach()
+                if accelerator.num_processes > 1:
+                    reduced_backward_loss = accelerator.reduce(
+                        reduced_backward_loss, reduction="mean"
+                    )
+                on_backward_hook_args.reduced_backward_loss = (
+                    reduced_backward_loss
+                )
 
         on_batch_hook_args.model_outputs = outputs
-        on_batch_hook_args.reduce_loss = reduce_loss
+        on_batch_hook_args.reduced_backward_loss = reduced_backward_loss
 
 
 class StepProcessorFromCallable(SimpleStepProcessor):
