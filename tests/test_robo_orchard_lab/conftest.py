@@ -71,8 +71,8 @@ warnings.filterwarnings(
 warnings.filterwarnings(
     "ignore",
     message=(
-        "Failed to load dataset using `datasets.load_from_disk`\\. "
-        "Falling back to use wrapped version\\."
+        "Failed to load dataset using wrapped version\\. "
+        "Falling back to use `datasets.load_from_disk`\\."
     ),
     category=UserWarning,
 )

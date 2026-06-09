@@ -155,20 +155,22 @@ class RODataset(TorchDataset):
     ):
         dataset_path = os.path.expanduser(dataset_path)
 
+        from robo_orchard_lab.dataset.robot._hf_dataset import (
+            load_from_disk,
+        )
+
         try:
-            self.frame_dataset = HFDataset.load_from_disk(
+            self.frame_dataset = load_from_disk(
                 dataset_path, storage_options=storage_options
             )
-        except (TypeError, ValueError) as e:  # noqa
-            from robo_orchard_lab.dataset.robot._hf_dataset import (
-                load_from_disk,
-            )
-
+        except (TypeError, ValueError) as e:
             warnings.warn(
-                "Failed to load dataset using `datasets.load_from_disk`. "
-                "Falling back to use wrapped version. "
+                "Failed to load dataset using wrapped version. "
+                "Falling back to use `datasets.load_from_disk`. "
+                f"Original error: {e}",
+                stacklevel=2,
             )
-            self.frame_dataset = load_from_disk(
+            self.frame_dataset = HFDataset.load_from_disk(
                 dataset_path, storage_options=storage_options
             )
 
@@ -182,7 +184,8 @@ class RODataset(TorchDataset):
         state_file = os.path.join(
             dataset_path, hg_datasets_config.DATASET_STATE_JSON_FILENAME
         )
-        state: dict = json.load(open(state_file, "r"))
+        with open(state_file, "r") as f:
+            state: dict = json.load(f)
         self._dataset_format_version = state.get("robo_orchard_state", {}).get(
             "dataset_format_version", None
         )

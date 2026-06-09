@@ -66,6 +66,11 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
 )
 
 
+class _FakeFrameDataset:
+    def select_columns(self, column_names: list[str]) -> "_FakeFrameDataset":
+        return self
+
+
 class DummyEpisodePackaging(EpisodePackaging):
     def __init__(
         self,
@@ -778,6 +783,102 @@ class TestDatasetPackaging:
 
 
 class TestDataset:
+    def test_load_dataset_prefers_wrapped_loader(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """RODataset should use the RoboOrchard loader before HF fallback."""
+
+        dataset_path = tmp_path / "dataset"
+        dataset_path.mkdir()
+        (dataset_path / "state.json").write_text(
+            '{"robo_orchard_state": {}}',
+            encoding="utf-8",
+        )
+        frame_dataset = _FakeFrameDataset()
+        calls: list[str] = []
+
+        def wrapped_load_from_disk(
+            dataset_path: str,
+            storage_options: dict | None = None,
+        ) -> _FakeFrameDataset:
+            calls.append("wrapped")
+            return frame_dataset
+
+        def hf_load_from_disk(
+            dataset_path: str,
+            storage_options: dict | None = None,
+        ) -> _FakeFrameDataset:
+            calls.append("hf")
+            return frame_dataset
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.dataset.robot._hf_dataset.load_from_disk",
+            wrapped_load_from_disk,
+        )
+        monkeypatch.setattr(
+            hg_datasets.Dataset,
+            "load_from_disk",
+            hf_load_from_disk,
+        )
+        monkeypatch.setattr(RODataset, "_load_db", lambda self, path: object())
+
+        dataset = RODataset(str(dataset_path))
+
+        assert dataset.frame_dataset is frame_dataset
+        assert calls == ["wrapped"]
+
+    def test_load_dataset_falls_back_to_hf_loader_when_wrapped_loader_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """RODataset should try HF loading only after wrapped loading fails."""
+
+        dataset_path = tmp_path / "dataset"
+        dataset_path.mkdir()
+        (dataset_path / "state.json").write_text(
+            '{"robo_orchard_state": {}}',
+            encoding="utf-8",
+        )
+        frame_dataset = _FakeFrameDataset()
+        calls: list[str] = []
+
+        def wrapped_load_from_disk(
+            dataset_path: str,
+            storage_options: dict | None = None,
+        ) -> _FakeFrameDataset:
+            calls.append("wrapped")
+            raise TypeError("wrapped loader failed")
+
+        def hf_load_from_disk(
+            dataset_path: str,
+            storage_options: dict | None = None,
+        ) -> _FakeFrameDataset:
+            calls.append("hf")
+            return frame_dataset
+
+        monkeypatch.setattr(
+            "robo_orchard_lab.dataset.robot._hf_dataset.load_from_disk",
+            wrapped_load_from_disk,
+        )
+        monkeypatch.setattr(
+            hg_datasets.Dataset,
+            "load_from_disk",
+            hf_load_from_disk,
+        )
+        monkeypatch.setattr(RODataset, "_load_db", lambda self, path: object())
+
+        with pytest.warns(
+            UserWarning,
+            match="Failed to load dataset using wrapped version",
+        ):
+            dataset = RODataset(str(dataset_path))
+
+        assert dataset.frame_dataset is frame_dataset
+        assert calls == ["wrapped", "hf"]
+
     def test_no_lockfiles(self, example_dataset_path: str):
         database_p_dir = os.path.dirname(example_dataset_path)
         import glob
