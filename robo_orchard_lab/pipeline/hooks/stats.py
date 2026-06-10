@@ -320,6 +320,9 @@ class StatsMonitor(PipelineHooks):
             args (PipelineHookArgs): Hook arguments including current step
                 and epoch information.
         """
+        if args.exception is not None:
+            return
+
         assert (
             self._start_time is not None and self.total_batch_size is not None
         ), "Please call `on_loop_begin` first."
@@ -393,6 +396,9 @@ class StatsMonitor(PipelineHooks):
             args (PipelineHookArgs): Hook arguments including current epoch
             information.
         """
+        if args.exception is not None:
+            return
+
         assert self._start_time is not None, (
             "Please call `on_loop_begin` first."
         )

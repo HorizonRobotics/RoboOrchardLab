@@ -100,13 +100,22 @@ class PipelineHookArgs:
     lr_scheduler: Optional[AcceleratedScheduler] = None
     batch: Optional[Any] = None
     model_outputs: Optional[ModelOutput] = None
+    exception: BaseException | None = None
+    """The exception raised by the hook context body, if one occurred.
+
+    After hooks can use this field to skip side effects such as optimizer
+    steps, checkpoint saves, or distributed collectives when the wrapped body
+    is already failing. The original exception is re-raised by the context
+    manager.
+    """
     reduced_backward_loss: Optional[torch.Tensor] = None
-    """The average backward loss across all processes, if applicable.
+    """The detached backward loss reduced across processes, if applicable.
 
     When the batch processor returns a loss for backward computation, this
-    field stores the detached mean of that loss across all processes after
-    backward has run. This value is distinct from model-output loss entries,
-    which may include auxiliary or diagnostic losses.
+    field stores the detached loss after backward has run and after the value
+    is reduced across distributed processes. This value is distinct from
+    model-output loss entries, which may include auxiliary or diagnostic
+    losses.
     """
 
     @property
@@ -178,7 +187,11 @@ class PipelineHooks(ClassInitFromConfigMixin):
     @contextmanager
     def begin(self, channel: PipelineHookChanelType, arg: PipelineHookArgs):
         with self.hooks[channel].begin(arg) as ctx:
-            yield ctx
+            try:
+                yield ctx
+            except BaseException as exc:
+                arg.exception = exc
+                raise
 
     def register_hook(
         self,

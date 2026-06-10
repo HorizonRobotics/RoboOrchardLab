@@ -164,5 +164,20 @@ def test_skip_checkpoint_on_epoch(mocker, mock_accelerator):
     mock_logger.info.assert_not_called()
 
 
+def test_checkpoint_skips_loop_end_save_when_body_raises(
+    mock_accelerator,
+):
+    hook = SaveCheckpointConfig(save_root="checkpoints")()
+    args = PipelineHookArgs(accelerator=mock_accelerator)
+
+    with pytest.raises(RuntimeError, match="body failed") as exc_info:
+        with hook.begin("on_loop", args):
+            raise RuntimeError("body failed")
+
+    assert args.exception is exc_info.value
+    mock_accelerator.wait_for_everyone.assert_not_called()
+    mock_accelerator.save_state.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main(["-s", __file__])

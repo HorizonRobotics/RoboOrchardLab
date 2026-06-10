@@ -350,12 +350,11 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                     reduced_backward_loss=reduced_backward_loss,
                 ),
             ) as on_backward_hook_args:
-                on_backward_hook_args.accelerator.backward(loss)
-                reduced_backward_loss = loss.detach()
-                if accelerator.num_processes > 1:
-                    reduced_backward_loss = accelerator.reduce(
-                        reduced_backward_loss, reduction="mean"
-                    )
+                accelerator = on_backward_hook_args.accelerator
+                accelerator.backward(loss)
+                reduced_backward_loss = accelerator.reduce(
+                    loss.detach(), reduction="mean"
+                )
                 on_backward_hook_args.reduced_backward_loss = (
                     reduced_backward_loss
                 )

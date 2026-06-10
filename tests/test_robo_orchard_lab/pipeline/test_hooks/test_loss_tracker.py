@@ -19,26 +19,37 @@ from unittest.mock import MagicMock
 import torch
 
 from robo_orchard_lab.pipeline.hooks.loss_tracker import LossTrackerConfig
+from robo_orchard_lab.pipeline.hooks.mixin import PipelineHookArgs
 
 
-def test_loss_tracker_reduces_detached_model_output_loss():
-    """LossTracker should keep logging reductions out of the autograd graph."""
+def test_loss_tracker_tracks_detached_reduced_model_output_loss():
+    """LossTracker should reduce detached loss values for logging."""
 
     tracker = LossTrackerConfig()()
     accelerator = MagicMock()
-    reduce_calls: list[tuple[torch.Tensor, str, bool]] = []
-
-    def fake_reduce(loss: torch.Tensor, reduction: str = "mean"):
-        reduce_calls.append((loss.clone(), reduction, loss.requires_grad))
-        return loss
-
-    accelerator.reduce.side_effect = fake_reduce
+    accelerator.reduce.return_value = torch.tensor(2.0)
     model_outputs = {"loss": torch.tensor(4.0, requires_grad=True)}
 
     tracker.update(accelerator=accelerator, model_outputs=model_outputs)
 
-    assert len(reduce_calls) == 1
-    assert torch.equal(reduce_calls[0][0], torch.tensor(4.0))
-    assert reduce_calls[0][1] == "mean"
-    assert reduce_calls[0][2] is False
-    assert tracker.cached_loss["loss"] == 4.0
+    accelerator.reduce.assert_called_once()
+    reduced_arg = accelerator.reduce.call_args.args[0]
+    assert torch.equal(reduced_arg, torch.tensor(4.0))
+    assert reduced_arg.requires_grad is False
+    assert accelerator.reduce.call_args.kwargs == {"reduction": "mean"}
+    assert tracker.cached_loss["loss"] == 2.0
+
+
+def test_loss_tracker_skips_reduce_on_context_exception():
+    tracker = LossTrackerConfig()()
+    accelerator = MagicMock()
+    args = PipelineHookArgs(
+        accelerator=accelerator,
+        model_outputs={"loss": torch.tensor(4.0, requires_grad=True)},
+        exception=RuntimeError("body failed"),
+    )
+
+    tracker._on_step_end(args)
+
+    accelerator.reduce.assert_not_called()
+    assert tracker.cached_loss == {}

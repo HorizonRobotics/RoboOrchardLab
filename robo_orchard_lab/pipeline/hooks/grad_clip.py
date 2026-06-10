@@ -75,9 +75,12 @@ class GradientClippingHook(PipelineHooks):
             hook_args (PipelineHookArgs): The workspace for the gradient
                 clipping hook. It should contain the following attributes:
                   - accelerator: The Accelerator instance.
-                  - optimizer: The optimizer instance.
+                - optimizer: The optimizer instance.
 
         """
+        if hook_args.exception is not None:
+            return
+
         if hook_args.optimizer is None:
             raise ValueError("Optimizer is not set in the hook arguments.")
 

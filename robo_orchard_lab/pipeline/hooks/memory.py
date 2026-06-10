@@ -96,6 +96,9 @@ class ClearCacheHook(PipelineHooks):
             `global_step_id`.
 
         """
+        if arg.exception is not None:
+            return
+
         if (
             self.empty_cache_at == "step"
             and (arg.global_step_id + 1) % self.empty_cache_freq == 0
@@ -113,6 +116,9 @@ class ClearCacheHook(PipelineHooks):
             including `epoch_id`.
 
         """
+        if arg.exception is not None:
+            return
+
         if (
             self.empty_cache_at == "epoch"
             and (arg.epoch_id + 1) % self.empty_cache_freq == 0

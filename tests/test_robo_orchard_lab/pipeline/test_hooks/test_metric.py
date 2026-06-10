@@ -145,6 +145,16 @@ def test_on_step_end(
     # assert "Epoch[0] Step[1] GlobalStep[1]: accuracy[tensor(1.)]" in logs
 
 
+def test_metric_tracker_skips_batch_update_on_context_exception(
+    mock_metric_tracker: CustomMetricTracker,
+    mock_hook_args: PipelineHookArgs,
+):
+    mock_hook_args.model_outputs = None
+    mock_hook_args.exception = RuntimeError("body failed")
+
+    mock_metric_tracker._on_batch_end(mock_hook_args)
+
+
 def test_on_epoch_end(
     mock_metric_tracker: CustomMetricTracker,
     mock_hook_args: PipelineHookArgs,

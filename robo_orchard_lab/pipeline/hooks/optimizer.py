@@ -60,6 +60,8 @@ class OptimizerHook(PipelineHooks):
                   - lr_scheduler: The learning rate scheduler instance.
 
         """
+        if hook_args.exception is not None:
+            return
 
         if hook_args.optimizer is None:
             raise ValueError("Optimizer is not set in the hook arguments.")

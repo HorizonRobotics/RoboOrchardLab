@@ -1013,6 +1013,110 @@ def test_training_loop(dummy_trainer: HookBasedTrainer):
     assert hook._on_loop_end_cnt == 1
 
 
+def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    event_order: list[str] = []
+
+    class RecordingBatchProcessor(DummyBatchProcessor):
+        def forward(self, model: torch.nn.Module, batch: torch.Tensor):
+            event_order.append("step")
+            return super().forward(model=model, batch=batch)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.tensor([[0.5, 0.5]], dtype=torch.float32),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=RecordingBatchProcessor(),
+        max_epoch=1,
+    )
+    check_results = iter([True, True])
+
+    def record_sync() -> None:
+        event_order.append("sync")
+
+    def record_set_trigger() -> None:
+        event_order.append("set")
+
+    def record_check_trigger() -> bool:
+        event_order.append("check")
+        return next(check_results, False)
+
+    monkeypatch.setattr(accelerator, "wait_for_everyone", record_sync)
+    monkeypatch.setattr(accelerator, "set_trigger", record_set_trigger)
+    monkeypatch.setattr(accelerator, "check_trigger", record_check_trigger)
+
+    trainer()
+
+    assert event_order == ["check", "set", "check"]
+    assert trainer.trainer_progress_state.global_step_id == 0
+
+
+def test_hook_based_trainer_sets_trigger_when_dataloader_is_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    event_order: list[str] = []
+
+    class RecordingBatchProcessor(DummyBatchProcessor):
+        def forward(self, model: torch.nn.Module, batch: torch.Tensor):
+            event_order.append("step")
+            return super().forward(model=model, batch=batch)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.empty((0, 2), dtype=torch.float32),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=RecordingBatchProcessor(),
+        max_epoch=1,
+    )
+    check_results = iter([True, True])
+
+    def record_sync() -> None:
+        event_order.append("sync")
+
+    def record_set_trigger() -> None:
+        event_order.append("set")
+
+    def record_check_trigger() -> bool:
+        event_order.append("check")
+        return next(check_results, False)
+
+    monkeypatch.setattr(accelerator, "wait_for_everyone", record_sync)
+    monkeypatch.setattr(accelerator, "set_trigger", record_set_trigger)
+    monkeypatch.setattr(accelerator, "check_trigger", record_check_trigger)
+
+    trainer()
+
+    assert event_order == ["set", "check", "set", "check"]
+    assert trainer.trainer_progress_state.global_step_id == 0
+
+
 def test_optimizer_and_scheduler(dummy_trainer):
     initial_lr = dummy_trainer.optimizer.param_groups[0]["lr"]
     dummy_trainer()

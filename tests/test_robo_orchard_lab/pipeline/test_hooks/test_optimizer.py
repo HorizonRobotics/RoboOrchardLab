@@ -37,3 +37,22 @@ def test_optimizer_hook_skips_scheduler_when_gradients_not_synced():
     optimizer.step.assert_called_once_with()
     lr_scheduler.step.assert_not_called()
     optimizer.zero_grad.assert_called_once_with()
+
+
+def test_optimizer_hook_skips_step_on_context_exception():
+    accelerator = MagicMock()
+    accelerator.sync_gradients = True
+    optimizer = MagicMock()
+    lr_scheduler = MagicMock()
+    hook_args = PipelineHookArgs(
+        accelerator=accelerator,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        exception=RuntimeError("body failed"),
+    )
+
+    OptimizerHook(None)._optimizer_step(hook_args)
+
+    optimizer.step.assert_not_called()
+    lr_scheduler.step.assert_not_called()
+    optimizer.zero_grad.assert_not_called()

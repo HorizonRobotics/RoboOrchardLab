@@ -417,18 +417,6 @@ class HookBasedTrainer:
             "on_loop", self._get_hook_args()
         ) as on_loop_hook_args:
             while not end_loop_flag:
-                # TODO: Synchronize end_loop_flag when different
-                # processes have different batch numbers. !
-                #
-                # In some cases, the dataloader may not have the same
-                # number of batches when dataset is split into
-                # different processes.
-                #
-                # If the dataloader has a different number of batches,
-                # the training loop may hang or produce unexpected results.
-                #
-                # Consider using Accelerator.join_uneven_inputs?
-                #
                 with self.hooks.begin(
                     "on_epoch", self._get_hook_args()
                 ) as on_epoch_hook_args:
@@ -438,6 +426,13 @@ class HookBasedTrainer:
                             try:
                                 batch = next(dataloader_iter)
                             except StopIteration:
+                                # Signal other ranks to stop the current epoch
+                                # before they step on an extra local batch.
+                                self.accelerator.set_trigger()
+                                self.accelerator.check_trigger()
+                                break
+
+                            if self.accelerator.check_trigger():
                                 break
 
                             with self.accelerator.accumulate(self.model):
@@ -453,6 +448,9 @@ class HookBasedTrainer:
                                 max_step=self.max_step,
                                 max_epoch=self.max_epoch,
                             ):
+                                end_loop_flag = True
+                                self.accelerator.set_trigger()
+                            if self.accelerator.check_trigger():
                                 end_loop_flag = True
                                 break
                     finally:
@@ -470,6 +468,9 @@ class HookBasedTrainer:
                 if self.trainer_progress_state.is_training_end(
                     max_step=self.max_step, max_epoch=self.max_epoch
                 ):
+                    end_loop_flag = True
+                    self.accelerator.set_trigger()
+                if self.accelerator.check_trigger():
                     end_loop_flag = True
 
         logger.info(

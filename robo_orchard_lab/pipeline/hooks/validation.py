@@ -101,6 +101,9 @@ class ValidationHook(PipelineHooks):
         Args:
             hook_args (PipelineHookArgs): The current training progress state.
         """
+        if hook_args.exception is not None:
+            return
+
         if self.need_eval(hook_args):
             self.evaluate(hook_args)
 
@@ -116,6 +119,9 @@ class ValidationHook(PipelineHooks):
         Args:
             hook_args (PipelineHookArgs): The current training progress state.
         """
+        if hook_args.exception is not None:
+            return
+
         if self.need_eval(hook_args):
             self.evaluate(hook_args)
 

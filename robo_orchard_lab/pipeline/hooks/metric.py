@@ -198,6 +198,9 @@ class MetricTracker(PipelineHooks):
             args (PipelineHookArgs): Arguments containing the batch data and
             model outputs.
         """
+        if args.exception is not None:
+            return
+
         if args.model_outputs is None:
             raise ValueError("Model outputs are required to update metrics.")
         self.update_metric(args.batch, args.model_outputs)
@@ -212,6 +215,8 @@ class MetricTracker(PipelineHooks):
             args (PipelineHookArgs): Arguments containing the current step
                 and epoch IDs.
         """
+        if args.exception is not None:
+            return
 
         if (
             self.step_log_freq > 0
@@ -239,6 +244,8 @@ class MetricTracker(PipelineHooks):
         Args:
             args (PipelineHookArgs): Arguments containing the current epoch ID.
         """
+        if args.exception is not None:
+            return
 
         if (
             self.epoch_log_freq > 0

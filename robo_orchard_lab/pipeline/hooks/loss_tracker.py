@@ -62,8 +62,8 @@ class LossTracker(PipelineHooks):
     def update(self, accelerator: Accelerator, model_outputs: ModelOutput):
         """Track and update the loss values.
 
-        This method only runs on the main process, and all loss values are
-        reduced (averaged) across all processes.
+        This method tracks detached loss values reduced across distributed
+        processes.
         """
 
         # find loss keys
@@ -75,9 +75,7 @@ class LossTracker(PipelineHooks):
             loss = model_outputs[k]
             assert isinstance(loss, torch.Tensor), f"Loss {k} is not a tensor."
 
-            reduced_loss: torch.Tensor = accelerator.reduce(
-                loss.detach(), reduction="mean"
-            )  # type: ignore
+            reduced_loss = loss.detach()
             if reduced_loss.numel() != 1:
                 logger.warning(
                     f"The loss {k} is not a scalar, "
@@ -86,6 +84,7 @@ class LossTracker(PipelineHooks):
                 )
                 reduced_loss = reduced_loss.mean()
 
+            reduced_loss = accelerator.reduce(reduced_loss, reduction="mean")
             reduced_loss_value = reduced_loss.item()
 
             if k not in self.cached_loss:
@@ -109,6 +108,9 @@ class LossTracker(PipelineHooks):
             args (PipelineHookArgs): Arguments containing the current step
                 and epoch IDs.
         """
+        if args.exception is not None:
+            return
+
         if args.model_outputs is not None:
             self.update(args.accelerator, args.model_outputs)
 

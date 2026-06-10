@@ -166,6 +166,9 @@ class SaveCheckpoint(PipelineHooks):
         Logs:
             A message indicating the checkpoint location.
         """
+        if args.exception is not None:
+            return
+
         if (
             self.save_step_freq is not None
             and (args.global_step_id + 1) % self.save_step_freq == 0
@@ -192,6 +195,9 @@ class SaveCheckpoint(PipelineHooks):
         Logs:
             A message indicating the checkpoint location.
         """
+        if args.exception is not None:
+            return
+
         if (
             self.save_epoch_freq is not None
             and (args.epoch_id + 1) % self.save_epoch_freq == 0
@@ -206,6 +212,9 @@ class SaveCheckpoint(PipelineHooks):
                 )
 
     def _on_loop_end(self, args: PipelineHookArgs) -> None:
+        if args.exception is not None:
+            return
+
         if not self.cfg.save_when_loop_end:
             return
 
@@ -287,6 +296,9 @@ class SaveModel(PipelineHooks):
         return save_root
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
+        if args.exception is not None:
+            return
+
         if (
             self.cfg.save_step_freq is not None
             and (args.global_step_id + 1) % self.cfg.save_step_freq == 0
@@ -304,6 +316,9 @@ class SaveModel(PipelineHooks):
                 )
 
     def _on_epoch_end(self, args: PipelineHookArgs) -> None:
+        if args.exception is not None:
+            return
+
         if (
             self.cfg.save_epoch_freq is not None
             and (args.epoch_id + 1) % self.cfg.save_epoch_freq == 0
@@ -334,6 +349,9 @@ class SaveModel(PipelineHooks):
         Logs:
             A message indicating the checkpoint location.
         """
+        if args.exception is not None:
+            return
+
         if (
             self.cfg.save_when_loop_end is False
             or self._saved_last_step == args.global_step_id
