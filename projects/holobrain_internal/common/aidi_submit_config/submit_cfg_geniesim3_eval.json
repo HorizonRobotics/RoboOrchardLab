@@ -1,7 +1,7 @@
 {
     "job_name": "eval_geniesim3_holobrain",
     "workspace_folder": "submit/holobrain",
-    "docker_image": "hub.hobot.cc/auto/robot_lab/jiawei03.li/open_source_cloud:0.2.0",
+    "docker_image": "hub.hobot.cc/auto/robot_lab/jiawei03.li/geniesim_holobrain:0.3.5",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,
