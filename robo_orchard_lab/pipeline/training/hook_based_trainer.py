@@ -19,15 +19,15 @@ from typing import Any, Iterable
 
 import torch
 from accelerate import Accelerator
-from accelerate.data_loader import DataLoaderStateMixin
 from accelerate.logging import get_logger
 from accelerate.optimizer import AcceleratedOptimizer
 from accelerate.scheduler import AcceleratedScheduler
 from robo_orchard_core.utils.config import Config
 from torch.utils.data import DataLoader
 
-from robo_orchard_lab.dataset.robot.dataset_ex import (
-    _close_dataloader_iterator,
+from robo_orchard_lab.dataset.robot._prefetch import (
+    DataloaderCloseReason,
+    close_dataloader_resources,
 )
 from robo_orchard_lab.models.torch_model import TorchModelMixin
 from robo_orchard_lab.pipeline.hooks.grad_clip import (
@@ -372,6 +372,88 @@ class HookBasedTrainer:
             setattr(hookargs, k, v)
         return hookargs
 
+    def _run_batch_step(self, batch: Any) -> None:
+        """Run one batch through step and batch hooks.
+
+        The batch processor owns forward/backward work. The surrounding step
+        hooks own optimizer and scheduler side effects, including the default
+        optimizer hook installed by this trainer.
+        """
+        with self.hooks.begin(
+            "on_step", self._get_hook_args()
+        ) as on_step_hook_args:
+            with self.hooks.begin(
+                "on_batch", self._get_hook_args(batch=batch)
+            ) as on_batch_hook_args:
+                self.batch_processor(
+                    pipeline_hooks=self.hooks,
+                    on_batch_hook_args=on_batch_hook_args,
+                    model=self.model,
+                )
+                on_step_hook_args.model_outputs = (
+                    on_batch_hook_args.model_outputs
+                )
+                on_step_hook_args.reduced_backward_loss = (
+                    on_batch_hook_args.reduced_backward_loss
+                )
+
+    def _run_epoch_steps(
+        self,
+        on_epoch_hook_args: PipelineHookArgs,
+    ) -> bool:
+        """Run one epoch's dataloader iterator and always close it.
+
+        Returns:
+            bool: Whether the training loop should end after this epoch.
+        """
+        dataloader_iter = iter(self.dataloader)
+        primary_exc: BaseException | None = None
+        end_loop_flag = False
+        try:
+            while True:
+                try:
+                    batch = next(dataloader_iter)
+                except StopIteration:
+                    # Signal other ranks to stop the current epoch before
+                    # they step on an extra local batch.
+                    self.accelerator.set_trigger()
+                    self.accelerator.check_trigger()
+                    break
+
+                if self.accelerator.check_trigger():
+                    break
+
+                with self.accelerator.accumulate(self.model):
+                    self._run_batch_step(batch=batch)
+                self.trainer_progress_state.update_step()
+                self.trainer_progress_state.sync_pipeline_hook_arg(
+                    on_epoch_hook_args
+                )
+                if self.trainer_progress_state.is_training_end(
+                    max_step=self.max_step,
+                    max_epoch=self.max_epoch,
+                ):
+                    end_loop_flag = True
+                    self.accelerator.set_trigger()
+                if self.accelerator.check_trigger():
+                    end_loop_flag = True
+                    break
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            if primary_exc is not None:
+                reason = DataloaderCloseReason.EXCEPTION_ABORT
+            else:
+                reason = DataloaderCloseReason.EARLY_BREAK
+            close_dataloader_resources(
+                self.dataloader,
+                dataloader_iter,
+                reason=reason,
+                primary_exc=primary_exc,
+            )
+        return end_loop_flag
+
     def __call__(self):
         logger.info(
             "\n" + "=" * 50 + "BEGIN TRAINING" + "=" * 50,
@@ -385,34 +467,6 @@ class HookBasedTrainer:
         end_loop_flag = False
         self.model.train()
 
-        def step(
-            batch: Any,
-            batch_processor: BatchStepProcessorMixin,
-        ):
-            # batch processor handle forward and backward,
-            # while hooks handle optimizer and lr_scheduler.
-            # By default optimizer hook is enabled and will
-            # call optimizer.step() and lr_scheduler.step()
-            # when on_step hook ends.
-            with self.hooks.begin(
-                "on_step", self._get_hook_args()
-            ) as on_step_hook_args:
-                with self.hooks.begin(
-                    "on_batch", self._get_hook_args(batch=batch)
-                ) as on_batch_hook_args:
-                    batch_processor(
-                        pipeline_hooks=self.hooks,
-                        on_batch_hook_args=on_batch_hook_args,
-                        model=self.model,
-                    )
-                    # update module_output to on_step_hook_args
-                    on_step_hook_args.model_outputs = (
-                        on_batch_hook_args.model_outputs
-                    )
-                    on_step_hook_args.reduced_backward_loss = (
-                        on_batch_hook_args.reduced_backward_loss
-                    )
-
         with self.hooks.begin(
             "on_loop", self._get_hook_args()
         ) as on_loop_hook_args:
@@ -420,46 +474,7 @@ class HookBasedTrainer:
                 with self.hooks.begin(
                     "on_epoch", self._get_hook_args()
                 ) as on_epoch_hook_args:
-                    dataloader_iter = iter(self.dataloader)
-                    try:
-                        while True:
-                            try:
-                                batch = next(dataloader_iter)
-                            except StopIteration:
-                                # Signal other ranks to stop the current epoch
-                                # before they step on an extra local batch.
-                                self.accelerator.set_trigger()
-                                self.accelerator.check_trigger()
-                                break
-
-                            if self.accelerator.check_trigger():
-                                break
-
-                            with self.accelerator.accumulate(self.model):
-                                step(
-                                    batch=batch,
-                                    batch_processor=self.batch_processor,
-                                )
-                            self.trainer_progress_state.update_step()
-                            self.trainer_progress_state.sync_pipeline_hook_arg(
-                                on_epoch_hook_args
-                            )
-                            if self.trainer_progress_state.is_training_end(
-                                max_step=self.max_step,
-                                max_epoch=self.max_epoch,
-                            ):
-                                end_loop_flag = True
-                                self.accelerator.set_trigger()
-                            if self.accelerator.check_trigger():
-                                end_loop_flag = True
-                                break
-                    finally:
-                        _close_dataloader_iterator(dataloader_iter)
-                        # Iterator teardown does not reset prepared-wrapper
-                        # state. The trainer owns the prepared dataloader
-                        # lifecycle, so it must end that wrapper explicitly.
-                        if isinstance(self.dataloader, DataLoaderStateMixin):
-                            self.dataloader.end()
+                    end_loop_flag = self._run_epoch_steps(on_epoch_hook_args)
 
                 self.trainer_progress_state.update_epoch()
                 self.trainer_progress_state.sync_pipeline_hook_arg(

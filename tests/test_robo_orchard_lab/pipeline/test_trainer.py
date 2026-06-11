@@ -31,6 +31,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 
 import robo_orchard_lab.pipeline as pipeline_module
+import robo_orchard_lab.pipeline.training.hook_based_trainer as trainer_module
 from robo_orchard_lab.dataset.robot import (
     DatasetItem,
     DictIterableDataset,
@@ -1017,6 +1018,7 @@ def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
     monkeypatch: pytest.MonkeyPatch,
 ):
     event_order: list[str] = []
+    close_count = 0
 
     class RecordingBatchProcessor(DummyBatchProcessor):
         def forward(self, model: torch.nn.Module, batch: torch.Tensor):
@@ -1058,17 +1060,31 @@ def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
     monkeypatch.setattr(accelerator, "wait_for_everyone", record_sync)
     monkeypatch.setattr(accelerator, "set_trigger", record_set_trigger)
     monkeypatch.setattr(accelerator, "check_trigger", record_check_trigger)
+    original_close = trainer_module.close_dataloader_resources
+
+    def record_close(*args, **kwargs):
+        nonlocal close_count
+        close_count += 1
+        return original_close(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trainer_module,
+        "close_dataloader_resources",
+        record_close,
+    )
 
     trainer()
 
     assert event_order == ["check", "set", "check"]
     assert trainer.trainer_progress_state.global_step_id == 0
+    assert close_count == 1
 
 
 def test_hook_based_trainer_sets_trigger_when_dataloader_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ):
     event_order: list[str] = []
+    close_count = 0
 
     class RecordingBatchProcessor(DummyBatchProcessor):
         def forward(self, model: torch.nn.Module, batch: torch.Tensor):
@@ -1110,11 +1126,24 @@ def test_hook_based_trainer_sets_trigger_when_dataloader_is_exhausted(
     monkeypatch.setattr(accelerator, "wait_for_everyone", record_sync)
     monkeypatch.setattr(accelerator, "set_trigger", record_set_trigger)
     monkeypatch.setattr(accelerator, "check_trigger", record_check_trigger)
+    original_close = trainer_module.close_dataloader_resources
+
+    def record_close(*args, **kwargs):
+        nonlocal close_count
+        close_count += 1
+        return original_close(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trainer_module,
+        "close_dataloader_resources",
+        record_close,
+    )
 
     trainer()
 
     assert event_order == ["set", "check", "set", "check"]
     assert trainer.trainer_progress_state.global_step_id == 0
+    assert close_count == 1
 
 
 def test_optimizer_and_scheduler(dummy_trainer):

@@ -15,18 +15,14 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-import copy
 import inspect
-import threading
 import warnings
 from abc import ABCMeta, abstractmethod
 from functools import partial
-from types import GeneratorType
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -44,13 +40,12 @@ from torch.utils.data import (
     Dataset as TorchDataset,
     IterableDataset as TorchIterableDataset,
 )
-from torch.utils.data._utils.fetch import _IterableDatasetFetcher
-from torch.utils.data.dataloader import (
-    _MultiProcessingDataLoaderIter,
-    _SingleProcessDataLoaderIter,
-)
 from typing_extensions import TypeVar
 
+from robo_orchard_lab.dataset.robot._prefetch import (
+    close_iterators_best_effort,
+    create_prefetch_iterator,
+)
 from robo_orchard_lab.dataset.sampler import (
     ChunkedIndiceTable,
     IndiceTable,
@@ -77,7 +72,6 @@ __all__ = [
 DatasetType = TypeVar("DatasetType", bound=TorchDataset)
 _TORCH_DATALOADER_INIT_SIGNATURE = inspect.signature(TorchDataLoader.__init__)
 _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE = 32
-_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC = 1.0
 
 
 class ShardConfig(Config):
@@ -178,6 +172,12 @@ def _wrap_with_prefetch_if_needed(
     generator: torch.Generator | np.random.Generator | None,
     batch_loader_kwargs: BatchLoaderConfig | None,
 ) -> Iterator[Any]:
+    """Return an iterator wrapped with sample-level prefetching when needed.
+
+    Prefetching is a dataset-side optimization for shuffled sample iteration.
+    Dataset-side batching already owns its own iteration boundary, so this
+    helper leaves batched iteration unwrapped.
+    """
     prefetch_size = shuffle_config.prefetch_size
     if (
         prefetch_size is not None
@@ -187,7 +187,7 @@ def _wrap_with_prefetch_if_needed(
         logger.debug(
             "Applying prefetching with prefetch size: %d", prefetch_size
         )
-        return _create_prefetch_iterator(
+        return create_prefetch_iterator(
             iterator,
             prefetch_size,
             shuffle=shuffle_config.shuffle,
@@ -947,7 +947,20 @@ class IterableWithLenDataset(
             self._shuffle_config,
             self.batch_loader_kwargs,
         )
-        yield from self._create_inner_batch_loader()
+        inner_loader = self._create_inner_batch_loader()
+        inner_iter = iter(inner_loader)
+        primary_exc: BaseException | None = None
+        try:
+            for item in inner_iter:
+                yield item
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            close_iterators_best_effort(
+                [inner_iter],
+                primary_exc=primary_exc,
+            )
 
     def _iter_indices(self, indice_iter: Iterable[int]) -> Iterator[Any]:
         """Yield samples for the provided indices.
@@ -1023,12 +1036,24 @@ class IterableWithLenDataset(
         Once dataset-side batching is active, the inner batching layer remains
         the single source of batch construction.
         """
-        yield from _wrap_with_prefetch_if_needed(
+        iterator = _wrap_with_prefetch_if_needed(
             self._torch_iter(),
             shuffle_config=self._shuffle_config,
             generator=self.indice_sampler.generator,
             batch_loader_kwargs=self.batch_loader_kwargs,
         )
+        primary_exc: BaseException | None = None
+        try:
+            for item in iterator:
+                yield item
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            close_iterators_best_effort(
+                [iterator],
+                primary_exc=primary_exc,
+            )
 
     @property
     def total_iterator_length(self) -> int:
@@ -1434,7 +1459,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
 
     def _prepare_dataset_for_iter(
         self,
-        cur_dataset_iters: list[tuple[int, Generator[Any, None, None]]],
+        cur_dataset_iters: list[tuple[int, Iterator[Any]]],
         remaining_dataset_indices: list[int],
     ) -> np.ndarray:
         """Prepare the dataset for iteration and return the sampling weights.
@@ -1472,7 +1497,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         return weights
 
     def __iter__(self):
-        cur_dataset_iters: list[tuple[int, Generator[Any, None, None]]] = []
+        cur_dataset_iters: list[tuple[int, Iterator[Any]]] = []
         dataset_indices = list(
             IndiceTableSampler(
                 len(self.dataset_items),
@@ -1489,6 +1514,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             remaining_dataset_indices=dataset_indices,
         )
 
+        primary_exc: BaseException | None = None
         try:
             while len(cur_dataset_iters) > 0:
                 # calulate the sampling weight for each dataset iterator based
@@ -1519,14 +1545,19 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     yield item
                 except StopIteration:
                     cur_dataset_iters.pop(selected_idx)
-                    iter_dataset.close()
+                    close_iterators_best_effort([iter_dataset])
                     weights = self._prepare_dataset_for_iter(
                         cur_dataset_iters=cur_dataset_iters,
                         remaining_dataset_indices=dataset_indices,
                     )
+        except BaseException as exc:
+            primary_exc = exc
+            raise
         finally:
-            for _, iter_dataset in cur_dataset_iters:
-                iter_dataset.close()
+            close_iterators_best_effort(
+                [iter_dataset for _, iter_dataset in cur_dataset_iters],
+                primary_exc=primary_exc,
+            )
 
 
 def _get_batch_num(batch_size: int, num_samples: int, drop_last: bool) -> int:
@@ -1580,228 +1611,6 @@ def _get_total_batch_num(
             drop_last=drop_last,
         )
     return total_batches
-
-
-def _create_prefetch_iterator(
-    source_iter: Iterator,
-    prefetch_size: int,
-    shuffle: bool,
-    generator: torch.Generator | np.random.Generator | None,
-) -> Iterator:
-    """Create a prefetch iterator from the given iterator.
-
-    This function creates a prefetch iterator that prefetches the next
-    `prefetch_size` items from the given iterator. This can help improve
-    the data loading performance by overlapping the data loading and data
-    processing.
-
-    Args:
-        source_iter (Iterator): The input iterator to create a prefetch
-            iterator from.
-        prefetch_size (int): The number of items to prefetch.
-
-    Returns:
-        Iterator: A prefetch iterator that yields items from the input iterator
-            with prefetching.
-
-    """
-    if prefetch_size <= 0:
-        raise ValueError("prefetch_size must be greater than 0.")
-
-    if prefetch_size == 1:
-        yield from source_iter
-        return
-
-    if shuffle and generator is None:
-        seed = int(torch.empty((), dtype=torch.int64).random_().item())
-        generator = torch.Generator()
-        generator.manual_seed(seed)
-
-    def shuffle_queue(queue: list) -> list:
-        if isinstance(generator, np.random.Generator):
-            ret = copy.copy(queue)
-            generator.shuffle(ret)
-            return ret
-        elif isinstance(generator, torch.Generator):
-            indices = torch.randperm(len(queue), generator=generator).tolist()
-            return [queue[i] for i in indices]
-        else:
-            raise ValueError(
-                "Generator must be either a torch.Generator or a "
-                "numpy.random.Generator."
-            )
-
-    # `queue` is the mutable buffer currently being filled by the producer
-    # thread. Once it reaches a consumable state, the consumer swaps it out as
-    # `ready_queue` and replaces `queue` with a fresh list so the producer can
-    # continue filling the next window in parallel.
-    queue: list[Any] = []
-    # A single condition variable protects the shared state below:
-    # - `queue`: current fill buffer
-    # - `producer_done`: upstream iterator has exited
-    # - `consumer_closed`: downstream no longer needs more data
-    # - `producer_error`: exception raised by the producer side
-    condition = threading.Condition()
-    producer_done = False
-    consumer_closed = False
-    producer_error: BaseException | None = None
-
-    def producer() -> None:
-        nonlocal producer_done, producer_error
-        try:
-            for item in source_iter:
-                with condition:
-                    # Stop filling when the current buffer is already full.
-                    # The consumer will swap in a fresh buffer after it takes
-                    # over this full window for shuffle/consumption.
-                    while len(queue) >= prefetch_size and not consumer_closed:
-                        condition.wait()
-                    # If the consumer closed early, exit without touching the
-                    # queue again.
-                    if consumer_closed:
-                        return
-                    queue.append(item)
-                    # Wake the consumer so it can observe newly available data
-                    # or a fully prepared prefetch window.
-                    condition.notify_all()
-        except BaseException as exc:
-            with condition:
-                # Record the producer-side failure and let the consumer raise
-                # it from the foreground thread on the next check.
-                producer_error = exc
-        finally:
-            with condition:
-                # Always mark the producer as done so the consumer can stop
-                # waiting even if the upstream iterator exited via exception.
-                producer_done = True
-                condition.notify_all()
-
-    producer_thread = threading.Thread(
-        target=producer,
-        name="dataset-prefetch-producer",
-        daemon=True,
-    )
-    producer_thread.start()
-
-    try:
-        while True:
-            with condition:
-                # For shuffled mode we wait until a full window is available so
-                # the randomization has enough candidates. For the terminal
-                # partial window, `producer_done=True` breaks this wait.
-                while (
-                    len(queue) < prefetch_size
-                    and not producer_done
-                    and producer_error is None
-                ):
-                    condition.wait()
-
-                if producer_error is not None:
-                    raise producer_error
-
-                if len(queue) == 0 and producer_done:
-                    break
-
-                # Hand the current buffer to the consumer and immediately
-                # replace it with a fresh list. Because this happens under the
-                # same lock, the producer will see the new buffer atomically
-                # and can start filling the next window right away.
-                ready_queue = queue
-                queue = []
-                condition.notify_all()
-
-            if shuffle:
-                # Shuffle happens only after a full window is sealed as
-                # `ready_queue`, so randomization quality is not degraded by
-                # consuming under-filled buffers too early.
-                ready_queue = shuffle_queue(ready_queue)
-
-            for item in ready_queue:
-                with condition:
-                    # Re-check producer failure between yielded items so an
-                    # upstream crash is surfaced promptly instead of waiting
-                    # until the entire ready window has been drained.
-                    if producer_error is not None:
-                        raise producer_error
-                yield item
-    finally:
-        with condition:
-            # Notify the producer that the consumer is done, including cases
-            # where the generator is closed early by the caller.
-            consumer_closed = True
-            condition.notify_all()
-        # Best-effort cleanup only: if the producer is blocked inside
-        # `source_iter`, it cannot observe `consumer_closed` yet. Keep close
-        # bounded so caller teardown does not hang forever on a stalled
-        # upstream iterator.
-        producer_thread.join(timeout=_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC)
-        if producer_thread.is_alive():
-            warnings.warn(
-                "Prefetch producer thread did not exit within "
-                f"{_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC:.1f}s during close(); "
-                "it will finish in the background when the upstream iterator "
-                "returns.",
-                UserWarning,
-            )
-
-
-def _close_dataloader_iterator(
-    dataloader_iter: (
-        GeneratorType
-        | _SingleProcessDataLoaderIter
-        | _MultiProcessingDataLoaderIter
-    ),
-    _visited: set[int] | None = None,
-) -> None:
-    """Close a dataloader iterator and the nested iterator layers it owns.
-
-    This helper only tears down resources owned by the active iterator stack.
-    Prepared-wrapper lifecycle state such as `accelerate`'s
-    `DataLoaderStateMixin` must be ended separately by the owner that
-    prepared the dataloader.
-    """
-
-    if _visited is None:
-        _visited = set()
-
-    iterator_id = id(dataloader_iter)
-    if iterator_id in _visited:
-        return
-    _visited.add(iterator_id)
-
-    if isinstance(dataloader_iter, GeneratorType):
-        generator_locals = inspect.getgeneratorlocals(dataloader_iter)
-        for nested_iter_name in ("dataloader_iter", "main_iterator"):
-            nested_dataloader_iter = generator_locals.get(nested_iter_name)
-            if isinstance(
-                nested_dataloader_iter,
-                (
-                    GeneratorType,
-                    _SingleProcessDataLoaderIter,
-                    _MultiProcessingDataLoaderIter,
-                ),
-            ):
-                _close_dataloader_iterator(nested_dataloader_iter, _visited)
-        dataloader_iter.close()
-        return
-
-    if isinstance(dataloader_iter, _SingleProcessDataLoaderIter):
-        if not isinstance(
-            dataloader_iter._dataset_fetcher, _IterableDatasetFetcher
-        ):
-            return
-        dataset_iter = dataloader_iter._dataset_fetcher.dataset_iter
-        if isinstance(dataset_iter, GeneratorType) or (
-            hasattr(dataset_iter, "close") and callable(dataset_iter.close)
-        ):
-            dataset_iter.close()
-        return
-
-    if (
-        isinstance(dataloader_iter, _MultiProcessingDataLoaderIter)
-        and not dataloader_iter._persistent_workers
-    ):
-        dataloader_iter._shutdown_workers()
 
 
 if not TYPE_CHECKING:

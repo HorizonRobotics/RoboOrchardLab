@@ -28,12 +28,14 @@ from robo_orchard_core.utils.config import ClassType
 from torch.utils.data import Dataset
 
 from robo_orchard_lab.dataset.robot import DatasetItem
+from robo_orchard_lab.dataset.robot._prefetch import (
+    close_iterators_best_effort,
+)
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     DataLoader,
     DictIterableDataset,
     IterableWithLenDataset,
     ShuffleConfig,
-    _close_dataloader_iterator,
 )
 from robo_orchard_lab.utils.accelerate import (
     prepare_data_loader as repo_prepare_data_loader,
@@ -220,7 +222,7 @@ def _iterate_with_early_break(dataloader: object, max_batches: int) -> int:
         # This subprocess probe is limited to iterator-owned resource cleanup.
         # Prepared-wrapper state such as Accelerate's DataLoaderStateMixin is
         # intentionally left to the wrapper owner and is not asserted here.
-        _close_dataloader_iterator(dataloader_iter)
+        close_iterators_best_effort([dataloader_iter])
 
     return batch_count
 

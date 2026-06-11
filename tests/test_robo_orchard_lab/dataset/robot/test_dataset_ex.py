@@ -32,6 +32,7 @@ from torch.utils.data import (
     IterableDataset as TorchIterableDataset,
 )
 
+import robo_orchard_lab.dataset.robot._prefetch as prefetch_module
 from robo_orchard_lab.dataset.robot import (
     BatchLoaderConfig,
     DataLoader,
@@ -41,12 +42,15 @@ from robo_orchard_lab.dataset.robot import (
     ShardConfig,
     ShuffleConfig,
 )
+from robo_orchard_lab.dataset.robot._prefetch import (
+    DataloaderCloseReason,
+    _close_dataloader_iterator,
+    close_dataloader_resources,
+    create_prefetch_iterator,
+)
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE,
-    _PREFETCH_CLOSE_JOIN_TIMEOUT_SEC,
     DictIterableDataset,
-    _close_dataloader_iterator,
-    _create_prefetch_iterator,
 )
 from robo_orchard_lab.dataset.sampler import ShardStrategy
 from robo_orchard_lab.utils.accelerate import (
@@ -991,7 +995,7 @@ class TestCreatePrefetchIterator:
 
         generator = torch.Generator()
         generator.manual_seed(0)
-        prefetch_iter = _create_prefetch_iterator(
+        prefetch_iter = create_prefetch_iterator(
             iter(blocking_iter()),
             prefetch_size=2,
             shuffle=True,
@@ -1035,7 +1039,7 @@ class TestCreatePrefetchIterator:
             yield 2
             yield 3
 
-        prefetch_iter = _create_prefetch_iterator(
+        prefetch_iter = create_prefetch_iterator(
             iter(blocking_iter()),
             prefetch_size=2,
             shuffle=False,
@@ -1054,29 +1058,33 @@ class TestCreatePrefetchIterator:
     def test_close_stops_prefetch_thread_waiting_on_full_queue(self):
         # Closing the generator early should notify the producer and let the
         # background thread exit instead of remaining blocked on a full queue.
-        allow_refill = threading.Event()
+        item_requests = 0
 
         def blocking_iter():
+            nonlocal item_requests
+            item_requests += 1
             yield 0
+            item_requests += 1
             yield 1
-            if not allow_refill.wait(timeout=1):
-                raise TimeoutError("Timed out waiting for refill release.")
+            item_requests += 1
             yield 2
 
         baseline_threads = self._count_prefetch_threads()
-        prefetch_iter = _create_prefetch_iterator(
+        prefetch_iter = create_prefetch_iterator(
             iter(blocking_iter()),
             prefetch_size=2,
             shuffle=False,
             generator=None,
         )
 
-        assert next(prefetch_iter) == 0
+        for _ in range(40):
+            if item_requests == 2:
+                break
+            time.sleep(0.05)
+        assert item_requests == 2
+
         cast(Any, prefetch_iter).close()
 
-        # Release the upstream iterator and wait briefly for the prefetch
-        # thread count to return to its baseline.
-        allow_refill.set()
         for _ in range(20):
             if self._count_prefetch_threads() == baseline_threads:
                 break
@@ -1095,7 +1103,7 @@ class TestCreatePrefetchIterator:
             yield 2
 
         baseline_threads = self._count_prefetch_threads()
-        prefetch_iter = _create_prefetch_iterator(
+        prefetch_iter = create_prefetch_iterator(
             iter(slow_tail_iter()),
             prefetch_size=2,
             shuffle=False,
@@ -1109,7 +1117,7 @@ class TestCreatePrefetchIterator:
 
         assert self._count_prefetch_threads() == baseline_threads
 
-    def test_close_returns_when_inflight_prefetch_item_blocks(self):
+    def test_close_raises_when_inflight_prefetch_item_blocks(self):
         tail_item_started = threading.Event()
         allow_tail_item = threading.Event()
 
@@ -1121,7 +1129,7 @@ class TestCreatePrefetchIterator:
             yield 2
 
         baseline_threads = self._count_prefetch_threads()
-        prefetch_iter = _create_prefetch_iterator(
+        prefetch_iter = create_prefetch_iterator(
             iter(blocked_tail_iter()),
             prefetch_size=2,
             shuffle=False,
@@ -1132,14 +1140,14 @@ class TestCreatePrefetchIterator:
         assert tail_item_started.wait(timeout=1)
 
         start = time.monotonic()
-        with pytest.warns(
-            UserWarning,
-            match="Prefetch producer thread did not exit within",
+        with pytest.raises(
+            RuntimeError,
+            match="Prefetch producer thread did not exit",
         ):
-            cast(Any, prefetch_iter).close()
+            cast(Any, prefetch_iter).close(timeout=0.2)
         elapsed = time.monotonic() - start
 
-        assert elapsed < _PREFETCH_CLOSE_JOIN_TIMEOUT_SEC + 0.5
+        assert elapsed < 0.7
 
         allow_tail_item.set()
         for _ in range(40):
@@ -1148,6 +1156,185 @@ class TestCreatePrefetchIterator:
             threading.Event().wait(0.05)
 
         assert self._count_prefetch_threads() == baseline_threads
+
+    def test_close_logs_producer_error_in_gc_close_path(self, caplog):
+        baseline_threads = self._count_prefetch_threads()
+
+        def failing_iter():
+            yield 0
+            yield 1
+            raise RuntimeError("producer failed during close")
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(failing_iter()),
+            prefetch_size=3,
+            shuffle=False,
+            generator=None,
+        )
+
+        for _ in range(40):
+            if self._count_prefetch_threads() == baseline_threads:
+                break
+            time.sleep(0.05)
+
+        cast(Any, prefetch_iter).close(raise_on_timeout=False)
+
+        assert "producer-side exception" in caplog.text
+
+    def test_close_calls_source_iter_close_from_producer_thread(self):
+        class _CloseTrackingIterator:
+            def __init__(self) -> None:
+                self.item_count = 0
+                self.window_ready = threading.Event()
+                self.closed = threading.Event()
+                self.close_thread_name: str | None = None
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                if self.item_count >= 2:
+                    raise StopIteration
+                value = self.item_count
+                self.item_count += 1
+                if self.item_count == 2:
+                    self.window_ready.set()
+                return value
+
+            def close(self) -> None:
+                self.close_thread_name = threading.current_thread().name
+                self.closed.set()
+
+        source_iter = _CloseTrackingIterator()
+        prefetch_iter = create_prefetch_iterator(
+            source_iter,
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert source_iter.window_ready.wait(timeout=1)
+        cast(Any, prefetch_iter).close()
+
+        assert source_iter.closed.is_set()
+        assert source_iter.close_thread_name == "dataset-prefetch-producer"
+
+    def test_source_iter_close_error_is_raised_without_timeout(self):
+        class _FailingCloseIterator:
+            def __init__(self) -> None:
+                self.item_count = 0
+                self.window_ready = threading.Event()
+                self.closed = threading.Event()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                if self.item_count >= 2:
+                    raise StopIteration
+                value = self.item_count
+                self.item_count += 1
+                if self.item_count == 2:
+                    self.window_ready.set()
+                return value
+
+            def close(self) -> None:
+                self.closed.set()
+                raise RuntimeError("source close failed")
+
+        source_iter = _FailingCloseIterator()
+        prefetch_iter = create_prefetch_iterator(
+            source_iter,
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert source_iter.window_ready.wait(timeout=1)
+        with pytest.raises(RuntimeError, match="source close failed"):
+            cast(Any, prefetch_iter).close(timeout=0.2)
+
+        assert source_iter.closed.is_set()
+
+    def test_prefetch_thread_start_failure_closes_source_iterator(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        class _CloseTrackingIterator:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                return 0
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _FailingThread:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+        source_iter = _CloseTrackingIterator()
+        monkeypatch.setattr(
+            prefetch_module.threading,
+            "Thread",
+            _FailingThread,
+        )
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            create_prefetch_iterator(
+                source_iter,
+                prefetch_size=2,
+                shuffle=False,
+                generator=None,
+            )
+
+        assert source_iter.closed is True
+
+    def test_second_close_consumes_error_after_first_close_timeout(self):
+        source_blocked = threading.Event()
+        unblock_source = threading.Event()
+
+        def blocked_then_failing_iter():
+            yield 0
+            yield 1
+            source_blocked.set()
+            unblock_source.wait()
+            raise RuntimeError("producer failed after timeout")
+
+        baseline_threads = self._count_prefetch_threads()
+        prefetch_iter = create_prefetch_iterator(
+            iter(blocked_then_failing_iter()),
+            prefetch_size=2,
+            shuffle=False,
+            generator=None,
+        )
+
+        assert next(prefetch_iter) == 0
+        assert source_blocked.wait(timeout=1)
+        with pytest.raises(
+            RuntimeError,
+            match="Prefetch producer thread did not exit",
+        ):
+            cast(Any, prefetch_iter).close(timeout=0.05)
+
+        unblock_source.set()
+        for _ in range(40):
+            if self._count_prefetch_threads() == baseline_threads:
+                break
+            time.sleep(0.05)
+
+        with pytest.raises(
+            RuntimeError,
+            match="producer failed after timeout",
+        ):
+            cast(Any, prefetch_iter).close(timeout=1.0)
 
     def test_close_closes_nested_prefetch_iterator_but_not_wrapper_state(
         self,
@@ -1279,6 +1466,41 @@ class TestCreatePrefetchIterator:
         assert first_batch.tolist() == [0, 1, 2, 3]
         assert second_batch.tolist() == [0, 1, 2, 3]
 
+    def test_close_resources_shutdowns_persistent_workers_for_early_break(
+        self,
+    ):
+        num_workers = 1
+        dataloader = DataLoader(
+            ArrayDataset(data=list(range(16))),
+            batch_size=4,
+            num_workers=num_workers,
+            persistent_workers=True,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        iterator = iter(dataloader)
+        first_batch = cast(torch.Tensor, next(iterator))
+
+        close_dataloader_resources(
+            dataloader,
+            iterator,
+            reason=DataloaderCloseReason.EARLY_BREAK,
+        )
+
+        assert getattr(dataloader, "_iterator", None) is None
+        iterator = iter(dataloader)
+        second_batch = cast(torch.Tensor, next(iterator))
+        close_dataloader_resources(
+            dataloader,
+            iterator,
+            reason=DataloaderCloseReason.EPOCH_EXHAUSTED,
+        )
+
+        assert first_batch.tolist() == [0, 1, 2, 3]
+        assert second_batch.tolist() == [0, 1, 2, 3]
+
     def test_raises_producer_error_without_draining_ready_queue(self):
         # If the producer fails after the current window has been handed off,
         # the consumer should observe that failure on the next pull instead of
@@ -1294,7 +1516,7 @@ class TestCreatePrefetchIterator:
             failure_branch_reached.set()
             raise RuntimeError("producer failed")
 
-        prefetch_iter = _create_prefetch_iterator(
+        prefetch_iter = create_prefetch_iterator(
             iter(failing_iter()),
             prefetch_size=2,
             shuffle=False,
