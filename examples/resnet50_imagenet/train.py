@@ -227,13 +227,14 @@ def main(cfg: TrainerConfig):
     )
 
     accelerator = Accelerator(
+        step_scheduler_with_optimizer=False,
         project_config=ProjectConfiguration(
             project_dir=workspace_root,
             logging_dir=os.path.join(workspace_root, "logs"),
             automatic_checkpoint_naming=True,
             total_limit=32,
             iteration=last_ckpt_iteration + 1,
-        )
+        ),
     )
 
     trainer = HookBasedTrainer(
