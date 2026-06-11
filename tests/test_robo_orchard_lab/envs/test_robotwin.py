@@ -25,6 +25,9 @@ import numpy as np
 import pytest
 import torch
 from pydantic import BaseModel, ValidationError
+from test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+    assert_mcap_compatible_pydantic_schema,
+)
 
 import robo_orchard_lab.envs.robotwin.env as robotwin_env
 from robo_orchard_lab.dataset.datatypes import (
@@ -53,9 +56,6 @@ from robo_orchard_lab.envs.robotwin.kinematics import (
 )
 from robo_orchard_lab.envs.state import ENV_STATE_SCOPE_KEY, EnvStateScope
 from robo_orchard_lab.utils.video import VideoWriter
-from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
-    assert_mcap_compatible_pydantic_schema,
-)
 
 pytestmark = pytest.mark.sim_env
 

@@ -18,8 +18,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-
-from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+from test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
     assert_mcap_compatible_pydantic_schema,
 )
 

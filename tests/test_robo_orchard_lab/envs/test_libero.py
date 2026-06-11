@@ -35,6 +35,9 @@ from robo_orchard_core.utils.math import (
     matrix_to_quaternion,
 )
 from robosuite.controllers.osc import OperationalSpaceController
+from test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+    assert_mcap_compatible_pydantic_schema,
+)
 
 from robo_orchard_lab.envs.libero import (
     LiberoEnv,
@@ -43,9 +46,6 @@ from robo_orchard_lab.envs.libero import (
 )
 from robo_orchard_lab.envs.libero.env import (
     LiberoObservationMetaPayload,
-)
-from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
-    assert_mcap_compatible_pydantic_schema,
 )
 
 pytestmark = pytest.mark.sim_env

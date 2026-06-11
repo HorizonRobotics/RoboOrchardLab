@@ -21,6 +21,9 @@ import pytest
 from foxglove_schemas_protobuf.RawImage_pb2 import RawImage
 from google.protobuf.timestamp import from_nanoseconds
 from pydantic import BaseModel, Field, RootModel
+from test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
+    assert_mcap_compatible_pydantic_schema,
+)
 
 from robo_orchard_lab.dataset.experimental.mcap import msg_encoder
 from robo_orchard_lab.dataset.experimental.mcap.foxglove import create_channel
@@ -39,9 +42,6 @@ from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
 from robo_orchard_lab.dataset.experimental.mcap.reader import (
     MakeIterMsgArgs,
     McapReader,
-)
-from tests.test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
-    assert_mcap_compatible_pydantic_schema,
 )
 
 

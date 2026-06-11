@@ -180,6 +180,7 @@ from accelerate.utils import ProjectConfiguration
 
 accelerator = Accelerator(
     cpu=True,
+    step_scheduler_with_optimizer=False,
     project_config=ProjectConfiguration(
         project_dir=cfg.workspace_root,
         logging_dir=os.path.join(cfg.workspace_root, "logs"),
