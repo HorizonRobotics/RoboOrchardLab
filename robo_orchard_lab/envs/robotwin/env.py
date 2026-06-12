@@ -1781,15 +1781,16 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     These overrides are applied after `_update_task_config()` finishes.
     """
 
-    patch_curobo_base_transform: bool = True
-    """Whether to patch RoboTwin Curobo target poses into base-link frame.
+    patch_curobo_base_transform: bool = False
+    """Whether to guard RoboTwin Curobo target poses in base-link frame.
 
-    RoboTwin's Curobo wrapper applies `planner.frame_bias` as a translation
-    only. For `action_type="ee"`, the default patch preserves RoboTwin's
-    action surface while applying the full fixed transform from the RoboTwin
-    entity frame to the Curobo `base_link`. Set this to False only when
-    intentionally comparing against the original RoboTwin behavior in a fresh
-    Python process where the class-level patch has not yet been installed.
+    When enabled for `action_type="ee"`, RoboOrchard patches RoboTwin's
+    Curobo planner to derive the full fixed transform from the Curobo yml and
+    URDF `base_link`, and bypasses RoboTwin's hard-coded `aloha-agilex`
+    transform branch. The default is False so current RoboTwin deployments use
+    their bundled planner behavior unless callers explicitly opt into the
+    RoboOrchard compatibility patch. Once enabled in a process, comparing
+    against the original RoboTwin behavior requires a fresh Python process.
     """
 
     def __post_init__(self):

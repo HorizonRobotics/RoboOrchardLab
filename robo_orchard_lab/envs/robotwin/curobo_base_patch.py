@@ -14,10 +14,41 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""Opt-in RoboTwin Curobo planner patch for base-link target poses.
+
+RoboTwin receives end-effector targets in the simulator/world frame, converts
+them into the RoboTwin entity frame, then passes the result to Curobo. Curobo,
+however, plans in the `robot_cfg.kinematics.base_link` frame from the Curobo
+yml. The fixed transform from the RoboTwin entity frame to that base link is
+already described by the same yml and URDF that RoboTwin gives to Curobo.
+
+This module keeps that transform source-of-truth in the runtime artifacts
+instead of duplicating embodiment-specific constants in RoboOrchard config.
+When `patch_curobo_base_transform=True`, the patch:
+
+- parses the fixed `footprint -> base_link` transform from the Curobo yml and
+  URDF during `CuroboPlanner.__init__`
+- validates RoboTwin's legacy `planner.frame_bias` against the parsed
+  translation, then zeros it so it cannot be applied a second time
+- extends RoboTwin's `_trans_from_world_to_base` result from entity frame to
+  Curobo base-link frame
+- wraps `plan_path` and `plan_batch` so RoboTwin versions with a hard-coded
+  `aloha-agilex` yml-path branch bypass that branch when this patch owns the
+  transform. Versions without that branch keep their original planning flow.
+
+The patch mutates RoboTwin's planner class process-wide. If the planner class
+cannot be patched, RoboOrchard logs a warning and falls back to the original
+RoboTwin behavior. If a specific planner instance cannot parse or validate its
+Curobo yml/URDF transform, that instance also falls back to the original
+RoboTwin behavior. Disabling a successfully installed patch requires a fresh
+Python process, and RoboTwin worker subprocess planner mode is rejected because
+those subprocesses would need the same patch installed independently.
+"""
+
 from __future__ import annotations
 import importlib
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
@@ -50,6 +81,8 @@ logger = LoggerManager().get_child(__name__)
 _PATCH_FLAG = "_robo_orchard_base_transform_patched"
 _PATCH_TRANSFORM_ATTR = "_robo_orchard_entity_T_curobo_base"
 _PATCH_ORIGINAL_FRAME_BIAS_ATTR = "_robo_orchard_original_frame_bias"
+_PATCH_BYPASS_NATIVE_ALOHA_ATTR = "_robo_orchard_bypass_native_aloha"
+_NATIVE_ALOHA_EMBODIMENT_NAME = "aloha-agilex"
 _FRAME_BIAS_ATOL = 1e-6
 _QUAT_NORM_EPS = 1e-9
 _WORKER_JOIN_TIMEOUT_SECONDS = 2.0
@@ -62,6 +95,10 @@ class RoboTwinCuroboPatchUnsupportedError(RuntimeError):
 
 class _PlannerWithFrameBias(Protocol):
     frame_bias: list[float]
+
+
+class _PlannerWithYmlPath(Protocol):
+    yml_path: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +172,22 @@ class _CuroboBaseTransform:
 
 
 def prepare_robotwin_runtime_for_cfg(cfg: object) -> None:
-    """Install configured RoboTwin runtime patches before task setup."""
+    """Install the opt-in Curobo base-link patch before task setup.
+
+    The patch applies only to end-effector control (`action_type="ee"`) and
+    only when `patch_curobo_base_transform` is truthy on the config. The
+    default config keeps this disabled so current RoboTwin installations can
+    use their bundled planner behavior.
+
+    Args:
+        cfg (object): RoboTwin env config-like object. The function reads only
+            `action_type` and `patch_curobo_base_transform`.
+
+    Raises:
+        RuntimeError: If callers try to disable a successfully installed patch
+            after it has already mutated RoboTwin's process-wide planner
+            class.
+    """
     if getattr(cfg, "action_type", None) != "ee":
         return
     if not bool(getattr(cfg, "patch_curobo_base_transform", False)):
@@ -150,7 +202,14 @@ def prepare_robotwin_runtime_for_cfg(cfg: object) -> None:
         return
 
     with in_robotwin_workspace():
-        _install_robotwin_curobo_base_transform_patch()
+        try:
+            _install_robotwin_curobo_base_transform_patch()
+        except Exception as exc:
+            logger.warning(
+                "Failed to install RoboTwin Curobo base transform patch. "
+                "Falling back to original RoboTwin CuroboPlanner behavior.",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
 
 def setup_robotwin_demo_with_runtime_guards(
@@ -158,7 +217,28 @@ def setup_robotwin_demo_with_runtime_guards(
     task: "Base_Task",
     task_config: dict[str, object],
 ) -> None:
-    """Run RoboTwin setup, validate patched runtime, and cleanup on failure."""
+    """Run RoboTwin setup and validate patch coverage for created planners.
+
+    This wrapper keeps the process-wide patch installation at the environment
+    boundary, then rejects runtime modes only when the patch was actually
+    installed and the current patch cannot cover them. In particular, RoboTwin
+    `communication_flag=True` creates Curobo planners inside worker
+    subprocesses; patching the parent process is not sufficient for that mode.
+
+    Args:
+        cfg (object): RoboTwin env config-like object used to decide whether
+            the Curobo patch is active.
+        task (Base_Task): RoboTwin task object whose `setup_demo` method
+            creates the robot and planners.
+        task_config (dict[str, object]): Keyword arguments forwarded to
+            `task.setup_demo`.
+
+    Raises:
+        RoboTwinCuroboPatchUnsupportedError: If the patch is enabled but the
+            created RoboTwin runtime mode is unsupported.
+        Exception: Re-raises any `setup_demo` failure after best-effort
+            cleanup.
+    """
     try:
         task.setup_demo(**task_config)  # type: ignore[attr-defined]
         if _cfg_needs_curobo_base_transform_patch(cfg):
@@ -174,6 +254,21 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
     The patch is process-wide and idempotent. It mutates the original
     RoboTwin ``CuroboPlanner`` class object so already-bound class references
     inside RoboTwin modules see the patched methods.
+
+    The implementation patches four planner entry points as one unit:
+
+    - `__init__` tries to parse the Curobo yml and URDF, stores the fixed
+      `footprint -> base_link` transform, validates `frame_bias`, and sets
+      `frame_bias` to zero. If parsing or validation fails, it logs a warning
+      and leaves that planner instance on RoboTwin's original behavior.
+    - `_trans_from_world_to_base` keeps RoboTwin's original world-to-entity
+      conversion and then applies the parsed entity-to-base transform.
+    - `plan_path` and `plan_batch` call RoboTwin's original planning logic
+      while disabling the hard-coded `aloha-agilex` substring branch in
+      `self.yml_path` for RoboTwin versions that contain that branch. That
+      prevents those versions from applying their native Aloha transform on
+      top of the parsed yml/URDF transform. Versions without this branch see
+      no behavior change from the wrapper beyond the patched frame transform.
     """
     global _PATCH_INSTALLED_IN_PROCESS
 
@@ -191,27 +286,46 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
 
     original_init = planner_cls.__init__
     original_world_to_base = planner_cls._trans_from_world_to_base
+    original_plan_path = getattr(planner_cls, "plan_path", None)
+    original_plan_batch = getattr(planner_cls, "plan_batch", None)
+    if not callable(original_plan_path) or not callable(original_plan_batch):
+        raise RuntimeError(
+            "Patched RoboTwin CuroboPlanner expected callable plan_path and "
+            "plan_batch methods."
+        )
 
     def patched_init(self: object, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)
-        yml_path = getattr(self, "yml_path", None)
-        if not isinstance(yml_path, str):
-            raise RuntimeError(
-                "Patched RoboTwin CuroboPlanner expected string yml_path."
+        setattr(self, _PATCH_TRANSFORM_ATTR, None)
+        setattr(self, _PATCH_BYPASS_NATIVE_ALOHA_ATTR, False)
+        try:
+            yml_path = getattr(self, "yml_path", None)
+            if not isinstance(yml_path, str):
+                raise RuntimeError(
+                    "Patched RoboTwin CuroboPlanner expected string yml_path."
+                )
+            entity_to_base = _parse_entity_to_base_from_curobo_yml(yml_path)
+            frame_bias = _float_tensor(
+                getattr(self, "frame_bias", None),
+                expected_size=3,
+                context="planner.frame_bias",
             )
-        entity_to_base = _parse_entity_to_base_from_curobo_yml(yml_path)
-        frame_bias = _float_tensor(
-            getattr(self, "frame_bias", None),
-            expected_size=3,
-            context="planner.frame_bias",
-        )
-        _validate_frame_bias(entity_to_base, frame_bias)
+            _validate_frame_bias(entity_to_base, frame_bias)
+        except Exception as exc:
+            logger.warning(
+                "Failed to configure RoboTwin Curobo base transform patch "
+                "for this planner instance. Falling back to original "
+                "RoboTwin CuroboPlanner behavior.",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            return
         setattr(
             self,
             _PATCH_ORIGINAL_FRAME_BIAS_ATTR,
             [float(value) for value in frame_bias],
         )
         setattr(self, _PATCH_TRANSFORM_ATTR, entity_to_base)
+        setattr(self, _PATCH_BYPASS_NATIVE_ALOHA_ATTR, True)
         cast(_PlannerWithFrameBias, self).frame_bias = [0.0, 0.0, 0.0]
 
     def patched_world_to_base(
@@ -236,8 +350,34 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
             entity_target_quat,
         )
 
+    def patched_plan_path(
+        self: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        return _call_without_native_aloha_yml_path_check(
+            self,
+            original_plan_path,
+            *args,
+            **kwargs,
+        )
+
+    def patched_plan_batch(
+        self: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        return _call_without_native_aloha_yml_path_check(
+            self,
+            original_plan_batch,
+            *args,
+            **kwargs,
+        )
+
     planner_cls.__init__ = patched_init
     planner_cls._trans_from_world_to_base = patched_world_to_base
+    planner_cls.plan_path = patched_plan_path
+    planner_cls.plan_batch = patched_plan_batch
     setattr(planner_cls, _PATCH_FLAG, True)
     _PATCH_INSTALLED_IN_PROCESS = True
 
@@ -334,9 +474,69 @@ def _cleanup_robotwin_task_after_failed_setup(task: object) -> None:
 
 
 def _cfg_needs_curobo_base_transform_patch(cfg: object) -> bool:
-    return getattr(cfg, "action_type", None) == "ee" and bool(
-        getattr(cfg, "patch_curobo_base_transform", False)
+    return (
+        _PATCH_INSTALLED_IN_PROCESS
+        and getattr(cfg, "action_type", None) == "ee"
+        and bool(getattr(cfg, "patch_curobo_base_transform", False))
     )
+
+
+class _YmlPathWithoutNativeAlohaCheck(str):
+    """String path that disables RoboTwin's hard-coded Aloha branch.
+
+    Some RoboTwin versions check `"aloha-agilex" in self.yml_path` inside
+    `plan_path` and `plan_batch` to decide whether to apply an embodiment-
+    specific `frame_bias + yaw` correction. Once this patch has already
+    converted the target pose into Curobo `base_link`, that branch would apply
+    a second transform. This string wrapper preserves the real path value for
+    normal use but makes only that exact substring check return False. If the
+    underlying RoboTwin method does not perform that check, this wrapper is a
+    no-op compatibility guard.
+    """
+
+    def __contains__(self, item: object) -> bool:
+        if item == _NATIVE_ALOHA_EMBODIMENT_NAME:
+            return False
+        if not isinstance(item, str):
+            return False
+        return super().__contains__(item)
+
+
+def _call_without_native_aloha_yml_path_check(
+    planner: object,
+    method: Callable[..., object],
+    *args: object,
+    **kwargs: object,
+) -> object:
+    """Call a RoboTwin planner method with the known Aloha check disabled.
+
+    Args:
+        planner (object): RoboTwin `CuroboPlanner` instance whose `yml_path`
+            may contain `aloha-agilex`.
+        method (Callable[..., object]): Original RoboTwin `plan_path` or
+            `plan_batch` method captured before patching.
+        *args (object): Positional arguments forwarded to the original method.
+        **kwargs (object): Keyword arguments forwarded to the original method.
+
+    Returns:
+        object: The original planner method's return value.
+    """
+    if not bool(getattr(planner, _PATCH_BYPASS_NATIVE_ALOHA_ATTR, False)):
+        return method(planner, *args, **kwargs)
+
+    yml_path = getattr(planner, "yml_path", None)
+    if (
+        not isinstance(yml_path, str)
+        or _NATIVE_ALOHA_EMBODIMENT_NAME not in yml_path
+    ):
+        return method(planner, *args, **kwargs)
+
+    planner_with_yml_path = cast(_PlannerWithYmlPath, planner)
+    planner_with_yml_path.yml_path = _YmlPathWithoutNativeAlohaCheck(yml_path)
+    try:
+        return method(planner, *args, **kwargs)
+    finally:
+        planner_with_yml_path.yml_path = yml_path
 
 
 def _parse_entity_to_base_from_urdf(
