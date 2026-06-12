@@ -90,6 +90,7 @@ def _fps_rule_metrics(
         dict[str, float | int]: Metrics used by FPS-related rules and logs.
     """
 
+    interval_limit = 1.0 / min_fps_limit if min_fps_limit > 0 else float("inf")
     if isinstance(freq, np.ndarray):
         if freq.size == 0:
             mean_fps = 0.0
@@ -105,9 +106,6 @@ def _fps_rule_metrics(
                 max_interval = float(np.max(intervals))
             else:
                 max_interval = float("inf")
-            interval_limit = (
-                1.0 / min_fps_limit if min_fps_limit > 0 else float("inf")
-            )
             exceed_count = int(np.count_nonzero(intervals > interval_limit))
     else:
         mean_fps = (
@@ -116,16 +114,10 @@ def _fps_rule_metrics(
         min_fps = mean_fps
         if mean_fps > 0:
             max_interval = 1.0 / mean_fps
-            interval_limit = (
-                1.0 / min_fps_limit if min_fps_limit > 0 else float("inf")
-            )
             exceed_count = 1 if max_interval > interval_limit else 0
         else:
             max_interval = 0.0
             exceed_count = 0
-            interval_limit = (
-                1.0 / min_fps_limit if min_fps_limit > 0 else float("inf")
-            )
     return {
         "mean_fps": round(mean_fps, 6),
         "min_fps": round(min_fps, 6),
