@@ -29,6 +29,7 @@ from test_robo_orchard_lab.dataset._mcap_pydantic_schema_helper import (
     assert_mcap_compatible_pydantic_schema,
 )
 
+import robo_orchard_lab.envs.robotwin.curobo_base_patch as curobo_base_patch
 import robo_orchard_lab.envs.robotwin.env as robotwin_env
 from robo_orchard_lab.dataset.datatypes import (
     BatchFrameTransform,
@@ -596,6 +597,11 @@ class TestRoboTwinEnv:
             close_env=MagicMock(side_effect=RuntimeError("close failed")),
         )
         monkeypatch.setattr(robotwin_env, "in_robotwin_workspace", nullcontext)
+        monkeypatch.setattr(
+            curobo_base_patch,
+            "_PATCH_INSTALLED_IN_PROCESS",
+            True,
+        )
         monkeypatch.setattr(
             robotwin_env,
             "create_task_from_name",
