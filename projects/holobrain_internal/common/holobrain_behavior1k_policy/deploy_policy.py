@@ -21,6 +21,7 @@ import os
 
 import numpy as np
 import torch
+from holobrain_utils import download_file  # noqa: F401
 from robo_orchard_core.utils.config import load_config_class
 from scipy.spatial.transform import Rotation
 

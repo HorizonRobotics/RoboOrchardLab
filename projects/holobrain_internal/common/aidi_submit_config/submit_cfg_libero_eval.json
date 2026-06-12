@@ -23,6 +23,7 @@
     ],
     "to_upload": [
         "robo_orchard_lab",
+        "projects/holobrain_internal/common/holobrain_utils.py",
         "projects/holobrain_internal/common/holobrain_libero_policy",
         "projects/holobrain_internal/common/libero_eval.py",
         "projects/holobrain_internal/libero/eval_policy.py",

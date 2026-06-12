@@ -18,16 +18,13 @@ import importlib
 import logging
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import requests
 import torch
-from safetensors.torch import load_model
-from terminaltables import AsciiTable
-from tqdm import tqdm
 
 from robo_orchard_lab.utils import as_sequence
 
@@ -75,28 +72,48 @@ def load_config(config_file):
     return config
 
 
-class GetFile:
-    def __init__(self, url):
-        self.url = url
+def download_file(url: str, file_name: str, timeout: int = 180) -> None:
+    import requests
+    from filelock import FileLock, Timeout
 
-    def __enter__(self):
-        if not self.url.startswith("http"):
-            self._tmp_path = None
-            return self.url
-        file_name = "_" + self.url.split("/")[-1]
-        self._tmp_path = file_name
-        with requests.get(self.url, stream=True, timeout=1800) as r:
-            r.raise_for_status()
-            with open(file_name, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        self.url = file_name
-        return file_name
+    if os.path.exists(file_name):
+        print(f"File existed: {file_name}")
+        return
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None and self._tmp_path is not None:
-            if os.path.exists(self._tmp_path):
-                os.remove(self._tmp_path)
+    os.makedirs(os.path.dirname(file_name) or ".", exist_ok=True)
+    lock_path = file_name + ".lock"
+    lock = FileLock(lock_path, timeout=timeout)
+
+    try:
+        with lock:
+            if os.path.exists(file_name):
+                print(f"File existed: {file_name}")
+                return
+
+            temp_dir = os.path.dirname(file_name) or "."
+            with tempfile.NamedTemporaryFile(
+                delete=False, dir=temp_dir
+            ) as tmp_file:
+                tmp_path = tmp_file.name
+                try:
+                    response = requests.get(url, stream=True)
+                    response.raise_for_status()
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            tmp_file.write(chunk)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+
+                    os.rename(tmp_path, file_name)
+                    print(f"Download success: {file_name}")
+                except Exception as e:
+                    print(f"Download fail: {file_name}, error: {e}")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    raise
+    except Timeout as e:
+        print(f"Download timeout: {file_name}")
+        raise e
 
 
 def load_checkpoint(model, checkpoint=None, accelerator=None, **kwargs):
@@ -104,27 +121,33 @@ def load_checkpoint(model, checkpoint=None, accelerator=None, **kwargs):
         return
 
     logger.info(f"load checkpoint: {checkpoint}")
-    with GetFile(checkpoint) as checkpoint:
-        if checkpoint.endswith(".safetensors"):
-            missing_keys, unexpected_keys = load_model(
-                model, checkpoint, strict=False, **kwargs
-            )
-        else:
-            state_dict = torch.load(checkpoint, weights_only=True)
-            if "state_dict" in state_dict:
-                state_dict = state_dict["state_dict"]
-            missing_keys, unexpected_keys = model.load_state_dict(
-                state_dict, strict=False, **kwargs
-            )
-        if accelerator is None or accelerator.is_main_process:
-            logger.info(
-                f"num of missing_keys: {len(missing_keys)},"
-                f"num of unexpected_keys: {len(unexpected_keys)}"
-            )
-            logger.info(
-                f"missing_keys:\n {missing_keys}\n"
-                f"unexpected_keys:\n {unexpected_keys}"
-            )
+    if checkpoint.startswith("http"):
+        file_name = "_" + checkpoint.split("/")[-1]
+        download_file(checkpoint, file_name)
+        checkpoint = file_name
+
+    if checkpoint.endswith(".safetensors"):
+        from safetensors.torch import load_model
+
+        missing_keys, unexpected_keys = load_model(
+            model, checkpoint, strict=False, **kwargs
+        )
+    else:
+        state_dict = torch.load(checkpoint, weights_only=True)
+        if "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+        missing_keys, unexpected_keys = model.load_state_dict(
+            state_dict, strict=False, **kwargs
+        )
+    if accelerator is None or accelerator.is_main_process:
+        logger.info(
+            f"num of missing_keys: {len(missing_keys)},"
+            f"num of unexpected_keys: {len(unexpected_keys)}"
+        )
+        logger.info(
+            f"missing_keys:\n {missing_keys}\n"
+            f"unexpected_keys:\n {unexpected_keys}"
+        )
 
 
 class ActionMetric:
@@ -217,6 +240,8 @@ class ActionMetric:
             table_rows.append([])
 
         for rows in [table_rows, ee_table_rows, mean_table_rows]:
+            from terminaltables import AsciiTable
+
             table = AsciiTable(rows)
             logger.info("\n" + table.table)
         return metrics
@@ -340,6 +365,8 @@ class HolobrainVideoVisualizer:
         logger.info(f"video save path: {save_path.absolute()}")
 
         frames = []
+        from tqdm import tqdm
+
         for idx in tqdm(range(start, end, interval)):
             frame_data = HolobrainDataFeature.from_dict(self.dataset[idx])
             frame = self._render_frame(frame_data, ee_indices)

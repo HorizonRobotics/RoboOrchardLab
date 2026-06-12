@@ -17,12 +17,10 @@
 import importlib
 import logging
 import os
-import tempfile
 
 import numpy as np
-import requests
 import torch
-from filelock import FileLock, Timeout
+from holobrain_utils import download_file
 
 from robo_orchard_lab.models.holobrain.processor import (
     HoloBrainProcessor,
@@ -43,46 +41,6 @@ def load_config(config_file):
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
     return config
-
-
-def download_file(url, file_name, timeout=180):
-    if os.path.exists(file_name):
-        print(f"File existed: {file_name}")
-        return
-
-    lock_path = file_name + ".lock"
-    lock = FileLock(lock_path, timeout=timeout)
-
-    try:
-        with lock:
-            if os.path.exists(file_name):
-                print(f"File existed: {file_name}")
-                return
-
-            temp_dir = os.path.dirname(file_name) or "."
-            with tempfile.NamedTemporaryFile(
-                delete=False, dir=temp_dir
-            ) as tmp_file:
-                tmp_path = tmp_file.name
-                try:
-                    response = requests.get(url, stream=True)
-                    response.raise_for_status()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            tmp_file.write(chunk)
-                    tmp_file.flush()
-                    os.fsync(tmp_file.fileno())
-
-                    os.rename(tmp_path, file_name)
-                    print(f"Download success: {file_name}")
-                except Exception as e:
-                    print(f"Download fail: {file_name}, error: {e}")
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                    raise
-    except Timeout as e:
-        print(f"Download timeout: {file_name}")
-        raise e
 
 
 def download_job_ckpt_processor(

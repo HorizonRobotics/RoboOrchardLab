@@ -17,14 +17,12 @@
 from __future__ import annotations
 import logging
 import os
-import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import requests
 import torch
-from filelock import FileLock, Timeout
+from holobrain_utils import download_file
 
 from robo_orchard_lab.dataset.agibot_geniesim.transforms import (
     GenieSim3CalibrationToExtrinsic,
@@ -180,47 +178,6 @@ class HoloBrainGenieSim3PolicyCfg:
 
 def _is_http_url(path: str) -> bool:
     return path.startswith(("http://", "https://"))
-
-
-def download_file(url: str, file_name: str, timeout: int = 180) -> None:
-    if os.path.exists(file_name):
-        logger.info("File existed: %s", file_name)
-        return
-
-    os.makedirs(os.path.dirname(file_name) or ".", exist_ok=True)
-    lock_path = file_name + ".lock"
-    lock = FileLock(lock_path, timeout=timeout)
-
-    try:
-        with lock:
-            if os.path.exists(file_name):
-                logger.info("File existed: %s", file_name)
-                return
-
-            temp_dir = os.path.dirname(file_name) or "."
-            with tempfile.NamedTemporaryFile(
-                delete=False, dir=temp_dir
-            ) as tmp_file:
-                tmp_path = tmp_file.name
-                try:
-                    response = requests.get(url, stream=True)
-                    response.raise_for_status()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            tmp_file.write(chunk)
-                    tmp_file.flush()
-                    os.fsync(tmp_file.fileno())
-
-                    os.rename(tmp_path, file_name)
-                    logger.info("Download success: %s", file_name)
-                except Exception:
-                    logger.exception("Download fail: %s", file_name)
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                    raise
-    except Timeout:
-        logger.exception("Download timeout: %s", file_name)
-        raise
 
 
 def download_job_ckpt_processor(

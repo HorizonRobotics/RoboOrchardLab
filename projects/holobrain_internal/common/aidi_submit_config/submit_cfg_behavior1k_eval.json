@@ -16,6 +16,7 @@
         "cp behavior1k/tasks.yaml OmniGibson/omnigibson/learning/configs/",
         "cp behavior1k/rgbd_obs_wrapper.py OmniGibson/omnigibson/learning/wrappers",
         "cp holobrain_behavior1k_policy/deploy_policy.py OmniGibson/omnigibson/learning/",
+        "cp holobrain_utils.py OmniGibson/omnigibson/learning/",
 
         "export PYTHONPATH=${WORKING_PATH}/OmniGibson:$PYTHONPATH",
         "export PYTHONPATH=${WORKING_PATH}/bddl3/:$PYTHONPATH",
@@ -44,6 +45,7 @@
     "to_upload": [
         "robo_orchard_lab",
         "projects/holobrain_internal/behavior1k",
+        "projects/holobrain_internal/common/holobrain_utils.py",
         "projects/holobrain_internal/common/behavior1k_eval.py",
         "projects/holobrain_internal/common/holobrain_behavior1k_policy"
     ],
