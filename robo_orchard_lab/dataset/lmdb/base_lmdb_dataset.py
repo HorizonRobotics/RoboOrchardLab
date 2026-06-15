@@ -250,6 +250,8 @@ class BaseLmdbManipulationDataset(Dataset):
         flag: Optional[int] = None,
         lru_queue_length: Optional[int] = None,
         instruction_reader: Optional[InstructionReader] = None,
+        pred_steps: Optional[int] = None,
+        hist_steps: Optional[int] = None,
     ):
         if not isinstance(paths, (list, tuple)):
             paths = [paths]
@@ -267,6 +269,8 @@ class BaseLmdbManipulationDataset(Dataset):
         self.flag = flag
         self.lru_queue_length = lru_queue_length
         self.instruction_reader = instruction_reader
+        self.pred_steps = pred_steps
+        self.hist_steps = hist_steps
         self.initialized = False
         if not lazy_init:
             self._init_lmdb()
@@ -440,6 +444,78 @@ class BaseLmdbManipulationDataset(Dataset):
                     **self.lmdb_kwargs,
                 )
         return lmdb_index, episode_index, step_index
+
+    def _concat_shards(self, *shards):
+        shards = [x for x in shards if x is not None]
+        if len(shards) == 0:
+            return None
+        elif isinstance(shards[0], np.ndarray):
+            return np.concatenate(shards, axis=0)
+        elif isinstance(shards[0], list):
+            results = []
+            for x in shards:
+                results.extend(x)
+            return results
+
+    def _get_step_index_in_shard(
+        self, step_index, num_steps_per_shard=None, retrival_index=None
+    ):
+        if num_steps_per_shard is None:
+            return step_index
+        self._require_shard_steps()
+        shard_index = step_index // num_steps_per_shard
+        step_index_in_shard = step_index % num_steps_per_shard
+        if (
+            self.hist_steps is not None
+            and step_index_in_shard < self.hist_steps - 1
+            and shard_index != 0
+        ):
+            step_index_in_shard += num_steps_per_shard
+        if retrival_index is not None:
+            step_index_in_shard += retrival_index - step_index
+        return step_index_in_shard
+
+    def _require_shard_steps(self):
+        if self.hist_steps is None or self.pred_steps is None:
+            raise ValueError(
+                "hist_steps and pred_steps must be specified when reading "
+                "sharded LMDB metadata."
+            )
+
+    def _get_meta(
+        self, lmdb_index, uuid, key, step_index=None, num_steps_per_shard=None
+    ):
+        if num_steps_per_shard is None:
+            return self.meta_lmdbs[lmdb_index][f"{uuid}/{key}"]
+
+        self._require_shard_steps()
+        shard_index = step_index // num_steps_per_shard
+        current_shard = self.meta_lmdbs[lmdb_index][
+            f"{uuid}/{shard_index}/{key}"
+        ]
+        step_index_in_shard = step_index % num_steps_per_shard
+        if (
+            self.hist_steps is not None
+            and step_index_in_shard < self.hist_steps - 1
+            and shard_index != 0
+        ):
+            pre_shard = self.meta_lmdbs[lmdb_index][
+                f"{uuid}/{shard_index - 1}/{key}"
+            ]
+        else:
+            pre_shard = None
+
+        if (
+            self.pred_steps is not None
+            and num_steps_per_shard - step_index_in_shard < self.pred_steps
+        ):
+            next_shard = self.meta_lmdbs[lmdb_index][
+                f"{uuid}/{shard_index + 1}/{key}"
+            ]
+        else:
+            next_shard = None
+        data = self._concat_shards(pre_shard, current_shard, next_shard)
+        return data
 
     def __getitem__(self, index):
         """Get data dict by index.

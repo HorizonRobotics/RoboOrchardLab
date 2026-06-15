@@ -494,6 +494,8 @@ def _build_dataset(
         load_depth=False,
         load_calibration=load_calibration,
         load_extrinsic=load_extrinsic,
+        hist_steps=config["hist_steps"],
+        pred_steps=config["pred_steps"],
     )
 
 

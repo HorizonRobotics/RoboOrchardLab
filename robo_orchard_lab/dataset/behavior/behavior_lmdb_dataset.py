@@ -95,6 +95,8 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             lazy_init=lazy_init,
             reset_step=reset_step,
             dataset_name=dataset_name,
+            hist_steps=hist_steps,
+            pred_steps=pred_steps,
             **kwargs,
         )
 
@@ -103,62 +105,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
         else:
             self.cam_names = ROBOT_CAMERA_NAMES["R1Pro"]
 
-        self.hist_steps = hist_steps
-        self.pred_steps = pred_steps
         self.dataset_name = dataset_name
-
-    def _concat_shards(self, *shards):
-        shards = [x for x in shards if x is not None]
-        if len(shards) == 0:
-            return None
-        elif isinstance(shards[0], np.ndarray):
-            return np.concatenate(shards, axis=0)
-        elif isinstance(shards[0], list):
-            results = []
-            for x in shards:
-                results.extend(x)
-            return results
-
-    def _get_meta_with_shard(
-        self,
-        lmdb_index,
-        uuid,
-        key,
-        step_index,
-        num_steps_per_shard,
-    ):
-        shard_index = step_index // num_steps_per_shard
-        current_shard = self.meta_lmdbs[lmdb_index][
-            f"{uuid}/{shard_index}/{key}"
-        ]
-        step_index_in_shard = step_index % num_steps_per_shard
-        if (
-            self.hist_steps is not None
-            and step_index_in_shard < self.hist_steps - 1
-            and shard_index != 0
-        ):
-            pre_shard = self.meta_lmdbs[lmdb_index][
-                f"{uuid}/{shard_index - 1}/{key}"
-            ]
-        else:
-            pre_shard = None
-
-        if (
-            self.pred_steps is not None
-            and num_steps_per_shard - step_index_in_shard < self.pred_steps
-        ):
-            # maybe out of bound, return None
-            next_shard = self.meta_lmdbs[lmdb_index][
-                f"{uuid}/{shard_index + 1}/{key}"
-            ]
-        else:
-            next_shard = None
-
-        if pre_shard is not None:
-            step_index_in_shard += len(pre_shard)
-
-        data = self._concat_shards(pre_shard, current_shard, next_shard)
-        return data, step_index_in_shard
 
     def __getitem__(self, index):
         lmdb_index, episode_index, step_index = self._get_indices(index)
@@ -185,14 +132,18 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             intrinsic = self.meta_lmdbs[lmdb_index][f"{uuid}/intrinsic"]
 
         else:
-            mobile_traj, step_index_in_shard = self._get_meta_with_shard(
+            step_index_in_shard = self._get_step_index_in_shard(
+                step_index,
+                num_steps_per_shard,
+            )
+            mobile_traj = self._get_meta(
                 lmdb_index,
                 uuid,
                 "observation/robot_state/mobile_traj",
                 step_index,
                 num_steps_per_shard,
             )
-            joint_state, _ = self._get_meta_with_shard(
+            joint_state = self._get_meta(
                 lmdb_index,
                 uuid,
                 "observation/robot_state/joint_position",
@@ -200,7 +151,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
                 num_steps_per_shard,
             )
 
-            action, _ = self._get_meta_with_shard(
+            action = self._get_meta(
                 lmdb_index,
                 uuid,
                 "robot_action/joint_position",
@@ -208,7 +159,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
                 num_steps_per_shard,
             )
 
-            extrinsic, step_index_in_shard = self._get_meta_with_shard(
+            extrinsic = self._get_meta(
                 lmdb_index,
                 uuid,
                 "extrinsic",
@@ -217,7 +168,7 @@ class BehaviorLmdbDataset(BaseLmdbManipulationDataset):
             )
             extrinsic = extrinsic[step_index_in_shard]
 
-            intrinsic, step_index_in_shard = self._get_meta_with_shard(
+            intrinsic = self._get_meta(
                 lmdb_index,
                 uuid,
                 "intrinsic",
