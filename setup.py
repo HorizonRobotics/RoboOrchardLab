@@ -222,6 +222,7 @@ if __name__ == "__main__":
         "duckdb-engine",
         "duckdb<=1.3.2",
         "fsspec",
+        "ffmpeg-python",
         "sortedcontainers",
         "numpydantic",
         "click>=8.1.0,<=8.2.1",

@@ -455,7 +455,16 @@ class BaseLmdbManipulationDataset(Dataset):
             results = []
             for x in shards:
                 results.extend(x)
-            return results
+        elif isinstance(shards[0], dict):
+            keys = set(shards[0])
+            if any(set(x) != keys for x in shards[1:]):
+                raise ValueError("All dict shards must contain the same keys.")
+            results = {}
+            for key in shards[0].keys():
+                results[key] = self._concat_shards(
+                    *(x[key] for x in shards)
+                )
+        return results
 
     def _get_step_index_in_shard(
         self, step_index, num_steps_per_shard=None, retrival_index=None

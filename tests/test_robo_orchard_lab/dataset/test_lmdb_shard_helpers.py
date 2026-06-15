@@ -92,6 +92,85 @@ def test_base_get_meta_reads_neighbor_shards_for_chunk_sampling():
     assert events == ["s1-0", "s1-1", "s1-2", "s2-0", "s2-1", "s2-2"]
 
 
+def test_base_get_meta_concats_dict_shards_recursively():
+    dataset = BaseLmdbManipulationDataset(
+        paths=[],
+        lazy_init=True,
+        hist_steps=2,
+        pred_steps=2,
+    )
+    dataset.meta_lmdbs = [
+        DictLmdb(
+            {
+                "episode/1/camera_info": {
+                    "left": {
+                        "pose": np.array([[10], [11]]),
+                        "tags": ["left-1", "left-2"],
+                    },
+                    "right": {
+                        "pose": np.array([[20], [21]]),
+                        "tags": ["right-1", "right-2"],
+                    },
+                },
+                "episode/2/camera_info": {
+                    "left": {
+                        "pose": np.array([[12], [13]]),
+                        "tags": ["left-3", "left-4"],
+                    },
+                    "right": {
+                        "pose": np.array([[22], [23]]),
+                        "tags": ["right-3", "right-4"],
+                    },
+                },
+            }
+        )
+    ]
+
+    camera_info = dataset._get_meta(
+        0,
+        "episode",
+        "camera_info",
+        step_index=3,
+        num_steps_per_shard=2,
+    )
+
+    assert np.array_equal(
+        camera_info["left"]["pose"][:, 0],
+        np.array([10, 11, 12, 13]),
+    )
+    assert np.array_equal(
+        camera_info["right"]["pose"][:, 0],
+        np.array([20, 21, 22, 23]),
+    )
+    assert camera_info["left"]["tags"] == [
+        "left-1",
+        "left-2",
+        "left-3",
+        "left-4",
+    ]
+    assert camera_info["right"]["tags"] == [
+        "right-1",
+        "right-2",
+        "right-3",
+        "right-4",
+    ]
+
+
+def test_base_concat_dict_shards_requires_matching_keys():
+    dataset = BaseLmdbManipulationDataset(
+        paths=[],
+        lazy_init=True,
+        hist_steps=1,
+        pred_steps=1,
+    )
+
+    with pytest.raises(ValueError, match="same keys"):
+        dataset._concat_shards(
+            {"left": np.array([[0]])},
+            {"right": np.array([[1]])},
+        )
+
+
 def test_base_get_meta_requires_sampling_steps_for_sharded_meta():
     dataset = BaseLmdbManipulationDataset(paths=[], lazy_init=True)
     dataset.meta_lmdbs = [
