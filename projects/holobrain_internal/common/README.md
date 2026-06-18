@@ -204,11 +204,11 @@ python3 realworld_eval.py \
     --server_name holobrain \
     --model_dir ./model \
     --model_url "http://path/to/checkpoint" \
-    --model_processor table30v2_arx5_processor \
+    --model_processor horizon_beijing_processor \
     --vlm_ckpt_dir /path/to/ckpt \
     --urdf_dir /path/to/urdf \
     --num_joints_per_arm 7 \
-    --max_action_delta 3.0
+    --max_action_delta 2.0
 ```
 
 The endpoint is `POST /${server_name}`. Required multipart fields are
