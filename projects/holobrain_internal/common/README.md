@@ -188,6 +188,41 @@ RoboOrchardJob-AIDISubmit submit_from_config \
   --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_geniesim3_eval.json
 ```
 
+# Real-world inference server
+
+`realworld_eval.py` serves HoloBrain real-world inference over HTTP. The model
+directory should contain `model.safetensors`, `model.config.json`, and a
+processor json. If `--model_url` is set, missing files are downloaded into
+`--model_dir`. This script currently supports dual-arm real-world deployment
+only; other embodiments need request decoding and action formatting extensions.
+
+```bash
+cd projects/holobrain_internal/common
+
+python3 realworld_eval.py \
+    --port 6050 \
+    --server_name holobrain \
+    --model_dir ./model \
+    --model_url "http://path/to/checkpoint" \
+    --model_processor table30v2_arx5_processor \
+    --vlm_ckpt_dir /path/to/ckpt \
+    --urdf_dir /path/to/urdf \
+    --num_joints_per_arm 7 \
+    --max_action_delta 3.0
+```
+
+The endpoint is `POST /${server_name}`. Required multipart fields are
+`left_color`, `middle_color`, `right_color`, `left_depth`, `middle_depth`,
+`right_depth`, `left_intrinsic`, `middle_intrinsic`, `right_intrinsic`,
+`left_arm_state`, `right_arm_state`, and `instruction`. Optional fields are
+`remaining_actions` and `delay_horizon`.
+
+The response contains `left_arm_actions`, `right_arm_actions`, and
+`action_horizon`. Useful runtime controls include `--interpolation`
+(default `200 / 30`), `--clip_action_len`, `--delay_horizon`, and
+`--max_action_delta`; for example, threshold `3` turns a scalar jump
+`[1, 10]` into `[1, 4, 7, 10]`.
+
 ## Data visualization
 ```bash
 cd project/holobrain_internal/common
