@@ -14,18 +14,21 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from .config_agibot_dataset import *  # noqa: F401
-from .config_agibot_digit_dataset import *  # noqa: F401
-from .config_agibot_geniesim_dataset import *  # noqa: F401
-from .config_agilex_dataset import *  # noqa: F401
-from .config_agilex_ro_dataset import *  # noqa: F401
-from .config_behavior_dataset import *  # noqa: F401
-from .config_droid_dataset import *  # noqa: F401
-from .config_egodex_dataset import *  # noqa: F401
-from .config_interna1_dataset import *  # noqa: F401
-from .config_isaac_dataset import *  # noqa: F401
-from .config_libero_dataset import *  # noqa: F401
-from .config_rh20t_dataset import *  # noqa: F401
-from .config_robotwin_dataset import *  # noqa: F401
-from .config_table30_ro_dataset import *  # noqa: F401
-from .config_table30v2_dataset import *  # noqa: F401
+# ruff: noqa: F401
+
+from .config_agibot_dataset import *
+from .config_agibot_digit_dataset import *
+from .config_agibot_geniesim_dataset import *
+from .config_agilex_dataset import *
+from .config_agilex_ro_dataset import *
+from .config_behavior_dataset import *
+from .config_droid_dataset import *
+from .config_egodex_dataset import *
+from .config_interna1_dataset import *
+from .config_isaac_dataset import *
+from .config_libero_dataset import *
+from .config_rh20t_dataset import *
+from .config_robocasa_dataset import *
+from .config_robotwin_dataset import *
+from .config_table30_ro_dataset import *
+from .config_table30v2_dataset import *

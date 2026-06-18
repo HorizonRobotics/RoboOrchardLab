@@ -44,11 +44,9 @@ def test_robocasa_holobrain_config_supports_validation_and_deploy_modes():
         "dst_wh": (16, 12),
     }
 
-    training_transforms = build_transforms(config, "training", cam_names=None)
-    validation_transforms = build_transforms(
-        config, "validation", cam_names=None
-    )
-    deploy_transforms = build_transforms(config, "deploy", cam_names=None)
+    training_transforms = build_transforms(config, "training")
+    validation_transforms = build_transforms(config, "validation")
+    deploy_transforms = build_transforms(config, "deploy")
 
     assert "state_loss_weights" in training_transforms[-1]["keys"]
     assert "fk_loss_weight" in training_transforms[-1]["keys"]
@@ -73,7 +71,8 @@ def test_robocasa_holobrain_config_supports_validation_and_deploy_modes():
         type(transform).__name__ for transform in processor.transforms
     ] == expected_transform_names
 
-    cam_names = ["robot0_agentview_left", "robot0_eye_in_hand"]
+    cam_names = processor.cfg.cam_names
+    assert cam_names is not None
     sample = MultiArmManipulationInput(
         intrinsic={cam_name: np.eye(4) for cam_name in cam_names},
         t_base2cam={cam_name: np.eye(4) for cam_name in cam_names},
@@ -94,9 +93,9 @@ def test_robocasa_holobrain_config_supports_validation_and_deploy_modes():
 
     batch = processor.pre_process(sample)
 
-    assert batch["imgs"].shape == (1, 2, 12, 16, 3)
+    assert batch["imgs"].shape == (1, len(cam_names), 12, 16, 3)
     assert batch["hist_robot_state"].shape == (1, 2, 1, 8)
     assert batch["pred_robot_state"].shape == (1, 4, 1, 8)
-    assert batch["projection_mat"].shape == (1, 2, 4, 4)
+    assert batch["projection_mat"].shape == (1, len(cam_names), 4, 4)
     assert batch["embodiedment_mat"].shape == (1, 4, 4)
     assert batch["text"] == ["Open the oven door."]

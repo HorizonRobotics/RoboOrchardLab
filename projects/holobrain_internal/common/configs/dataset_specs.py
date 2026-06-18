@@ -511,6 +511,14 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/arrow/20260305_01/table30/plug_in_network_cable",
         ],
     ),
+    # ================ robocasa ===================
+    dict(
+        dataset_type="robocasa",
+        dataset_name="robocasa",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/robocasa/v1.0/lmdb/*/*/*",
+        ),
+    ),
 ]
 
 # TODO
@@ -557,6 +565,7 @@ filter_list = [
     "rh20t_kuka_v2",
     "behavior_manipulation",
     "behavior_navigation",
+    "robocasa",
     # "isaac_pick_place",
     # "agibot_digit",
     # "agilex_ro",
@@ -601,6 +610,7 @@ dataset_sample_weights = dict(
     rh20t_kuka_v2=0.1,
     behavior_manipulation=5,
     behavior_navigation=0,
+    robocasa=5,
 )
 
 use_dataset_sample_weights = True

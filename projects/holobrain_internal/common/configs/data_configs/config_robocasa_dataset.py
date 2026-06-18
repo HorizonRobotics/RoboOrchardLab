@@ -21,9 +21,13 @@ from dataset_factory import (
 )
 
 DATA_TYPE = "robocasa"
+CAMERA_NAMES = [
+    ["robot0_eye_in_hand", "robot0_agentview_left", "robot0_agentview_right"],
+    ["robot0_eye_in_hand", "robot0_agentview_right", "robot0_agentview_left"],
+]
 
 
-def build_transforms(config, mode, cam_names):
+def build_transforms(config, mode):
     import numpy as np
 
     from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
@@ -77,6 +81,7 @@ def build_transforms(config, mode, cam_names):
     convert_map = dict(
         imgs="float32",
         image_wh="float32",
+        depths="float32",
         projection_mat="float32",
         embodiedment_mat="float32",
         hist_robot_state="float32",
@@ -136,7 +141,6 @@ def build_datasets(
     data_paths,
     mode="training",
     lazy_init=True,
-    cam_names=None,
 ):
     from robo_orchard_lab.dataset.robocasa.robocasa_lmdb_dataset import (
         RoboCasaLmdbDataset,
@@ -144,19 +148,19 @@ def build_datasets(
 
     return RoboCasaLmdbDataset(
         paths=data_paths,
-        transforms=build_transforms(config, mode, cam_names),
+        transforms=build_transforms(config, mode),
         lazy_init=lazy_init or mode != "training",
         dataset_name=dataset_name,
         reset_step=1000,
         load_depth=False,
-        cam_names=cam_names,
+        cam_names=CAMERA_NAMES,
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
     )
 
 
 @processor_register(DATA_TYPE)
-def build_processors(config, dataset_name, cam_names=None, **kwargs):
+def build_processors(config, dataset_name, **kwargs):
     from robo_orchard_lab.models.holobrain.processor import (
         HoloBrainProcessor,
         HoloBrainProcessorCfg,
@@ -167,7 +171,7 @@ def build_processors(config, dataset_name, cam_names=None, **kwargs):
             load_image=True,
             load_depth=False,
             valid_action_step=None,
-            transforms=build_transforms(config, "deploy", cam_names),
-            cam_names=cam_names,
+            transforms=build_transforms(config, "deploy"),
+            cam_names=CAMERA_NAMES[0],
         )
     )
