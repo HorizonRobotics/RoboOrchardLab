@@ -24,13 +24,28 @@ DEPLOY_DATASETS = [
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_beijing_piper_x",
+        dataset_name="horizon_piper_x_435",
         setting_type="horizon_beijing_piper_x",
     ),
     dict(
         dataset_type="agilex",
         dataset_name="horizon_shanghai",
         setting_type="horizon_shanghai",
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_piper_435_high",
+        setting_type="horizon_piper_435_high",
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_piper_435_low",
+        setting_type="horizon_piper_435_low",
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_piper_x_405_455",
+        setting_type="horizon_piper_x_405_455",
     ),
     dict(
         dataset_type="robotwin",

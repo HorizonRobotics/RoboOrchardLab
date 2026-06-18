@@ -1,3 +1,13 @@
+# Internal Resources
+
+Internal users can create the expected local resource links with:
+
+```bash
+ln -s /horizon-bucket/robot_lab2/datasets/all_data projects/holobrain_internal/common/data
+ln -s /horizon-bucket/robot_lab/users/xuewu.lin/urdf projects/holobrain_internal/common/urdf
+ln -s /horizon-bucket/robot_lab/users/xuewu.lin/ckpt projects/holobrain_internal/common/ckpt
+```
+
 # Training
 ## Local run
 ```bash

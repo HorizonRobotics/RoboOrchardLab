@@ -220,6 +220,129 @@ default_calibrations = dict(
             ],
         },
     ),
+    horizon_piper_435_high=dict(
+        left={
+            "position": [
+                -0.07187119209436892,
+                -0.0038742124545078963,
+                0.03848311081942217,
+            ],
+            "orientation": [
+                -0.14929331497130632,
+                0.1386757370673157,
+                -0.6856238984540931,
+                0.6988565059597904,
+            ],
+        },
+        right={
+            "position": [
+                -0.07020379397980514,
+                0.002208931101560816,
+                0.03864419615086635,
+            ],
+            "orientation": [
+                -0.12810968024634153,
+                0.12425625721361307,
+                -0.6940195330118537,
+                0.6974848960145682,
+            ],
+        },
+        middle={
+            "position": [
+                -0.03007155725467936,
+                -0.2730860893744077,
+                0.7733328288568009,
+            ],
+            "orientation": [
+                -0.6690798281518483,
+                0.6919193985821155,
+                -0.19544146988141584,
+                0.1881019970033503,
+            ],
+        },
+    ),
+    horizon_piper_435_low=dict(
+        left={
+            "position": [
+                -0.06867924193484086,
+                -0.0005945544447201671,
+                0.03843362824412718,
+            ],
+            "orientation": [
+                -0.14277810176817451,
+                0.1236499359266293,
+                -0.6680764786273947,
+                0.7197214222917346,
+            ],
+        },
+        right={
+            "position": [
+                -0.07333788908459828,
+                0.00991803705544634,
+                0.03390080995535155,
+            ],
+            "orientation": [
+                0.1296176811682453,
+                -0.12171535345636147,
+                0.717362436615576,
+                -0.673628802824318,
+            ],
+        },
+        middle={
+            "position": [
+                -0.010783568385050412,
+                -0.2559182030838615,
+                0.5173197227547938,
+            ],
+            "orientation": [
+                -0.6344593881273598,
+                0.6670669773214551,
+                -0.2848079166270871,
+                0.2671467447131103,
+            ],
+        },
+    ),
+    horizon_piper_x_405_455=dict(
+        left={
+            "position": [
+                -0.0096489170911759,
+                -0.08009372951791657,
+                0.04279548930003773,
+            ],
+            "orientation": [
+                -0.17191546428297078,
+                -0.0013898166917794218,
+                -0.008866866103733552,
+                0.9850708199086157,
+            ],
+        },
+        right={
+            "position": [
+                -0.0076363572782560665,
+                -0.07947460457157493,
+                0.043216980311924016,
+            ],
+            "orientation": [
+                -0.1764401074959075,
+                0.0001554395920107693,
+                -0.0032741894713766953,
+                0.9843059199195499,
+            ],
+        },
+        middle={
+            "position": [
+                -0.007383059883329407,
+                -0.31715773707478656,
+                0.6036358425132415,
+            ],
+            "orientation": [
+                -0.6620275905116694,
+                0.6913463014325211,
+                -0.2114074909007769,
+                0.19765281097906265,
+            ],
+        },
+    ),
 )
 
 
@@ -251,6 +374,7 @@ dataset_config = dict(
         load_extrinsic=True,
     ),
     horizon_shanghai=dict(
+        default_calibration=default_calibrations["horizon_shanghai"],
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
@@ -285,6 +409,25 @@ dataset_config = dict(
         ],
         default_calibration=default_calibrations["horizon_beijing"],
         load_extrinsic=True,
+    ),
+)
+
+#  only for deploy
+dataset_config.update(
+    horizon_piper_435_high=dict(
+        default_calibration=default_calibrations["horizon_piper_435_high"],
+        urdf="./urdf/piper_description_dualarm.urdf",
+        cam_names=["left", "right", "middle"],
+    ),
+    horizon_piper_435_low=dict(
+        default_calibration=default_calibrations["horizon_piper_435_low"],
+        urdf="./urdf/piper_description_dualarm.urdf",
+        cam_names=["left", "right", "middle"],
+    ),
+    horizon_piper_x_405_455=dict(
+        default_calibration=default_calibrations["horizon_piper_x_405_455"],
+        urdf="./urdf/piper_description_dualarm.urdf",
+        cam_names=["left", "right", "middle"],
     ),
 )
 
