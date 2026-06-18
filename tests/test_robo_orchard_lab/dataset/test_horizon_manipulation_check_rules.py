@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 import importlib.util
+import io
 import sys
 from pathlib import Path
 
@@ -80,3 +81,52 @@ def test_evaluate_episode_rules_handles_empty_topic_frequency():
     assert fps_result.metrics[topic]["mean_fps"] == 0.0
     assert fps_result.metrics[topic]["min_fps"] == 0.0
     assert fps_result.metrics[topic]["max_interval_limit"] == 0.2
+
+
+def test_write_full_log_episode_handles_empty_topic_summary():
+    check_config = _load_tools_module("check_config")
+    utils = _load_tools_module("utils")
+
+    empty_topic = "/observation/cameras/right/depth_image/image_raw"
+    valid_topic = "/observation/cameras/left/color_image/image_raw"
+    output = io.StringIO()
+
+    utils.write_full_log_episode(
+        output,
+        {
+            "mcap_path": "episode.mcap",
+            "topic_summaries": {
+                empty_topic: {
+                    "count": 0,
+                    "size_bytes": 0,
+                    "start_time_ns": None,
+                    "end_time_ns": None,
+                    "mean_frequency": 0.0,
+                    "min_frequency": 0.0,
+                },
+                valid_topic: {
+                    "count": 2,
+                    "size_bytes": 2000,
+                    "start_time_ns": 1_000_000_000,
+                    "end_time_ns": 2_000_000_000,
+                    "mean_frequency": 1.0,
+                    "min_frequency": 1.0,
+                },
+            },
+            "rule_results": [
+                {
+                    "rule_id": "empty_stream",
+                    "status": "fail",
+                    "severity": "blocking",
+                    "message": "required topics have no usable messages",
+                    "metrics": {"empty_topics": empty_topic},
+                }
+            ],
+        },
+        check_config.build_default_inspect_config(),
+    )
+
+    log = output.getvalue()
+    assert f"Error: Topic '{empty_topic}' has no usable messages" in log
+    assert "Average size of the mcap file is 0.002 MB/s." in log
+    assert "Total duration is 1.0 s." in log

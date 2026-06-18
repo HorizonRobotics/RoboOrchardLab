@@ -1115,6 +1115,13 @@ def iter_logged_topics(
     )
 
 
+def _topic_summary_has_timestamps(summary: dict) -> bool:
+    return (
+        summary.get("start_time_ns") is not None
+        and summary.get("end_time_ns") is not None
+    )
+
+
 def format_topic_summary_line(topic: str, summary: dict) -> str:
     """Format one topic summary row for the full log FPS table.
 
@@ -1128,7 +1135,7 @@ def format_topic_summary_line(topic: str, summary: dict) -> str:
 
     duration = (
         (summary["end_time_ns"] - summary["start_time_ns"]) / 1e9
-        if summary["count"] > 1
+        if summary["count"] > 1 and _topic_summary_has_timestamps(summary)
         else 0.0
     )
     mean_fps = summary.get("mean_frequency", 0.0)
@@ -1288,13 +1295,18 @@ def write_full_log_episode(fh, item: dict, inspect_config) -> None:
     fh.write("Checking data compression...\n")
     total_size = sum(summary["size_bytes"] for _, summary in logged_topics)
     fh.write(f"Total size of the mcap file is {total_size / 1e6:.3f} MB.\n")
+    timed_topics = [
+        (topic, summary)
+        for topic, summary in logged_topics
+        if _topic_summary_has_timestamps(summary)
+    ]
     average_duration = (
         sum(
             (summary["end_time_ns"] - summary["start_time_ns"]) / 1e9
-            for _, summary in logged_topics
+            for _, summary in timed_topics
         )
-        / len(logged_topics)
-        if logged_topics
+        / len(timed_topics)
+        if timed_topics
         else 0.0
     )
     average_size = (
@@ -1307,9 +1319,21 @@ def write_full_log_episode(fh, item: dict, inspect_config) -> None:
         fh.write("Warning: Data Average Size is too large.\n")
 
     fh.write("Checking message timestamps...\n")
-    start_ns = min(summary["start_time_ns"] for _, summary in logged_topics)
-    end_ns = max(summary["end_time_ns"] for _, summary in logged_topics)
-    duration = (end_ns - start_ns) / 1e9
+    start_ns = (
+        min(summary["start_time_ns"] for _, summary in timed_topics)
+        if timed_topics
+        else None
+    )
+    end_ns = (
+        max(summary["end_time_ns"] for _, summary in timed_topics)
+        if timed_topics
+        else None
+    )
+    duration = (
+        (end_ns - start_ns) / 1e9
+        if start_ns is not None and end_ns is not None
+        else 0.0
+    )
     fh.write(f"Minimum start time is {format_timestamp(start_ns)}.\n")
     fh.write(f"Maximum end time is {format_timestamp(end_ns)}.\n")
     fh.write(f"Total duration is {duration} s.\n")
