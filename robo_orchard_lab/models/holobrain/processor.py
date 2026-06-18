@@ -62,11 +62,15 @@ class MultiArmManipulationInput:
     """A dictionary mapping camera names to their world-to-camera
     transformation matrices (e.g., extrinsic parameters)."""
 
-    t_robot2world: TENSOR_TYPE | None = None
+    t_base2cam: dict[str, TENSOR_TYPE] | None = None
+    """A dictionary mapping camera names to their base-to-camera
+    transformation matrices."""
+
+    t_base2world: TENSOR_TYPE | None = None
     """The transformation from the robot's base frame to the
     world coordinate frame."""
 
-    t_robot2ego: TENSOR_TYPE | None = None
+    t_base2ego: TENSOR_TYPE | None = None
     """The transformation from the robot's base frame to an
     egocentric frame, if applicable."""
 
@@ -140,6 +144,14 @@ class Struct2Dict:
             input_data["T_world2cam"] = np.stack(
                 [data.t_world2cam[x] for x in cam_names]
             )
+        if data.t_base2cam is not None:
+            input_data["T_base2cam"] = np.stack(
+                [data.t_base2cam[x] for x in cam_names]
+            )
+        if data.t_base2world is not None:
+            input_data["T_base2world"] = data.t_base2world
+        if data.t_base2ego is not None:
+            input_data["T_base2ego"] = data.t_base2ego
 
         assert data.history_joint_state is not None
         input_data["joint_state"] = np.stack(data.history_joint_state)

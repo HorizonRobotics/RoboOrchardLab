@@ -461,9 +461,7 @@ class BaseLmdbManipulationDataset(Dataset):
                 raise ValueError("All dict shards must contain the same keys.")
             results = {}
             for key in shards[0].keys():
-                results[key] = self._concat_shards(
-                    *(x[key] for x in shards)
-                )
+                results[key] = self._concat_shards(*(x[key] for x in shards))
         return results
 
     def _get_step_index_in_shard(

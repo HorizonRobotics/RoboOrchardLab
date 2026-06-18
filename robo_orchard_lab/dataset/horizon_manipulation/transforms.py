@@ -281,9 +281,12 @@ class MoveEgoToCam:
             cam_idx = data["cam_names"].index(self.cam_idx)
         else:
             cam_idx = self.cam_idx
-        data["T_base2ego"] = data["T_world2cam"][cam_idx] @ data.get(
-            "T_base2world", np.eye(4)
-        )
+        if "T_world2cam" in data:
+            data["T_base2ego"] = data["T_world2cam"][cam_idx] @ data.get(
+                "T_base2world", np.eye(4)
+            )
+        else:
+            data["T_base2ego"] = data["T_base2cam"][cam_idx]
         return data
 
 
@@ -962,17 +965,27 @@ class GetProjectionMat:
             projection_mat = intrinsic @ data["T_world2cam"]
             embodiedment_mat = data["T_base2world"]
         elif self.target_coordinate == "base":
-            projection_mat = (
-                intrinsic @ data["T_world2cam"] @ data["T_base2world"]
-            )
+            if "T_world2cam" in data:
+                projection_mat = (
+                    intrinsic @ data["T_world2cam"] @ data["T_base2world"]
+                )
+            else:
+                projection_mat = intrinsic @ data["T_base2cam"]
             embodiedment_mat = torch.eye(4).to(projection_mat)
         elif self.target_coordinate == "ego":
-            projection_mat = (
-                intrinsic
-                @ data["T_world2cam"]
-                @ data["T_base2world"]
-                @ torch.linalg.inv(data["T_base2ego"])
-            )
+            if "T_world2cam" in data:
+                projection_mat = (
+                    intrinsic
+                    @ data["T_world2cam"]
+                    @ data["T_base2world"]
+                    @ torch.linalg.inv(data["T_base2ego"])
+                )
+            else:
+                projection_mat = (
+                    intrinsic
+                    @ data["T_base2cam"]
+                    @ torch.linalg.inv(data["T_base2ego"])
+                )
             embodiedment_mat = data["T_base2ego"]
         data["projection_mat"] = projection_mat
         data["embodiedment_mat"] = embodiedment_mat
