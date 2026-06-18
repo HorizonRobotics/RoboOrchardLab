@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import base64
 import importlib.util
 import re
 import shutil
@@ -185,8 +186,15 @@ class _FakeIndexedDataset:
 
 
 class _FakeVisualizer:
-    def _render_frame(self, data, ee_indices):
+    def _render_frame(
+        self,
+        data,
+        ee_indices,
+        project_pred_robot_state=False,
+    ):
         value = 50 + len(tuple(ee_indices))
+        if project_pred_robot_state:
+            value += 100
         return np.full((4, 4, 3), value, dtype=np.uint8)
 
 
@@ -195,7 +203,12 @@ class _CountingVisualizer:
         self.render_count = 0
         self.lock = threading.Lock()
 
-    def _render_frame(self, data, ee_indices):
+    def _render_frame(
+        self,
+        data,
+        ee_indices,
+        project_pred_robot_state=False,
+    ):
         time.sleep(0.01)
         with self.lock:
             self.render_count += 1
@@ -292,8 +305,10 @@ def test_index_renders_dataset_options_without_client_fetch():
     assert 'id="copyMeta"' in html
     assert 'id="metadataJson"' in html
     assert 'id="loadMeta"' in html
+    assert 'id="projectPredRobotState"' in html
     assert "Copy JSON" in html
     assert "Load From JSON" in html
+    assert "Future Trajectory" in html
     assert "__DATASET_OPTIONS__" not in html
     assert "__INITIAL_DATASETS__" not in html
 
@@ -682,6 +697,22 @@ def test_frame_endpoint_uses_requested_highlight_joint_indices():
     assert image.getpixel((0, 0)) == (53, 53, 53)
 
 
+def test_frame_endpoint_uses_project_pred_robot_state_flag():
+    client = _make_client()
+
+    default_response = client.get("/api/frames/0/1/1")
+    enabled_response = client.get(
+        "/api/frames/0/1/1?project_pred_robot_state=1"
+    )
+
+    assert default_response.status_code == 200
+    assert enabled_response.status_code == 200
+    default_image = Image.open(BytesIO(default_response.data))
+    enabled_image = Image.open(BytesIO(enabled_response.data))
+    assert default_image.getpixel((0, 0)) == (52, 52, 52)
+    assert enabled_image.getpixel((0, 0)) == (152, 152, 152)
+
+
 def test_frame_endpoint_rejects_invalid_highlight_joint_indices():
     client = _make_client()
 
@@ -733,6 +764,75 @@ def test_frame_data_endpoint_returns_image_metadata_and_joint_state_once():
                 "angles": [11.0, 11.1],
             },
         },
+    ]
+
+
+def test_frame_data_endpoint_uses_project_pred_robot_state_flag():
+    client = _make_client()
+
+    response = client.get(
+        "/api/frame_data/0/1/1?highlight_joint_indices=1,3"
+        "&project_pred_robot_state=true"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    image = Image.open(BytesIO(base64.b64decode(payload["image"])))
+    assert image.getpixel((0, 0)) == (152, 152, 152)
+
+
+def test_video_visualizer_projects_only_highlight_pred_joints_without_text(
+    monkeypatch,
+):
+    calls = []
+
+    def fake_draw_joint_overlay(
+        img,
+        pts2d,
+        joint_idx,
+        robot_state,
+        ee_indices,
+        draw_text=True,
+        **_kwargs,
+    ):
+        calls.append((joint_idx, draw_text))
+
+    monkeypatch.setattr(
+        app_module.HolobrainVideoVisualizer,
+        "_draw_joint_overlay",
+        staticmethod(fake_draw_joint_overlay),
+    )
+    robot_state = np.zeros((3, 8), dtype=np.float64)
+    for joint_idx in range(robot_state.shape[0]):
+        robot_state[joint_idx, 1:4] = [joint_idx * 0.01, 0.0, 1.0]
+        robot_state[joint_idx, 4] = 1.0
+    pred_robot_state = np.stack([robot_state.copy(), robot_state.copy()])
+    projection_mat = np.array(
+        [
+            [
+                [20.0, 0.0, 20.0, 0.0],
+                [0.0, 20.0, 20.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        ],
+        dtype=np.float64,
+    )
+
+    app_module.HolobrainVideoVisualizer.get_vis_imgs(
+        np.zeros((1, 64, 64, 3), dtype=np.uint8),
+        projection_mat,
+        robot_state,
+        ee_indices=(1,),
+        pred_robot_states=pred_robot_state,
+    )
+
+    assert calls == [
+        (0, True),
+        (1, True),
+        (2, True),
+        (1, False),
+        (1, False),
     ]
 
 

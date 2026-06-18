@@ -46,6 +46,7 @@
         minmax(120px, 0.8fr)
         minmax(120px, 0.8fr)
         minmax(120px, 0.8fr)
+        minmax(136px, 0.7fr)
         minmax(104px, 0.5fr);
       gap: 12px;
       align-items: end;
@@ -76,6 +77,18 @@
     select, input, button {
       height: 38px;
       padding: 0 10px;
+    }
+    .checkbox-label {
+      align-content: end;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      min-height: 56px;
+    }
+    .checkbox-label input {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      align-self: center;
     }
     textarea {
       height: 72px;
@@ -296,6 +309,10 @@
       <label>Highlight Joint Indices
         <input id="highlightJointIndices" type="text" value="6,13">
       </label>
+      <label class="checkbox-label">
+        <input id="projectPredRobotState" type="checkbox">
+        <span>Future Trajectory</span>
+      </label>
       <button id="load" type="button">Load</button>
     </div>
     <div class="episode-actions">
@@ -350,6 +367,9 @@
     const highlightJointIndicesEl = document.getElementById(
       "highlightJointIndices"
     );
+    const projectPredRobotStateEl = document.getElementById(
+      "projectPredRobotState"
+    );
     const loadEl = document.getElementById("load");
     const copyMetaEl = document.getElementById("copyMeta");
     const metadataJsonEl = document.getElementById("metadataJson");
@@ -396,6 +416,7 @@
       episodeEl.disabled = loading;
       visIntervalEl.disabled = loading;
       highlightJointIndicesEl.disabled = loading;
+      projectPredRobotStateEl.disabled = loading;
       for (const button of jumpEls) {
         button.disabled = loading;
       }
@@ -714,6 +735,9 @@
         `&vis_interval=${episode.interval}` +
         `&highlight_joint_indices=${
           encodeURIComponent(selectedHighlightJointIndices())
+        }` +
+        `&project_pred_robot_state=${
+          projectPredRobotStateEl.checked ? "1" : "0"
         }`
       );
       if (requestId !== frameRequestId) return false;
@@ -896,6 +920,16 @@
     });
 
     highlightJointIndicesEl.addEventListener("change", async () => {
+      if (!episode) return;
+      setError("");
+      try {
+        await showFrame(Number(seekEl.value));
+      } catch (err) {
+        setError(err.message);
+      }
+    });
+
+    projectPredRobotStateEl.addEventListener("change", async () => {
       if (!episode) return;
       setError("");
       try {

@@ -384,6 +384,9 @@ def create_app(
         try:
             handle, mode, vis_interval = load_request_dataset(dataset_id)
             highlight_joint_indices = _request_highlight_joint_indices()
+            project_pred_robot_state = _request_bool(
+                "project_pred_robot_state"
+            )
             cached = _cached_or_render_frame(
                 frame_cache,
                 (
@@ -393,6 +396,7 @@ def create_app(
                     frame_offset,
                     vis_interval,
                     highlight_joint_indices,
+                    project_pred_robot_state,
                 ),
                 handle,
                 mode,
@@ -400,6 +404,7 @@ def create_app(
                 frame_offset,
                 vis_interval,
                 highlight_joint_indices,
+                project_pred_robot_state,
             )
         except (IndexError, UnknownDatasetError) as exc:
             return _json_error(str(exc), 404)
@@ -418,6 +423,7 @@ def create_app(
             frame_offset,
             vis_interval,
             highlight_joint_indices,
+            project_pred_robot_state,
             prefetch_frames,
         )
 
@@ -430,6 +436,9 @@ def create_app(
         try:
             handle, mode, vis_interval = load_request_dataset(dataset_id)
             highlight_joint_indices = _request_highlight_joint_indices()
+            project_pred_robot_state = _request_bool(
+                "project_pred_robot_state"
+            )
             payload = _frame_data_payload(
                 handle,
                 mode,
@@ -437,6 +446,7 @@ def create_app(
                 frame_offset,
                 vis_interval,
                 highlight_joint_indices,
+                project_pred_robot_state,
             )
         except (IndexError, UnknownDatasetError) as exc:
             return _json_error(str(exc), 404)
@@ -533,6 +543,7 @@ def _schedule_prefetch(
     frame_offset: int,
     interval: int,
     highlight_joint_indices: tuple[int, ...],
+    project_pred_robot_state: bool,
     prefetch_frames: int,
 ) -> None:
     dataset = _loaded_dataset(handle, mode)
@@ -554,7 +565,7 @@ def _schedule_prefetch(
             offset,
             interval,
             highlight_joint_indices,
-            "",
+            project_pred_robot_state,
         )
         if frame_cache.get(key) is not None:
             continue
@@ -569,6 +580,7 @@ def _schedule_prefetch(
             offset,
             interval,
             highlight_joint_indices,
+            project_pred_robot_state,
         )
 
 
@@ -581,6 +593,7 @@ def _prefetch_frame(
     frame_offset: int,
     interval: int,
     highlight_joint_indices: tuple[int, ...],
+    project_pred_robot_state: bool,
 ) -> None:
     if frame_cache.get(key) is not None:
         return
@@ -594,6 +607,7 @@ def _prefetch_frame(
                 frame_offset,
                 interval,
                 highlight_joint_indices,
+                project_pred_robot_state,
             ),
         )
     except Exception:
@@ -641,6 +655,18 @@ def _request_vis_interval(default_interval: int) -> int:
     if value < 1:
         raise ValueError("vis_interval must be >= 1.")
     return value
+
+
+def _request_bool(name: str, default: bool = False) -> bool:
+    raw_value = request.args.get(name)
+    if raw_value is None:
+        return default
+    value = raw_value.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value.")
 
 
 def _request_highlight_joint_indices() -> tuple[int, ...]:
@@ -885,6 +911,7 @@ def _render_encoded_frame(
     frame_offset: int,
     interval: int,
     highlight_joint_indices: tuple[int, ...],
+    project_pred_robot_state: bool,
 ) -> EncodedFrame:
     dataset = _loaded_dataset(handle, mode)
     visualizer = handle.visualizers.get(mode, handle.visualizer)
@@ -898,6 +925,7 @@ def _render_encoded_frame(
     rendered = visualizer._render_frame(
         HolobrainDataFeature.from_dict(raw_frame),
         ee_indices=highlight_joint_indices,
+        project_pred_robot_state=project_pred_robot_state,
     )
     return (
         _encode_jpeg(rendered),
@@ -919,6 +947,7 @@ def _cached_or_render_frame(
     frame_offset: int,
     interval: int,
     highlight_joint_indices: tuple[int, ...],
+    project_pred_robot_state: bool,
 ) -> EncodedFrame:
     cached = frame_cache.get(cache_key)
     if cached is not None:
@@ -930,6 +959,7 @@ def _cached_or_render_frame(
         frame_offset,
         interval,
         highlight_joint_indices,
+        project_pred_robot_state,
     )
     frame_cache.put(cache_key, rendered)
     return rendered
@@ -942,6 +972,7 @@ def _frame_data_payload(
     frame_offset: int,
     interval: int,
     highlight_joint_indices: tuple[int, ...],
+    project_pred_robot_state: bool,
 ) -> dict[str, Any]:
     dataset = _loaded_dataset(handle, mode)
     visualizer = handle.visualizers.get(mode, handle.visualizer)
@@ -954,6 +985,7 @@ def _frame_data_payload(
     rendered = visualizer._render_frame(
         HolobrainDataFeature.from_dict(raw_frame),
         ee_indices=highlight_joint_indices,
+        project_pred_robot_state=project_pred_robot_state,
     )
     return {
         "image": base64.b64encode(_encode_jpeg(rendered)).decode("ascii"),

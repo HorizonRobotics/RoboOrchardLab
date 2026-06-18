@@ -38,17 +38,24 @@ class HolobrainDataFeature:
     depths: np.ndarray  # (N_cams, H, W) float
     projection_mat: Optional[np.ndarray] = None  # (N_cams, 4, 4)
     hist_robot_state: Optional[list] = None  # list of (N_joints, 8)
+    pred_robot_state: Optional[list] = None  # list of (N_joints, 8)
 
     def __post_init__(self):
         for attr in ("imgs", "depths", "projection_mat"):
             val = getattr(self, attr)
             if isinstance(val, torch.Tensor):
                 setattr(self, attr, val.cpu().numpy())
-        if self.hist_robot_state is not None:
-            self.hist_robot_state = [
-                s.cpu().numpy() if isinstance(s, torch.Tensor) else s
-                for s in self.hist_robot_state
-            ]
+        for attr in ("hist_robot_state", "pred_robot_state"):
+            val = getattr(self, attr)
+            if val is not None:
+                setattr(
+                    self,
+                    attr,
+                    [
+                        s.cpu().numpy() if isinstance(s, torch.Tensor) else s
+                        for s in val
+                    ],
+                )
 
     @classmethod
     def from_dict(cls, raw: dict) -> "HolobrainDataFeature":
@@ -58,6 +65,7 @@ class HolobrainDataFeature:
             depths=raw["depths"],
             projection_mat=raw.get("projection_mat"),
             hist_robot_state=raw.get("hist_robot_state"),
+            pred_robot_state=raw.get("pred_robot_state"),
         )
 
 
@@ -340,6 +348,7 @@ class HolobrainVideoVisualizer:
         ee_indices=(6, 13),
         fps=25,
         interval=1,
+        project_pred_robot_state=False,
     ):
         """Visualizes a complete episode and saves it as an MP4 video file.
 
@@ -349,6 +358,8 @@ class HolobrainVideoVisualizer:
             ee_indices: Indices of joints to be highlighted as end-effectors.
             fps: Frames per second for the output video.
             interval: Step size for frame sampling (stride).
+            project_pred_robot_state: Whether to project future predicted
+                end-effector trajectory on RGB images.
         """
         import imageio
 
@@ -369,19 +380,28 @@ class HolobrainVideoVisualizer:
 
         for idx in tqdm(range(start, end, interval)):
             frame_data = HolobrainDataFeature.from_dict(self.dataset[idx])
-            frame = self._render_frame(frame_data, ee_indices)
+            frame = self._render_frame(
+                frame_data,
+                ee_indices,
+                project_pred_robot_state=project_pred_robot_state,
+            )
             frames.append(frame)
 
         imageio.mimwrite(str(save_path), frames, fps=fps)
 
     def _render_frame(
-        self, data: HolobrainDataFeature, ee_indices
+        self,
+        data: HolobrainDataFeature,
+        ee_indices,
+        project_pred_robot_state: bool = False,
     ) -> np.ndarray:
         """Renders a single frame combining multi-view RGB and depth.
 
         Args:
             data: A :class:`HolobrainDataFeature` from ``dataset[idx]``.
             ee_indices: Joint indices to highlight with larger axes.
+            project_pred_robot_state: Whether to project predicted future
+                end-effector trajectory on RGB images.
 
         Returns:
             np.ndarray: Combined image array (uint8) with RGB and Depth rows.
@@ -393,7 +413,13 @@ class HolobrainVideoVisualizer:
         )
 
         vis_imgs = self.get_vis_imgs(
-            data.imgs, data.projection_mat, robot_state, ee_indices=ee_indices
+            data.imgs,
+            data.projection_mat,
+            robot_state,
+            ee_indices=ee_indices,
+            pred_robot_states=(
+                data.pred_robot_state if project_pred_robot_state else None
+            ),
         )
         vis_depths = self.depth_visualize(data.depths)
         vis_depths = np.reshape(
@@ -403,7 +429,13 @@ class HolobrainVideoVisualizer:
         return np.concatenate([vis_imgs, vis_depths], axis=0)
 
     @staticmethod
-    def get_vis_imgs(imgs, projection_mat, robot_state, ee_indices):
+    def get_vis_imgs(
+        imgs,
+        projection_mat,
+        robot_state,
+        ee_indices,
+        pred_robot_states=None,
+    ):
         """Projects 3D robot joint frames onto 2D camera images.
 
         Args:
@@ -411,6 +443,8 @@ class HolobrainVideoVisualizer:
             projection_mat: Camera projection matrices [P = K * [R|t]].
             robot_state: Joint value with joint states (pos + quat). (N, 8).
             ee_indices: Indices of joints to render with enhanced axis length.
+            pred_robot_states: Optional future joint states. Only
+                ``ee_indices`` are projected, without value labels.
 
         Returns:
             np.ndarray: Horizontally concatenated images from all camera views.
@@ -421,6 +455,7 @@ class HolobrainVideoVisualizer:
         vis_list = []
         for cam_idx in range(imgs.shape[0]):
             img = imgs[cam_idx].copy()
+            drew_overlay = False
 
             if projection_mat is not None and robot_state is not None:
                 joints = HolobrainVideoVisualizer._project_joints_to_2d(
@@ -430,6 +465,13 @@ class HolobrainVideoVisualizer:
                     HolobrainVideoVisualizer._draw_joint_overlay(
                         img, pts2d, j, robot_state, ee_indices
                     )
+                drew_overlay = True
+            if projection_mat is not None and pred_robot_states is not None:
+                HolobrainVideoVisualizer._draw_pred_robot_state_overlay(
+                    img, pred_robot_states, projection_mat[cam_idx], ee_indices
+                )
+                drew_overlay = True
+            if drew_overlay:
                 img = img[:, :, ::-1]  # BGR to RGB
 
             vis_list.append(img)
@@ -472,7 +514,9 @@ class HolobrainVideoVisualizer:
         return depth_color
 
     @staticmethod
-    def _project_joints_to_2d(robot_state, proj_matrix, ee_indices):
+    def _project_joints_to_2d(
+        robot_state, proj_matrix, ee_indices, joint_indices=None
+    ):
         """Projects 3D robot joint frames to 2D points for a single camera.
 
         Returns:
@@ -481,7 +525,11 @@ class HolobrainVideoVisualizer:
         from scipy.spatial.transform import Rotation
 
         results = []
-        for j in range(robot_state.shape[0]):
+        if joint_indices is None:
+            joint_indices = range(robot_state.shape[0])
+        for j in joint_indices:
+            if j < 0 or j >= robot_state.shape[0]:
+                continue
             rot = Rotation.from_quat(
                 robot_state[j, 4:], scalar_first=True
             ).as_matrix()
@@ -505,19 +553,70 @@ class HolobrainVideoVisualizer:
         return results
 
     @staticmethod
-    def _draw_joint_overlay(img, pts2d, joint_idx, robot_state, ee_indices):
+    def _draw_pred_robot_state_overlay(
+        img, pred_robot_states, proj_matrix, ee_indices
+    ):
+        """Draws future predicted end-effector poses with transparent style."""
+        import cv2
+
+        overlay = img.copy()
+        for robot_state in pred_robot_states:
+            robot_state = np.asarray(robot_state)
+            joints = HolobrainVideoVisualizer._project_joints_to_2d(
+                robot_state,
+                proj_matrix,
+                ee_indices,
+                joint_indices=ee_indices,
+            )
+            for pts2d, joint_idx in joints:
+                HolobrainVideoVisualizer._draw_joint_overlay(
+                    overlay,
+                    pts2d,
+                    joint_idx,
+                    robot_state,
+                    ee_indices,
+                    draw_text=False,
+                    axis_colors=((255, 191, 0), (255, 191, 0), (255, 191, 0)),
+                    tip_color=(255, 255, 255),
+                    line_width=2,
+                    tip_radius=3,
+                )
+        cv2.addWeighted(overlay, 0.45, img, 0.55, 0, dst=img)
+
+    @staticmethod
+    def _draw_joint_overlay(
+        img,
+        pts2d,
+        joint_idx,
+        robot_state,
+        ee_indices,
+        draw_text=True,
+        axis_colors=None,
+        tip_color=(0, 0, 255),
+        line_width=3,
+        tip_radius=5,
+    ):
         """Draws axis lines, tips, and gripper value for one joint."""
         import cv2
 
         for ax in range(3):
-            color = [0, 0, 0]
-            color[ax] = 255
-            cv2.line(img, tuple(pts2d[3]), tuple(pts2d[ax]), tuple(color), 3)
+            if axis_colors is None:
+                color = [0, 0, 0]
+                color[ax] = 255
+            else:
+                color = axis_colors[ax]
+            cv2.line(
+                img,
+                tuple(pts2d[3]),
+                tuple(pts2d[ax]),
+                tuple(color),
+                line_width,
+            )
 
         for ax in range(3):
-            cv2.circle(img, tuple(pts2d[ax]), 5, (0, 0, 255), -1)
+            cv2.circle(img, tuple(pts2d[ax]), tip_radius, tip_color, -1)
 
-        if joint_idx in ee_indices:
+        if draw_text and joint_idx in ee_indices:
             gripper_value = robot_state[joint_idx, 0]
             x, y = int(pts2d[3][0]) + 5, int(pts2d[3][1]) - 5
             if 0 <= x < img.shape[1] and 0 <= y < img.shape[0]:
