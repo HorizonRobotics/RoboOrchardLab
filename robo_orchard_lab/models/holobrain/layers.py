@@ -425,6 +425,151 @@ class TemporalJointGraphAttention(nn.Module):
         return x
 
 
+class MultiModalAttention(nn.Module):
+    def __init__(
+        self,
+        img_cross_attn,
+        text_cross_attn,
+        temp_joint_attn,
+        embed_dims,
+        num_heads=8,
+        state_drop_rate=0.2,
+        scale=3,
+        parallel_attn=False,
+    ):
+        super().__init__()
+        self.img_cross_attn = build(img_cross_attn)
+        self.text_cross_attn = build(text_cross_attn)
+        self.temp_joint_attn = build(temp_joint_attn)
+        self.embed_dims = embed_dims
+        self.num_heads = num_heads
+        self.router = nn.Linear(embed_dims, 3 * num_heads)
+        self.state_drop_rate = state_drop_rate
+        self.scale = scale
+        self.parallel_attn = parallel_attn
+        self._branch_streams = {}
+
+    def clear_cache(self):
+        self.img_cross_attn.clear_cache()
+        self.text_cross_attn.clear_cache()
+        self.temp_joint_attn.clear_cache()
+
+    def do_cache(self, enable: bool):
+        self.img_cross_attn.do_cache(enable)
+        self.text_cross_attn.do_cache(enable)
+        self.temp_joint_attn.do_cache(enable)
+
+    def _get_branch_streams(self, device):
+        device_idx = torch.device(device).index
+        streams = self._branch_streams.get(device_idx)
+        if streams is None:
+            streams = tuple(torch.cuda.Stream(device=device) for _ in range(3))
+            self._branch_streams[device_idx] = streams
+        return streams
+
+    def forward(
+        self,
+        query,
+        state_feature,
+        joint_distance,
+        temporal_pos_q,
+        temporal_pos_k,
+        temporal_attn_mask,
+        text_feature,
+        text_key_padding_mask,
+        tca_query_pos,
+        tca_key_pos,
+        img_feature,
+        ica_query_pos,
+        ica_key_pos,
+        identity=None,
+    ):
+        bs, num_joint_q, num_step_q = query.shape[:3]
+        if identity is None:
+            identity = query
+
+        query_flat = query.flatten(1, 2)
+        identity_flat = identity.flatten(1, 2)
+
+        def route():
+            probs = self.router(query)
+            if self.training:
+                mask = torch.rand_like(probs) < self.state_drop_rate
+                mask[..., 1:] = False
+                probs = torch.where(mask, float("-inf"), probs)
+            return (
+                (probs.unflatten(-1, (self.num_heads, 3)) / self.scale)
+                .softmax(dim=-1)
+                .unsqueeze(-2)
+            )
+
+        def state_attn():
+            return self.temp_joint_attn(
+                query=query,
+                key=state_feature,
+                joint_distance=joint_distance,
+                temporal_pos_q=temporal_pos_q,
+                temporal_pos_k=temporal_pos_k,
+                temporal_attn_mask=temporal_attn_mask,
+                identity=identity,
+            )
+
+        def text_attn():
+            return self.text_cross_attn(
+                query=query_flat,
+                key=text_feature,
+                key_padding_mask=text_key_padding_mask,
+                query_pos=tca_query_pos,
+                key_pos=tca_key_pos,
+                identity=identity_flat,
+            ).unflatten(1, (num_joint_q, num_step_q))
+
+        def img_attn():
+            return self.img_cross_attn(
+                query=query_flat,
+                key=img_feature,
+                query_pos=ica_query_pos,
+                key_pos=ica_key_pos,
+                identity=identity_flat,
+            ).unflatten(1, (num_joint_q, num_step_q))
+
+        if self.parallel_attn and query.is_cuda:
+            cur_stream = torch.cuda.current_stream(query.device)
+            state_stream, text_stream, img_stream = self._get_branch_streams(
+                query.device
+            )
+            for stream in (state_stream, text_stream, img_stream):
+                stream.wait_stream(cur_stream)
+
+            with torch.cuda.stream(state_stream):
+                out_state_attn = state_attn()
+            with torch.cuda.stream(text_stream):
+                out_text_attn = text_attn()
+            with torch.cuda.stream(img_stream):
+                out_img_attn = img_attn()
+
+            probs = route()
+            for stream in (state_stream, text_stream, img_stream):
+                cur_stream.wait_stream(stream)
+        else:
+            probs = route()
+            out_state_attn = state_attn()
+            out_text_attn = text_attn()
+            out_img_attn = img_attn()
+
+        output = (
+            (
+                torch.stack(
+                    [out_state_attn, out_text_attn, out_img_attn], dim=-1
+                ).unflatten(-2, (self.num_heads, -1))
+                * probs
+            )
+            .sum(dim=-1)
+            .flatten(-2)
+        )
+        return output
+
+
 class AdaRMSNorm(nn.RMSNorm):
     def __init__(
         self,

@@ -28,10 +28,12 @@ def build_transforms(config, mode):
         AddScaleShift,
         ConvertDataType,
         GetProjectionMat,
+        IdentityTransform,
         ItemSelection,
         MoveEgoToCam,
         MultiArmKinematics,
         Resize,
+        SimpleResize,
         SimpleStateSampling,
         ToTensor,
         UpSampleJointState,
@@ -135,6 +137,15 @@ def build_transforms(config, mode):
         ],
     )
 
+    with_reference_imgs = config.get("with_reference_imgs", False)
+    if with_reference_imgs:
+        reference_img_dst_wh = config.get("reference_img_dst_wh", (224, 224))
+        resize_reference_img = SimpleResize(
+            keys="reference_imgs", dst_wh=reference_img_dst_wh
+        )
+    else:
+        resize_reference_img = IdentityTransform()
+
     scale_shift = AddScaleShift(scale_shift=scale_shift)
     if mode == "training":
         item_selection = ItemSelection(
@@ -155,10 +166,12 @@ def build_transforms(config, mode):
                 "subtask",
                 "joint_mask",
                 "value",
+                *(["reference_imgs"] if with_reference_imgs else []),
             ]
         )
         transforms = [
             add_data_relative_items,
+            resize_reference_img,
             value_sampling,
             state_sampling,
             resize,
@@ -188,10 +201,12 @@ def build_transforms(config, mode):
                 "subtask",
                 "joint_mask",
                 "value",
+                *(["reference_imgs"] if with_reference_imgs else []),
             ]
         )
         transforms = [
             add_data_relative_items,
+            resize_reference_img,
             value_sampling,
             state_sampling,
             resize,
@@ -230,6 +245,7 @@ def _build_dataset(
         min_num_step=50,
         max_num_step=1000,
         reset_step=1000,
+        load_reference_img=config.get("with_reference_imgs", False),
     )
     return dataset
 

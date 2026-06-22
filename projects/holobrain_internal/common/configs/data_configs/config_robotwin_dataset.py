@@ -292,7 +292,13 @@ dataset_config = dict(
 
 
 def build_transforms(
-    config, mode, kinematics_config, t_base2world, scale_shift, num_joint
+    config,
+    mode,
+    kinematics_config,
+    t_base2world,
+    scale_shift,
+    num_joint,
+    reference_img_path=None,
 ):
     import numpy as np
 
@@ -302,11 +308,14 @@ def build_transforms(
         ConvertDataType,
         DualArmKinematics,
         GetProjectionMat,
+        IdentityTransform,
         ImageChannelFlip,
         ItemSelection,
         JointStateNoise,
+        LoadReferenceImages,
         MoveEgoToCam,
         Resize,
+        SimpleResize,
         SimpleStateSampling,
         ToTensor,
         UnsqueezeBatch,
@@ -322,6 +331,24 @@ def build_transforms(
         if config.get("value_model_training", False)
         else None
     )
+
+    with_reference_imgs = reference_img_path is not None and config.get(
+        "with_reference_imgs", False
+    )
+    if with_reference_imgs:
+        load_reference_img = dict(
+            type=LoadReferenceImages, path=reference_img_path
+        )
+        reference_img_dst_wh = config.get("reference_img_dst_wh", (224, 224))
+        resize_reference_img = dict(
+            type=SimpleResize,
+            keys="reference_imgs",
+            dst_wh=reference_img_dst_wh,
+        )
+    else:
+        load_reference_img = resize_reference_img = dict(
+            type=IdentityTransform
+        )
 
     num_joint_per_arm = num_joint // 2 - 1
     joint_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
@@ -398,6 +425,7 @@ def build_transforms(
                 "uuid",
                 "joint_mask",
                 "value",
+                *(["reference_imgs"] if with_reference_imgs else []),
             ],
         )
         joint_state_noise = dict(
@@ -407,6 +435,8 @@ def build_transforms(
         )
         transforms = [
             add_data_relative_items,
+            load_reference_img,
+            resize_reference_img,
             value_sampling,
             state_sampling,
             resize,
@@ -437,10 +467,13 @@ def build_transforms(
                 "uuid",
                 "joint_mask",
                 "value",
+                *(["reference_imgs"] if with_reference_imgs else []),
             ],
         )
         transforms = [
             add_data_relative_items,
+            load_reference_img,
+            resize_reference_img,
             value_sampling,
             state_sampling,
             resize,
@@ -467,11 +500,14 @@ def build_transforms(
                 "kinematics",
                 "text",
                 "joint_mask",
+                *(["reference_imgs"] if with_reference_imgs else []),
             ],
         )
         unsqueeze_batch = dict(type=UnsqueezeBatch)
         transforms = [
             add_data_relative_items,
+            load_reference_img,
+            resize_reference_img,
             state_sampling,
             resize,
             img_channel_flip,
@@ -487,13 +523,15 @@ def build_transforms(
     return transforms
 
 
-def _build_dataset(
+@train_dataset_register(DATA_TYPE)
+def build_datasets(
     config,
     dataset_name,
     data_paths,
     setting_type,
-    mode,
+    mode="training",
     lazy_init=True,
+    reference_img_path=None,
 ):
     from robo_orchard_lab.dataset.robotwin.robotwin_lmdb_dataset import (
         RoboTwinLmdbDataset,
@@ -506,6 +544,7 @@ def _build_dataset(
         dataset_config[setting_type]["T_base2world"],
         dataset_config[setting_type]["scale_shift"],
         dataset_config[setting_type]["num_joint"],
+        reference_img_path=reference_img_path,
     )
     return RoboTwinLmdbDataset(
         paths=data_paths,
@@ -515,25 +554,6 @@ def _build_dataset(
         dataset_name=dataset_name,
         cam_names=dataset_config[setting_type]["cam_names"],
         reset_step=1000,
-    )
-
-
-@train_dataset_register(DATA_TYPE)
-def build_datasets(
-    config,
-    dataset_name,
-    data_paths,
-    setting_type,
-    mode="training",
-    lazy_init=True,
-):
-    return _build_dataset(
-        config,
-        dataset_name=dataset_name,
-        data_paths=data_paths,
-        setting_type=setting_type,
-        mode=mode,
-        lazy_init=lazy_init,
     )
 
 

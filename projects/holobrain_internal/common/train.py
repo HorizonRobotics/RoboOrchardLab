@@ -96,10 +96,13 @@ def main(args, accelerator):
     num_workers = config.get("num_workers", 4)
     if not args.eval_only:
         train_dataset = build_dataset(config)
+        pin_memory = config.get("pin_memory", True)
+        prefetch_factor = config.get("prefetch_factor", 2)
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             num_workers=num_workers,
-            pin_memory=False,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
             collate_fn=collate_batch_dict,
             persistent_workers=num_workers > 0,
             batch_sampler=DistributedBatchFlagSampler(
@@ -217,6 +220,7 @@ if __name__ == "__main__":
         ),
         dataloader_config=DataLoaderConfiguration(
             use_seedable_sampler=True,
+            non_blocking=True,
         ),
     )
     accelerator.init_trackers("tensorboard")

@@ -33,9 +33,11 @@ def build_transforms(config, mode):
         AddScaleShift,
         ConvertDataType,
         GetProjectionMat,
+        IdentityTransform,
         ImageChannelFlip,
         ItemSelection,
         Resize,
+        SimpleResize,
         ToTensor,
     )
 
@@ -86,6 +88,16 @@ def build_transforms(config, mode):
         )
     )
     scale_shift = AddScaleShift(scale_shift=scale_shift)
+
+    with_reference_imgs = config.get("with_reference_imgs", False)
+    if with_reference_imgs:
+        reference_img_dst_wh = config.get("reference_img_dst_wh", (224, 224))
+        resize_reference_img = SimpleResize(
+            keys="reference_imgs", dst_wh=reference_img_dst_wh
+        )
+    else:
+        resize_reference_img = IdentityTransform()
+
     if mode == "training":
         item_selection = ItemSelection(
             keys=[
@@ -105,10 +117,12 @@ def build_transforms(config, mode):
                 "joint_relative_pos",
                 "noise_type",
                 "pred_mask",
+                *(["reference_imgs"] if with_reference_imgs else []),
             ]
         )
         transforms = [
             add_data_relative_items,
+            resize_reference_img,
             add_non_array_items,
             state_sampling,
             hand_to_gripper,
@@ -146,6 +160,7 @@ def _build_dataset(
         lazy_init=lazy_init or mode != "training",
         dataset_name=dataset_name,
         reset_step=1000,
+        load_reference_img=config.get("with_reference_imgs", False),
     )
     return dataset
 

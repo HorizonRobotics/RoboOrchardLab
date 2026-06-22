@@ -128,6 +128,7 @@ class DroidActionLmdbDataset(BaseLmdbManipulationDataset):
         load_ee_state=False,
         min_num_step=0,
         max_num_step=1e5,
+        load_reference_img=False,
         **kwargs,
     ):
         self.min_num_step = min_num_step
@@ -143,6 +144,7 @@ class DroidActionLmdbDataset(BaseLmdbManipulationDataset):
         )
         self.cam_names = cam_names
         self.load_ee_state = load_ee_state
+        self.load_reference_img = load_reference_img
 
     def _check_valid(self, index_data):
         if (
@@ -151,6 +153,17 @@ class DroidActionLmdbDataset(BaseLmdbManipulationDataset):
         ):
             return False
         return super()._check_valid(index_data)
+
+    def _get_reference_img(self, lmdb_index, episode_index, uuid, cam_name):
+        last_step_index = (
+            self.idx_lmdbs[lmdb_index][episode_index]["num_steps"] - 1
+        )
+        image = self.img_lmdbs[lmdb_index][
+            f"{uuid}/{cam_name}/{last_step_index}"
+        ]
+        if image is not None:
+            image = cv2.imdecode(image, cv2.IMREAD_UNCHANGED)
+        return {"reference_imgs": [image]}
 
     def __getitem__(self, index):
         lmdb_index, episode_index, step_index = self._get_indices(index)
@@ -239,6 +252,14 @@ class DroidActionLmdbDataset(BaseLmdbManipulationDataset):
             data["ee_state"] = ee_state
 
         self.get_instruction(lmdb_index, data)
+
+        if self.load_reference_img:
+            data.update(
+                self._get_reference_img(
+                    lmdb_index, episode_index, uuid, cam_names[-1]
+                )
+            )
+
         for transform in self.transforms:
             if transform is None:
                 continue

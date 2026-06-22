@@ -234,6 +234,7 @@ class RoboTwinLmdbDataset(BaseLmdbManipulationDataset):
             T_base2world=copy.deepcopy(self.T_base2world),
             joint_state=joint_state,
             ee_state=ee_state,
+            task_name=task_name,
         )
         if self.T_base2ego is not None:
             data["T_base2ego"] = copy.deepcopy(self.T_base2ego)

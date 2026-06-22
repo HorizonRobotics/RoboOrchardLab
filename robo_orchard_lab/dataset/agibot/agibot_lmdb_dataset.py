@@ -129,6 +129,8 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
         }
 
     def _get_task_name(self, index_data):
+        if isinstance(index_data, dict):
+            return index_data["task_info"]["task_name"]
         return index_data.task_info["task_name"]
 
     def _load_images_consistent(self, cam_names, uuid, step_index, lmdb_index):
@@ -447,6 +449,7 @@ class AgiBotLmdbDataset(BaseLmdbManipulationDataset):
             ee_state=ee_state,  # End-effector cartesian positions for both arms
             text=instruction,  # Main task instruction
             subtask=subtask,  # Current frame's subtask description
+            task_name=self._get_task_name(idx_data),
         )
 
         # Add optional data

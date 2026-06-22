@@ -85,7 +85,7 @@ agibot_scale_shift = [
 
 
 
-def build_transforms(config):
+def build_transforms(config, reference_img_path):
     from robo_orchard_lab.dataset.agibot.transforms import (
         AddItems,
         AddScaleShift,
@@ -100,9 +100,24 @@ def build_transforms(config):
         UpSampleJointState,
         MoveEgoToCam,
         TextAug,
+        LoadReferenceImages,
+        IdentityTransform,
+        SimpleResize,
     )
 
     from robo_orchard_lab.transforms import ValueSampling
+
+
+    with_reference_imgs = reference_img_path is not None and config.get("with_reference_imgs", False)
+    if with_reference_imgs:
+        load_reference_img = LoadReferenceImages(reference_img_path)
+        reference_img_dst_wh = config.get("reference_img_dst_wh", (224, 224))
+        resize_reference_img = SimpleResize(
+            keys="reference_imgs", dst_wh=reference_img_dst_wh
+        )
+    else:
+        load_reference_img = IdentityTransform()
+        resize_reference_img = IdentityTransform()
 
     value_sampling = dict(
         type=ValueSampling,
@@ -194,6 +209,7 @@ def build_transforms(config):
             "intrinsic",
             "joint_mask",
             "value",
+            *(["reference_imgs"] if with_reference_imgs else []),
         ]
     )
 
@@ -240,6 +256,8 @@ def build_transforms(config):
 
     return [
         add_data_relative_items,
+        load_reference_img,
+        resize_reference_img,
         value_sampling,
         state_sampling,
         resize,
@@ -265,6 +283,7 @@ def build_datasets(
     lazy_init=True,
     lmdb_kwargs=None,
     mode="training",
+    reference_img_path=None,
 ):
     """Build AgiBot datasets for training."""
     assert mode == "training", "only support training mode"
@@ -278,7 +297,7 @@ def build_datasets(
     if callable(data_paths):
         data_paths = data_paths()
 
-    transforms = build_transforms(config)
+    transforms = build_transforms(config, reference_img_path)
     instruction_reader = InstructionReader(paths=instruction_path)
     dataset = AgiBotLmdbDataset(
         paths=data_paths,

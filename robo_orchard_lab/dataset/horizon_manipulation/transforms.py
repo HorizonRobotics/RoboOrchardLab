@@ -534,6 +534,33 @@ class UpSampleJointState:
         return data
 
 
+class SimpleResize:
+    def __init__(self, keys, dst_wh):
+        if isinstance(keys, str):
+            keys = [keys]
+        assert ("imgs" not in keys) and ("depths" not in keys), (
+            "Use `Resize` transform for imgs and depths because of intrinsic"
+        )
+        self.keys = keys
+        self.dst_wh = dst_wh
+
+    def __call__(self, data):
+        for key in self.keys:
+            if key not in data:
+                continue
+            data[key] = self._resize(data[key])
+        return data
+
+    def _resize(self, inputs):
+        if isinstance(inputs, torch.Tensor):
+            inputs = inputs.cpu().numpy()
+        if isinstance(inputs, np.ndarray) and inputs.ndim <= 3:
+            return cv2.resize(inputs, self.dst_wh)
+        if isinstance(inputs, (tuple, list)):
+            return [cv2.resize(x, self.dst_wh) for x in inputs]
+        return np.stack([inputs[i] for i in range(inputs.shape[0])])
+
+
 class Resize:
     def __init__(self, dst_wh, dst_intrinsic=None):
         self.dst_wh = dst_wh

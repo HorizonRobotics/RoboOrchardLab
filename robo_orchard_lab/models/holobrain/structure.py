@@ -158,7 +158,7 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
             self.vlm.eval()
             self.vlm.requires_grad_(False)
         else:
-            # self.vlm.language_model.gradient_checkpointing_enable()
+            self.vlm.language_model.gradient_checkpointing_enable()
             if self.cfg.freeze_vision:
                 self.vlm.visual.eval()
                 self.vlm.visual.requires_grad_(False)

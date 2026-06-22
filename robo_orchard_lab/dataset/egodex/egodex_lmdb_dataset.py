@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 class EgoDexLmdbDataset(BaseLmdbManipulationDataset):
     """EgoDex LMDB Dataset."""
 
+    def __init__(self, load_reference_img=False, **kwargs):
+        super().__init__(**kwargs)
+        self.load_reference_img = load_reference_img
+
+    def _get_reference_img(self, lmdb_index, episode_index, uuid):
+        last_step_index = (
+            self.idx_lmdbs[lmdb_index][episode_index]["num_steps"] - 1
+        )
+        image = self.img_lmdbs[lmdb_index][f"{uuid}/camera/{last_step_index}"]
+        if image is not None:
+            image = cv2.imdecode(image, cv2.IMREAD_UNCHANGED)
+        return {"reference_imgs": [image]}
+
     def __getitem__(self, index):
         lmdb_index, episode_index, step_index = self._get_indices(index)
 
@@ -78,6 +91,11 @@ class EgoDexLmdbDataset(BaseLmdbManipulationDataset):
             image = cv2.imdecode(image, cv2.IMREAD_UNCHANGED)
             data["imgs"] = np.stack([image])
             data["depths"] = np.zeros_like(data["imgs"][..., 0])
+
+        if self.load_reference_img:
+            data.update(
+                self._get_reference_img(lmdb_index, episode_index, uuid)
+            )
 
         for transform in self.transforms:
             if transform is None:

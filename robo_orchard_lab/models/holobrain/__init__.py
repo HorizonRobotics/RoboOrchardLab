@@ -23,6 +23,7 @@ from .action_decoder import (
 from .layers import (
     AdaRMSNorm,
     JointGraphAttention,
+    MultiModalAttention,
     RotaryAttention,
     RotaryEmbedding,
     ScalarEmbedder,

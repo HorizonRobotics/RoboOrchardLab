@@ -88,6 +88,7 @@ class HoloBrainDecoderTransformerConfig(Config):
     text_cross_attn: Optional[MODULE_TYPE] = None
     temp_joint_attn: Optional[MODULE_TYPE] = None
     timestep_norm_layer: Optional[MODULE_TYPE] = None
+    multi_model_attn: Optional[MODULE_TYPE] = None
     pre_norm: bool = True
 
     @property
@@ -101,6 +102,7 @@ class HoloBrainDecoderTransformerConfig(Config):
             "t_norm": self.timestep_norm_layer,
             "text_cross_attn": self.text_cross_attn,
             "temp_cross_attn": self.temp_cross_attn,
+            "multi_model_attn": self.multi_model_attn,
         }
 
 
@@ -760,6 +762,7 @@ class HoloBrainActionDecoder(nn.Module):
             "img_cross_attn",
             "text_cross_attn",
             "temp_joint_attn",
+            "multi_model_attn",
         )
         for op, layer in zip(self.operation_order, self.layers, strict=True):
             if op in cacheable_ops and layer is not None:
@@ -851,7 +854,10 @@ class HoloBrainActionDecoder(nn.Module):
             temp_attn_mask = temp_attn_mask[None].repeat(bs, 1, 1)
             temp_attn_mask[..., :num_hist_chunk] = attn_drop
 
-        if "temp_cross_attn" in self.operation_order:
+        if (
+            "temp_cross_attn" in self.operation_order
+            or "multi_model_attn" in self.operation_order
+        ):
             temp_query_pos = (
                 torch.arange(num_chunk)[None].tile(bs * num_joint, 1).to(x)
                 + num_hist_chunk
@@ -862,7 +868,10 @@ class HoloBrainActionDecoder(nn.Module):
                 .to(x)
             )
 
-        if "text_cross_attn" in self.operation_order:
+        if (
+            "text_cross_attn" in self.operation_order
+            or "multi_model_attn" in self.operation_order
+        ):
             text_feature = text_dict.get("embedded")
             assert text_feature is not None
             num_text_token = text_feature.shape[1]
@@ -874,13 +883,19 @@ class HoloBrainActionDecoder(nn.Module):
             if text_key_padding_mask is not None:
                 text_key_padding_mask = ~text_key_padding_mask
 
-        if "img_cross_attn" in self.operation_order:
+        if (
+            "img_cross_attn" in self.operation_order
+            or "multi_model_attn" in self.operation_order
+        ):
             ica_query_pos = torch.arange(num_chunk).to(x)[None, None]
             ica_query_pos = ica_query_pos.tile(bs, num_joint, 1).flatten(1, 2)
             ica_query_pos += 1
             ica_key_pos = None
 
-        if "temp_joint_attn" in self.operation_order:
+        if (
+            "temp_joint_attn" in self.operation_order
+            or "multi_model_attn" in self.operation_order
+        ):
             temp_query_pos_wojoint = (
                 torch.arange(num_chunk)[None].tile(bs, 1).to(x)
                 + num_hist_chunk
@@ -961,6 +976,34 @@ class HoloBrainActionDecoder(nn.Module):
                     temporal_pos_q=temp_query_pos_wojoint,
                     temporal_pos_k=temp_key_pos_wojoint,
                     temporal_attn_mask=temp_attn_mask,
+                    identity=_identity,
+                )
+                x = layer(**kwargs)
+                x = x.reshape(bs, num_joint * num_chunk, -1)
+
+            elif op == "multi_model_attn":
+                x = x.reshape(bs, num_joint, num_chunk, -1)
+                state_feature = torch.cat(
+                    [robot_feature.unflatten(0, (bs, num_joint)), x], dim=2
+                )
+                if identity is not None:
+                    _identity = identity.reshape(bs, num_joint, num_chunk, -1)
+                else:
+                    _identity = None
+                kwargs = dict(
+                    query=x,
+                    state_feature=state_feature,
+                    joint_distance=joint_relative_pos_wochunk,
+                    temporal_pos_q=temp_query_pos_wojoint,
+                    temporal_pos_k=temp_key_pos_wojoint,
+                    temporal_attn_mask=temp_attn_mask,
+                    text_feature=text_feature,
+                    text_key_padding_mask=text_key_padding_mask,
+                    tca_query_pos=tca_query_pos,
+                    tca_key_pos=tca_key_pos,
+                    img_feature=img_feature,
+                    ica_query_pos=ica_query_pos,
+                    ica_key_pos=ica_key_pos,
                     identity=_identity,
                 )
                 x = layer(**kwargs)

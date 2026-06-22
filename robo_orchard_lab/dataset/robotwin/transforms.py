@@ -16,6 +16,7 @@
 
 import copy
 from typing import Type
+import os
 
 import cv2
 import numpy as np
@@ -49,6 +50,62 @@ __all__ = [
     "GetProjectionMat",
     "UnsqueezeBatch",
 ]
+
+
+class LoadReferenceImages:
+    def __init__(self, path=None, drop_text=None):
+        self.path = path
+        self.drop_text = drop_text
+
+    def __call__(self, data):
+        path = os.path.join(
+            data.get("reference_img_path", self.path), data["task_name"]
+        )
+        if not os.path.exists(path):
+            data["reference_imgs"] = None
+            return data
+        reference_id = np.random.choice(os.listdir(path))
+        path = os.path.join(path, reference_id)
+        reference_imgs = []
+        files = os.listdir(path)
+        files.sort(key=lambda x: int(os.path.splitext(x)[0]))
+        for file in files:
+            reference_imgs.append(cv2.imread(os.path.join(path, file)))
+        data["reference_imgs"] = reference_imgs
+
+        if self.drop_text is not None and np.random.uniform() < self.drop_text:
+            data["text"] = "Complete the task shown in the reference images."
+        return data
+
+
+class SimpleResize:
+    def __init__(self, keys, dst_wh):
+        if isinstance(keys, str):
+            keys = [keys]
+        assert ("imgs" not in keys) and ("depths" not in keys), (
+            "Use `Resize` transform for imgs and depths because of intrinsic"
+        )
+        self.keys = keys
+        self.dst_wh = dst_wh
+
+    def __call__(self, data):
+        for key in self.keys:
+            if key not in data:
+                continue
+            data[key] = self._resize(data[key])
+        return data
+
+    def _resize(self, inputs):
+        if inputs is None:
+            return None
+        if isinstance(inputs, torch.Tensor):
+            inputs = inputs.cpu().numpy()
+        if isinstance(inputs, np.ndarray) and inputs.ndim <= 3:
+            return cv2.resize(inputs, self.dst_wh)
+        if isinstance(inputs, (tuple, list)):
+            return [cv2.resize(x, self.dst_wh) for x in inputs]
+        return np.stack([inputs[i] for i in range(inputs.shape[0])])
+
 
 
 class MoveEgoToCam:
