@@ -21,6 +21,7 @@ import logging
 import math
 import os
 
+import cv2
 import numpy as np
 import pytorch_kinematics as pk
 from mcap.reader import make_reader
@@ -94,6 +95,67 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         for camera, calib in calibration_dict.items():
             calibration_dict[camera] = np.linalg.inv(pose_to_mat(calib))
         return calibration_dict
+
+    @staticmethod
+    def _decode_depth(depth: bytes) -> np.ndarray | None:
+        depth_buffer = np.frombuffer(depth, np.uint8)
+        return cv2.imdecode(depth_buffer, cv2.IMREAD_UNCHANGED)
+
+    @staticmethod
+    def _encode_depth(depth: np.ndarray) -> bytes:
+        success, buffer = cv2.imencode(".png", depth)
+        if not success:
+            raise RuntimeError("Failed to encode replacement zero depth PNG")
+        return buffer.tobytes()
+
+    @classmethod
+    def _replace_invalid_depths(
+        cls,
+        depths: list[bytes],
+        *,
+        uuid: str,
+        cam: str,
+        expected_shape: tuple[int, int] | None = None,
+    ) -> list[bytes]:
+        """Replace invalid encoded depth frames with zero-depth PNGs."""
+
+        fallback_depth = None
+        invalid_indices = []
+
+        for idx, depth in enumerate(depths):
+            decoded = cls._decode_depth(depth)
+            if decoded is None:
+                invalid_indices.append(idx)
+                continue
+            if fallback_depth is None:
+                fallback_depth = np.zeros_like(decoded)
+
+        if not invalid_indices:
+            return depths
+
+        if fallback_depth is None and expected_shape is not None:
+            fallback_depth = np.zeros(expected_shape, dtype=np.uint16)
+
+        if fallback_depth is None:
+            raise RuntimeError(
+                f"{uuid} | {cam} depth has no valid frame to infer "
+                "replacement shape"
+            )
+
+        zero_depth = cls._encode_depth(fallback_depth)
+        sanitized_depths = list(depths)
+        for idx in invalid_indices:
+            sanitized_depths[idx] = zero_depth
+
+        logger.warning(
+            "%s | %s depth contains %d invalid PNG frame(s); "
+            "replace with zero depth at indices: %s",
+            uuid,
+            cam,
+            len(invalid_indices),
+            invalid_indices[:20],
+        )
+        return sanitized_depths
 
     def input_path_handler(self, input_paths):
         episodes = []
@@ -280,6 +342,7 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                     "data": [],
                     "time": [],
                     "intrinsic": None,
+                    "shape": None,
                 }
             joints = {}
             for t in [
@@ -351,6 +414,13 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                     depths[dpt_topic]["intrinsic"] = np.array(
                         ros_msg.p
                     ).reshape(3, 4)
+                    if hasattr(ros_msg, "height") and hasattr(
+                        ros_msg, "width"
+                    ):
+                        depths[dpt_topic]["shape"] = (
+                            int(ros_msg.height),
+                            int(ros_msg.width),
+                        )
                 elif topic in image_extrinsic_topic:
                     for tf in ros_msg.transforms:
                         frame_id = f"{tf.child_frame_id}/{tf.header.frame_id}"
@@ -548,7 +618,13 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
                     self.image_pack_file.write(f"{uuid}/{cam}/{i}", img)
 
             for cam, t in zip(cameras, depth_topics, strict=False):
-                for i, depth in enumerate(depths[t]["data"]):
+                sanitized_depths = self._replace_invalid_depths(
+                    depths[t]["data"],
+                    uuid=uuid,
+                    cam=cam,
+                    expected_shape=depths[t].get("shape"),
+                )
+                for i, depth in enumerate(sanitized_depths):
                     self.depth_pack_file.write(f"{uuid}/{cam}/{i}", depth)
 
             self.meta_pack_file.write(f"{uuid}/intrinsic", intrinsic)
