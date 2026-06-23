@@ -80,6 +80,19 @@ directly in each dataset spec
 # )
 
 
+# v9
+config.update(
+    num_vlm_layers=4,
+    embed_dims=384,
+    decoder_layers=10,
+    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-06-13/18-52/bcloud-bj-zone1-23a35623c35d/holobrain_v9_newinit_f146897e_6715_11f1_9bdf_1d433b603abb/output/checkpoints/checkpoint_50/model.safetensors",
+    multi_modal_attn=True,
+    # below only for pretrain
+    # warmup_step=5000,
+    # with_reference_imgs=True,
+)
+
+
 # config.update(
 #     pretrain=True,
 #     max_step=200000,
@@ -89,6 +102,7 @@ directly in each dataset spec
 
 def build_model(config):
     import copy
+    import math
 
     from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
     from diffusers.schedulers.scheduling_dpmsolver_multistep import (
@@ -115,6 +129,7 @@ def build_model(config):
         HoloBrainRobotStateEncoder,
         HoloBrainTrainingConfig,
         JointGraphAttention,
+        MultiModalAttention,
         RotaryAttention,
         TemporalJointGraphAttention,
         TextTemplate,
@@ -165,19 +180,38 @@ def build_model(config):
     else:
         mobile_head = None
 
-    decoder_operation_order = [
-        "t_norm",
-        "temp_joint_attn",
-        "gate_msa",
-        "norm",
-        "img_cross_attn",
-        "norm",
-        "text_cross_attn",
-        "norm",
-        "scale_shift",
-        "ffn",
-        "gate_mlp",
-    ] * config.get("decoder_layers", 6)
+    decoder_layers = config.get("decoder_layers", 6)
+    attn_output_proj_init_cfg = dict(
+        output_proj_init="normal",
+        output_proj_std=0.02 / math.sqrt(2 * decoder_layers),
+    )
+    decoder_ffn_init_cfg = dict(final_linear_init="zero")
+    num_heads = config.get("num_heads", 8)
+    multi_modal_attn = config.get("multi_modal_attn", False)
+    if not multi_modal_attn:
+        decoder_operation_order = [
+            "t_norm",
+            "temp_joint_attn",
+            "gate_msa",
+            "norm",
+            "img_cross_attn",
+            "norm",
+            "text_cross_attn",
+            "norm",
+            "scale_shift",
+            "ffn",
+            "gate_mlp",
+        ] * decoder_layers
+    else:
+        decoder_operation_order = [
+            "t_norm",
+            "multi_modal_attn",
+            "gate_msa",
+            "norm",
+            "scale_shift",
+            "ffn",
+            "gate_mlp",
+        ] * decoder_layers
 
     model = model_class(
         cfg=model_config(
@@ -253,14 +287,16 @@ def build_model(config):
                     img_cross_attn=dict(
                         type=RotaryAttention,
                         embed_dims=embed_dims,
-                        num_heads=8,
+                        num_heads=num_heads,
                         max_position_embeddings=32,
+                        **attn_output_proj_init_cfg,
                     ),
                     temp_joint_attn=dict(
                         type=TemporalJointGraphAttention,
                         embed_dims=embed_dims,
-                        num_heads=8,
+                        num_heads=num_heads,
                         max_position_embeddings=32,
+                        **attn_output_proj_init_cfg,
                     ),
                     norm_layer=dict(
                         type=decoder_norm,
@@ -269,31 +305,62 @@ def build_model(config):
                     ffn=dict(
                         type=FFN,
                         embed_dims=embed_dims,
-                        feedforward_channels=2048,
+                        feedforward_channels=embed_dims * 8,
                         act_cfg=dict(type=nn.SiLU, inplace=True),
+                        **decoder_ffn_init_cfg,
                     ),
                     joint_self_attn=dict(
                         type=JointGraphAttention,
                         embed_dims=embed_dims,
-                        num_heads=8,
+                        num_heads=num_heads,
+                        **attn_output_proj_init_cfg,
                     ),
                     temp_cross_attn=dict(
                         type=RotaryAttention,
                         embed_dims=embed_dims,
-                        num_heads=8,
+                        num_heads=num_heads,
                         max_position_embeddings=32,
+                        **attn_output_proj_init_cfg,
                     ),
                     text_cross_attn=dict(
                         type=RotaryAttention,
                         embed_dims=embed_dims,
-                        num_heads=8,
+                        num_heads=num_heads,
                         max_position_embeddings=512,
+                        **attn_output_proj_init_cfg,
                     ),
                     timestep_norm_layer=dict(
                         type=AdaRMSNorm,
                         normalized_shape=embed_dims,
                         condition_dims=256,
                         zero=True,
+                        ada_init="identity",
+                        gate_bias=1.0,
+                    ),
+                    multi_modal_attn=dict(
+                        type=MultiModalAttention,
+                        embed_dims=embed_dims,
+                        img_cross_attn=dict(
+                            type=RotaryAttention,
+                            embed_dims=embed_dims,
+                            num_heads=num_heads,
+                            max_position_embeddings=32,
+                            **attn_output_proj_init_cfg,
+                        ),
+                        text_cross_attn=dict(
+                            type=RotaryAttention,
+                            embed_dims=embed_dims,
+                            num_heads=num_heads,
+                            max_position_embeddings=512,
+                            **attn_output_proj_init_cfg,
+                        ),
+                        temp_joint_attn=dict(
+                            type=TemporalJointGraphAttention,
+                            embed_dims=embed_dims,
+                            num_heads=num_heads,
+                            max_position_embeddings=32,
+                            **attn_output_proj_init_cfg,
+                        ),
                     ),
                     operation_order=decoder_operation_order,
                 ),
@@ -343,7 +410,8 @@ def build_model(config):
                         joint_self_attn=dict(
                             type=JointGraphAttention,
                             embed_dims=embed_dims,
-                            num_heads=8,
+                            num_heads=num_heads,
+                            **attn_output_proj_init_cfg,
                         ),
                         norm_layer=dict(
                             type=decoder_norm,
@@ -354,12 +422,14 @@ def build_model(config):
                             embed_dims=embed_dims,
                             feedforward_channels=2048,
                             act_cfg=dict(type=nn.SiLU, inplace=True),
+                            **decoder_ffn_init_cfg,
                         ),
                         temp_self_attn=dict(
                             type=RotaryAttention,
                             embed_dims=embed_dims,
-                            num_heads=8,
+                            num_heads=num_heads,
                             max_position_embeddings=32,
+                            **attn_output_proj_init_cfg,
                         ),
                         operation_order=[
                             "norm",
@@ -391,6 +461,7 @@ def build_optimizer(config, model):
 
     base_lr = config["lr"]
     max_step = config["max_step"]
+    warmup_step = config.get("warmup_step", 500)
 
     vlm_params = []
     bit16_params = []
@@ -419,7 +490,7 @@ def build_optimizer(config, model):
     lr_scheduler = optim.lr_scheduler.ChainedScheduler(
         [
             optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=0.001, total_iters=500
+                optimizer, start_factor=0.001, total_iters=warmup_step
             ),
         ]
         + (

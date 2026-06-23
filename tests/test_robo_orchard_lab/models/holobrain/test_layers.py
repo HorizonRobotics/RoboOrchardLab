@@ -28,6 +28,7 @@ from robo_orchard_lab.models.holobrain.layers import (
     UpsampleHead,
     linear_act_ln,
 )
+from robo_orchard_lab.models.layers.transformer_layers import FFN
 
 
 class TestLinearActLn:
@@ -160,6 +161,23 @@ class TestRotaryAttention:
         out = attn(query, key)
         assert out.shape == (bs, n_q, c)
 
+    def test_output_projection_small_normal_init(self):
+        """Can initialize the residual branch output projection narrowly."""
+        attn = RotaryAttention(
+            embed_dims=64,
+            num_heads=4,
+            max_position_embeddings=32,
+            output_proj_init="normal",
+            output_proj_std=0.001,
+        )
+        assert torch.isclose(
+            attn.proj.weight.std(unbiased=False),
+            torch.tensor(0.001),
+            rtol=0.35,
+            atol=0.0003,
+        )
+        assert torch.allclose(attn.proj.bias, torch.zeros_like(attn.proj.bias))
+
 
 class TestJointGraphAttention:
     """Tests for JointGraphAttention over robot joints."""
@@ -266,6 +284,45 @@ class TestAdaRMSNorm:
         c = torch.randn(2, 128)
         out_x, *_ = norm(x, c)
         assert out_x.shape == x.shape
+
+    def test_identity_init_sets_zero_shift_and_unit_gates(self):
+        """Identity init keeps normalized x and starts gates at one."""
+        norm = AdaRMSNorm(
+            normalized_shape=64,
+            condition_dims=128,
+            zero=True,
+            ada_init="identity",
+            gate_bias=1.0,
+        )
+        x = torch.randn(2, 4, 64)
+        c = torch.randn(2, 128)
+        out_x, gate_msa, shift_mlp, scale_mlp, gate_mlp = norm(x, c)
+        expected_x = nn.functional.rms_norm(x, (64,), eps=norm.eps)
+        assert torch.allclose(out_x, expected_x)
+        assert torch.allclose(gate_msa, torch.ones_like(gate_msa))
+        assert torch.allclose(shift_mlp, torch.zeros_like(shift_mlp))
+        assert torch.allclose(scale_mlp, torch.zeros_like(scale_mlp))
+        assert torch.allclose(gate_mlp, torch.ones_like(gate_mlp))
+
+
+class TestFFN:
+    """Tests for FFN initialization options used by HoloBrain decoder."""
+
+    def test_final_linear_zero_init(self):
+        """Can zero-init the final residual branch projection."""
+        ffn = FFN(
+            embed_dims=64,
+            feedforward_channels=128,
+            final_linear_init="zero",
+        )
+        final_linear = ffn.layers[-2]
+        assert isinstance(final_linear, nn.Linear)
+        assert torch.allclose(
+            final_linear.weight, torch.zeros_like(final_linear.weight)
+        )
+        assert torch.allclose(
+            final_linear.bias, torch.zeros_like(final_linear.bias)
+        )
 
 
 class TestUpsampleHead:

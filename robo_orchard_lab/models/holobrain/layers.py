@@ -25,6 +25,21 @@ from torch.nn.init import constant_, xavier_uniform_
 from robo_orchard_lab.utils.build import build
 
 
+def _init_projection(linear, init="default", std=None):
+    if init in (None, "default"):
+        return
+    if init == "zero":
+        constant_(linear.weight, 0.0)
+    elif init == "normal":
+        if std is None:
+            raise ValueError("`std` must be set when init is 'normal'.")
+        nn.init.normal_(linear.weight, mean=0.0, std=std)
+    else:
+        raise ValueError(f"Unsupported projection init: {init}")
+    if linear.bias is not None:
+        constant_(linear.bias, 0.0)
+
+
 def linear_act_ln(
     embed_dims,
     in_loops,
@@ -137,6 +152,8 @@ class RotaryAttention(nn.Module):
         qkv_bias=True,
         qk_scale=None,
         max_position_embeddings=128,
+        output_proj_init="default",
+        output_proj_std=None,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -153,6 +170,8 @@ class RotaryAttention(nn.Module):
         )
         self._kv_cache: Optional[tuple] = None
         self._use_cache: bool = False
+        self.output_proj_init = output_proj_init
+        self.output_proj_std = output_proj_std
         self.init_weights()
 
     def init_weights(self):
@@ -163,6 +182,9 @@ class RotaryAttention(nn.Module):
             constant_(self.q_proj.bias, 0.0)
         if self.v_proj.bias is not None:
             constant_(self.v_proj.bias, 0.0)
+        _init_projection(
+            self.proj, self.output_proj_init, self.output_proj_std
+        )
 
     def clear_cache(self):
         self._kv_cache = None
@@ -247,6 +269,8 @@ class JointGraphAttention(nn.Module):
         num_heads=8,
         qkv_bias=True,
         qk_scale=None,
+        output_proj_init="default",
+        output_proj_std=None,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -260,6 +284,8 @@ class JointGraphAttention(nn.Module):
 
         self.proj = nn.Linear(all_head_dim, embed_dims)
         self.position_encoder = ScalarEmbedder(embed_dims)
+        self.output_proj_init = output_proj_init
+        self.output_proj_std = output_proj_std
         self.init_weights()
 
     def init_weights(self):
@@ -270,6 +296,9 @@ class JointGraphAttention(nn.Module):
             constant_(self.q_proj.bias, 0.0)
         if self.v_proj.bias is not None:
             constant_(self.v_proj.bias, 0.0)
+        _init_projection(
+            self.proj, self.output_proj_init, self.output_proj_std
+        )
 
     def forward(
         self,
@@ -323,6 +352,8 @@ class TemporalJointGraphAttention(nn.Module):
         qkv_bias=True,
         qk_scale=None,
         max_position_embeddings=None,
+        output_proj_init="default",
+        output_proj_std=None,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -341,6 +372,8 @@ class TemporalJointGraphAttention(nn.Module):
         )
         self._joint_dist_cache: Optional[torch.Tensor] = None
         self._use_cache: bool = False
+        self.output_proj_init = output_proj_init
+        self.output_proj_std = output_proj_std
         self.init_weights()
 
     def init_weights(self):
@@ -351,6 +384,9 @@ class TemporalJointGraphAttention(nn.Module):
             constant_(self.q_proj.bias, 0.0)
         if self.v_proj.bias is not None:
             constant_(self.v_proj.bias, 0.0)
+        _init_projection(
+            self.proj, self.output_proj_init, self.output_proj_std
+        )
 
     def clear_cache(self):
         self._joint_dist_cache = None
@@ -579,6 +615,8 @@ class AdaRMSNorm(nn.RMSNorm):
         elementwise_affine=False,
         eps=1e-6,
         zero=False,
+        ada_init="default",
+        gate_bias=1.0,
         **kwargs,
     ):
         super().__init__(
@@ -594,6 +632,24 @@ class AdaRMSNorm(nn.RMSNorm):
                 condition_dims, normalized_shape * (2 if not zero else 6)
             ),
         )
+        self.ada_init = ada_init
+        self.gate_bias = gate_bias
+        self.init_weights()
+
+    def init_weights(self):
+        if self.ada_init in (None, "default"):
+            return
+        if self.ada_init != "identity":
+            raise ValueError(f"Unsupported AdaRMSNorm init: {self.ada_init}")
+
+        linear = self.adaLN_modulation[-1]
+        with torch.no_grad():
+            constant_(linear.weight, 0.0)
+            constant_(linear.bias, 0.0)
+            if self.zero:
+                bias = linear.bias.view(-1, 6)
+                bias[:, 2] = self.gate_bias
+                bias[:, 5] = self.gate_bias
 
     def forward(self, x, c):
         x = super().forward(x)

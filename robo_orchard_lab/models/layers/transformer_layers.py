@@ -23,6 +23,7 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from robo_orchard_lab.utils.build import build
 
@@ -235,6 +236,9 @@ class FFN(nn.Module):
         dropout_layer=None,
         add_identity=True,
         layer_scale_init_value=0.0,
+        with_cp=False,
+        final_linear_init="normal",
+        final_linear_std=0.02,
     ):
         super().__init__()
         assert num_fcs >= 2, (
@@ -257,17 +261,45 @@ class FFN(nn.Module):
                 )
             )
             in_channels = feedforward_channels
-        layers.append(nn.Linear(feedforward_channels, embed_dims))
+        final_linear = nn.Linear(feedforward_channels, embed_dims)
+        self._init_final_linear(
+            final_linear, final_linear_init, final_linear_std
+        )
+        layers.append(final_linear)
         layers.append(nn.Dropout(ffn_drop))
         self.layers = nn.Sequential(*layers)
         self.add_identity = add_identity
+        self.with_cp = with_cp
 
         if layer_scale_init_value > 0:
             self.gamma2 = LayerScale(embed_dims, scale=layer_scale_init_value)
         else:
             self.gamma2 = nn.Identity()
 
+    def _init_final_linear(self, linear, init, std):
+        if init in (None, "default"):
+            return
+        if init == "zero":
+            nn.init.constant_(linear.weight, 0.0)
+        elif init == "normal":
+            if std is None:
+                raise ValueError("`std` must be set when init is 'normal'.")
+            nn.init.normal_(linear.weight, mean=0.0, std=std)
+        else:
+            raise ValueError(f"Unsupported FFN final linear init: {init}")
+        if linear.bias is not None:
+            nn.init.constant_(linear.bias, 0.0)
+
     def forward(self, x, identity=None):
+        if identity is None:
+            identity = x
+
+        if self.with_cp and x.requires_grad:
+            return checkpoint(self.forward_func, x, identity)
+        else:
+            return self.forward_func(x, identity)
+
+    def forward_func(self, x, identity):
         """Forward function for `FFN`.
 
         The function would add x to the output tensor if residue is None.
@@ -276,8 +308,6 @@ class FFN(nn.Module):
         out = self.gamma2(out)
         if not self.add_identity:
             return out
-        if identity is None:
-            identity = x
         return identity + out
 
 

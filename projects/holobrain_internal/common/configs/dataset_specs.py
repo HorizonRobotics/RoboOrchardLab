@@ -74,15 +74,16 @@ TRAINING_DATASETS = [
         setting_type="franka_panda",
         data_paths=[f"{DATA_BASE}/robotwin2.0/franka-panda_demo_clean"],
     ),
-    # dict(  # without text instruction
-    #     dataset_type="robotwin",
-    #     dataset_name="robotwin2_0_piper",
-    #     setting_type="piper",
-    #     data_paths=[
-    #         f"{DATA_BASE}/robotwin2.0/aloha_piper_27tasks_clean_200",
-    #         f"{DATA_BASE}/robotwin2.0/aloha_piper_27tasks_noise_300",
-    #     ],
-    # ),
+    dict(  # without text instruction
+        dataset_type="robotwin",
+        dataset_name="robotwin2_0_piper",
+        setting_type="piper",
+        data_paths=[
+            f"{DATA_BASE}/robotwin2.0/aloha_piper_27tasks_clean_200",
+            f"{DATA_BASE}/robotwin2.0/aloha_piper_27tasks_noise_300",
+        ],
+        reference_img_path=f"{DATA_BASE}/reference_imgs/robotwin2_0",
+    ),
     # ================ agilex ===================
     dict(
         dataset_type="agilex",
@@ -533,7 +534,7 @@ filter_list = [
     "robotwin2_0_ur5_wsg",
     "robotwin2_0_arx_x5a",
     "robotwin2_0_franka_panda",
-    # "robotwin2_0_piper",
+    "robotwin2_0_piper",
     "challenge",
     "challenge_finetune",
     "challenge_self_collect",
@@ -543,7 +544,7 @@ filter_list = [
     "horizon_grasp_anything",
     "agilex",
     "agibot",
-    "agibot_geniesim3_challenge",
+    # "agibot_geniesim3_challenge",
     "droid",
     "egodex",
     "interna1_arx_lift2",
@@ -613,7 +614,7 @@ dataset_sample_weights = dict(
     robocasa=5,
 )
 
-use_dataset_sample_weights = True
+use_dataset_sample_weights = False
 
 training_datasets = [
     x for x in training_datasets if x["dataset_name"] in filter_list

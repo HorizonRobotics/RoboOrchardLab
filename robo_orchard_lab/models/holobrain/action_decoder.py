@@ -88,7 +88,7 @@ class HoloBrainDecoderTransformerConfig(Config):
     text_cross_attn: Optional[MODULE_TYPE] = None
     temp_joint_attn: Optional[MODULE_TYPE] = None
     timestep_norm_layer: Optional[MODULE_TYPE] = None
-    multi_model_attn: Optional[MODULE_TYPE] = None
+    multi_modal_attn: Optional[MODULE_TYPE] = None
     pre_norm: bool = True
 
     @property
@@ -102,7 +102,7 @@ class HoloBrainDecoderTransformerConfig(Config):
             "t_norm": self.timestep_norm_layer,
             "text_cross_attn": self.text_cross_attn,
             "temp_cross_attn": self.temp_cross_attn,
-            "multi_model_attn": self.multi_model_attn,
+            "multi_modal_attn": self.multi_modal_attn,
         }
 
 
@@ -762,7 +762,7 @@ class HoloBrainActionDecoder(nn.Module):
             "img_cross_attn",
             "text_cross_attn",
             "temp_joint_attn",
-            "multi_model_attn",
+            "multi_modal_attn",
         )
         for op, layer in zip(self.operation_order, self.layers, strict=True):
             if op in cacheable_ops and layer is not None:
@@ -856,7 +856,7 @@ class HoloBrainActionDecoder(nn.Module):
 
         if (
             "temp_cross_attn" in self.operation_order
-            or "multi_model_attn" in self.operation_order
+            or "multi_modal_attn" in self.operation_order
         ):
             temp_query_pos = (
                 torch.arange(num_chunk)[None].tile(bs * num_joint, 1).to(x)
@@ -870,7 +870,7 @@ class HoloBrainActionDecoder(nn.Module):
 
         if (
             "text_cross_attn" in self.operation_order
-            or "multi_model_attn" in self.operation_order
+            or "multi_modal_attn" in self.operation_order
         ):
             text_feature = text_dict.get("embedded")
             assert text_feature is not None
@@ -885,7 +885,7 @@ class HoloBrainActionDecoder(nn.Module):
 
         if (
             "img_cross_attn" in self.operation_order
-            or "multi_model_attn" in self.operation_order
+            or "multi_modal_attn" in self.operation_order
         ):
             ica_query_pos = torch.arange(num_chunk).to(x)[None, None]
             ica_query_pos = ica_query_pos.tile(bs, num_joint, 1).flatten(1, 2)
@@ -894,7 +894,7 @@ class HoloBrainActionDecoder(nn.Module):
 
         if (
             "temp_joint_attn" in self.operation_order
-            or "multi_model_attn" in self.operation_order
+            or "multi_modal_attn" in self.operation_order
         ):
             temp_query_pos_wojoint = (
                 torch.arange(num_chunk)[None].tile(bs, 1).to(x)
@@ -981,7 +981,7 @@ class HoloBrainActionDecoder(nn.Module):
                 x = layer(**kwargs)
                 x = x.reshape(bs, num_joint * num_chunk, -1)
 
-            elif op == "multi_model_attn":
+            elif op == "multi_modal_attn":
                 x = x.reshape(bs, num_joint, num_chunk, -1)
                 state_feature = torch.cat(
                     [robot_feature.unflatten(0, (bs, num_joint)), x], dim=2
