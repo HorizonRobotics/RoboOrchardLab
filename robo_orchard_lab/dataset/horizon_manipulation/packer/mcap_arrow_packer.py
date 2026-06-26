@@ -64,6 +64,7 @@ logger.setLevel(logging.INFO)
 # ========= Arrow Dataset Feature Definition =========
 ArrowDatasetFeatures = hg_datasets.Features(
     {
+        "uuid": hg_datasets.Value("string"),
         "joints": BatchJointsStateFeature(dtype="float32"),
         "actions": BatchJointsStateFeature(dtype="float32"),
         "middle": BatchCameraDataEncodedFeature(dtype="float32"),
@@ -326,7 +327,11 @@ class McapEpisodePackaging(EpisodePackaging):
         )
 
         for i in range(self.num_steps):
-            features = {"joints": joint_states[i], "actions": action_states[i]}
+            features = {
+                "uuid": self.uuid,
+                "joints": joint_states[i],
+                "actions": action_states[i],
+            }
             for cam_idx, cam_name in enumerate(parse_config.CAMERAS):
                 color_topic = parse_config.COLOR_IMAGE_TOPICS[cam_idx]
                 depth_topic = parse_config.DEPTH_IMAGE_TOPICS[cam_idx]

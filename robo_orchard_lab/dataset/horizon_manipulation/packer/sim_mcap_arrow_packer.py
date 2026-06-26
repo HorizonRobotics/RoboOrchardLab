@@ -17,6 +17,7 @@
 import argparse
 import bisect
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -95,6 +96,7 @@ def _normalize_parent_frame_id(
 # ========= Arrow Dataset Feature Definition =========
 def make_dataset_features(camera_names: List[str]) -> hg_datasets.Features:
     features = {
+        "uuid": hg_datasets.Value("string"),
         "joints": BatchJointsStateFeature(dtype="float32"),
         "actions": BatchJointsStateFeature(dtype="float32"),
     }
@@ -856,6 +858,8 @@ class McapEpisodePackaging(EpisodePackaging):
         self.date = date
         self.pack_config = pack_config
         self.urdf_path = urdf_path
+        self.mcap_path = self.episode_path
+        self.uuid = hashlib.md5(self.mcap_path.encode("utf-8")).hexdigest()
 
     def generate_episode_meta(self) -> EpisodeMeta:
         """Generates the metadata for the current episode.
@@ -872,7 +876,12 @@ class McapEpisodePackaging(EpisodePackaging):
         # Init Metadata
         urdf_content = open(self.urdf_path, "r").read()
         return EpisodeMeta(
-            episode=EpisodeData(),
+            episode=EpisodeData(
+                info={
+                    "uuid": self.uuid,
+                    "date": self.date,
+                }
+            ),
             robot=RobotData(
                 name=os.path.basename(self.urdf_path),
                 content=urdf_content,
@@ -885,7 +894,6 @@ class McapEpisodePackaging(EpisodePackaging):
         )
 
     def process_data(self):
-        self.uuid = f"{self.task_name}/{self.user}/{self.date}"
         logger.info(f"Start processing episode: {self.uuid}")
         pack_config: PackConfig = self.pack_config
         parse_config: SimMcapParseConfig = pack_config.PARSE_CONFIG
@@ -1098,6 +1106,7 @@ class McapEpisodePackaging(EpisodePackaging):
         # --- Camera Data ---
         for i in range(self.num_steps):
             features = {
+                "uuid": self.uuid,
                 "joints": self.joint_states[i],
                 "actions": self.action_states[i],
             }
