@@ -184,10 +184,14 @@ def add_table_info(
             tb_creation_statement = str(
                 CreateTable(tb.__table__).compile(engine)  # type: ignore
             )
+            raw_app_version = get_package_version(APP_NAME)
+            app_version = (
+                str(raw_app_version).strip() if raw_app_version else "unknown"
+            )
             ti = TableInfo(
                 table_name=tb_name,
                 table_version=tb_version,
-                app_version=get_package_version(f"{APP_NAME}"),
+                app_version=app_version,
                 creation_statement=tb_creation_statement,
             )
             if ti.pk_str not in existing_table_info:

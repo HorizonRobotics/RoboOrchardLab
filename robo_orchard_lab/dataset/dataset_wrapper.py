@@ -206,3 +206,121 @@ class DistributedBatchFlagSampler(Sampler[list[int]]):
             else:
                 ret += (group_len + self.batch_size - 1) // self.batch_size
         return ret
+
+
+class DistributedMixedBatchFlagSampler(Sampler[list[int]]):
+    def __init__(
+        self,
+        data_source,
+        batch_size,
+        *,
+        dataset_batch_ratios: dict[str, float],
+        drop_last=True,
+        seed=0,
+    ):
+        dist_info = get_dist_info()
+        self.rank = dist_info.rank
+
+        self.data_source = data_source
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.seed = seed + self.rank
+        self._epoch = 0
+        self.dataset_names = [
+            getattr(dataset, "dataset_name", f"dataset_{i}")
+            for i, dataset in enumerate(self.data_source.datasets)
+        ]
+        self.dataset_offsets = np.cumsum(
+            [0] + [len(dataset) for dataset in self.data_source.datasets]
+        )
+        self.dataset_batch_sizes = self._compute_dataset_batch_sizes(
+            dataset_batch_ratios
+        )
+        logger.info(
+            f"dataset length: {len(self.data_source)}, "
+            f"number of mixed batches: {self.__len__()}, "
+            f"dataset batch sizes: {self.dataset_batch_sizes}"
+        )
+
+    def _compute_dataset_batch_sizes(
+        self, dataset_batch_ratios: dict[str, float]
+    ) -> dict[int, int]:
+        unknown_names = set(dataset_batch_ratios) - set(self.dataset_names)
+        if unknown_names:
+            raise ValueError(
+                "Unknown dataset names in dataset_batch_ratios: "
+                f"{sorted(unknown_names)}. Available datasets: "
+                f"{self.dataset_names}"
+            )
+
+        dataset_indices = []
+        weights = []
+        for dataset_idx, dataset_name in enumerate(self.dataset_names):
+            weight = dataset_batch_ratios.get(dataset_name, 0)
+            if weight <= 0:
+                continue
+            dataset_indices.append(dataset_idx)
+            weights.append(weight)
+        if not weights:
+            raise ValueError("dataset_batch_ratios has no positive weights.")
+
+        weights = np.asarray(weights, dtype=np.float64)
+        weights = weights / weights.sum()
+        raw_sizes = weights * self.batch_size
+        sizes = np.floor(raw_sizes).astype(np.int64)
+
+        remainder = self.batch_size - int(sizes.sum())
+        fractional_order = np.argsort(-(raw_sizes - sizes))
+        for idx in fractional_order[:remainder]:
+            sizes[idx] += 1
+
+        batch_sizes = {}
+        for idx, size in enumerate(sizes):
+            if size > 0:
+                batch_sizes[dataset_indices[idx]] = int(size)
+        return batch_sizes
+
+    def set_epoch(self, epoch):
+        self._epoch = epoch
+
+    def _dataset_permutation(self, dataset_idx: int) -> np.ndarray:
+        length = len(self.data_source.datasets[dataset_idx])
+        rng = np.random.default_rng(
+            self.seed + self._epoch * 100_000 + dataset_idx
+        )
+        return rng.permutation(length) + self.dataset_offsets[dataset_idx]
+
+    def __iter__(self):
+        dataset_permutations = {
+            dataset_idx: self._dataset_permutation(dataset_idx)
+            for dataset_idx in self.dataset_batch_sizes
+        }
+        cursors = {dataset_idx: 0 for dataset_idx in self.dataset_batch_sizes}
+        batch_rng = np.random.default_rng(self.seed + self._epoch)
+
+        for _ in range(len(self)):
+            batch = []
+            for (
+                dataset_idx,
+                per_batch_count,
+            ) in self.dataset_batch_sizes.items():
+                start = cursors[dataset_idx]
+                end = start + per_batch_count
+                batch.extend(dataset_permutations[dataset_idx][start:end])
+                cursors[dataset_idx] = end
+            batch = [int(idx) for idx in batch]
+            batch_rng.shuffle(batch)
+            yield batch
+        self._epoch += 1
+
+    def __len__(self):
+        num_batches = []
+        for dataset_idx, per_batch_count in self.dataset_batch_sizes.items():
+            dataset_len = len(self.data_source.datasets[dataset_idx])
+            if self.drop_last:
+                num_batches.append(dataset_len // per_batch_count)
+            else:
+                num_batches.append(
+                    (dataset_len + per_batch_count - 1) // per_batch_count
+                )
+        return min(num_batches)

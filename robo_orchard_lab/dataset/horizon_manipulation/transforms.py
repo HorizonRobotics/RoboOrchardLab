@@ -22,7 +22,6 @@ import numpy as np
 import pytorch_kinematics as pk
 import torch
 from datasets import Dataset as HFDataset
-from pytorch3d.transforms import euler_angles_to_matrix, matrix_to_quaternion
 from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.dataset.robot.row_sampler import (
@@ -810,6 +809,8 @@ class MultiArmKinematics:
     def joint_state_to_robot_state(
         self, joint_state, embodiedment_mat=None, return_matrix=False
     ):
+        from pytorch3d.transforms import matrix_to_quaternion
+
         input_shape = joint_state.shape
         joint_state = joint_state.to(torch.float32)
 
@@ -1157,6 +1158,8 @@ class ExtrinsicNoise:
         self.noise_range = np.array(noise_range)
 
     def __call__(self, data):
+        from pytorch3d.transforms import euler_angles_to_matrix
+
         num_cams = len(data["T_world2cam"])
         noise = np.random.uniform(
             -self.noise_range,

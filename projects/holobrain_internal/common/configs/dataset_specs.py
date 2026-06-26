@@ -434,11 +434,11 @@ TRAINING_DATASETS = [
         dataset_type="isaac",
         dataset_name="isaac_pick_place",
         setting_type="isaac_pick_place",
-        data_paths=[
-            "/horizon-bucket/robot_lab/users/mengao.zhao/dataset/pick_place_arrow/stack_block_two_seed0-499",
-            "/horizon-bucket/robot_lab/users/mengao.zhao/dataset/pick_place_arrow/place_mouse_pad_seed0-499",
-            "/horizon-bucket/robot_lab/users/mengao.zhao/dataset/pick_place_arrow/place_lemon_plate_seed0-499",
-        ],
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/anymove_arrow/pick_category0522_005_seen_only_*",
+            f"{DATA_BASE}/anymove_arrow/pick_attribute_0522_2124_seen_only_*",
+            f"{DATA_BASE}/anymove_arrow/pick_place_0525_1539_seen_only_*",
+        ),
     ),
     # ================== agibot digit ===============
     dict(

@@ -23,8 +23,6 @@ import numpy as np
 import pytorch_kinematics as pk
 import torch
 from datasets import Dataset as HFDataset
-from pytorch3d.transforms import matrix_to_quaternion
-from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.dataset.robot.row_sampler import (
     MultiRowSampler,
@@ -693,6 +691,8 @@ class DualArmKinematics:
     def joint_state_to_robot_state(
         self, joint_state, embodiedment_mat=None, return_matrix=False
     ):
+        from pytorch3d.transforms import matrix_to_quaternion
+
         input_shape = joint_state.shape
         joint_state = joint_state.to(torch.float32)
 
@@ -873,6 +873,8 @@ class CalibrationToExtrinsic(DualArmKinematics):
         return data
 
     def _pose_to_mat(self, pose):
+        from scipy.spatial.transform import Rotation
+
         if "position" in pose:
             x, y, z = pose["position"]
         else:

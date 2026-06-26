@@ -14,26 +14,231 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from collections.abc import Sequence
+
+import numpy as np
 from dataset_factory import processor_register, train_dataset_register
+
+
+def build_block_stratified_episode_row_indices(
+    episode_indices: Sequence[int],
+    *,
+    block_size: int = 12,
+    ratio: float = 1.0,
+    seed: int = 42,
+) -> list[int]:
+    if block_size <= 0:
+        raise ValueError("block_size must be positive.")
+    if ratio <= 0 or ratio > 1:
+        raise ValueError("ratio must be in the range (0, 1].")
+    if ratio == 1.0:
+        return list(range(len(episode_indices)))
+
+    episode_to_rows = {}
+    ordered_episodes = []
+    for row_idx, episode_idx in enumerate(episode_indices):
+        if episode_idx not in episode_to_rows:
+            episode_to_rows[episode_idx] = []
+            ordered_episodes.append(episode_idx)
+        episode_to_rows[episode_idx].append(row_idx)
+
+    rng = np.random.default_rng(seed)
+    selected_rows = []
+    for start in range(0, len(ordered_episodes), block_size):
+        block = ordered_episodes[start : start + block_size]
+        keep_count = min(
+            len(block),
+            max(1, int(round(len(block) * ratio))),
+        )
+        selected_positions = rng.permutation(len(block))[:keep_count]
+        for pos in selected_positions:
+            selected_rows.extend(episode_to_rows[block[pos]])
+
+    return sorted(selected_rows)
+
+
+class EpisodeSubsetDataset:
+    def __init__(
+        self,
+        dataset,
+        row_indices: Sequence[int],
+        *,
+        dataset_name: str | None = None,
+    ):
+        self.dataset = dataset
+        self.row_indices = list(row_indices)
+        self.dataset_name = dataset_name or getattr(
+            dataset, "dataset_name", "unnamed"
+        )
+
+    def __len__(self):
+        return len(self.row_indices)
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            return self.dataset[self.row_indices[index]]
+        if isinstance(index, list):
+            return self.dataset[[self.row_indices[i] for i in index]]
+        if isinstance(index, slice):
+            return self[list(range(*index.indices(len(self))))]
+        raise TypeError(f"Unsupported index type: {type(index)!r}")
+
+    @property
+    def features(self):
+        return self.dataset.features
+
+    @property
+    def transform(self):
+        return self.dataset.transform
+
+    def set_transform(self, transform):
+        self.dataset.set_transform(transform)
+
+    @property
+    def meta_index2meta(self):
+        return self.dataset.meta_index2meta
+
+    @meta_index2meta.setter
+    def meta_index2meta(self, value):
+        self.dataset.meta_index2meta = value
+
 
 DATA_TYPE = "isaac"
 
-dataset_config = dict(
-    isaac_pick_place=dict(
-        urdf="./urdf/piper_description_dualarm_new.urdf",
-        cam_names=[
+ROBOT_PROFILES = dict(
+    piperx=dict(
+        urdf="./urdf/piper_x_description_dualarm.urdf",
+        cam_names=["left", "right", "middle"],
+        joint_mask=([True] * 6 + [False]) * 2,
+        gripper_indices=[6, 13],
+        joint_state_loss_weights=[1, 0, 0, 0, 0, 0, 0, 0],
+        ee_state_loss_weights=[1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1],
+        scale_shift=[
+            [1.478021398, 0.10237011399999996],
+            [1.453678296, 1.4043815520000003],
+            [1.553963852, -1.5014923],
+            [1.86969153, -0.0010728060000000372],
+            [1.3381379620000002, -0.012585846000000012],
+            [3.086157592, -0.06803160000000008],
+            [0.03857, 0.036329999999999994],
+            [1.478021398, 0.10237011399999996],
+            [1.453678296, 1.4043815520000003],
+            [1.553963852, -1.5014923],
+            [1.86969153, -0.0010728060000000372],
+            [1.3381379620000002, -0.012585846000000012],
+            [3.086157592, -0.06803160000000008],
+            [0.03857, 0.036329999999999994],
+        ],
+        joint_state_noise_range=[
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.0, 0.0],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.0, 0.0],
+        ],
+        kinematics_config=dict(
+            urdf="./urdf/piper_x_description_dualarm.urdf",
+            arm_joint_id=[list(range(6)), list(range(8, 14))],
+            arm_link_keys=[
+                [
+                    "left_link1",
+                    "left_link2",
+                    "left_link3",
+                    "left_link4",
+                    "left_link5",
+                    "left_link6",
+                ],
+                [
+                    "right_link1",
+                    "right_link2",
+                    "right_link3",
+                    "right_link4",
+                    "right_link5",
+                    "right_link6",
+                ],
+            ],
+            finger_keys=[["left_link7"], ["right_link7"]],
+        ),
+        calib_to_ext_kwargs=dict(cam_ee_joint_indices=dict(left=5, right=12)),
+        arrow_cam_names=[
             "left_hand_camera",
             "right_hand_camera",
-            "camera_ext",
+            "static_camera",
         ],
+    ),
+    franka=dict(
+        urdf="/horizon-bucket/robot_lab/assets/ROBOTS/FRANKA/franka_panda.urdf",
+        cam_names=["ext1_camera", "ext2_camera", "wrist_camera"],
+        joint_mask=[True] * 7 + [False],
+        gripper_indices=[7],
+        joint_state_loss_weights=[1, 0, 0, 0, 0, 0, 0, 0],
+        ee_state_loss_weights=[1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1],
+        scale_shift=[
+            [0.3342398234502883, 0.05480703378777375],
+            [0.34801173277799424, 0.14486869546571998],
+            [0.25697947733358306, -0.009624386876346059],
+            [0.3041917461078475, -2.1549022377761684],
+            [0.48351280064879965, 0.03227452103317364],
+            [0.3164671897776108, 1.9411939409982757],
+            [0.42373574881002624, 0.8050510254576515],
+            [0.02240243915587483, 0.06110932271404834],
+        ],
+        joint_state_noise_range=[
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.02, 0.02],
+            [-0.0, 0.0],
+        ],
+        kinematics_config=dict(
+            urdf="/horizon-bucket/robot_lab/assets/ROBOTS/FRANKA/franka_panda.urdf",
+            arm_joint_id=[list(range(7))],
+            arm_link_keys=[
+                [
+                    "panda_link1",
+                    "panda_link2",
+                    "panda_link3",
+                    "panda_link4",
+                    "panda_link5",
+                    "panda_link6",
+                    "panda_link7",
+                ]
+            ],
+            finger_keys=[["panda_leftfinger"]],
+        ),
+        calib_to_ext_kwargs=dict(cam_ee_joint_indices=dict(wrist_camera=5)),
+        arrow_cam_names=["ext1_camera", "ext2_camera", "wrist_camera"],
+    ),
+)
+
+dataset_config = dict(
+    isaac_pick_place=dict(
+        robot_type="piperx",
     )
 )
+
+
+def get_robot_profile(setting_type):
+    return ROBOT_PROFILES[dataset_config[setting_type]["robot_type"]]
 
 
 def build_transforms(
     config,
     mode,
     urdf,
+    robot_profile,
     calibration=None,
     depth_restore=False,
     do_calib_to_ext=False,
@@ -55,6 +260,7 @@ def build_transforms(
         Resize,
         SimpleStateSampling,
         ToTensor,
+        UnsqueezeBatch,
     )
 
     if depth_restore:
@@ -62,22 +268,17 @@ def build_transforms(
     else:
         depth_restoration = dict(type=IdentityTransform)
 
-    t_base2ego = np.array(
-        [[1, 0, 0, 0], [0, 1, 0, 0.3], [0, 0, 1, 0], [0, 0, 0, 1]]
-    ).tolist()  # noqa: N806
     t_base2world = np.eye(4).tolist()  # noqa: N806
-    joint_mask = ([True] * 6 + [False]) * 2
+    joint_mask = robot_profile["joint_mask"]
 
-    joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
-    ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
-    loss_weights = np.array(
-        [
-            [joint_state_loss_weights] * 6
-            + [ee_state_loss_weights]
-            + [joint_state_loss_weights] * 6
-            + [ee_state_loss_weights]
-        ]
-    )
+    joint_state_loss_weights = robot_profile["joint_state_loss_weights"]
+    ee_state_loss_weights = robot_profile["ee_state_loss_weights"]
+    arm_joint_ids = robot_profile["kinematics_config"]["arm_joint_id"]
+    loss_weight_tokens = []
+    for joint_ids in arm_joint_ids:
+        loss_weight_tokens.extend([joint_state_loss_weights] * len(joint_ids))
+        loss_weight_tokens.append(ee_state_loss_weights)
+    loss_weights = np.array([loss_weight_tokens])
     state_loss_weights = loss_weights * 0.2
     fk_loss_weight = loss_weights * 1.8
     state_loss_weights = state_loss_weights.tolist()
@@ -88,14 +289,12 @@ def build_transforms(
             type=AddItems,
             state_loss_weights=state_loss_weights,
             fk_loss_weight=fk_loss_weight,
-            T_base2ego=t_base2ego,
             T_base2world=t_base2world,
             joint_mask=joint_mask,
         )
     else:
         add_data_relative_items = dict(
             type=AddItems,
-            T_base2ego=t_base2ego,
             T_base2world=t_base2world,
             joint_mask=joint_mask,
         )
@@ -106,7 +305,7 @@ def build_transforms(
         pred_steps=config["pred_steps"],
         use_master_gripper=True,
         use_master_joint=True,
-        gripper_indices=[6, 13],
+        gripper_indices=robot_profile["gripper_indices"],
     )
     dst_wh = config.get("dst_wh", (308, 252))
     dst_wh = (max(392, dst_wh[0]), max(252, dst_wh[1]))
@@ -136,36 +335,15 @@ def build_transforms(
         ),
     )
 
-    kinematics_config = dict(
-        urdf=urdf,
-        arm_joint_id=[list(range(6)), list(range(8, 14))],
-        arm_link_keys=[
-            [
-                "left_link1",
-                "left_link2",
-                "left_link3",
-                "left_link4",
-                "left_link5",
-                "left_link6",
-            ],
-            [
-                "right_link1",
-                "right_link2",
-                "right_link3",
-                "right_link4",
-                "right_link5",
-                "right_link6",
-            ],
-        ],
-        finger_keys=[["left_link7"], ["right_link7"]],
-    )
+    kinematics_config = dict(robot_profile["kinematics_config"])
+    kinematics_config["urdf"] = urdf
     kinematics = dict(type=MultiArmKinematics, **kinematics_config)
 
     if do_calib_to_ext:
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
             calibration=calibration,
-            cam_ee_joint_indices=dict(left=5, right=12),
+            **robot_profile.get("calib_to_ext_kwargs", {}),
             **kinematics_config,
         )
     else:
@@ -173,22 +351,7 @@ def build_transforms(
 
     scale_shift = dict(
         type=AddScaleShift,
-        scale_shift=[
-            [1.478021398, 0.10237011399999996],
-            [1.453678296, 1.4043815520000003],
-            [1.553963852, -1.5014923],
-            [1.86969153, -0.0010728060000000372],
-            [1.3381379620000002, -0.012585846000000012],
-            [3.086157592, -0.06803160000000008],
-            [0.03857, 0.036329999999999994],
-            [1.478021398, 0.10237011399999996],
-            [1.453678296, 1.4043815520000003],
-            [1.553963852, -1.5014923],
-            [1.86969153, -0.0010728060000000372],
-            [1.3381379620000002, -0.012585846000000012],
-            [3.086157592, -0.06803160000000008],
-            [0.03857, 0.036329999999999994],
-        ],
+        scale_shift=robot_profile["scale_shift"],
     )
     if mode == "training":
         item_selection = dict(
@@ -201,6 +364,8 @@ def build_transforms(
                 "embodiedment_mat",
                 "hist_robot_state",
                 "pred_robot_state",
+                # "hist_joint_state", # for pi
+                # "pred_joint_state", # for pi
                 "joint_scale_shift",
                 "kinematics",
                 "fk_loss_weight",
@@ -214,22 +379,7 @@ def build_transforms(
         )
         joint_state_noise = dict(
             type=JointStateNoise,
-            noise_range=[
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.0, 0.0],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.02, 0.02],
-                [-0.0, 0.0],
-            ],
+            noise_range=robot_profile["joint_state_noise_range"],
             add_to_pred=True,
         )
         # random_crop_padding = dict(
@@ -259,6 +409,16 @@ def build_transforms(
             kinematics,
             item_selection,
         ]
+        if config.get("openpi", False):
+            transforms = [
+                state_sampling,
+                resize,
+                to_tensor,
+                joint_state_noise,
+                item_selection,
+            ]
+            print("Using openpi transforms")
+
         from torchvision.transforms import Compose
 
         from robo_orchard_lab.dataset.robotwin.transforms import ArrowDataParse
@@ -267,7 +427,9 @@ def build_transforms(
 
         data_parser = dict(
             type=ArrowDataParse,
-            cam_names=["left_hand_camera", "right_hand_camera", "camera_ext"],
+            cam_names=robot_profile.get(
+                "arrow_cam_names", robot_profile["cam_names"]
+            ),
             load_image=True,
             load_depth=True,
             load_extrinsic=True,
@@ -327,6 +489,7 @@ def build_transforms(
                 "joint_mask",
             ],
         )
+        unsqueeze_batch = dict(type=UnsqueezeBatch)
         transforms = [
             add_data_relative_items,
             state_sampling,
@@ -339,6 +502,7 @@ def build_transforms(
             convert_dtype,
             kinematics,
             item_selection,
+            unsqueeze_batch,
         ]
     return transforms
 
@@ -361,20 +525,48 @@ def build_datasets(
         EpisodeSamplerConfig,
     )
 
-    data_config = dataset_config[setting_type]
-    transforms = build_transforms(config, mode, urdf=data_config["urdf"])
+    robot_profile = get_robot_profile(setting_type)
+    transforms = build_transforms(
+        config,
+        mode,
+        urdf=robot_profile["urdf"],
+        robot_profile=robot_profile,
+    )
 
     joint_sampler = EpisodeSamplerConfig(target_columns=["joints", "actions"])
 
     dataset_list = []
-    for data_path in data_paths:
+    for data_path_idx, data_path in enumerate(data_paths):
         print(f"Loading arrow dataset from {data_path}...")
         arrow_dataset = ROMultiRowDataset(
-            dataset_path=data_path, row_sampler=joint_sampler
+            dataset_path=data_path,
+            row_sampler=joint_sampler,
+            meta_index2meta=True,
         )
         arrow_dataset.set_transform(transforms)
+
+        data_ratio = config.get("data_ratio", 1.0)
+        if data_ratio < 1.0:
+            row_indices = build_block_stratified_episode_row_indices(
+                arrow_dataset.index_dataset["episode_index"],
+                block_size=config.get("data_subset_block_size", 12),
+                ratio=data_ratio,
+                seed=config.get("data_subset_seed", 42) + data_path_idx,
+            )
+            print(
+                "Using "
+                f"{len(row_indices)}/{len(arrow_dataset)} rows "
+                f"from {data_path} with data_ratio={data_ratio}."
+            )
+            arrow_dataset = EpisodeSubsetDataset(
+                arrow_dataset,
+                row_indices,
+                dataset_name=f"{dataset_name}_{data_path_idx}",
+            )
         dataset_list.append(arrow_dataset)
-    return ConcatRODataset(dataset_list)
+    datasets = ConcatRODataset(dataset_list)
+
+    return datasets
 
 
 @processor_register(DATA_TYPE)
@@ -384,11 +576,12 @@ def build_processors(config, dataset_name, setting_type, **kwargs):
         HoloBrainProcessorCfg,
     )
 
-    data_config = dataset_config[setting_type]
+    robot_profile = get_robot_profile(setting_type)
     transforms = build_transforms(
         config,
         mode="deploy",
-        urdf=data_config["urdf"],
+        urdf=robot_profile["urdf"],
+        robot_profile=robot_profile,
         calibration=False,
         depth_restore=False,
         do_calib_to_ext=False,
@@ -398,50 +591,7 @@ def build_processors(config, dataset_name, setting_type, **kwargs):
             load_image=True,
             load_depth=config["with_depth_loss"],
             valid_action_step=None,
-            cam_names=data_config["cam_names"],
+            cam_names=robot_profile["cam_names"],
             transforms=transforms,
         )
     )
-
-
-def viz_arrow_dataset(dataset):
-    import os
-
-    import cv2
-    import numpy as np
-    from tqdm import tqdm
-
-    from robo_orchard_lab.dataset.robot.db_orm import Episode
-    from robo_orchard_lab.dataset.robotwin.robotwin_lmdb_dataset import (
-        RoboTwinLmdbDataset,
-    )
-
-    # Export video to viz
-    output_path = "./"
-    episode_index = 0
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    file = os.path.join(output_path, "viz.mp4")
-
-    arrow_dataset = dataset.datasets[0]
-    episode_info = arrow_dataset.get_meta(Episode, episode_index)
-    begin = episode_info.dataset_begin_index
-    end = begin + episode_info.frame_num
-
-    for idx in tqdm(range(begin, end)):
-        data = arrow_dataset[idx]
-        vis_imgs = RoboTwinLmdbDataset.get_vis_imgs(
-            data["imgs"],
-            data.get("projection_mat"),
-            data.get("hist_robot_state", [None])[-1],
-        )
-        vis_depths = RoboTwinLmdbDataset.depth_visualize(data["depths"])
-        vis_depths = np.reshape(
-            vis_depths.transpose(1, 0, 2, 3), vis_imgs.shape
-        )
-        vis_imgs = np.concatenate([vis_imgs, vis_depths], axis=0)
-        if idx == begin:
-            video_writer = cv2.VideoWriter(
-                file, fourcc, 25, vis_imgs.shape[:2][::-1]
-            )  # noqa: E501
-        video_writer.write(vis_imgs)
-    video_writer.release()

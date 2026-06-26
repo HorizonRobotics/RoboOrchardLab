@@ -142,6 +142,12 @@ class PackConfig(BaseModel):
             "in BatchFrameTransform format"
         ),
     )
+    FILTER_FAILED_FRAME: bool = Field(
+        default=False, description="Whether to filter failed frame"
+    )
+    WITH_SUBTASK: bool = Field(
+        default=False, description="Whether to return subtask"
+    )
 
 
 def _scale_camera_streams(
@@ -360,6 +366,132 @@ def filter_static_frames(
         f"Filtering: {num_steps} steps -> {retained_index.sum()} steps"
     )
 
+    for msg_dict in data:
+        for _, msg_data in msg_dict.items():
+            msg_time = np.array(msg_data.timestamps)
+            filtered_msg_time = msg_time[retained_index]
+
+            if isinstance(msg_data, BatchJointsState):
+                msg_data.position = msg_data.position[retained_index]
+                msg_data.velocity = msg_data.velocity[retained_index]
+                msg_data.effort = msg_data.effort[retained_index]
+                msg_data.timestamps = filtered_msg_time.tolist()
+
+            elif isinstance(msg_data, BatchCameraDataEncoded):
+                msg_data.intrinsic_matrices = msg_data.intrinsic_matrices[
+                    retained_index
+                ]
+                msg_data.sensor_data = np.array(msg_data.sensor_data)[
+                    retained_index
+                ].tolist()
+
+                if msg_data.pose is not None:
+                    msg_data.pose = BatchFrameTransform(
+                        parent_frame_id=msg_data.pose.parent_frame_id,
+                        child_frame_id=msg_data.pose.child_frame_id,
+                        xyz=msg_data.pose.xyz[retained_index],
+                        quat=msg_data.pose.quat[retained_index],
+                    )
+
+                msg_data.timestamps = filtered_msg_time.tolist()
+
+
+def get_static_frames(
+    joint_positions: torch.Tensor,
+    base_time: List[int],
+    static_threshold: float,
+    head_time_to_filter: float | None,
+    tail_time_to_filter: float | None,
+):
+    # Filtering
+    num_steps = joint_positions.shape[0]
+    static_mask = np.ones(num_steps, dtype=bool)
+    if static_threshold > 0:
+        static_mask[1:] = np.any(
+            np.abs(np.diff(joint_positions, axis=0)) > static_threshold,
+            axis=1,
+        )
+
+    base_time = np.array(base_time)
+    time_mask = np.ones(num_steps, dtype=bool)
+    if head_time_to_filter is not None:
+        time_mask[(base_time - base_time[0]) / 1e9 < head_time_to_filter] = (
+            False
+        )
+    if tail_time_to_filter is not None:
+        time_mask[(base_time[-1] - base_time) / 1e9 < tail_time_to_filter] = (
+            False
+        )
+
+    if head_time_to_filter is None and tail_time_to_filter is None:
+        retained_index = static_mask
+    else:
+        retained_index = static_mask | time_mask
+    return retained_index
+
+
+def get_failed_frames(
+    task_status: List[Dict],
+    base_time: List[int],
+    skip_first: bool = True,
+):
+    def _extract_retained_clips(data):
+        segments = []
+        current_start = None
+        current_end = None
+        if skip_first:
+            data = data[1:]
+        # only keep item after PrePlace
+        for i, item in enumerate(data):
+            if item["task"] == "PrePLACE":
+                data = data[i + 1 :]
+                break
+        for item in data:
+            if item["task"] == "PrePick":  # remove PrePick action
+                if current_start is not None:
+                    segments.append((current_start, current_end))
+                    current_start = None
+                    current_end = None
+                continue
+            if item["success"]:
+                if current_start is None:
+                    current_start = item["start_ts"]
+                current_end = item["end_ts"]
+            else:
+                if current_start is not None:
+                    segments.append((current_start, current_end))
+                    current_start = None
+                    current_end = None
+        if current_start is not None:
+            segments.append((current_start, current_end))
+        return segments
+
+    def _in_ranges(data, range_list):
+        skip = False
+        starts = np.array([x for x, _ in range_list])
+        ends = np.array([y for _, y in range_list])
+        idx = np.searchsorted(starts, data, side="right") - 1
+        valid = idx >= 0
+        if ends.size == 0:
+            skip = True
+            return None, skip
+        retained_index = valid & (data <= ends[idx])
+        return retained_index, skip
+
+    retained_clips = _extract_retained_clips(task_status)
+    retained_clips.sort()
+
+    retained_index, skip = _in_ranges(base_time, retained_clips)
+    if skip:
+        logger.info("All frames are failed.")
+        return np.zeros_like(retained_index)
+    return retained_index
+
+
+def filter_frames(
+    data: List[Dict[str, BatchCameraDataEncoded | BatchJointsState]],
+    retained_index,
+):
     for msg_dict in data:
         for _, msg_data in msg_dict.items():
             msg_time = np.array(msg_data.timestamps)
@@ -696,3 +828,22 @@ def get_index_camera(data: BatchCameraDataEncoded, index):
 
     ret = BatchCameraDataEncoded(**ret_dict)
     return ret
+
+
+def get_urdf_with_custom_fields(urdf_file: str, field_type: str):
+    import xml.etree.ElementTree as ET
+
+    import urdf_parser_py.urdf as urdf
+
+    robot = urdf.URDF.from_xml_file(urdf_file)
+    tree = ET.parse(urdf_file)
+    root = tree.getroot()
+
+    custom_data = {}
+
+    filed_info = root.find(f".//{field_type}")
+    if filed_info is not None:
+        for child in filed_info:
+            custom_data[child.tag] = child.text
+
+    return robot, custom_data
