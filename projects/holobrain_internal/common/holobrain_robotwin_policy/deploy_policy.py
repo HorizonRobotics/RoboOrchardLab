@@ -152,7 +152,7 @@ class HoloBrainPolicy:
     def get_action(self, observation, instruction):
         data = self.data_preprocess(observation, instruction)
         model_outs = self.model(data)
-        actions = self.processor.post_process(data, model_outs).action
+        actions = self.processor.post_process(model_outs, data).action
         valid_action_step = 32
         actions = actions[:valid_action_step].cpu().numpy()
         return actions

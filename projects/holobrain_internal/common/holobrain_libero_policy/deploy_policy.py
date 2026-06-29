@@ -177,7 +177,7 @@ class HoloBrainPolicy:
     def get_action(self, observation, instruction):
         data = self.data_preprocess(observation, instruction)
         model_outs = self.model(data)
-        actions = self.processor.post_process(data, model_outs).pose.squeeze(1)
+        actions = self.processor.post_process(model_outs, data).pose.squeeze(1)
         inv_embodiedment_mat = torch.linalg.inv(data["embodiedment_mat"])
         actions = apply_transform(actions, inv_embodiedment_mat)
         actions[..., -4:] = F.normalize(actions[..., -4:], p=2, dim=-1)

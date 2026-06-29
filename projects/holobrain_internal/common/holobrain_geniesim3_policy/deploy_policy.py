@@ -549,7 +549,7 @@ class HoloBrainGenieSim3Policy:
             raise RuntimeError("Policy is missing processor or model.")
         model_input = self.processor.pre_process(data)
         model_outs = self.model(model_input)
-        return self.processor.post_process(model_input, model_outs)
+        return self.processor.post_process(model_outs, model_input)
 
     def get_actions(self, payload: dict[str, Any]) -> np.ndarray:
         output = self._run_holobrain(self.data_preprocess(payload))

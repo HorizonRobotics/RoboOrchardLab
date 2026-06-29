@@ -214,7 +214,7 @@ class HoloBrainPolicy:
     def forward(self, obs):
         data = self.data_preprocess(obs)
         model_outs = self.model(data)
-        output = self.processor.post_process(data, model_outs)
+        output = self.processor.post_process(model_outs, data)
 
         action = output.action.cpu().numpy()
 

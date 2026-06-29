@@ -261,7 +261,7 @@ class HoloBrainPolicy:
         data = self.data_preprocess(state, prompt, delay_horizon)
         model_outs = self.model(data)
 
-        actions = self.processor.post_process(data, model_outs).action
+        actions = self.processor.post_process(model_outs, data).action
         if hasattr(actions, "detach"):
             actions = actions.detach().cpu().numpy()
 

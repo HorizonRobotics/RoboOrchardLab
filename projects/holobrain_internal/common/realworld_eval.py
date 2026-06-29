@@ -428,8 +428,8 @@ class HoloBrainPolicy:
         model_output: Any,
     ) -> dict[str, Any]:
         actions = self.processor.post_process(
-            pre_processed_input,
             model_output,
+            pre_processed_input,
         ).action
 
         actions = self._clip_actions_if_needed(actions, pre_processed_input)
