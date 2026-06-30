@@ -141,6 +141,8 @@ def build_datasets(
     data_paths,
     mode="training",
     lazy_init=True,
+    mobile=None,
+    mimicgen=None,
 ):
     from robo_orchard_lab.dataset.robocasa.robocasa_lmdb_dataset import (
         RoboCasaLmdbDataset,
@@ -156,6 +158,8 @@ def build_datasets(
         cam_names=CAMERA_NAMES,
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
+        mobile=mobile,
+        mimicgen=mimicgen,
     )
 
 

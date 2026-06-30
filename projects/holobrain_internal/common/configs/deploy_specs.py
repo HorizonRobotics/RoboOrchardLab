@@ -117,6 +117,10 @@ DEPLOY_DATASETS = [
         dataset_name="table30v2_dos_w1",
         setting_type="dos_w1",
     ),
+    dict(
+        dataset_type="robocasa",
+        dataset_name="robocasa",
+    ),
 ]
 
 deploy_datasets = copy.deepcopy(DEPLOY_DATASETS)

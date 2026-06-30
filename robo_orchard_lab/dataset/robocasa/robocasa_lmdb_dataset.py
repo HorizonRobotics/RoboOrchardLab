@@ -18,51 +18,15 @@ import random
 
 import cv2
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
     BaseIndexData,
     BaseLmdbManipulationDataset,
 )
-
-ACTION_POS_SCALE = 0.05
-ACTION_ROT_SCALE = 0.5
-GRIPPER_WIDTH = 0.08
-
-
-def osc_action_to_ee_pose(
-    ee_state: np.ndarray,
-    osc_action: np.ndarray,
-) -> np.ndarray:
-    ee_state = np.asarray(ee_state, dtype=np.float64)
-    osc_action = np.asarray(osc_action, dtype=np.float64)
-    action_pos = ee_state[..., :3] + osc_action[..., :3] * ACTION_POS_SCALE
-    current_rot = Rotation.from_quat(ee_state[..., 3:7], scalar_first=True)
-    delta_rot = Rotation.from_rotvec(osc_action[..., 3:6] * ACTION_ROT_SCALE)
-    action_rot = current_rot * delta_rot
-    action_quat = action_rot.as_quat(scalar_first=True)
-    return np.concatenate([action_pos, action_quat], axis=-1)
-
-
-def ee_pose_to_osc_action(
-    ee_state: np.ndarray,
-    ee_pose: np.ndarray,
-) -> np.ndarray:
-    ee_state = np.asarray(ee_state, dtype=np.float64)
-    ee_pose = np.asarray(ee_pose, dtype=np.float64)
-
-    target_pos = ee_pose[..., :3]
-    target_rot = Rotation.from_quat(ee_pose[..., 3:7], scalar_first=True)
-
-    current_rot = Rotation.from_quat(ee_state[..., 3:7], scalar_first=True)
-    delta_pos = (target_pos - ee_state[..., :3]) / ACTION_POS_SCALE
-    delta_rot = current_rot.inv() * target_rot
-    delta_rotvec = delta_rot.as_rotvec() / ACTION_ROT_SCALE
-    return np.concatenate([delta_pos, delta_rotvec], axis=-1)
-
-
-def get_gripper_openness(gripper_state):
-    return (-gripper_state[:, :1] + gripper_state[:, 1:2]) / GRIPPER_WIDTH
+from robo_orchard_lab.dataset.robocasa.utils import (
+    get_gripper_openness,
+    osc_action_to_ee_pose,
+)
 
 
 def _decode_image(image_buffer, flags):
@@ -89,8 +53,12 @@ class RoboCasaLmdbDataset(BaseLmdbManipulationDataset):
         task_names=None,
         lazy_init=False,
         cam_names=None,
+        mobile=None,
+        mimicgen=None,
         **kwargs,
     ) -> None:
+        self.mobile = mobile
+        self.mimicgen = mimicgen
         super().__init__(
             paths=paths,
             transforms=transforms,
@@ -103,6 +71,17 @@ class RoboCasaLmdbDataset(BaseLmdbManipulationDataset):
         )
         assert not self.load_depth
         self.cam_names = cam_names
+
+    def _check_valid(self, index_data):
+        if not super()._check_valid(index_data):
+            return False
+        if self.mobile is not None:
+            if self.mobile != index_data.if_mobile:
+                return False
+        if self.mimicgen is not None:
+            if self.mimicgen != index_data.if_mimicgen:
+                return False
+        return True
 
     def _get_episode_meta(self, lmdb_index, uuid, key, step_index):
         data = self.meta_lmdbs[lmdb_index][f"{uuid}/{key}"]

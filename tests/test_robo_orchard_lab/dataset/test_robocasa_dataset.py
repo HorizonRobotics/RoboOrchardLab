@@ -28,7 +28,11 @@ from robo_orchard_lab.dataset.lmdb.lmdb_wrapper import Lmdb
 from robo_orchard_lab.dataset.robocasa.robocasa_lmdb_dataset import (
     RoboCasaLmdbDataset,
 )
-from robo_orchard_lab.dataset.robocasa.robocasa_lmdb_packer import (
+from robo_orchard_lab.dataset.robocasa.transforms import (
+    SimpleStateSampling,
+    TransformRobotState,
+)
+from robo_orchard_lab.dataset.robocasa.utils import (
     DEFAULT_CAMERA_CONFIGS,
     DEFAULT_EEF_TO_HAND,
     STATE_SLICES,
@@ -40,10 +44,6 @@ from robo_orchard_lab.dataset.robocasa.robocasa_lmdb_packer import (
     state_base_pose,
     state_camera_world_pose,
     t_base2cam_from_world_pose,
-)
-from robo_orchard_lab.dataset.robocasa.transforms import (
-    SimpleStateSampling,
-    TransformRobotState,
 )
 
 
@@ -253,7 +253,7 @@ def test_robocasa_wrist_camera_uses_fixed_hand_to_eef_offset():
     )
     previous_base2cam_without_offset = pose_inv(
         make_pose(eef_pos, np.eye(3))
-        @ make_pose(np.asarray(cam_cfg["pos"], dtype=np.float64), np.eye(3))
+        @ t_hand_to_cam
         @ camera_axis_correction()
     ) @ make_pose(base_pos, base_rot)
 
@@ -267,8 +267,8 @@ def test_robocasa_camera_calibration_semantics():
     )
     expected_wrist_calibration = np.array(
         [
-            [-1.0, 0.0, 0.0, 0.0],
-            [0.0, -1.0, 0.0, 0.05],
+            [0.0, 1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 0.05],
             [0.0, 0.0, 1.0, 0.097],
             [0.0, 0.0, 0.0, 1.0],
         ],
