@@ -97,6 +97,30 @@ def make_env(
     )
 
 
+def configure_robocasa_env_absolute_action(env: Any) -> None:
+    """Configure RoboCasa PandaOmron OSC for base-frame absolute poses."""
+    inner_env = getattr(env.unwrapped, "env", env.unwrapped)
+    composite_controller = inner_env.robots[0].composite_controller
+    right_arm_controller = composite_controller.get_controller("right")
+    if right_arm_controller.name_suffix != "POSE":
+        raise ValueError(
+            "RoboCasa absolute action eval expects the right arm controller "
+            f"to control pose, got suffix {right_arm_controller.name_suffix}."
+        )
+    right_arm_controller.input_type = "absolute"
+    right_arm_controller.input_ref_frame = "base"
+    right_arm_controller.input_min = np.full(
+        right_arm_controller.control_dim,
+        -np.inf,
+        dtype=np.float64,
+    )
+    right_arm_controller.input_max = np.full(
+        right_arm_controller.control_dim,
+        np.inf,
+        dtype=np.float64,
+    )
+
+
 def save_video_frame(
     writer: Any,
     env: Any,
@@ -176,6 +200,7 @@ def run_trial(
 
     try:
         obs, info = env.reset(seed=seed)
+        configure_robocasa_env_absolute_action(env)
         action_queue: deque[dict[str, np.ndarray]] = deque()
         success = bool(info.get("success", False))
         steps_executed = 0

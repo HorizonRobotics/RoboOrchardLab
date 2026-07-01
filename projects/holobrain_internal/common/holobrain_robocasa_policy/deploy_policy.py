@@ -24,13 +24,13 @@ import numpy as np
 import torch
 from holobrain_utils import download_file
 from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
+from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.dataset.robocasa.utils import (
     DEFAULT_CAMERA_CONFIGS,
     DEFAULT_EEF_TO_HAND,
     GRIPPER_WIDTH,
     STATE_SLICES,
-    ee_pose_to_osc_action,
     get_camera_fovy,
     get_gripper_openness,
     intrinsic_from_fovy,
@@ -270,6 +270,7 @@ def convert_ee_poses_to_robocasa_actions(
     *,
     valid_action_step: int,
     control_mode: float = 1.0,
+    eef_body_to_site_rot: np.ndarray | None = None,
 ) -> np.ndarray:
     current_robot_state = np.asarray(current_robot_state, dtype=np.float64)
     target_robot_state = np.asarray(target_robot_state, dtype=np.float64)
@@ -303,28 +304,35 @@ def convert_ee_poses_to_robocasa_actions(
         )
 
     target_robot_state = target_robot_state[:valid_action_step]
-    current_ee_pose = current_robot_state.reshape(-1, ROBOCASA_STATE_DIM)[
-        -1, 1:
-    ]
-    source_ee_pose = np.concatenate(
-        [current_ee_pose[None], target_robot_state[:-1, 1:]],
-        axis=0,
-    )
-    target_ee_pose = target_robot_state[:, 1:]
-    osc_action = ee_pose_to_osc_action(source_ee_pose, target_ee_pose)
+    target_quat_wxyz = _normalize_quaternion(target_robot_state[:, 4:])
+    target_quat_xyzw = target_quat_wxyz[:, [1, 2, 3, 0]]
+    target_rot = Rotation.from_quat(target_quat_xyzw).as_matrix()
+    if eef_body_to_site_rot is not None:
+        eef_body_to_site_rot = np.asarray(
+            eef_body_to_site_rot,
+            dtype=np.float64,
+        )
+        if eef_body_to_site_rot.shape != (3, 3):
+            raise ValueError(
+                "eef_body_to_site_rot must have shape (3, 3), got "
+                f"{eef_body_to_site_rot.shape}."
+            )
+        target_rot = target_rot @ eef_body_to_site_rot
+    target_rotvec = Rotation.from_matrix(target_rot).as_rotvec()
 
     actions = np.zeros(
         (valid_action_step, ROBOCASA_ACTION_DIM),
         dtype=np.float32,
     )
-    actions[:, :6] = osc_action.astype(np.float32)
+    actions[:, :3] = target_robot_state[:, 1:4].astype(np.float32)
+    actions[:, 3:6] = target_rotvec.astype(np.float32)
     actions[:, 6:7] = np.clip(
         target_robot_state[:, :1],
         0.0,
         1.0,
     ).astype(np.float32)
     actions[:, 11] = np.float32(control_mode)
-    return np.clip(actions, -1.0, 1.0)
+    return actions
 
 
 def robocasa_action_to_dict(action: np.ndarray) -> dict[str, np.ndarray]:
@@ -336,6 +344,18 @@ def robocasa_action_to_dict(action: np.ndarray) -> dict[str, np.ndarray]:
         "action.base_motion": action[7:11],
         "action.control_mode": action[11:12],
     }
+
+
+def extract_eef_body_to_site_rot(env: Any) -> np.ndarray:
+    """Return fixed right_hand-body to grip-site rotation."""
+    inner_env = _unwrap_robocasa_env(env)
+    robot = inner_env.robots[0]
+    sim = inner_env.sim
+    body_name = robot.robot_model.eef_name["right"]
+    site_name = robot.gripper["right"].important_sites["grip_site"]
+    body_rot = sim.data.get_body_xmat(body_name).reshape(3, 3)
+    site_rot = sim.data.get_site_xmat(site_name).reshape(3, 3)
+    return body_rot.T @ site_rot
 
 
 class HoloBrainRoboCasaPolicy:
@@ -544,6 +564,9 @@ class HoloBrainRoboCasaPolicy:
             target_robot_state=target_robot_state,
             valid_action_step=self.cfg.valid_action_step,
             control_mode=self.cfg.control_mode,
+            eef_body_to_site_rot=extract_eef_body_to_site_rot(env)
+            if env is not None
+            else None,
         )
 
     def get_action_dicts(
@@ -553,8 +576,7 @@ class HoloBrainRoboCasaPolicy:
         env: Any | None = None,
     ) -> list[dict[str, np.ndarray]]:
         return [
-            robocasa_action_to_dict(x)
-            for x in self.get_actions(obs, env=env)
+            robocasa_action_to_dict(x) for x in self.get_actions(obs, env=env)
         ]
 
 
