@@ -215,7 +215,10 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
         elif os.path.isdir(self.cfg.vlm_pretrain):
             if not os.path.exists(os.path.split(directory)[0]):
                 os.makedirs(os.path.split(directory)[0])
-            os.symlink(os.path.abspath(self.cfg.vlm_pretrain), directory)
+            try:
+                os.symlink(os.path.abspath(self.cfg.vlm_pretrain), directory)
+            except FileExistsError:
+                pass
 
     def forward(self, inputs):
         if self.data_preprocessor is not None:

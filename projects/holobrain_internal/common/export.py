@@ -23,6 +23,10 @@ import shutil
 from holobrain_utils import load_checkpoint, load_config
 
 from robo_orchard_lab.models.holobrain import HoloBrainProcessor
+from robo_orchard_lab.models.holobrain.pipeline import (
+    HoloBrainInferencePipeline,
+    HoloBrainInferencePipelineCfg,
+)
 from robo_orchard_lab.models.mixin import ModelMixin
 from robo_orchard_lab.utils import log_basic_config
 
@@ -51,34 +55,72 @@ def main(args):
         config.update(kwargs)
     logger.info("\n" + json.dumps(config, indent=4))
 
+    required_datasets = args.dataset_names
+    if required_datasets is not None:
+        required_datasets = required_datasets.split(",")
+
     # export data processors and reload test
     processors = build_processors(config)
     for dataset_name, processor in processors.items():
+        if (
+            required_datasets is not None
+            and dataset_name not in required_datasets
+        ):
+            continue
         processor_name = f"{dataset_name}_processor.json"
         processor.save(args.workspace, processor_name)
         logger.info(f"Export {processor_name} successfully.")
         _processor = HoloBrainProcessor.load(args.workspace, processor_name)
         logger.info(f"Reload {processor_name} successfully.")
 
-    # export model and reload test
+    # # export model and reload test
     model = build_model(config)
     load_checkpoint(model, config.get("checkpoint"))
     model_path = os.path.join(args.workspace, "model")
     model.save_model(model_path, required_empty=False)
     logger.info("Export model successfully.")
-    _model = ModelMixin.load_model(model_path, load_impl="native")
-    logger.info("Reload model successfully.")
+    if args.reload_test:
+        _model = ModelMixin.load_model(model_path, load_impl="native")
+        logger.info("Reload model successfully.")
 
+    # export inference.config.json for each dataset's pipeline
     for dataset_name, processor in processors.items():
-        processor_name = f"{dataset_name}_processor.json"
-        processor.save(model_path, processor_name)
-        logger.info(f"Export {processor_name} into model dir successfully.")
+        if (
+            required_datasets is not None
+            and dataset_name not in required_datasets
+        ):
+            continue
+        inference_cfg = HoloBrainInferencePipelineCfg(
+            class_type=HoloBrainInferencePipeline,
+            model_cfg=None,
+            processor=processor.cfg,
+        )
+        pipeline = HoloBrainInferencePipeline(inference_cfg, model)
+        pipeline.save_pipeline(
+            model_path,
+            inference_prefix=f"{dataset_name}_inference",
+            required_empty=False,
+            save_model=False,
+        )
+        logger.info(f"Export {dataset_name} inference pipeline successfully.")
+
+        if args.reload_test:
+            HoloBrainInferencePipeline.load_pipeline(
+                model_path,
+                inference_prefix=f"{dataset_name}_inference",
+                load_impl="native",
+            )
+            logger.info(
+                f"Reload {dataset_name} inference pipeline successfully."
+            )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str)
     parser.add_argument("--workspace", type=str, default="./workspace")
+    parser.add_argument("--reload_test", action="store_true")
+    parser.add_argument("--dataset_names", type=str, default=None)
     parser.add_argument("--kwargs", type=str, default=None)
     args = parser.parse_args()
     log_basic_config(

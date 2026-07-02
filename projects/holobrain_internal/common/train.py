@@ -30,6 +30,10 @@ from robo_orchard_lab.dataset.collates import collate_batch_dict
 from robo_orchard_lab.dataset.dataset_wrapper import (
     DistributedBatchFlagSampler,
 )
+from robo_orchard_lab.models.holobrain.pipeline import (
+    HoloBrainInferencePipeline,
+    HoloBrainInferencePipelineCfg,
+)
 from robo_orchard_lab.pipeline import SimpleTrainer
 from robo_orchard_lab.pipeline.batch_processor import SimpleBatchProcessor
 from robo_orchard_lab.pipeline.hooks import (
@@ -82,16 +86,28 @@ def main(args, accelerator):
             raise ValueError(f"Unknown config keys in kwargs: {unknown_keys}")
         config.update(kwargs)
 
+    if accelerator.is_main_process:
+        logger.info("\n" + json.dumps(config, indent=4))
+
+    model = build_model(config)
+
     # export data processors
     if accelerator.is_main_process:
         processors = build_processors(config)
         for dataset_name, processor in processors.items():
             processor.save(args.workspace, f"{dataset_name}_processor.json")
-
-    if accelerator.is_main_process:
-        logger.info("\n" + json.dumps(config, indent=4))
-
-    model = build_model(config)
+            inference_cfg = HoloBrainInferencePipelineCfg(
+                class_type=HoloBrainInferencePipeline,
+                model_cfg=None,
+                processor=processor.cfg,
+            )
+            pipeline = HoloBrainInferencePipeline(inference_cfg, model)
+            pipeline.save_pipeline(
+                args.workspace,
+                inference_prefix=f"{dataset_name}_inference",
+                required_empty=False,
+                save_model=False,
+            )
 
     num_workers = config.get("num_workers", 4)
     if not args.eval_only:

@@ -240,7 +240,7 @@ class HoloBrainProcessor(ProcessorMixin):
                 )
 
         if len(urdfs) > 0:
-            if not os.path.isabs(path):
+            if not os.path.isabs(urdf_dir):
                 target_urdf_path = os.path.join(path, urdf_dir)
             else:
                 target_urdf_path = urdf_dir
