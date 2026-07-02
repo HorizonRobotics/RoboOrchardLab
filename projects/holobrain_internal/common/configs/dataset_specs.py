@@ -125,7 +125,7 @@ TRAINING_DATASETS = [
     dict(
         dataset_type="agilex",
         dataset_name="horizon_grasp_anything",
-        setting_type="horizon_beijing",
+        setting_type="horizon_piper_435_low_beijing",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_beijing/*-place_objects_to_basket-*",
         ),
@@ -138,7 +138,7 @@ TRAINING_DATASETS = [
     dict(
         dataset_type="agilex",
         dataset_name="horizon_beijing",
-        setting_type="horizon_beijing",
+        setting_type="horizon_piper_435_low_beijing",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_beijing/xuewu.lin-empty_cup_place",
             f"{DATA_BASE}/horizon_beijing/xuewu.lin-collect_bottles",
@@ -158,7 +158,7 @@ TRAINING_DATASETS = [
     dict(
         dataset_type="agilex",
         dataset_name="horizon_beijing_piper_x",
-        setting_type="horizon_beijing_piper_x",
+        setting_type="horizon_piper_x_435",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_beijing/*-piper_x-*-*"
         ),
@@ -169,7 +169,7 @@ TRAINING_DATASETS = [
     dict(
         dataset_type="agilex",
         dataset_name="horizon_shanghai",
-        setting_type="horizon_shanghai",
+        setting_type="horizon_piper_435_low_shanghai",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_shanghai/*-empty_cup_place-*",
             f"{DATA_BASE}/horizon_shanghai/*-place_shoe-*",
@@ -178,9 +178,19 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-stack_block_two-*",
             f"{DATA_BASE}/horizon_shanghai/*-stack_bowls_three-*",
             f"{DATA_BASE}/horizon_shanghai/*-two_fold_towel-*",
+            f"{DATA_BASE}/horizon_shanghai/*-place_object_to_location-*",
+        ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_shanghai_fold_clothes",
+        setting_type="horizon_piper_435_high",
+        data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_shanghai/*-fold_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-flatten_clothes-*",
-            f"{DATA_BASE}/horizon_shanghai/*-place_object_to_location-*",
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",

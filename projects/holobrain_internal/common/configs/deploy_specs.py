@@ -19,18 +19,13 @@ import copy
 DEPLOY_DATASETS = [
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_beijing",
-        setting_type="horizon_beijing",
+        dataset_name="horizon_piper_435_low_beijing",
+        setting_type="horizon_piper_435_low_beijing",
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_piper_x_435",
-        setting_type="horizon_beijing_piper_x",
-    ),
-    dict(
-        dataset_type="agilex",
-        dataset_name="horizon_shanghai",
-        setting_type="horizon_shanghai",
+        dataset_name="horizon_piper_435_low_shanghai",
+        setting_type="horizon_piper_435_low_shanghai",
     ),
     dict(
         dataset_type="agilex",
@@ -39,8 +34,8 @@ DEPLOY_DATASETS = [
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_piper_435_low",
-        setting_type="horizon_piper_435_low",
+        dataset_name="horizon_piper_x_435",
+        setting_type="horizon_piper_x_435",
     ),
     dict(
         dataset_type="agilex",
