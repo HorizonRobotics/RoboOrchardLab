@@ -1,10 +1,11 @@
 ---
-description: Use this guidance when distilling stable implementation, review, or design-process lessons into local guidance assets in this repository.
+description: Use this guidance when distilling stable implementation, review, or design-process lessons into local guidance assets or memory in this repository.
 ---
 
 # Experience Distillation Instruction
 
-Use this instruction for local guidance distillation work in this repository.
+Use this instruction for local guidance and memory distillation work in this
+repository.
 
 ## Distillation Trigger
 
@@ -25,8 +26,16 @@ latest design note or code diff.
 
 When reporting candidates from a broad session, classify them by intended
 asset type, such as instruction/workflow rule, reference/guideline,
-template/scaffold, implementation-validated follow-up, or task-local detail
-that should stay out of shared guidance.
+template/scaffold, memory note, implementation-validated follow-up, or
+task-local detail that should stay out of shared guidance.
+
+When the user asks to distill or preserve lessons, explicitly evaluate both
+tracked local guidance and repo/session memory. Do not treat memory as a
+substitute for repository-owned guidance: if the lesson should follow this
+repository into another environment, promote it to tracked `.agents`, `docs/`,
+package docs, or code-near TODOs first. Use memory only for reusable context
+that is helpful to future agents but too local, environment-specific, or
+task-specific for tracked guidance.
 
 ## Candidate Dimensions
 
@@ -79,6 +88,9 @@ Choose the destination by audience, lifecycle, and reuse mode:
   usage knowledge.
 - `.agents/scratch/`: task-local, evolving, or historical context that should
   not be routed as shared guidance.
+- repo/session memory: reusable but non-project-owned context, exact commands,
+  environment quirks, older rollout evidence, or task-specific details that
+  should not become tracked guidance.
 
 Before editing guidance, ask who will consume the lesson, whether it is a
 rule, principle, workflow, template, or historical decision, whether it is
@@ -97,6 +109,8 @@ When reporting candidate distillation items, include:
 - why it is worth keeping
 - whether it should be applied now or left as a candidate
 - any existing guidance it may overlap with
+- whether memory should also be updated, and why tracked local guidance is or
+  is not the right durable destination
 
 ## Maintenance
 

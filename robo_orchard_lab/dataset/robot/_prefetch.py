@@ -242,6 +242,67 @@ def close_dataloader_resources(
     _raise_close_errors(errors)
 
 
+def _close_dataloader_owner_resources(
+    dataloader: Any,
+    *,
+    primary_exc: BaseException | None = None,
+) -> None:
+    """Shut down dataloader resources kept alive by owner objects.
+
+    This is the trainer-teardown counterpart of ``close_dataloader_resources``.
+    It only closes existing owner-held PyTorch dataloader iterators; it never
+    calls ``iter(dataloader)`` and therefore cannot create workers during
+    cleanup. Use it after normal epoch-level closes have intentionally kept
+    persistent workers reusable.
+
+    Args:
+        dataloader (Any): Original or prepared dataloader owner.
+        primary_exc (BaseException | None, optional): Exception already being
+            propagated by the caller. Default is ``None``. When set, cleanup
+            failures are logged instead of replacing it.
+
+    Raises:
+        BaseException: A cleanup error when no ``primary_exc`` is active.
+        RuntimeError: If multiple cleanup errors occur and no ``primary_exc``
+            is active.
+    """
+
+    dataloader_owners = list(_iter_dataloader_owners(dataloader))
+    owner_iterators = [
+        owner._iterator
+        for owner in dataloader_owners
+        if isinstance(owner, TorchDataLoader)
+        and getattr(owner, "_iterator", None) is not None
+    ]
+
+    errors: list[BaseException] = []
+    try:
+        close_iterators_best_effort(
+            owner_iterators,
+            primary_exc=primary_exc,
+            shutdown_persistent_workers=True,
+        )
+    except BaseException as exc:
+        errors.append(exc)
+
+    try:
+        _end_prepared_dataloader_wrappers(dataloader_owners)
+    except BaseException as exc:
+        errors.append(exc)
+
+    try:
+        _clear_persistent_dataloader_owner_iterators(dataloader_owners)
+    except BaseException as exc:
+        errors.append(exc)
+
+    if not errors:
+        return
+    if primary_exc is not None:
+        _log_close_errors(primary_exc, errors)
+        return
+    _raise_close_errors(errors)
+
+
 def _get_prefetch_close_hard_timeout_sec() -> float:
     value = os.environ.get(_PREFETCH_CLOSE_HARD_TIMEOUT_ENV)
     if value is None:

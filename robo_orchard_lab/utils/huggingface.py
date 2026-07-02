@@ -38,6 +38,41 @@ __all__ = [
 ]
 
 
+def _should_write_like_accelerate_save(accelerator: Accelerator) -> bool:
+    if accelerator.project_configuration.save_on_each_node:
+        return accelerator.is_local_main_process
+    return accelerator.is_main_process
+
+
+def _has_model_save_artifact(directory: str) -> bool:
+    if not os.path.isdir(directory):
+        return False
+
+    try:
+        with os.scandir(directory) as entries:
+            return any(
+                entry.is_file()
+                and _is_accelerate_model_artifact_name(entry.name)
+                for entry in entries
+            )
+    except FileNotFoundError:
+        return False
+
+
+def _is_accelerate_model_artifact_name(filename: str) -> bool:
+    if filename in {
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    }:
+        return True
+
+    return (
+        filename.startswith("model-") and filename.endswith(".safetensors")
+    ) or (filename.startswith("pytorch_model-") and filename.endswith(".bin"))
+
+
 def get_accelerate_project_last_checkpoint_id(project_dir: str) -> int:
     """Helper function to get last checkpoint id.
 

@@ -73,6 +73,17 @@ boundaries, and the main execution path understandable.
 - During architecture review, prefer identifying abstractions that can be
   deleted, merged, or downgraded to compatibility-only before proposing new
   abstractions.
+- Start architecture review with a minimality pass when a design introduces
+  new protocols, providers, adapters, factories, registries, DTOs, caches, or
+  snapshots. Require the reviewer to name the one-method or no-new-class
+  alternative and explain why it is insufficient before accepting the larger
+  design.
+- Treat overdesign as an architecture issue when the extra structure creates
+  meaningful extension cost or obscures ownership. Red flags include a
+  registry/factory for a single caller, a DTO that only carries an existing
+  object, a snapshot or cache added only to avoid one call, a two-method
+  protocol whose values must be kept in sync, or a callback that bypasses an
+  object that already owns the semantic.
 - When extracting shared logic from multiple callers, centralize only the
   stable semantic operation. Keep caller-owned boundary work such as runtime
   adaptation, flatten/unflatten, label reconstruction, layout plumbing, and
@@ -193,6 +204,8 @@ by an upstream framework.
   callbacks, indirection, or parameter plumbing?
 - Can any new abstraction be deleted, merged into an existing seam, or
   downgraded to compatibility-only?
+- What is the one-method / no-new-class alternative, and which proposed
+  fields, DTOs, adapters, factories, registries, or snapshots can be deleted?
 - Are stable cross-layer contracts explicit rather than half-dynamic?
 - Is dependency direction one-way, and is the source of truth for shared
   semantics unique?

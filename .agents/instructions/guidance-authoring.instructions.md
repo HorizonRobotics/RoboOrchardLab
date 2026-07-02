@@ -94,6 +94,11 @@ description: Load these instructions when creating, editing, or reorganizing AGE
 - Keep in-progress design notes in a disposable scratch path such as `.agents/scratch/designs/` while the task is active.
 - Before deleting temporary design notes or other temporary development documents, get explicit user confirmation.
 - Before that deletion, run a local experience distillation pass. If durable lessons remain, update the appropriate local instructions, references, templates, or skills and record concise repo memory notes when that will help future tasks.
+- Do not let external session or agent memory substitute for tracked local
+  guidance. When a stable lesson should travel with this repository, promote
+  it into `.agents`, `docs/`, package docs, or code-near TODOs first; use
+  memory as a complement for task-specific evidence or environment-local
+  context.
 - Do not treat temporary scratch notes as routed shared guidance while they remain task-local.
 - Promote stable project-facing knowledge into `docs/`, package docs, or another established design-doc location for this repository.
 - Distill stable agent-facing lessons into local instructions, references, templates, or other intentional local shared agent assets as appropriate; do not preserve one-off retrospectives when nothing durable should remain.

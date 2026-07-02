@@ -15,12 +15,14 @@
 # permissions and limitations under the License.
 
 import argparse
+import inspect
 import json
 import multiprocessing as mp
 import os
 import threading
 import time
 from pathlib import Path
+from types import GeneratorType
 
 from accelerate import Accelerator
 from accelerate.utils import DataLoaderConfiguration
@@ -29,6 +31,9 @@ from torch.utils.data import Dataset
 
 from robo_orchard_lab.dataset.robot import DatasetItem
 from robo_orchard_lab.dataset.robot._prefetch import (
+    DataloaderCloseReason,
+    _close_dataloader_owner_resources,
+    close_dataloader_resources,
     close_iterators_best_effort,
 )
 from robo_orchard_lab.dataset.robot.dataset_ex import (
@@ -95,6 +100,16 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cycles", type=int, default=4)
     parser.add_argument("--batches-per-cycle", type=int, default=2)
+    parser.add_argument(
+        "--close-mode",
+        choices=["early-break", "epoch-exhausted"],
+        default="early-break",
+    )
+    parser.add_argument(
+        "--pin-memory",
+        choices=["0", "1"],
+        default="0",
+    )
     parser.add_argument("--output-path", type=Path, required=True)
     return parser.parse_args()
 
@@ -210,11 +225,70 @@ def _prepare_dataloader(
     return accelerator, repo_prepare_data_loader(accelerator, dataloader)
 
 
-def _iterate_with_early_break(dataloader: object, max_batches: int) -> int:
+def _collect_pin_memory_flags(
+    owner: object,
+    seen: set[int] | None = None,
+) -> list[bool]:
+    """Find PyTorch iterator pin-memory flags through wrapper layers."""
+    if owner is None:
+        return []
+    if seen is None:
+        seen = set()
+    owner_id = id(owner)
+    if owner_id in seen:
+        return []
+    seen.add(owner_id)
+
+    flags: list[bool] = []
+    pin_memory = getattr(owner, "_pin_memory", None)
+    if isinstance(pin_memory, bool):
+        flags.append(pin_memory)
+
+    if isinstance(owner, GeneratorType):
+        generator_locals = inspect.getgeneratorlocals(owner)
+        for nested_name in ("dataloader_iter", "main_iterator"):
+            flags.extend(
+                _collect_pin_memory_flags(
+                    generator_locals.get(nested_name),
+                    seen,
+                )
+            )
+
+    for attr_name in (
+        "_iterator",
+        "base_dataloader",
+        "dataloader",
+        "_dataloader",
+        "data_loader",
+    ):
+        flags.extend(
+            _collect_pin_memory_flags(getattr(owner, attr_name, None), seen)
+        )
+
+    return flags
+
+
+def _pin_memory_observed(*owners: object) -> bool:
+    """Return whether any active iterator is using the pin-memory path."""
+    flags: list[bool] = []
+    seen: set[int] = set()
+    for owner in owners:
+        flags.extend(_collect_pin_memory_flags(owner, seen))
+    return any(flags)
+
+
+def _iterate_with_early_break(
+    dataloader: object,
+    max_batches: int,
+) -> tuple[int, bool]:
     dataloader_iter = iter(dataloader)
+    pin_memory_observed = _pin_memory_observed(dataloader, dataloader_iter)
     batch_count = 0
     try:
         for batch_idx, _batch in enumerate(dataloader_iter):
+            pin_memory_observed = pin_memory_observed or _pin_memory_observed(
+                dataloader, dataloader_iter
+            )
             batch_count += 1
             if batch_idx + 1 >= max_batches:
                 break
@@ -224,7 +298,43 @@ def _iterate_with_early_break(dataloader: object, max_batches: int) -> int:
         # intentionally left to the wrapper owner and is not asserted here.
         close_iterators_best_effort([dataloader_iter])
 
-    return batch_count
+    return batch_count, pin_memory_observed
+
+
+def _iterate_until_exhausted(dataloader: object) -> tuple[int, bool]:
+    """Consume a full epoch and close it as normal epoch exhaustion."""
+    dataloader_iter = iter(dataloader)
+    pin_memory_observed = _pin_memory_observed(dataloader, dataloader_iter)
+    batch_count = 0
+    try:
+        for _batch in dataloader_iter:
+            pin_memory_observed = pin_memory_observed or _pin_memory_observed(
+                dataloader, dataloader_iter
+            )
+            batch_count += 1
+    finally:
+        close_dataloader_resources(
+            dataloader,
+            dataloader_iter,
+            reason=DataloaderCloseReason.EPOCH_EXHAUSTED,
+        )
+
+    return batch_count, pin_memory_observed
+
+
+def _iterate_for_cycle(
+    dataloader: object,
+    *,
+    close_mode: str,
+    max_batches: int,
+) -> tuple[int, bool]:
+    """Run one cleanup probe cycle for the requested close mode."""
+    if close_mode == "early-break":
+        return _iterate_with_early_break(
+            dataloader,
+            max_batches=max_batches,
+        )
+    return _iterate_until_exhausted(dataloader)
 
 
 def main() -> int:
@@ -233,11 +343,13 @@ def main() -> int:
     persistent_workers = (
         args.persistent_workers == "1" and args.num_workers > 0
     )
+    pin_memory = args.pin_memory == "1"
 
     dataloader_kwargs = {
         "batch_size": 2 if use_dataset_side_batching else 1,
         "num_workers": args.num_workers,
         "use_dataset_side_batching": use_dataset_side_batching,
+        "pin_memory": pin_memory,
     }
     if args.num_workers > 0:
         dataloader_kwargs["persistent_workers"] = persistent_workers
@@ -258,12 +370,15 @@ def main() -> int:
     per_cycle: list[dict[str, object]] = []
     persistent_child_pids: list[int] | None = None
     expected_prefetch_threads = int(baseline["prefetch_threads"])
+    pin_memory_observed = False
 
     for _ in range(args.cycles):
-        batch_count = _iterate_with_early_break(
+        batch_count, cycle_pin_memory_observed = _iterate_for_cycle(
             prepared_dataloader,
+            close_mode=args.close_mode,
             max_batches=args.batches_per_cycle,
         )
+        pin_memory_observed = pin_memory_observed or cycle_pin_memory_observed
         if persistent_workers:
             current_child_pids = _child_pids()
             if persistent_child_pids is None:
@@ -277,7 +392,11 @@ def main() -> int:
             expected_prefetch_threads=expected_prefetch_threads,
         )
         cycle_snapshot["batch_count"] = batch_count
+        cycle_snapshot["pin_memory_observed"] = cycle_pin_memory_observed
         per_cycle.append(cycle_snapshot)
+
+    if args.close_mode == "epoch-exhausted":
+        _close_dataloader_owner_resources(prepared_dataloader)
 
     del prepared_dataloader
     del dataloader
@@ -296,6 +415,9 @@ def main() -> int:
         "use_dataset_side_batching": use_dataset_side_batching,
         "num_workers": args.num_workers,
         "persistent_workers": persistent_workers,
+        "close_mode": args.close_mode,
+        "pin_memory_requested": pin_memory,
+        "pin_memory_observed": pin_memory_observed,
         "baseline": baseline,
         "per_cycle": per_cycle,
         "after_cleanup": after_cleanup,

@@ -40,6 +40,11 @@ description: Load these instructions when planning complex repository work, vali
 - Do not bake a per-task commit requirement into repository-local plans.
   Commit cadence should follow the user's request and this repository's git
   instructions, even when an external workflow recommends frequent commits.
+- For user-reviewed phased development, finish implementation, validation,
+  and cleanup for the phase, then stop at a review gate. Run delegated review
+  at key checkpoints, such as phase completion with public API, persisted
+  format, or boundary changes, or when the user explicitly asks for review.
+  Do not commit that phase until the user explicitly says it can be committed.
 - If a Superpowers workflow is also in use, treat Superpowers as the
   collaboration and process guide, and this repository's design guideline as
   the repo-local content standard. User-specified scratch paths override
@@ -49,9 +54,10 @@ description: Load these instructions when planning complex repository work, vali
   and no unresolved user decision blocks implementation.
 - Skip the temporary design note for small, local, or mechanical changes when the implementation path is already obvious.
 - After implementation, run the smallest useful validation and confirm the result against the user's request before treating the task as complete.
-- After confirmation, delete the temporary design note.
 - If part of the temporary design is durable project knowledge, promote only the stable subset into this repository's canonical design docs, `docs/`, package docs, or another established design-doc location instead of preserving the scratch note.
 - If the work reveals durable agent-facing lessons, distill them into local guidance or other intentional local shared agent assets instead of copying the whole temporary design note into instructions.
+- After confirmation, delete the temporary design note only after any required
+  durable promotion or explicit no-durable-content decision is complete.
 
 ## Validation
 
@@ -80,6 +86,9 @@ description: Load these instructions when planning complex repository work, vali
 - Check each newly added `__all__` entry, public class, protocol, and helper:
   keep it only if it has a clear caller, compatibility purpose, or semantic
   boundary that cannot be handled by an existing seam.
+- When delegating review for non-trivial Python changes that add or modify
+  package roots, explicitly ask reviewers to check `__init__.py` and
+  `__all__` root-surface minimality.
 - Prefer deleting, merging, or downgrading compatibility-only code before
   adding another abstraction to explain it.
 

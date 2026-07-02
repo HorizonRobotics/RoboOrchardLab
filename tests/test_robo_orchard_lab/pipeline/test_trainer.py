@@ -1018,7 +1018,7 @@ def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
     monkeypatch: pytest.MonkeyPatch,
 ):
     event_order: list[str] = []
-    close_count = 0
+    close_reasons: list[trainer_module.DataloaderCloseReason] = []
 
     class RecordingBatchProcessor(DummyBatchProcessor):
         def forward(self, model: torch.nn.Module, batch: torch.Tensor):
@@ -1063,8 +1063,7 @@ def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
     original_close = trainer_module.close_dataloader_resources
 
     def record_close(*args, **kwargs):
-        nonlocal close_count
-        close_count += 1
+        close_reasons.append(kwargs["reason"])
         return original_close(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -1077,14 +1076,16 @@ def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
 
     assert event_order == ["check", "set", "check"]
     assert trainer.trainer_progress_state.global_step_id == 0
-    assert close_count == 1
+    assert close_reasons == [
+        trainer_module.DataloaderCloseReason.COORDINATED_EPOCH_END
+    ]
 
 
 def test_hook_based_trainer_sets_trigger_when_dataloader_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ):
     event_order: list[str] = []
-    close_count = 0
+    close_reasons: list[trainer_module.DataloaderCloseReason] = []
 
     class RecordingBatchProcessor(DummyBatchProcessor):
         def forward(self, model: torch.nn.Module, batch: torch.Tensor):
@@ -1129,8 +1130,7 @@ def test_hook_based_trainer_sets_trigger_when_dataloader_is_exhausted(
     original_close = trainer_module.close_dataloader_resources
 
     def record_close(*args, **kwargs):
-        nonlocal close_count
-        close_count += 1
+        close_reasons.append(kwargs["reason"])
         return original_close(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -1143,7 +1143,128 @@ def test_hook_based_trainer_sets_trigger_when_dataloader_is_exhausted(
 
     assert event_order == ["set", "check", "set", "check"]
     assert trainer.trainer_progress_state.global_step_id == 0
-    assert close_count == 1
+    assert close_reasons == [
+        trainer_module.DataloaderCloseReason.EPOCH_EXHAUSTED
+    ]
+
+
+def test_hook_based_trainer_closes_max_step_with_max_step_reason(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A local max-step stop must tear down the active iterator."""
+    close_reasons: list[trainer_module.DataloaderCloseReason] = []
+    teardown_primary_excs: list[BaseException | None] = []
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.tensor([[0.5, 0.5], [0.25, 0.25]], dtype=torch.float32),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        max_step=1,
+    )
+    original_close = trainer_module.close_dataloader_resources
+    original_teardown = trainer_module._close_dataloader_owner_resources
+
+    def record_close(*args, **kwargs):
+        close_reasons.append(kwargs["reason"])
+        return original_close(*args, **kwargs)
+
+    def record_teardown(*args, **kwargs):
+        teardown_primary_excs.append(kwargs.get("primary_exc"))
+        return original_teardown(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trainer_module,
+        "close_dataloader_resources",
+        record_close,
+    )
+    monkeypatch.setattr(
+        trainer_module,
+        "_close_dataloader_owner_resources",
+        record_teardown,
+    )
+
+    trainer()
+
+    assert trainer.trainer_progress_state.global_step_id == 1
+    assert close_reasons == [trainer_module.DataloaderCloseReason.MAX_STEP_END]
+    assert teardown_primary_excs == [None]
+
+
+def test_hook_based_trainer_closes_exception_with_exception_abort_reason(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An exception in the step body must preserve the primary failure."""
+    close_reasons: list[trainer_module.DataloaderCloseReason] = []
+    teardown_primary_excs: list[BaseException | None] = []
+
+    class FailingBatchProcessor(DummyBatchProcessor):
+        def forward(self, model: torch.nn.Module, batch: torch.Tensor):
+            raise RuntimeError("step failed")
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.tensor([[0.5, 0.5]], dtype=torch.float32),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=FailingBatchProcessor(),
+        max_epoch=1,
+    )
+    original_close = trainer_module.close_dataloader_resources
+    original_teardown = trainer_module._close_dataloader_owner_resources
+
+    def record_close(*args, **kwargs):
+        close_reasons.append(kwargs["reason"])
+        return original_close(*args, **kwargs)
+
+    def record_teardown(*args, **kwargs):
+        teardown_primary_excs.append(kwargs.get("primary_exc"))
+        return original_teardown(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trainer_module,
+        "close_dataloader_resources",
+        record_close,
+    )
+    monkeypatch.setattr(
+        trainer_module,
+        "_close_dataloader_owner_resources",
+        record_teardown,
+    )
+
+    with pytest.raises(RuntimeError, match="step failed"):
+        trainer()
+
+    assert close_reasons == [
+        trainer_module.DataloaderCloseReason.EXCEPTION_ABORT
+    ]
+    assert len(teardown_primary_excs) == 1
+    assert isinstance(teardown_primary_excs[0], RuntimeError)
 
 
 def test_optimizer_and_scheduler(dummy_trainer):

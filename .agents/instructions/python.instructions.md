@@ -97,6 +97,10 @@ description: Load these instructions when modifying Python source files, tests, 
   roots. Keep compatibility-only, adapter, resolver, and type-alias symbols
   in their defining submodules unless the package root is intentionally the
   supported import path.
+- When adding a new submodule family, default the package root to a minimal
+  high-level entrypoint surface. Import tests and internal callers from the
+  defining submodule for constants, schema helpers, low-level handles,
+  streams, validators, and other implementation details.
 - When an old package-level import path must remain for compatibility,
   prefer a deprecated compatibility re-export and update repository-owned
   imports to the defining submodule instead of growing the root surface
@@ -185,6 +189,17 @@ description: Load these instructions when modifying Python source files, tests, 
   that callers rely on.
 - Prefer code-near comments for one-off shape normalization, batch unwrapping, side-channel filtering, compatibility branches, or similar logic whose intent is not obvious from names alone.
 - For key interface functions, public dataset/model/pipeline entrypoints, and helper functions whose behavior or parameters are not immediately obvious from the signature alone, add or update docstrings instead of leaving the interface undocumented.
+- Do not treat a helper as self-documenting merely because it is private.
+  Private helpers that own validation, conversion, serialization restore,
+  tokenizer mutation, sequence-field alignment, model/processor boundaries,
+  or external-library adaptation should have a contract docstring or
+  adjacent comment. Leave simple local helpers undocumented when the signature
+  and body are obvious.
+- For private classes or functions that own a key pipeline stage, input
+  contract validation, copy/mutation ownership, random or stateful policy, or
+  failure semantics, write a complete contract docstring even when the symbol
+  is not public. Cover ownership, input/output semantics, whether the original
+  object is mutated or copied, and the important exception conditions.
 - For key public classes/functions and boundary helpers where safe use is
   not obvious from the signature alone, keep the docstring contract-first
   and user-task-first: start by explaining what the caller is trying to do

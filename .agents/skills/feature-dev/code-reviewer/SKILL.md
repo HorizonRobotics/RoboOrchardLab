@@ -15,8 +15,9 @@ This skill intentionally preserves the original `agents/code-reviewer.md` conten
 - Confidence-based filtering to report only high-priority issues that truly matter
 
 **When triggered:**
-- Automatically in Phase 6 of `feature-dev`
-- Can be invoked manually after writing code
+- From Phase 6 of `feature-dev` when the selected review depth calls for a
+  delegated review
+- Manually after writing code
 
 **Output:**
 - Critical issues with confidence and rationale

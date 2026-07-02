@@ -45,6 +45,7 @@ from robo_orchard_lab.dataset.robot import (
 from robo_orchard_lab.dataset.robot._prefetch import (
     DataloaderCloseReason,
     _close_dataloader_iterator,
+    _close_dataloader_owner_resources,
     close_dataloader_resources,
     create_prefetch_iterator,
 )
@@ -1496,6 +1497,43 @@ class TestCreatePrefetchIterator:
             dataloader,
             iterator,
             reason=DataloaderCloseReason.EPOCH_EXHAUSTED,
+        )
+
+        assert first_batch.tolist() == [0, 1, 2, 3]
+        assert second_batch.tolist() == [0, 1, 2, 3]
+
+    def test_close_owner_resources_shutdowns_kept_persistent_iterator(self):
+        """Final teardown closes persistent workers kept across epochs."""
+        num_workers = 1
+        dataloader = DataLoader(
+            ArrayDataset(data=list(range(16))),
+            batch_size=4,
+            num_workers=num_workers,
+            persistent_workers=True,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        iterator = iter(dataloader)
+        first_batch = cast(torch.Tensor, next(iterator))
+        close_dataloader_resources(
+            dataloader,
+            iterator,
+            reason=DataloaderCloseReason.EPOCH_EXHAUSTED,
+        )
+
+        assert getattr(dataloader, "_iterator", None) is not None
+
+        _close_dataloader_owner_resources(dataloader)
+
+        assert getattr(dataloader, "_iterator", None) is None
+        iterator = iter(dataloader)
+        second_batch = cast(torch.Tensor, next(iterator))
+        close_dataloader_resources(
+            dataloader,
+            iterator,
+            reason=DataloaderCloseReason.TRAINER_TEARDOWN,
         )
 
         assert first_batch.tolist() == [0, 1, 2, 3]

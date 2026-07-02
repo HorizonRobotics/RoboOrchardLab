@@ -172,15 +172,36 @@ Which approach would you like to use?
 
 **Goal**: Ensure the result is simple, DRY, elegant, easy to read, and functionally correct.
 
+This phase supplements, rather than replaces, the repository's regular review,
+validation, and Cleanup Gate requirements in
+`.agents/instructions/workflow.instructions.md`.
+
 **Actions**:
-1. Launch 3 `code-reviewer` style reviews in parallel with different focuses:
-   - simplicity / DRY / elegance
-   - bugs / functional correctness
-   - project conventions / abstractions
-2. Consolidate findings and identify all high-severity issues worth fixing.
-3. Present findings to the user and ask what they want to do: fix now, fix later, or proceed as-is. Ask for explicit approval before proceeding when there are material issues to address.
-4. Address issues based on the chosen path.
-5. Run the smallest useful validation for the files changed.
+1. Decide review depth from the change risk and the user's request.
+   - For small, local, low-risk changes, run a main-agent self-review,
+     validation, and the repository Cleanup Gate.
+   - For key checkpoints such as phase completion with public API, persisted
+     format, boundary, concurrency, lifecycle, or compatibility changes, or
+     when the user explicitly asks for a review loop, launch focused
+     `code-reviewer` style delegated reviews.
+   - Use multiple reviewers only when their scopes are genuinely independent,
+     such as simplicity, functional correctness, and project conventions.
+2. When delegating review, include the relevant cleanup-gate dimensions in the
+   prompt instead of relying on generic review wording.
+3. Consolidate findings and identify all high-severity issues worth fixing.
+4. Present findings to the user and ask what they want to do: fix now, fix later, or proceed as-is. Ask for explicit approval before proceeding when there are material issues to address.
+5. Address issues based on the chosen path.
+6. If review findings are fixed, rerun the smallest useful validation for the
+   changed behavior and, when practical, re-check the original finding source
+   before treating the issue as resolved.
+7. For substantial changes or an explicit review-loop request, run one fresh
+   independent review pass after fixing the known issues. Prefer a new
+   reviewer/subagent when available, and stop only after that pass has no
+   material findings or the user explicitly accepts the remaining risk.
+8. Run the smallest useful validation for the files changed.
+9. Before finalizing, run the repository Cleanup Gate: inspect diff scope,
+   public surfaces, helper granularity, TODO/legacy/compat/deprecated markers,
+   and validation coverage for the changed files.
 
 **Example output**:
 ```

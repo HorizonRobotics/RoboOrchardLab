@@ -63,7 +63,7 @@ or planning shapes in `templates/`.
 - `instructions/guidance-authoring.instructions.md`: guidance authoring,
   placement, and consistency rules.
 - `instructions/experience-distillation.instructions.md`: local experience
-  distillation routing.
+  distillation routing for guidance assets and memory.
 
 ## Current Skills
 

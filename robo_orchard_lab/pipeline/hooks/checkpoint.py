@@ -29,6 +29,10 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
     PipelineHooks,
     PipelineHooksConfig,
 )
+from robo_orchard_lab.utils.huggingface import (
+    _has_model_save_artifact,
+    _should_write_like_accelerate_save,
+)
 
 __all__ = [
     "SaveCheckpoint",
@@ -125,6 +129,7 @@ class SaveCheckpoint(PipelineHooks):
         if (
             accelerator.project_configuration.automatic_checkpoint_naming
             and self.save_root is not None
+            and accelerator.is_main_process
         ):
             logger.warning(
                 "Ignore customize save_root = {} since `automatic_checkpoint_naming` is True for Accelerator".format(  # noqa: E501
@@ -136,7 +141,10 @@ class SaveCheckpoint(PipelineHooks):
     def _save_state(self, accelerator: Accelerator) -> str:
         accelerator.wait_for_everyone()
         save_location = accelerator.save_state(self.save_root)  # type: ignore
-        if self.cfg.save_model and accelerator.is_main_process:
+        if self.cfg.save_model:
+            should_write_config = _should_write_like_accelerate_save(
+                accelerator
+            )
             for idx, model in enumerate(accelerator._models):
                 model_prefix = f"model_{idx}"
                 if idx == 0 and len(accelerator._models) == 1:
@@ -148,7 +156,11 @@ class SaveCheckpoint(PipelineHooks):
                 )
                 if os.path.exists(model_config_path):
                     # copy config to save_directory
-                    shutil.copy(model_config_path, save_directory)
+                    if should_write_config and _has_model_save_artifact(
+                        save_directory
+                    ):
+                        shutil.copy(model_config_path, save_directory)
+            accelerator.wait_for_everyone()
 
         return save_location
 
@@ -280,13 +292,15 @@ class SaveModel(PipelineHooks):
         save_root = os.path.join(
             save_root, f"model_epoch_{epoch_id}_step_{step_id}"
         )
-        if not accelerator.is_main_process:
-            return save_root
-        # only save on main process
+        should_write_config = _should_write_like_accelerate_save(accelerator)
         for idx, model in enumerate(accelerator._models):
             save_directory = os.path.join(save_root, f"{idx}")
             accelerator.save_model(model, save_directory)
-            if isinstance(model, TorchModelMixin):
+            if (
+                should_write_config
+                and isinstance(model, TorchModelMixin)
+                and _has_model_save_artifact(save_directory)
+            ):
                 model_config_path = os.path.join(
                     save_directory, "model.config.json"
                 )
@@ -305,10 +319,11 @@ class SaveModel(PipelineHooks):
             and self._saved_last_step != args.global_step_id
         ):
             args.accelerator.wait_for_everyone()
+            save_location = self._save_model(
+                args, step_id=args.step_id, epoch_id=args.epoch_id
+            )
+            args.accelerator.wait_for_everyone()
             if args.accelerator.is_main_process:
-                save_location = self._save_model(
-                    args, step_id=args.step_id, epoch_id=args.epoch_id
-                )
                 logger.info(
                     "Save model at the end of step {} to {}".format(
                         args.global_step_id, save_location
@@ -325,10 +340,11 @@ class SaveModel(PipelineHooks):
             and self._saved_last_step != args.global_step_id
         ):
             args.accelerator.wait_for_everyone()
+            save_location = self._save_model(
+                args, step_id=args.step_id, epoch_id=args.epoch_id
+            )
+            args.accelerator.wait_for_everyone()
             if args.accelerator.is_main_process:
-                save_location = self._save_model(
-                    args, step_id=args.step_id, epoch_id=args.epoch_id
-                )
                 logger.info(
                     "Save model at the end of epoch {} of global step {} to {}".format(  # noqa: E501
                         args.epoch_id, args.global_step_id, save_location
@@ -360,10 +376,11 @@ class SaveModel(PipelineHooks):
 
         args.accelerator.wait_for_everyone()
 
+        save_location = self._save_model(
+            args, step_id=args.step_id, epoch_id=args.epoch_id
+        )
+        args.accelerator.wait_for_everyone()
         if args.accelerator.is_main_process:
-            save_location = self._save_model(
-                args, step_id=args.step_id, epoch_id=args.epoch_id
-            )
             logger.info(
                 "Save model at the end of training global step {} to {}".format(  # noqa: E501
                     args.global_step_id, save_location
@@ -392,6 +409,7 @@ class SaveModelConfig(SaveHookConfigT[SaveModel]):
         if (
             accelerator.project_configuration.automatic_checkpoint_naming
             and self.save_root is not None
+            and accelerator.is_main_process
         ):
             logger.warning(
                 "Ignore customize save_root = {} since `automatic_checkpoint_naming` is True for Accelerator".format(  # noqa: E501

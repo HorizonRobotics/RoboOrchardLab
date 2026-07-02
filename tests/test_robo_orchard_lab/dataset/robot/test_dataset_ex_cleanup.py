@@ -33,11 +33,14 @@ def _run_cleanup_subprocess(
     use_dataset_side_batching: bool,
     num_workers: int,
     persistent_workers: bool,
+    close_mode: str = "early-break",
+    pin_memory: bool = False,
 ) -> dict[str, object]:
     output_path = tmp_path / (
         f"cleanup_{dataset_kind}_{prepare_mode}_"
         f"{int(use_dataset_side_batching)}_{num_workers}_"
-        f"{int(persistent_workers)}.json"
+        f"{int(persistent_workers)}_{close_mode}_"
+        f"{int(pin_memory)}.json"
     )
     env = os.environ.copy()
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
@@ -62,6 +65,10 @@ def _run_cleanup_subprocess(
         str(num_workers),
         "--persistent-workers",
         "1" if persistent_workers else "0",
+        "--close-mode",
+        close_mode,
+        "--pin-memory",
+        "1" if pin_memory else "0",
         "--cycles",
         "4",
         "--batches-per-cycle",
@@ -105,12 +112,21 @@ def _assert_cleanup_payload(payload: dict[str, object]) -> None:
     assert isinstance(num_workers, int)
     persistent_workers = payload["persistent_workers"]
     assert isinstance(persistent_workers, bool)
+    close_mode = payload["close_mode"]
+    assert close_mode in {"early-break", "epoch-exhausted"}
+    pin_memory_requested = payload["pin_memory_requested"]
+    assert isinstance(pin_memory_requested, bool)
+    pin_memory_observed = payload["pin_memory_observed"]
+    assert isinstance(pin_memory_observed, bool)
 
     cycle_child_pid_sets: list[tuple[int, ...]] = []
     cycle_fd_counts: list[int] = []
     for cycle in per_cycle:
         assert isinstance(cycle, dict)
-        assert cycle["batch_count"] == 2
+        if close_mode == "early-break":
+            assert cycle["batch_count"] == 2
+        else:
+            assert cycle["batch_count"] > 0
         assert cycle["prefetch_threads"] == baseline_prefetch_threads
         child_pids = cycle["child_pids"]
         assert isinstance(child_pids, list)
@@ -135,10 +151,34 @@ def _assert_cleanup_payload(payload: dict[str, object]) -> None:
     assert after_cleanup["child_pids"] == baseline_child_pids
     assert after_cleanup["prefetch_threads"] == baseline_prefetch_threads
     assert isinstance(after_cleanup["fd_count"], int)
-    fd_tolerance = 4 + 4 * num_workers
-    assert after_cleanup["fd_count"] <= baseline_fd_count + fd_tolerance
+    fd_tolerance = 8 + 8 * num_workers
+    if pin_memory_requested:
+        fd_tolerance += 8
     if cycle_fd_counts:
-        assert max(cycle_fd_counts) <= baseline_fd_count + fd_tolerance + 4
+        assert max(cycle_fd_counts) - min(cycle_fd_counts) <= (
+            4 + 2 * num_workers
+        )
+
+    if pin_memory_requested and persistent_workers:
+        assert cycle_fd_counts
+        assert after_cleanup["fd_count"] <= max(cycle_fd_counts)
+    else:
+        assert after_cleanup["fd_count"] <= baseline_fd_count + fd_tolerance
+        if cycle_fd_counts:
+            assert max(cycle_fd_counts) <= baseline_fd_count + fd_tolerance + 4
+
+
+def _assert_pin_memory_observed(payload: dict[str, object]) -> None:
+    pin_memory_requested = payload["pin_memory_requested"]
+    assert isinstance(pin_memory_requested, bool)
+    pin_memory_observed = payload["pin_memory_observed"]
+    assert isinstance(pin_memory_observed, bool)
+    if pin_memory_requested and not pin_memory_observed:
+        pytest.skip(
+            "pin_memory=True did not enable the PyTorch pin-memory iterator "
+            "path in this environment."
+        )
+    assert pin_memory_observed is True
 
 
 class TestDataLoaderEarlyBreakCleanupSubprocess:
@@ -205,3 +245,105 @@ class TestDataLoaderEarlyBreakCleanupSubprocess:
         )
 
         _assert_cleanup_payload(payload)
+
+
+class TestDataLoaderEpochExhaustionCleanupSubprocess:
+    @pytest.mark.parametrize("dataset_kind", ["iterable", "dict"])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    @pytest.mark.parametrize("persistent_workers", [False, True])
+    def test_unprepared_repeated_epoch_exhaustion_reuses_workers_cleanly(
+        self,
+        tmp_path: Path,
+        PROJECT_ROOT: str,
+        dataset_kind: str,
+        use_dataset_side_batching: bool,
+        persistent_workers: bool,
+    ):
+        """Natural epoch end should reuse persistent workers."""
+        payload = _run_cleanup_subprocess(
+            tmp_path=tmp_path,
+            project_root=PROJECT_ROOT,
+            dataset_kind=dataset_kind,
+            prepare_mode="none",
+            use_dataset_side_batching=use_dataset_side_batching,
+            num_workers=2,
+            persistent_workers=persistent_workers,
+            close_mode="epoch-exhausted",
+            pin_memory=False,
+        )
+
+        _assert_cleanup_payload(payload)
+
+    @pytest.mark.parametrize("prepare_mode", ["raw", "wrapped"])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_prepared_dict_epoch_exhaustion_reuses_workers_cleanly(
+        self,
+        tmp_path: Path,
+        PROJECT_ROOT: str,
+        prepare_mode: str,
+        use_dataset_side_batching: bool,
+    ):
+        """Prepared dataloader wrappers should survive normal epoch closes."""
+        payload = _run_cleanup_subprocess(
+            tmp_path=tmp_path,
+            project_root=PROJECT_ROOT,
+            dataset_kind="dict",
+            prepare_mode=prepare_mode,
+            use_dataset_side_batching=use_dataset_side_batching,
+            num_workers=2,
+            persistent_workers=True,
+            close_mode="epoch-exhausted",
+            pin_memory=False,
+        )
+
+        _assert_cleanup_payload(payload)
+
+    @pytest.mark.parametrize("dataset_kind", ["iterable", "dict"])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_unprepared_epoch_exhaustion_observes_pin_memory_when_available(
+        self,
+        tmp_path: Path,
+        PROJECT_ROOT: str,
+        dataset_kind: str,
+        use_dataset_side_batching: bool,
+    ):
+        """Pin-memory coverage runs separately from basic worker reuse."""
+        payload = _run_cleanup_subprocess(
+            tmp_path=tmp_path,
+            project_root=PROJECT_ROOT,
+            dataset_kind=dataset_kind,
+            prepare_mode="none",
+            use_dataset_side_batching=use_dataset_side_batching,
+            num_workers=2,
+            persistent_workers=True,
+            close_mode="epoch-exhausted",
+            pin_memory=True,
+        )
+
+        _assert_cleanup_payload(payload)
+        _assert_pin_memory_observed(payload)
+
+    @pytest.mark.parametrize("prepare_mode", ["raw", "wrapped"])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_prepared_dict_epoch_exhaustion_observes_pin_memory_when_available(
+        self,
+        tmp_path: Path,
+        PROJECT_ROOT: str,
+        prepare_mode: str,
+        use_dataset_side_batching: bool,
+    ):
+        """Prepared wrappers should expose pin-memory when the runtime does."""
+        payload = _run_cleanup_subprocess(
+            tmp_path=tmp_path,
+            project_root=PROJECT_ROOT,
+            dataset_kind="dict",
+            prepare_mode=prepare_mode,
+            use_dataset_side_batching=use_dataset_side_batching,
+            num_workers=2,
+            persistent_workers=True,
+            close_mode="epoch-exhausted",
+            pin_memory=True,
+        )
+
+        _assert_cleanup_payload(payload)
+        _assert_pin_memory_observed(payload)

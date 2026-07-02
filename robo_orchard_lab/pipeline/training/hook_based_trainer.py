@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 
 from robo_orchard_lab.dataset.robot._prefetch import (
     DataloaderCloseReason,
+    _close_dataloader_owner_resources,
     close_dataloader_resources,
 )
 from robo_orchard_lab.models.torch_model import TorchModelMixin
@@ -409,6 +410,7 @@ class HookBasedTrainer:
         dataloader_iter = iter(self.dataloader)
         primary_exc: BaseException | None = None
         end_loop_flag = False
+        close_reason = DataloaderCloseReason.EARLY_BREAK
         try:
             while True:
                 try:
@@ -416,11 +418,13 @@ class HookBasedTrainer:
                 except StopIteration:
                     # Signal other ranks to stop the current epoch before
                     # they step on an extra local batch.
+                    close_reason = DataloaderCloseReason.EPOCH_EXHAUSTED
                     self.accelerator.set_trigger()
                     self.accelerator.check_trigger()
                     break
 
                 if self.accelerator.check_trigger():
+                    close_reason = DataloaderCloseReason.COORDINATED_EPOCH_END
                     break
 
                 with self.accelerator.accumulate(self.model):
@@ -434,9 +438,15 @@ class HookBasedTrainer:
                     max_epoch=self.max_epoch,
                 ):
                     end_loop_flag = True
+                    close_reason = DataloaderCloseReason.MAX_STEP_END
                     self.accelerator.set_trigger()
                 if self.accelerator.check_trigger():
-                    end_loop_flag = True
+                    if not end_loop_flag:
+                        close_reason = (
+                            DataloaderCloseReason.COORDINATED_EPOCH_END
+                        )
+                    break
+                if end_loop_flag:
                     break
         except BaseException as exc:
             primary_exc = exc
@@ -445,7 +455,7 @@ class HookBasedTrainer:
             if primary_exc is not None:
                 reason = DataloaderCloseReason.EXCEPTION_ABORT
             else:
-                reason = DataloaderCloseReason.EARLY_BREAK
+                reason = close_reason
             close_dataloader_resources(
                 self.dataloader,
                 dataloader_iter,
@@ -467,26 +477,38 @@ class HookBasedTrainer:
         end_loop_flag = False
         self.model.train()
 
-        with self.hooks.begin(
-            "on_loop", self._get_hook_args()
-        ) as on_loop_hook_args:
-            while not end_loop_flag:
-                with self.hooks.begin(
-                    "on_epoch", self._get_hook_args()
-                ) as on_epoch_hook_args:
-                    end_loop_flag = self._run_epoch_steps(on_epoch_hook_args)
+        primary_exc: BaseException | None = None
+        try:
+            with self.hooks.begin(
+                "on_loop", self._get_hook_args()
+            ) as on_loop_hook_args:
+                while not end_loop_flag:
+                    with self.hooks.begin(
+                        "on_epoch", self._get_hook_args()
+                    ) as on_epoch_hook_args:
+                        end_loop_flag = self._run_epoch_steps(
+                            on_epoch_hook_args
+                        )
 
-                self.trainer_progress_state.update_epoch()
-                self.trainer_progress_state.sync_pipeline_hook_arg(
-                    on_loop_hook_args
-                )
-                if self.trainer_progress_state.is_training_end(
-                    max_step=self.max_step, max_epoch=self.max_epoch
-                ):
-                    end_loop_flag = True
-                    self.accelerator.set_trigger()
-                if self.accelerator.check_trigger():
-                    end_loop_flag = True
+                    self.trainer_progress_state.update_epoch()
+                    self.trainer_progress_state.sync_pipeline_hook_arg(
+                        on_loop_hook_args
+                    )
+                    if self.trainer_progress_state.is_training_end(
+                        max_step=self.max_step, max_epoch=self.max_epoch
+                    ):
+                        end_loop_flag = True
+                        self.accelerator.set_trigger()
+                    if self.accelerator.check_trigger():
+                        end_loop_flag = True
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            _close_dataloader_owner_resources(
+                self.dataloader,
+                primary_exc=primary_exc,
+            )
 
         logger.info(
             "\n" + "=" * 50 + "FINISH TRAINING" + "=" * 50,

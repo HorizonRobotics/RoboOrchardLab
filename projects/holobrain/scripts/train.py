@@ -143,9 +143,6 @@ def main(args, accelerator):
         f"non-trainable: {non_trainable_param / 10**6:.2f}M"
     )
 
-    accelerator.register_save_state_pre_hook(
-        model.accelerator_save_state_pre_hook
-    )
     load_checkpoint(model, config.get("checkpoint"), accelerator)
 
     val_dataset = build_validation_dataset(config)

@@ -16,10 +16,13 @@
 
 import os
 import tempfile
+from collections import OrderedDict
+from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn as nn
+from torch.utils.hooks import RemovableHandle
 
 from robo_orchard_lab.models.mixin import (
     ClassType_co,
@@ -95,6 +98,39 @@ class NestedTiedWeightModelCfg(TorchModuleCfg[NestedTiedWeightModel]):
     class_type: ClassType_co[NestedTiedWeightModel] = NestedTiedWeightModel
     vocab_size: int = 30
     embedding_dim: int = 8
+
+
+class FakeAccelerator:
+    def __init__(
+        self,
+        *,
+        is_main_process: bool = True,
+        is_local_main_process: bool = True,
+        save_on_each_node: bool = False,
+        create_model_artifact: bool = True,
+    ) -> None:
+        self.is_main_process = is_main_process
+        self.is_local_main_process = is_local_main_process
+        self.project_configuration = SimpleNamespace(
+            save_on_each_node=save_on_each_node
+        )
+        self.create_model_artifact = create_model_artifact
+        self._save_model_state_pre_hook = OrderedDict()
+        self.save_model_calls = []
+
+    def register_save_state_pre_hook(self, hook):
+        handle = RemovableHandle(self._save_model_state_pre_hook)
+        self._save_model_state_pre_hook[handle.id] = hook
+        return handle
+
+    def save_model(self, model, save_directory):
+        self.save_model_calls.append((model, save_directory))
+        if self.create_model_artifact:
+            os.makedirs(save_directory, exist_ok=True)
+            with open(
+                os.path.join(save_directory, "model.safetensors"), "wb"
+            ) as f:
+                f.write(b"")
 
 
 @pytest.fixture
@@ -257,3 +293,121 @@ class TestModelMixin:
 
         with pytest.raises(FileNotFoundError):
             ModelMixin.load_model(non_existent_path)
+
+    def test_accelerator_register_all_hooks_registers_local_main_node(self):
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        model.accelerate_model_id = 0
+        accelerator = FakeAccelerator(
+            is_main_process=False,
+            is_local_main_process=True,
+            save_on_each_node=True,
+        )
+
+        handles = model.accelerator_register_all_hooks(accelerator)
+
+        assert len(handles) == 1
+        assert list(accelerator._save_model_state_pre_hook.values()) == [
+            model.accelerator_save_state_pre_hook
+        ]
+
+    def test_accelerator_register_all_hooks_non_writer_skips_model_id(self):
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        accelerator = FakeAccelerator(
+            is_main_process=False,
+            is_local_main_process=False,
+            save_on_each_node=True,
+        )
+
+        handles = model.accelerator_register_all_hooks(accelerator)
+
+        assert handles == []
+        assert accelerator._save_model_state_pre_hook == {}
+
+    def test_accelerator_register_all_hooks_deduplicates_active_handle(
+        self, mocker
+    ):
+        mock_logger = mocker.patch(
+            "robo_orchard_lab.models.torch_model.logger"
+        )
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        model.accelerate_model_id = 0
+        accelerator = FakeAccelerator()
+
+        first_handles = model.accelerator_register_all_hooks(accelerator)
+        second_handles = model.accelerator_register_all_hooks(accelerator)
+        first_handles[0].remove()
+        third_handles = model.accelerator_register_all_hooks(accelerator)
+
+        assert len(first_handles) == 1
+        assert second_handles == []
+        assert len(third_handles) == 1
+        assert len(accelerator._save_model_state_pre_hook) == 1
+        mock_logger.warning.assert_called_once()
+
+    def test_save_model_with_accelerator_non_writer_skips_config(
+        self, temp_dir
+    ):
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        save_path = os.path.join(temp_dir, "accelerate_non_writer")
+        accelerator = FakeAccelerator(
+            is_main_process=False,
+            is_local_main_process=False,
+        )
+
+        model.save_model(save_path, accelerator=accelerator)
+
+        assert len(accelerator.save_model_calls) == 1
+        assert not os.path.exists(os.path.join(save_path, "model.config.json"))
+
+    def test_save_model_with_accelerator_writer_writes_config_after_artifact(
+        self, temp_dir
+    ):
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        save_path = os.path.join(temp_dir, "accelerate_writer")
+        accelerator = FakeAccelerator()
+
+        model.save_model(save_path, accelerator=accelerator)
+
+        assert len(accelerator.save_model_calls) == 1
+        assert os.path.exists(os.path.join(save_path, "model.config.json"))
+
+    def test_save_model_with_accelerator_skips_config_without_artifact(
+        self, temp_dir
+    ):
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        save_path = os.path.join(temp_dir, "accelerate_no_artifact")
+        accelerator = FakeAccelerator(create_model_artifact=False)
+
+        model.save_model(save_path, accelerator=accelerator)
+
+        assert len(accelerator.save_model_calls) == 1
+        assert not os.path.exists(os.path.join(save_path, "model.config.json"))
+
+    def test_save_model_with_accelerator_warnings_only_on_global_main(
+        self, mocker, temp_dir
+    ):
+        mock_logger = mocker.patch(
+            "robo_orchard_lab.models.torch_model.logger"
+        )
+        cfg = SimpleModelCfg()
+        model = SimpleModel(cfg)
+        save_path = os.path.join(temp_dir, "accelerate_non_writer_warning")
+        accelerator = FakeAccelerator(
+            is_main_process=False,
+            is_local_main_process=False,
+        )
+
+        model.save_model(
+            save_path,
+            model_prefix="custom",
+            allow_shared_tensor=False,
+            accelerator=accelerator,
+        )
+
+        mock_logger.warning.assert_not_called()

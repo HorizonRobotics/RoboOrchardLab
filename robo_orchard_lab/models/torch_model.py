@@ -32,7 +32,11 @@ from safetensors.torch import (
 )
 from typing_extensions import Self, deprecated
 
-from robo_orchard_lab.utils.huggingface import resolve_hf_compatible_path
+from robo_orchard_lab.utils.huggingface import (
+    _has_model_save_artifact,
+    _should_write_like_accelerate_save,
+    resolve_hf_compatible_path,
+)
 from robo_orchard_lab.utils.path import (
     DirectoryNotEmptyError,
     abspath,
@@ -113,6 +117,10 @@ class TorchModelMixin(
         self.cfg = cfg
 
         self._accelerate_model_id: int = -1
+        self._accelerator_save_state_pre_hook_handle: (
+            torch.utils.hooks.RemovableHandle | None
+        ) = None
+        self._accelerator_save_state_pre_hook_dict: Any | None = None
 
     @property
     def device(self) -> torch.device:
@@ -148,8 +156,11 @@ class TorchModelMixin(
             accelerator (Accelerator): The Hugging Face Accelerator instance.
         """
 
-        if accelerator.is_main_process is False:
-            logger.info("Not the main process, skip registering hooks.")
+        if not _should_write_like_accelerate_save(accelerator):
+            logger.info(
+                "Not an accelerator save writer process, "
+                "skip registering hooks."
+            )
             return []
 
         model_id = self.accelerate_model_id
@@ -160,18 +171,26 @@ class TorchModelMixin(
                 "with `accelerator.prepare()`."
             )
 
-        for hook in accelerator._save_model_state_pre_hook.keys():
-            if hook == self.accelerator_save_state_pre_hook:
-                logger.warning(
-                    f"accelerator_save_state_pre_hook of {self}"
-                    " is already registered. Skip registering again."
-                )
+        hook_dict = accelerator._save_model_state_pre_hook
+        handle = self._accelerator_save_state_pre_hook_handle
+        handle_dict = self._accelerator_save_state_pre_hook_dict
+        if handle is not None and handle_dict is hook_dict:
+            if handle.id in hook_dict:
+                if accelerator.is_main_process:
+                    logger.warning(
+                        f"accelerator_save_state_pre_hook of {self}"
+                        " is already registered. Skip registering again."
+                    )
                 return []
-        return [
-            accelerator.register_save_state_pre_hook(
-                self.accelerator_save_state_pre_hook
-            )
-        ]
+            self._accelerator_save_state_pre_hook_handle = None
+            self._accelerator_save_state_pre_hook_dict = None
+
+        handle = accelerator.register_save_state_pre_hook(
+            self.accelerator_save_state_pre_hook
+        )
+        self._accelerator_save_state_pre_hook_handle = handle
+        self._accelerator_save_state_pre_hook_dict = hook_dict
+        return [handle]
 
     def accelerator_save_state_pre_hook(
         self,
@@ -266,7 +285,7 @@ class TorchModelMixin(
                 is always enabled.
             required_empty (bool): If True, raises an error if the target
                 directory is not empty. Defaults to True.
-            accerator: An optional `Accelerator` instance from Hugging Face
+            accelerator: An optional `Accelerator` instance from Hugging Face
                 Accelerate. If provided, the model will be saved using the
                 accelerator's `save_model` method.
 
@@ -275,11 +294,21 @@ class TorchModelMixin(
                 is not empty.
         """  # noqa: E501
 
-        os.makedirs(directory, exist_ok=True)
-        if required_empty and not is_empty_directory(directory):
+        if accelerator is None:
+            os.makedirs(directory, exist_ok=True)
+            if required_empty and not is_empty_directory(directory):
+                raise DirectoryNotEmptyError(f"{directory} is not empty!")
+        elif (
+            required_empty
+            and os.path.exists(directory)
+            and not is_empty_directory(directory)
+        ):
             raise DirectoryNotEmptyError(f"{directory} is not empty!")
 
-        if allow_shared_tensor is not None:
+        should_log_accelerator_warning = (
+            accelerator is None or accelerator.is_main_process
+        )
+        if allow_shared_tensor is not None and should_log_accelerator_warning:
             logger.warning(
                 "The `allow_shared_tensor` argument is deprecated and will be "
                 "removed in future versions. The shared tensor handling is "
@@ -290,13 +319,20 @@ class TorchModelMixin(
             # save model will be:
             #   directory/model.safetensors
             #   or directory/model-00001-of-00005.safetensors ...
-            if model_prefix is not None and model_prefix != "model":
+            if (
+                model_prefix is not None
+                and model_prefix != "model"
+                and should_log_accelerator_warning
+            ):
                 logger.warning(
                     "model_prefix is ignored when saving with accelerator. "
                     "When using accelerator, the model prefix is "
                     "always 'model'."
                 )
             accelerator.save_model(self, save_directory=directory)
+            should_write_config = _should_write_like_accelerate_save(
+                accelerator
+            ) and _has_model_save_artifact(directory)
         else:
             assert model_prefix is not None
             weights_path = os.path.join(
@@ -305,9 +341,12 @@ class TorchModelMixin(
             safetensors_save_model(
                 self, weights_path, metadata={"format": "pt"}
             )
+            should_write_config = True
+
+        if not should_write_config:
+            return
 
         config_path = os.path.join(directory, f"{model_prefix}.config.json")
-
         with open(config_path, "w") as f:
             f.write(self.cfg.model_dump_json(indent=4))
 

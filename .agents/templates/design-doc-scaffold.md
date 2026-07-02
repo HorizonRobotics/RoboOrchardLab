@@ -9,6 +9,7 @@ merge, rename, or reorder freely.
 - Non-goals:
 - Current code facts and constraints:
 - Chosen approach:
+- Minimal viable shape / overdesign check:
 - Ownership and boundary decisions:
 - Public, compatibility, and internal contracts:
 - Failure, cleanup, timeout, or partial-output behavior:
@@ -19,6 +20,9 @@ merge, rename, or reorder freely.
 
 - Boundary split: `<layer>` owns `<responsibility>` and does not own
   `<excluded responsibility>`.
+- Minimality pass: one-method / no-new-class alternative is `<shape>`; extra
+  surfaces kept are `<fields / DTOs / providers / factories / snapshots>` because
+  `<reason>`.
 - Contract classification: `<API / type / schema>` is public,
   developer-facing, compatibility-only, or internal; produced by `<owner>` and
   consumed by `<consumer>`.
