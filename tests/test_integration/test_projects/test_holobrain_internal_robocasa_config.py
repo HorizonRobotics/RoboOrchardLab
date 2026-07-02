@@ -18,12 +18,24 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.models.holobrain.processor import (
     MultiArmManipulationInput,
 )
 from robo_orchard_lab.utils.build import build
+
+
+@pytest.fixture
+def robocasa_common_dir():
+    repo_root = Path(__file__).resolve().parents[3]
+    common_dir = repo_root / "projects/holobrain_internal/common"
+    sys.path.insert(0, str(common_dir))
+    try:
+        yield common_dir
+    finally:
+        sys.path.remove(str(common_dir))
 
 
 def test_robocasa_holobrain_config_supports_validation_and_deploy_modes():
@@ -204,14 +216,10 @@ def test_robocasa_policy_converts_model_pose_to_absolute_env_action():
     )
 
 
-def test_robocasa_eval_configures_env_for_absolute_base_osc():
-    repo_root = Path(__file__).resolve().parents[3]
-    common_dir = repo_root / "projects/holobrain_internal/common"
-    sys.path.insert(0, str(common_dir))
-    try:
-        from robocasa_eval import configure_robocasa_env_absolute_action
-    finally:
-        sys.path.remove(str(common_dir))
+def test_robocasa_eval_configures_env_for_absolute_base_osc(
+    robocasa_common_dir,
+):
+    from robocasa_eval import configure_robocasa_env_absolute_action
 
     class DummyController:
         name_suffix = "POSE"
@@ -246,3 +254,82 @@ def test_robocasa_eval_configures_env_for_absolute_base_osc():
     assert controller.input_ref_frame == "base"
     np.testing.assert_allclose(controller.input_min, -np.inf)
     np.testing.assert_allclose(controller.input_max, np.inf)
+
+
+def test_robocasa_eval_allocates_tasks_round_robin(robocasa_common_dir):
+    from robocasa_eval import allocate_tasks_to_gpus
+
+    assert allocate_tasks_to_gpus(
+        ["task_a", "task_b", "task_c", "task_d", "task_e"],
+        ["0", "1"],
+    ) == [
+        ("0", ["task_a", "task_c", "task_e"]),
+        ("1", ["task_b", "task_d"]),
+    ]
+    assert allocate_tasks_to_gpus(["task_a"], ["0", "1"]) == [
+        ("0", ["task_a"])
+    ]
+    assert allocate_tasks_to_gpus(["task_a", "task_b"], []) == [
+        (None, ["task_a", "task_b"])
+    ]
+
+
+def test_robocasa_eval_uses_visible_devices(
+    robocasa_common_dir,
+    monkeypatch,
+):
+    import robocasa_eval
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2, 5")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called")
+
+    monkeypatch.setattr(robocasa_eval.subprocess, "run", fail_if_called)
+
+    assert robocasa_eval.get_available_gpu_ids() == ["2", "5"]
+
+
+def test_robocasa_eval_writes_per_task_log(
+    robocasa_common_dir,
+    tmp_path,
+    monkeypatch,
+):
+    import robocasa_eval
+
+    class DummyPolicy:
+        pass
+
+    args = type(
+        "Args",
+        (),
+        {
+            "horizon": 3,
+            "split": "target",
+            "num_trials_per_task": 1,
+            "seed": 7,
+            "video_camera": "default",
+            "save_video": False,
+        },
+    )()
+
+    def fake_evaluate_task(*, task_name, policy, args, task_dir):
+        robocasa_eval.logger.info("inside task logger")
+        summary = {"task_name": task_name, "success_rate": 1.0}
+        with open(task_dir / "results.json", "w", encoding="utf-8") as f:
+            f.write("{}")
+        return summary
+
+    monkeypatch.setattr(robocasa_eval, "_evaluate_task", fake_evaluate_task)
+
+    result = robocasa_eval.evaluate_task(
+        task_name="DummyTask",
+        policy=DummyPolicy(),
+        args=args,
+        output_dir=tmp_path,
+    )
+
+    assert result["success_rate"] == 1.0
+    assert (tmp_path / "DummyTask" / "results.json").exists()
+    log_text = (tmp_path / "DummyTask" / "log.txt").read_text(encoding="utf-8")
+    assert "inside task logger" in log_text

@@ -25,7 +25,7 @@ class SimpleStateSampling:
         hist_steps,
         pred_steps,
         use_master_openness=True,
-        use_master_state=True,
+        use_master_state=False,
     ):
         self.hist_steps = hist_steps
         self.pred_steps = pred_steps

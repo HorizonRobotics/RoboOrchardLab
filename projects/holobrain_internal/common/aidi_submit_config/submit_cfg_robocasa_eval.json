@@ -1,0 +1,34 @@
+{
+    "job_name": "eval_robocasa_holobrain",
+    "workspace_folder": "submit-holobrain-robocasa-eval",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-robocasa",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "gpu_per_worker": 2,
+    "wall_time": 14400,
+    "cmd": [
+        "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+        "export TOKENIZERS_PARALLELISM=false",
+        "python3 robocasa_eval.py \\",
+        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-06-24/17-54/bcloud-bj-zone1-c836f0cb3f9d/holobrain_robocasa_b14d6d7e_6fb2_11f1_9bdf_1d433b603abb/output/checkpoints/checkpoint_20/' \\",
+        "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
+        "  --model_processor robocasa_processor \\",
+        "  --model_prefix model \\",
+        "  --task_set target50 \\",
+        "  --split target \\",
+        "  --assets_root /horizon-bucket/robot_lab/users/xuewu.lin/robocasa/v1.0/assets \\",
+        "  --save_video \\",
+        "  --output_dir /job_data/robocasa_eval_results"
+    ],
+    "to_upload": [
+        "robo_orchard_lab",
+        "projects/holobrain_internal/common/holobrain_utils.py",
+        "projects/holobrain_internal/common/holobrain_robocasa_policy",
+        "projects/holobrain_internal/common/robocasa_eval.py"
+    ],
+    "job_password": "1227",
+    "queue_name": "project-5090-robot-lab-bcloud-bj",
+    "project_id": "horizon-labs"
+}

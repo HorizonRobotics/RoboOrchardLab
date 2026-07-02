@@ -16,11 +16,14 @@
 
 from __future__ import annotations
 import argparse
+import contextlib
 import importlib
 import json
 import logging
+import multiprocessing
 import os
 import pkgutil
+import subprocess
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +40,7 @@ from robo_orchard_lab.utils import log_basic_config
 
 logger = logging.getLogger(__file__)
 DEFAULT_VIDEO_CAMERAS = ("robot0_agentview_center", *ROBOCASA_CAMERAS)
+LOG_FORMAT = "%(asctime)s %(levelname)s %(filename)s:%(lineno)d | %(message)s"
 
 
 def prepare_robocasa_runtime(assets_root: str) -> None:
@@ -169,6 +173,30 @@ def video_path_for_camera(
     )
 
 
+@contextlib.contextmanager
+def task_log_file(log_file: Path) -> Any:
+    """Route logs and plain stdout/stderr emitted during one task to a file."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    if root_logger.getEffectiveLevel() > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    try:
+        with (
+            contextlib.redirect_stdout(file_handler.stream),
+            contextlib.redirect_stderr(file_handler.stream),
+        ):
+            yield
+    finally:
+        root_logger.removeHandler(file_handler)
+        root_logger.setLevel(previous_level)
+        file_handler.close()
+
+
 def run_trial(
     *,
     env: Any,
@@ -206,6 +234,7 @@ def run_trial(
         steps_executed = 0
 
         for _ in range(horizon):
+            configure_robocasa_env_absolute_action(env)
             if not action_queue:
                 action_queue.extend(policy.get_action_dicts(obs, env=env))
             action = action_queue.popleft()
@@ -235,10 +264,26 @@ def evaluate_task(
     args: argparse.Namespace,
     output_dir: Path,
 ) -> dict[str, Any]:
-    from robocasa.utils.dataset_registry_utils import get_task_horizon
-
     task_dir = output_dir / task_name
     task_dir.mkdir(parents=True, exist_ok=True)
+    with task_log_file(task_dir / "log.txt"):
+        return _evaluate_task(
+            task_name=task_name,
+            policy=policy,
+            args=args,
+            task_dir=task_dir,
+        )
+
+
+def _evaluate_task(
+    *,
+    task_name: str,
+    policy: HoloBrainRoboCasaPolicy,
+    args: argparse.Namespace,
+    task_dir: Path,
+) -> dict[str, Any]:
+    from robocasa.utils.dataset_registry_utils import get_task_horizon
+
     horizon = args.horizon or get_task_horizon(task_name)
     results = []
     logger.info(
@@ -312,6 +357,160 @@ def build_policy(args: argparse.Namespace) -> HoloBrainRoboCasaPolicy:
     return HoloBrainRoboCasaPolicy(cfg=cfg)
 
 
+def get_available_gpu_ids() -> list[str]:
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible_devices:
+        return [
+            gpu_id.strip()
+            for gpu_id in visible_devices.split(",")
+            if gpu_id.strip()
+        ]
+
+    try:
+        ret = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index",
+                "--format=csv,noheader",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        ret = None
+    if ret is not None and ret.returncode == 0:
+        gpu_ids = [
+            line.strip() for line in ret.stdout.splitlines() if line.strip()
+        ]
+        if gpu_ids:
+            return gpu_ids
+
+    try:
+        import torch
+    except ImportError:
+        logger.warning("PyTorch is unavailable; running RoboCasa eval on CPU.")
+        return []
+
+    num_gpus = torch.cuda.device_count()
+    return [str(gpu_id) for gpu_id in range(num_gpus)]
+
+
+def allocate_tasks_to_gpus(
+    task_names: list[str],
+    gpu_ids: list[str],
+) -> list[tuple[str | None, list[str]]]:
+    if not task_names:
+        return []
+    if not gpu_ids:
+        return [(None, list(task_names))]
+
+    num_workers = min(len(gpu_ids), len(task_names))
+    task_groups = [(gpu_ids[i], []) for i in range(num_workers)]
+    for index, task_name in enumerate(task_names):
+        task_groups[index % num_workers][1].append(task_name)
+    return task_groups
+
+
+def evaluate_task_group(
+    *,
+    gpu_id: str | None,
+    task_names: list[str],
+    args: argparse.Namespace,
+    output_dir: Path,
+    shared_results: Any | None = None,
+) -> list[dict[str, Any]]:
+    if gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+
+    prepare_robocasa_runtime(args.assets_root)
+    register_robocasa_gym_envs()
+    logger.info("Worker gpu=%s task_names=%s", gpu_id, task_names)
+    policy = build_policy(args)
+
+    task_results = []
+    for task_name in task_names:
+        task_result = evaluate_task(
+            task_name=task_name,
+            policy=policy,
+            args=args,
+            output_dir=output_dir,
+        )
+        task_results.append(task_result)
+        if shared_results is not None:
+            shared_results[task_name] = task_result
+    return task_results
+
+
+def run_evaluation(
+    *,
+    task_names: list[str],
+    gpu_ids: list[str],
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> list[dict[str, Any]]:
+    task_groups = allocate_tasks_to_gpus(task_names, gpu_ids)
+    logger.info(
+        "Found %d GPU(s). Distributing %d task(s) across %d worker(s).",
+        len(gpu_ids),
+        len(task_names),
+        len(task_groups),
+    )
+    for gpu_id, gpu_task_names in task_groups:
+        logger.info("gpu=%s task_names=%s", gpu_id, gpu_task_names)
+
+    if len(task_groups) <= 1:
+        if not task_groups:
+            return []
+        gpu_id, gpu_task_names = task_groups[0]
+        return evaluate_task_group(
+            gpu_id=gpu_id,
+            task_names=gpu_task_names,
+            args=args,
+            output_dir=output_dir,
+        )
+
+    ctx = multiprocessing.get_context("spawn")
+    manager = ctx.Manager()
+    shared_results = manager.dict()
+    processes = []
+    for gpu_id, gpu_task_names in task_groups:
+        process = ctx.Process(
+            target=evaluate_task_group,
+            kwargs={
+                "gpu_id": gpu_id,
+                "task_names": gpu_task_names,
+                "args": args,
+                "output_dir": output_dir,
+                "shared_results": shared_results,
+            },
+        )
+        process.start()
+        processes.append(process)
+
+    failed_workers = []
+    for process in processes:
+        process.join()
+        if process.exitcode != 0:
+            failed_workers.append(process.exitcode)
+    if failed_workers:
+        raise RuntimeError(
+            f"RoboCasa eval worker failed with exit code(s): {failed_workers}"
+        )
+
+    result_by_task = dict(shared_results)
+    missing_tasks = [
+        task_name
+        for task_name in task_names
+        if task_name not in result_by_task
+    ]
+    if missing_tasks:
+        raise RuntimeError(
+            f"RoboCasa eval finished without results for: {missing_tasks}"
+        )
+    return [result_by_task[task_name] for task_name in task_names]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_config", type=str, required=True)
@@ -351,9 +550,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     log_basic_config(
-        format=(
-            "%(asctime)s %(levelname)s %(filename)s:%(lineno)d | %(message)s"
-        ),
+        format=LOG_FORMAT,
         level=logging.INFO,
     )
     args = parse_args()
@@ -371,18 +568,15 @@ def main() -> None:
     )
     logger.info(f"output_dir: {output_dir}, task_names: {task_names}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    policy = build_policy(args)
 
     start_time = datetime.now()
-    task_results = [
-        evaluate_task(
-            task_name=task_name,
-            policy=policy,
-            args=args,
-            output_dir=output_dir,
-        )
-        for task_name in task_names
-    ]
+    gpu_ids = get_available_gpu_ids()
+    task_results = run_evaluation(
+        task_names=task_names,
+        gpu_ids=gpu_ids,
+        args=args,
+        output_dir=output_dir,
+    )
     mean_success_rate = (
         sum(x["success_rate"] for x in task_results) / len(task_results)
         if task_results
