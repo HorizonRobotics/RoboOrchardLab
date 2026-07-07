@@ -73,7 +73,7 @@ dataset_config = dict(
             [0.378533170, 0.413475551],  # right_gripper
         ],
         num_joint=14,
-        cam_names=["top", "left", "right"],
+        cam_names=["left", "right", "top"],
     ),
 )
 
@@ -175,7 +175,7 @@ def build_transforms(
             + [joint_state_loss_weights] * num_joint_per_arm
             + [ee_state_loss_weights]
         ]
-    ).tolist()
+    )
     joint_mask = ([True] * num_joint_per_arm + [False]) * 2
 
     state_loss_weights = loss_weights * 0.2
