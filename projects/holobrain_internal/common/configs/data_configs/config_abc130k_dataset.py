@@ -14,48 +14,56 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import uuid
+
 import numpy as np
 from dataset_factory import processor_register, train_dataset_register
 
 DATA_TYPE = "abc130k"
-ABC130K_HAS_DEPTH = False
+
+# ABC130K itself is RGB-only, but the dataset fabricates a zero depth tensor
+# per sample (see ABC130kLmdbDataset.get_depths) so this run stays on the
+# same model architecture as depth-carrying datasets (agilex, robotwin) —
+# no config fork needed. `BatchDepthProbGTGenerator` treats depth ≤ 0 as
+# invalid (weight 0), so the depth loss branch contributes nothing at
+# training time. Flip this back to False once the source dataset is
+# re-packed with real D405 depth.
+ABC130K_HAS_DEPTH = True
 
 
 dataset_config = dict(
     abc130k_dual_arm=dict(
-        kinematics_config=dict(
-            urdf="./urdf/abc130k_dual_arm.urdf",  # ABC130K_YAM_DUAL_ARM_URDF,
-            left_arm_link_keys=[
-                "left_link_1",
-                "left_link_2",
-                "left_link_3",
-                "left_link_4",
-                "left_link_5",
-                "left_link_6",
-            ],
-            right_arm_link_keys=[
-                "right_link_1",
-                "right_link_2",
-                "right_link_3",
-                "right_link_4",
-                "right_link_5",
-                "right_link_6",
-            ],
-            left_finger_keys=[
-                "left_grasp_site",
-            ],
-            right_finger_keys=[
-                "right_grasp_site",
-            ],
-            left_arm_joint_id=list(range(6)),
-            right_arm_joint_id=list(range(8, 14)),
-        ),
-        # ABC130k extrinsics are already in world coordinates (see the URDF
-        # FK bake in the packer), so base==world and ego is identity too.
-        # Kept explicit so downstream `GetProjectionMat` can consume them
-        # without every branch guessing the frame.
+        urdf="./urdf/abc130k_dual_arm.urdf",
+        cam_names=["left", "right", "top"],
+        # ABC130k extrinsics are baked in world coordinates by the packer's
+        # URDF FK pass, so base==world and ego is identity too. Kept as
+        # explicit np.eye(4) so `GetProjectionMat` doesn't have to guess the
+        # frame downstream.
         T_base2world=np.eye(4).tolist(),
         T_base2ego=np.eye(4).tolist(),
+        kinematics_config=dict(
+            urdf="./urdf/abc130k_dual_arm.urdf",
+            arm_joint_id=[list(range(6)), list(range(8, 14))],
+            arm_link_keys=[
+                [
+                    "left_link_1",
+                    "left_link_2",
+                    "left_link_3",
+                    "left_link_4",
+                    "left_link_5",
+                    "left_link_6",
+                ],
+                [
+                    "right_link_1",
+                    "right_link_2",
+                    "right_link_3",
+                    "right_link_4",
+                    "right_link_5",
+                    "right_link_6",
+                ],
+            ],
+            finger_keys=[["left_grasp_site"], ["right_grasp_site"]],
+        ),
         scale_shift=[
             [0.352101557, -0.456893168],  # left_joint1
             [0.475206616, 1.345365714],  # left_joint2
@@ -73,7 +81,7 @@ dataset_config = dict(
             [0.378533170, 0.413475551],  # right_gripper
         ],
         num_joint=14,
-        cam_names=["left", "right", "top"],
+        flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "abc130k").hex[:4], 16),
     ),
 )
 
@@ -105,20 +113,34 @@ def _build_item_selection_keys(mode, with_depth):
     if with_depth:
         keys.insert(1, "depths")
 
-    if mode in ["training", "validation"]:
+    if mode == "training":
         keys.extend(
             [
                 "pred_robot_state",
-                # Emitted by horizon.SimpleStateSampling; masks padded pred
-                # rows at episode end so loss doesn't punish the model for
-                # not "predicting past" the trajectory.
+                # Emitted by SimpleStateSampling; masks padded pred rows at
+                # episode end so loss doesn't punish the model for
+                # "predicting past" the trajectory.
                 "pred_mask",
                 "uuid",
+                "subtask",
+                "value",
+                "fk_loss_weight",
+                "state_loss_weights",
+            ]
+        )
+    elif mode == "validation":
+        keys.extend(
+            [
+                "pred_robot_state",
+                "uuid",
+                "subtask",
                 "value",
             ]
         )
-    if mode == "training":
-        keys.extend(["fk_loss_weight", "state_loss_weights"])
+    elif mode == "deploy":
+        # Populated by the inference server, consumed by the RTC plugin to
+        # blend the previous action buffer into the new prediction.
+        keys.extend(["remaining_actions", "delay_horizon"])
     return keys
 
 
@@ -131,23 +153,22 @@ def build_transforms(
     scale_shift,
     num_joint,
 ):
-    # ABC130k uses horizon's SimpleStateSampling because gripper `state` is the
-    # post-contact finger distance, while the commanded `action` is 0/1 open/
-    # close intent. horizon's variant supports swapping master_joint_state into
-    # gripper columns so BC targets can actually close on new objects.
+    # ABC130k stays on the horizon_manipulation transform pipeline (same
+    # source of truth as agilex): SimpleStateSampling handles the gripper
+    # column swap because ABC130k's `state` gripper is post-contact finger
+    # distance while `action` is 0/1 open/close intent.
     from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
-        SimpleStateSampling,
-    )
-    from robo_orchard_lab.dataset.robotwin.transforms import (
         AddItems,
         AddScaleShift,
         ConvertDataType,
-        DualArmKinematics,
         GetProjectionMat,
         ItemSelection,
         JointStateNoise,
         MoveEgoToCam,
+        MultiArmKinematics,
+        RandomCropPaddingResize,
         Resize,
+        SimpleStateSampling,
         ToTensor,
         UnsqueezeBatch,
     )
@@ -155,17 +176,9 @@ def build_transforms(
 
     with_depth = config.get("with_depth", True) and ABC130K_HAS_DEPTH
 
-    value_sampling = (
-        dict(
-            type=ValueSampling,
-            norm_mode=config["value_norm_mode"],
-            task_max_step=None,
-        )
-        if config.get("value_model_training", False)
-        else None
-    )
-
     num_joint_per_arm = num_joint // 2 - 1
+    joint_mask = ([True] * num_joint_per_arm + [False]) * 2
+
     joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
     ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
     loss_weights = np.array(
@@ -176,12 +189,8 @@ def build_transforms(
             + [ee_state_loss_weights]
         ]
     )
-    joint_mask = ([True] * num_joint_per_arm + [False]) * 2
-
-    state_loss_weights = loss_weights * 0.2
-    fk_loss_weight = loss_weights * 1.8
-    state_loss_weights = state_loss_weights.tolist()
-    fk_loss_weight = fk_loss_weight.tolist()
+    state_loss_weights = (loss_weights * 0.2).tolist()
+    fk_loss_weight = (loss_weights * 1.8).tolist()
 
     if mode == "training":
         add_data_relative_items = dict(
@@ -208,9 +217,23 @@ def build_transforms(
         use_master_joint=False,
         gripper_indices=[6, 13],
     )
+
+    # Match agilex: pin `dst_intrinsic` so the projection distribution is
+    # decoupled from per-episode K variance and align dst_wh with the vision
+    # backbone's patch size so we don't lose a stride on the edge.
+    dst_wh = config.get("dst_wh", (308, 252))
+    dst_wh = (max(392, dst_wh[0]), max(252, dst_wh[1]))
+    patch_size = config.get("patch_size", 1)
+    dst_wh = tuple(x // patch_size * patch_size for x in dst_wh)
     resize = dict(
         type=Resize,
-        dst_wh=config.get("dst_wh", (308, 252)),
+        dst_wh=dst_wh,
+        dst_intrinsic=[
+            [290, 0.0, dst_wh[0] / 2, 0.0],
+            [0.0, 310, dst_wh[1] / 2, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     )
     to_tensor = dict(type=ToTensor)
     ego_to_cam = dict(type=MoveEgoToCam)
@@ -219,39 +242,84 @@ def build_transforms(
         type=ConvertDataType,
         convert_map=_build_convert_map(with_depth),
     )
-
-    kinematics = dict(type=DualArmKinematics, **kinematics_config)
-
-    scale_shift = dict(type=AddScaleShift, scale_shift=scale_shift)
+    kinematics = dict(type=MultiArmKinematics, **kinematics_config)
+    scale_shift_t = dict(type=AddScaleShift, scale_shift=scale_shift)
     item_selection = dict(
         type=ItemSelection,
         keys=_build_item_selection_keys(mode, with_depth),
     )
 
-    transforms = [
-        add_data_relative_items,
-        value_sampling,
-        state_sampling,
-        resize,
-        to_tensor,
-        ego_to_cam,
-        projection_mat,
-        scale_shift,
-    ]
+    value_sampling = (
+        dict(
+            type=ValueSampling,
+            norm_mode=config["value_norm_mode"],
+            task_max_step=None,
+        )
+        if config.get("value_model_training", False)
+        else None
+    )
 
     if mode == "training":
         joint_state_noise = dict(
             type=JointStateNoise,
             noise_range=([[-0.02, 0.02]] * num_joint_per_arm + [[0.0, 0.0]])
             * 2,
+            add_to_pred=True,
         )
-        transforms.append(joint_state_noise)
-
-    transforms.extend([convert_dtype, kinematics, item_selection])
-
-    if mode == "deploy":
+        random_crop_padding = dict(
+            type=RandomCropPaddingResize,
+            range_w=(-30, 30),
+            range_h=(-30, 50),
+            range_scale=None,
+        )
+        # NB: no `ExtrinsicNoise` — the packer already runs URDF FK to bake
+        # per-step extrinsics, so there's no calibration miscalibration to
+        # simulate. Adding noise here would fight the reason the packer
+        # produced `extrinsic_corrected` in the first place.
+        transforms = [
+            add_data_relative_items,
+            value_sampling,
+            state_sampling,
+            random_crop_padding,
+            resize,
+            to_tensor,
+            ego_to_cam,
+            projection_mat,
+            scale_shift_t,
+            joint_state_noise,
+            convert_dtype,
+            kinematics,
+            item_selection,
+        ]
+    elif mode == "validation":
+        transforms = [
+            add_data_relative_items,
+            value_sampling,
+            state_sampling,
+            resize,
+            to_tensor,
+            ego_to_cam,
+            projection_mat,
+            scale_shift_t,
+            convert_dtype,
+            kinematics,
+            item_selection,
+        ]
+    else:  # deploy
         unsqueeze_batch = dict(type=UnsqueezeBatch)
-        transforms.append(unsqueeze_batch)
+        transforms = [
+            add_data_relative_items,
+            state_sampling,
+            resize,
+            to_tensor,
+            ego_to_cam,
+            projection_mat,
+            scale_shift_t,
+            convert_dtype,
+            kinematics,
+            item_selection,
+            unsqueeze_batch,
+        ]
     return transforms
 
 
@@ -267,28 +335,35 @@ def _build_dataset(
         ABC130kLmdbDataset,
     )
 
+    data_config = dataset_config[setting_type]
     transforms = build_transforms(
         config,
         mode,
-        dataset_config[setting_type]["kinematics_config"],
-        dataset_config[setting_type]["T_base2world"],
-        dataset_config[setting_type]["T_base2ego"],
-        dataset_config[setting_type]["scale_shift"],
-        dataset_config[setting_type]["num_joint"],
+        data_config["kinematics_config"],
+        data_config["T_base2world"],
+        data_config["T_base2ego"],
+        data_config["scale_shift"],
+        data_config["num_joint"],
     )
+    if callable(data_paths):
+        data_paths = data_paths()
     return ABC130kLmdbDataset(
         paths=data_paths,
         task_names=config.get("task_names"),
         lazy_init=lazy_init or mode != "training",
         transforms=transforms,
         dataset_name=dataset_name,
-        cam_names=dataset_config[setting_type]["cam_names"],
-        reset_step=1000,
+        cam_names=data_config["cam_names"],
+        reset_step=500,
         load_depth=config.get("with_depth", True) and ABC130K_HAS_DEPTH,
         # Required when reading sharded LMDB packs (num_steps_per_shard set).
         # Harmless for flat packs.
         hist_steps=config.get("hist_steps"),
         pred_steps=config.get("pred_steps"),
+        flag=data_config.get(
+            "flag",
+            int(uuid.uuid5(uuid.NAMESPACE_DNS, "abc130k").hex[:4], 16),
+        ),
     )
 
 
@@ -317,14 +392,15 @@ def _build_processor(config, setting_type):
         HoloBrainProcessorCfg,
     )
 
+    data_config = dataset_config[setting_type]
     transforms = build_transforms(
         config,
         "deploy",
-        dataset_config[setting_type]["kinematics_config"],
-        dataset_config[setting_type]["T_base2world"],
-        dataset_config[setting_type]["T_base2ego"],
-        dataset_config[setting_type]["scale_shift"],
-        dataset_config[setting_type]["num_joint"],
+        data_config["kinematics_config"],
+        data_config["T_base2world"],
+        data_config["T_base2ego"],
+        data_config["scale_shift"],
+        data_config["num_joint"],
     )
     return HoloBrainProcessor(
         HoloBrainProcessorCfg(
@@ -332,7 +408,7 @@ def _build_processor(config, setting_type):
             load_depth=config["with_depth"] and ABC130K_HAS_DEPTH,
             valid_action_step=None,
             transforms=transforms,
-            cam_names=dataset_config[setting_type]["cam_names"],
+            cam_names=data_config["cam_names"],
         )
     )
 

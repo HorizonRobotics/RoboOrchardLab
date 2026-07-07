@@ -16,40 +16,49 @@
 
 import logging
 
-import cv2
 import numpy as np
-import torch
 
-from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
-    BaseIndexData,
-    BaseLmdbManipulationDataset,
+from robo_orchard_lab.dataset.horizon_manipulation.horizon_manipulation_dataset import (  # noqa: E501
+    HorizonManipulationLmdbDataset,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class ABC130kLmdbDataset(BaseLmdbManipulationDataset):
+class ABC130kLmdbDataset(HorizonManipulationLmdbDataset):
     """ABC-130K LMDB dataset.
 
-    This dataset follows the same LMDB organization as horizon manipulation:
-    ``index / meta / image / depth``. Intrinsics and extrinsics have been
-    packed with a per-episode correction pass (see
-    ``abc130k_lmdb_packer.py``):
+    Same LMDB layout as horizon manipulation (``index / meta / image``); the
+    only ABC130K-specific bits are:
 
-    * ``intrinsic_corrected``: K reconciled with the saved image resolution
-      (some publisher K's belonged to a different D405 streaming mode).
-    * ``extrinsic_corrected``: per-step ``T_world2cam`` computed via URDF FK
-      so wrist cameras track the arm; the field is optional and we fall back
-      to the static ``extrinsic`` (zero-joint reference) when it's missing.
+    * intrinsics were reconciled against the saved image resolution by the
+      packer and stored under ``{uuid}/intrinsic_corrected`` (some publisher
+      K's belonged to a different D405 streaming mode);
+    * the source dataset ships static extrinsics that don't move with the
+      wrist cameras, so the packer runs URDF FK per step and stores the
+      result under ``{uuid}/extrinsic_corrected``;
+    * text prompts are baked in ``{uuid}/instructions`` (from the MCAP
+      ``/instruction`` topic);
+    * the source dataset has no depth stream. The packer sets
+      ``{uuid}/has_depth = False`` and skips the depth LMDB entirely, so
+      ``get_depths`` fabricates zero depths matching the RGB shape rather
+      than crashing. It's a short-term hack — every depth-consuming module
+      (BatchDepthProbGTGenerator, DepthFusionSpatialEnhancer,
+      HolobrainDataFeature) already handles zero depth as "invalid, weight
+      0", so the pipeline behaves as if depth loss is off for ABC130K
+      samples without having to fork model configs. A re-pack that
+      actually decodes the D405 depth stream will remove the need for this
+      override.
 
-    Instructions are baked into the pack at ``{uuid}/instructions`` (and
-    also mirrored inside ``{uuid}/meta_data``) by the packer, so the
-    dataset does not accept an ``instructions`` override — it simply reads
-    what's there and falls back to ``task_name`` if both slots are empty.
+    We inherit horizon's ``__getitem__`` (which already handles shard-aware
+    joint state, cam name resolution, and transform composition) and only
+    override the readers that need to route to the ``_corrected`` slots,
+    read from the ABC130K instruction slot, or fabricate depth.
 
-    ``T_base2world`` / ``T_base2ego`` are *not* dataset attributes — inject
-    them via ``AddItems`` in the transform pipeline (see
-    ``config_abc130k_dataset.py``), matching horizon's config conventions.
+    ``load_calibration``/``load_ee_state`` default to False because ABC130K
+    has no packed calibration and its ``cartesian_position`` uses an
+    undocumented tool offset (ee pose is derived downstream via
+    ``MultiArmKinematics`` on ``joint_state``).
     """
 
     def __init__(
@@ -62,6 +71,9 @@ class ABC130kLmdbDataset(BaseLmdbManipulationDataset):
         task_names=None,
         lazy_init=False,
         cam_names=None,
+        load_extrinsic=True,
+        load_calibration=False,
+        load_ee_state=False,
         **kwargs,
     ):
         super().__init__(
@@ -72,50 +84,44 @@ class ABC130kLmdbDataset(BaseLmdbManipulationDataset):
             load_depth=load_depth,
             task_names=task_names,
             lazy_init=lazy_init,
+            cam_names=cam_names,
+            load_extrinsic=load_extrinsic,
+            load_calibration=load_calibration,
+            load_ee_state=load_ee_state,
             **kwargs,
         )
-        self.cam_names = cam_names
-
-    def _decode_image(self, encoded):
-        if encoded is None:
-            return None
-        if isinstance(encoded, bytes):
-            encoded = np.frombuffer(encoded, np.uint8)
-        return cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
-
-    def _decode_depth(self, encoded):
-        if encoded is None:
-            return None
-        if isinstance(encoded, bytes):
-            encoded = np.frombuffer(encoded, np.uint8)
-        depth = cv2.imdecode(
-            encoded, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_UNCHANGED
-        )
-        return depth.astype(np.float32) / 1000.0
-
-    def get_images(self, lmdb_index, data):
-        images = []
-        for cam_name in data["cam_names"]:
-            image = self.img_lmdbs[lmdb_index][
-                f"{data['uuid']}/{cam_name}/{data['step_index']}"
-            ]
-            images.append(self._decode_image(image))
-        return {"imgs": np.stack(images)}
 
     def get_depths(self, lmdb_index, data):
-        depths = []
-        for cam_name in data["cam_names"]:
-            depth = self.depth_lmdbs[lmdb_index][
-                f"{data['uuid']}/{cam_name}/{data['step_index']}"
-            ]
-            depths.append(self._decode_depth(depth))
-        return {"depths": np.stack(depths)}
+        """Fabricate a zero depth tensor per camera at the RGB resolution.
+
+        ABC130K has no depth stream — the packer stores nothing under
+        ``depth_lmdbs``. Reading images first (they're already fetched
+        earlier in ``__getitem__``) gives us the exact per-camera H/W so
+        the fake depth stays in lockstep with any resize/crop augmentation
+        the transform pipeline applies later. Zeros are the natural
+        placeholder: BatchDepthProbGTGenerator treats depth ≤ 0 as invalid
+        (weight 0), so the depth loss branch contributes nothing even if
+        the model is configured with ``with_depth_loss=True``.
+        """
+        imgs = data.get("imgs")
+        if imgs is None:
+            # Belt-and-braces: fall back to reading raw shapes if for some
+            # reason images weren't loaded first. Matches horizon's return
+            # shape (list of HxW arrays, no channel dim).
+            raise RuntimeError(
+                "ABC130kLmdbDataset.get_depths requires imgs to be loaded "
+                "first so the fabricated depth matches RGB resolution. "
+                "Ensure `load_image=True` when `load_depth=True`."
+            )
+        depths = [np.zeros(img.shape[:2], dtype=np.float32) for img in imgs]
+        return {"depths": depths}
 
     def get_intrinsic(self, lmdb_index, data):
-        """Read `intrinsic_corrected` (K reconciled with image size).
+        """Prefer ``intrinsic_corrected`` (K reconciled with image size).
 
         Falls back to the legacy ``intrinsic`` field if a pack predates the
         correction (should be re-packed for consistency, but we don't crash).
+        Same 3x3 -> 4x4 padding as horizon.
         """
         uuid = data["uuid"]
         intrinsics = self.meta_lmdbs[lmdb_index].get(
@@ -125,25 +131,20 @@ class ABC130kLmdbDataset(BaseLmdbManipulationDataset):
             intrinsics = self.meta_lmdbs[lmdb_index][f"{uuid}/intrinsic"]
         intrinsic = []
         for cam_name in data["cam_names"]:
-            tmp = np.eye(4, dtype=np.float64)
-            if isinstance(intrinsics, dict) and cam_name in intrinsics:
-                k = np.asarray(intrinsics[cam_name], dtype=np.float64)
-                if k.shape == (3, 3):
-                    tmp[:3, :3] = k
-                elif k.shape[0] >= 3 and k.shape[1] >= 3:
-                    tmp[:3, :3] = k[:3, :3]
+            tmp = np.eye(4)
+            tmp[:3, :3] = np.asarray(intrinsics[cam_name])[:3, :3]
             intrinsic.append(tmp)
         return {"intrinsic": np.stack(intrinsic)}
 
     def get_extrinsic(self, lmdb_index, data):
-        """Read per-step `extrinsic_corrected`, falling back to zero-joint.
+        """Prefer per-step ``extrinsic_corrected``, else broadcast the static.
 
         The packer runs URDF FK to bake ``[num_steps, 4, 4]`` per camera; old
         packs only ship the static ``[4, 4]`` reference under ``extrinsic``,
-        which we broadcast at the current step.
+        which we broadcast at the current step (matching horizon's ndim=2
+        fallback branch).
         """
         uuid = data["uuid"]
-        step_index = data["step_index"]
         extrinsics = self.meta_lmdbs[lmdb_index].get(
             f"{uuid}/extrinsic_corrected"
         )
@@ -152,156 +153,54 @@ class ABC130kLmdbDataset(BaseLmdbManipulationDataset):
 
         T_world2cam = []  # noqa: N806
         for cam_name in data["cam_names"]:
-            tmp = np.eye(4, dtype=np.float64)
-            source = (
-                extrinsics.get(cam_name)
-                if isinstance(extrinsics, dict)
-                else None
-            )
-            if source is not None:
-                source = np.asarray(source, dtype=np.float64)
-                if source.ndim == 3:
-                    tmp[:3] = source[step_index][:3]
-                elif source.ndim == 2:
-                    tmp[:3] = source[:3]
-            T_world2cam.append(tmp)
+            _ext = np.asarray(extrinsics[cam_name])
+            if _ext.ndim == 3:
+                _ext = _ext[data["step_index"]]
+            T_world2cam.append(_ext)
         return {"T_world2cam": np.stack(T_world2cam)}
 
-    def get_joint_state(self, lmdb_index, data):
-        """Load joint_state (+ master_joint_state) with sharded-window support.
-
-        Mirrors horizon's ``get_joint_state``: reads either flat or sharded
-        meta layout and always exposes ``step_index_in_shard`` so state
-        samplers can index the window regardless of layout.
-        """
-        uuid = data["uuid"]
-        step_index = data["step_index"]
-        num_steps_per_shard = self.meta_lmdbs[lmdb_index].get(
-            f"{uuid}/num_steps_per_shard"
-        )
-        if num_steps_per_shard is None:
-            joint_state = self.meta_lmdbs[lmdb_index][
-                f"{uuid}/observation/robot_state/joint_positions"
-            ]
-            master_joint_state = self.meta_lmdbs[lmdb_index].get(
-                f"{uuid}/observation/robot_state/master_joint_positions"
-            )
-            step_index_in_shard = step_index
-        else:
-            joint_state = self._get_meta(
-                lmdb_index,
-                uuid,
-                "observation/robot_state/joint_positions",
-                step_index,
-                num_steps_per_shard,
-            )
-            master_joint_state = self._get_meta(
-                lmdb_index,
-                uuid,
-                "observation/robot_state/master_joint_positions",
-                step_index,
-                num_steps_per_shard,
-            )
-            step_index_in_shard = self._get_step_index_in_shard(
-                step_index,
-                num_steps_per_shard,
-            )
-        results = {
-            "joint_state": np.asarray(joint_state),
-            "step_index_in_shard": step_index_in_shard,
-            "episode_step_index": step_index,
-        }
-        # Commanded action (0/1 on gripper columns) vs `joint_state`'s
-        # post-contact finger distance. horizon's SimpleStateSampling uses
-        # this to swap gripper columns into pred so BC targets can actually
-        # close on new objects.
-        if master_joint_state is not None:
-            results["master_joint_state"] = np.asarray(master_joint_state)
-        return results
-
     def get_instruction(self, lmdb_index, data):
-        """Resolve the text prompt for this sample from the pack.
+        """Resolve the text prompt, honoring ``instruction_reader`` first.
 
         Precedence:
-            1. episode-level ``{uuid}/instructions`` written by the packer
-               (from the MCAP ``/instruction`` topic);
-            2. ``{uuid}/meta_data['instruction']`` as a legacy fallback;
-            3. ``task_name`` so we never emit an empty prompt.
+            1. ``self.instruction_reader`` (frame/episode/task level, same as
+               horizon) — lets us paraphrase-inject without re-packing;
+            2. ``{uuid}/instructions`` written by the packer from MCAP's
+               ``/instruction`` topic;
+            3. ``{uuid}/meta_data['instruction']`` as a legacy fallback;
+            4. ``task_name`` so we never emit an empty prompt.
 
-        A list is randomly sampled once per __getitem__ call, matching
-        horizon's behavior — packers may pack a single string or a list of
-        paraphrases and the dataset handles both.
+        A list is randomly sampled once per __getitem__ call. ``subtask`` is
+        forwarded through when the reader provides one, matching horizon's
+        return shape.
         """
         uuid = data["uuid"]
-        task_name = data["task_name"]
+        result = None
+        if self.instruction_reader is not None:
+            result = self.instruction_reader.get(uuid, data["step_index"])
+            if result is None:
+                result = self.instruction_reader.get(data["task_name"])
 
-        instructions = self.meta_lmdbs[lmdb_index][f"{uuid}/instructions"]
-        if instructions is None:
-            meta_data = self.meta_lmdbs[lmdb_index][f"{uuid}/meta_data"]
-            if isinstance(meta_data, dict):
-                instructions = meta_data.get("instruction")
+        if result is None:
+            instructions = self.meta_lmdbs[lmdb_index].get(
+                f"{uuid}/instructions"
+            )
+            if instructions is None:
+                meta = self.meta_lmdbs[lmdb_index][f"{uuid}/meta_data"]
+                if isinstance(meta, dict):
+                    instructions = meta.get("instruction")
+            result = {"instruction": instructions, "subtask": None}
 
-        if isinstance(instructions, (list, tuple)) and len(instructions) > 0:
-            text = instructions[np.random.randint(len(instructions))]
-        elif isinstance(instructions, str):
-            text = instructions
-        else:
-            text = ""
-        if not text:
-            text = task_name
-        return {"text": text}
+        instruction = result.get("instruction")
+        if isinstance(instruction, (list, tuple)) and len(instruction) > 0:
+            instruction = instruction[np.random.randint(len(instruction))]
+        elif not isinstance(instruction, str):
+            instruction = ""
+        if not instruction:
+            instruction = data["task_name"]
+        result["text"] = instruction
 
-    def __getitem__(self, index):
-        lmdb_index, episode_index, step_index = self._get_indices(index)
-
-        idx_data = BaseIndexData.model_validate(
-            self.idx_lmdbs[lmdb_index][episode_index]
-        )
-        uuid = idx_data.uuid
-        task_name = idx_data.task_name
-        if self.cam_names is not None:
-            cam_names = self.cam_names
-        else:
-            cam_names = self.meta_lmdbs[lmdb_index][f"{uuid}/camera_names"]
-
-        data = dict(
-            uuid=uuid,
-            task_name=task_name,
-            step_index=step_index,
-            cam_names=cam_names,
-        )
-
-        data.update(self.get_joint_state(lmdb_index, data))
-        data.update(self.get_intrinsic(lmdb_index, data))
-        data.update(self.get_extrinsic(lmdb_index, data))
-        if self.load_image:
-            data.update(self.get_images(lmdb_index, data))
-        if self.load_depth:
-            data.update(self.get_depths(lmdb_index, data))
-        data.update(self.get_instruction(lmdb_index, data))
-
-        # ABC130k's `cartesian_position` uses an undocumented tool offset that
-        # does not match the official URDF, so ee pose is derived downstream
-        # via DualArmKinematics on `joint_state` — no `ee_state` here.
-
-        for transform in self.transforms:
-            if transform is None:
-                continue
-            data = transform(data)
-
-        # Keep compatibility with visualizers that expect a `depths` key.
-        # ABC130k is RGB-only; provide a zero depth placeholder at runtime.
-        if "depths" not in data and "imgs" in data:
-            imgs = data["imgs"]
-            if isinstance(imgs, torch.Tensor):
-                data["depths"] = torch.zeros(
-                    (imgs.shape[0], imgs.shape[1], imgs.shape[2]),
-                    dtype=torch.float32,
-                    device=imgs.device,
-                )
-            elif isinstance(imgs, np.ndarray):
-                data["depths"] = np.zeros(
-                    (imgs.shape[0], imgs.shape[1], imgs.shape[2]),
-                    dtype=np.float32,
-                )
-        return data
+        subtask = result.get("subtask")
+        if isinstance(subtask, (list, tuple)) and len(subtask) > 0:
+            result["subtask"] = subtask[np.random.randint(len(subtask))]
+        return result
