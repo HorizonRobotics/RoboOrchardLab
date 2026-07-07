@@ -238,15 +238,39 @@ def normalize_date_prefixes(value: str) -> list[str]:
     return parse_filter_items(normalize_filter(value))
 
 
+def date_prefix_matches(
+    episode_time_prefix: str, pattern: str | None
+) -> bool:
+    """Return whether an episode timestamp prefix matches a query pattern.
+
+    Valid patterns are treated as regular expressions. Invalid regular
+    expressions fall back to literal prefix matching to keep legacy date-prefix
+    searches working while still allowing regex queries.
+    """
+    if not pattern:
+        return False
+    try:
+        return re.match(pattern, episode_time_prefix) is not None
+    except re.error:
+        return episode_time_prefix.startswith(pattern)
+
+
+def matches_any_date_prefix(
+    episode_time_prefix: str, date_prefixes: list[str]
+) -> bool:
+    return any(
+        date_prefix_matches(episode_time_prefix, prefix)
+        for prefix in date_prefixes
+    )
+
+
 def record_matches_any_date_prefix(
     record: EpisodeRecord, date_prefixes: list[str]
 ) -> bool:
     if not date_prefixes:
         return False
     episode_time_prefix = extract_episode_time_prefix(record.episode_id)
-    return any(
-        episode_time_prefix.startswith(prefix) for prefix in date_prefixes
-    )
+    return matches_any_date_prefix(episode_time_prefix, date_prefixes)
 
 
 def _resolve_date_prefixes(
@@ -1300,9 +1324,8 @@ def iter_episode_dirs(
                             f"{task_dir.relative_to(base_path)}"
                         ),
                     )
-                if normalized_date_prefixes and not any(
-                    episode_time_prefix.startswith(prefix)
-                    for prefix in normalized_date_prefixes
+                if normalized_date_prefixes and not matches_any_date_prefix(
+                    episode_time_prefix, normalized_date_prefixes
                 ):
                     continue
                 if not is_valid_episode_dir(episode_dir):
@@ -1936,8 +1959,8 @@ def filter_records(
         ):
             return False
         episode_time_prefix = extract_episode_time_prefix(record.episode_id)
-        if date_prefixes and not any(
-            episode_time_prefix.startswith(prefix) for prefix in date_prefixes
+        if date_prefixes and not matches_any_date_prefix(
+            episode_time_prefix, date_prefixes
         ):
             return False
         return True

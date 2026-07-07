@@ -36,6 +36,7 @@ from robo_orchard_lab.dataset.horizon_manipulation.tools.app import (
     app,
     build_summary,
     build_summary_with_filters,
+    date_prefix_matches,
     format_duration_hours,
     get_cache_file_path,
     get_cache_key,
@@ -227,6 +228,40 @@ def test_filter_by_user_task_and_date_prefix(tmp_path: Path):
     )
     assert combo_summary["total_episodes"] == 1
     assert combo_summary["users"][0]["user_name"] == "bob"
+
+
+def test_filter_by_regex_date_prefix(tmp_path: Path):
+    create_episode(
+        tmp_path / "alice" / "pick" / "episode_2024_03_11-10_00_00",
+        1710115200,
+        3_600_000_000_000,
+    )
+    create_episode(
+        tmp_path / "alice" / "place" / "episode_2024_03_12-11_30_00",
+        1710201600,
+        1_800_000_000_000,
+    )
+    create_episode(
+        tmp_path / "bob" / "pick" / "episode_2024_03_13-14_45_00",
+        1710288000,
+        1_800_000_000_000,
+    )
+
+    records = scan_episode_records_parallel(tmp_path)
+    regex_summary = build_summary_with_filters(
+        records, tmp_path, FilterOptions(date_prefix=r"2024_03_1[12]")
+    )
+
+    assert regex_summary["total_episodes"] == 2
+    assert regex_summary["totals"]["by_day"] == {
+        "2024-03-11": 1,
+        "2024-03-12": 1,
+    }
+
+
+def test_date_prefix_matcher_falls_back_for_invalid_regex():
+    assert date_prefix_matches("2024_03_[-11_30_00", "2024_03_[")
+    assert not date_prefix_matches("2024_04_[-11_30_00", "2024_03_[")
 
 
 def test_iter_episode_dirs_skips_incomplete_episode_directories(
