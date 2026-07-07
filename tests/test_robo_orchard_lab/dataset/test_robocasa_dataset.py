@@ -163,11 +163,11 @@ def test_robocasa_lmdb_dataset_reads_episode_and_applies_sampling(tmp_path):
 
     np.testing.assert_allclose(
         data["hist_robot_state"][:, 0, 0],
-        np.array([-0.75, -0.5], dtype=np.float32),
+        np.array([0.75, 0.5], dtype=np.float32),
     )
     np.testing.assert_allclose(
         data["pred_robot_state"][:, 0, 0],
-        np.array([1.0, -1.0, -1.0], dtype=np.float32),
+        np.array([0.0, 1.0, 1.0], dtype=np.float32),
     )
     np.testing.assert_allclose(
         data["pred_robot_state"][0, 0, 1:4],

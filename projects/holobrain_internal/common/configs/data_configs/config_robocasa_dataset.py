@@ -55,7 +55,7 @@ def build_transforms(config, mode):
         type=AddItems,
         joint_mask=(False,),
         joint_relative_pos=((0,),),
-        joint_scale_shift=((-0.5, 0.5),),
+        joint_scale_shift=((0.5, 0.5),),
         noise_type="local_joint_local_pose",
         depths=np.zeros([3, 2, 2]).tolist(),  # 3 cameras, fake size: [2, 2]
     )

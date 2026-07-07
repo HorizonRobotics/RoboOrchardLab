@@ -193,6 +193,7 @@ class RoboCasaLmdbDataset(BaseLmdbManipulationDataset):
             "action/gripper",
             step_index,
         )
+        master_gripper = (1 - np.array(master_gripper)) * 0.5
         osc_action, _ = self._get_episode_meta(
             lmdb_index,
             uuid,

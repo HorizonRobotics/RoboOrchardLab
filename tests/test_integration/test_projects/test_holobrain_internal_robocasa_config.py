@@ -256,6 +256,51 @@ def test_robocasa_eval_configures_env_for_absolute_base_osc(
     np.testing.assert_allclose(controller.input_max, np.inf)
 
 
+def test_robocasa_eval_bootstraps_assets_root_before_robocasa_import(
+    robocasa_common_dir,
+    tmp_path,
+    monkeypatch,
+):
+    import robocasa_eval
+
+    fake_site = tmp_path / "site"
+    robocasa_dir = fake_site / "robocasa"
+    models_dir = robocasa_dir / "models"
+    models_dir.mkdir(parents=True)
+    (robocasa_dir / "__init__.py").write_text(
+        "raise RuntimeError('robocasa __init__ should not run')\n",
+        encoding="utf-8",
+    )
+    (models_dir / "__init__.py").write_text(
+        "assets_root = 'default-assets'\n",
+        encoding="utf-8",
+    )
+    assets_root = str(tmp_path / "assets")
+
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "robocasa" or name.startswith("robocasa.")
+    }
+    for name in saved_modules:
+        sys.modules.pop(name, None)
+
+    monkeypatch.syspath_prepend(str(fake_site))
+    try:
+        robocasa_eval.prepare_robocasa_runtime(assets_root)
+
+        import robocasa
+
+        assert robocasa.models.assets_root == assets_root
+        assert sys.modules["robocasa.models"].assets_root == assets_root
+        assert sys.modules["robocasa"].__path__ == [str(robocasa_dir)]
+    finally:
+        for name in list(sys.modules):
+            if name == "robocasa" or name.startswith("robocasa."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
+
+
 def test_robocasa_eval_allocates_tasks_round_robin(robocasa_common_dir):
     from robocasa_eval import allocate_tasks_to_gpus
 

@@ -136,7 +136,7 @@ def ee_pose_to_osc_action(
 
 
 def get_gripper_openness(gripper_state: np.ndarray) -> np.ndarray:
-    return (-gripper_state[:, :1] + gripper_state[:, 1:2]) / GRIPPER_WIDTH
+    return (gripper_state[:, :1] - gripper_state[:, 1:2]) / GRIPPER_WIDTH
 
 
 def quat_xyzw_to_mat(q: np.ndarray) -> np.ndarray:

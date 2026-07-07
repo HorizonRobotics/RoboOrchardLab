@@ -534,6 +534,7 @@ class HoloBrainRoboCasaPolicy:
         # )
         # cv2.imwrite("vis_img.png", vis_img)
 
+        pose[..., 0] = 1 - pose[..., 0] * 2
         if pose.ndim == 3 and pose.shape[1] == 1:
             pose = pose.squeeze(1)
         target_state = _apply_inverse_embodiment(

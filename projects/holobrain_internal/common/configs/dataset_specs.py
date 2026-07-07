@@ -525,10 +525,29 @@ TRAINING_DATASETS = [
     # ================ robocasa ===================
     dict(
         dataset_type="robocasa",
-        dataset_name="robocasa",
+        dataset_name="robocasa_pretrain",
         data_paths=lambda: _glob_sorted(
-            f"{DATA_BASE}/robocasa/v1.0/lmdb/*/*/*",
+            f"{DATA_BASE}/robocasa/v1.0/lmdb/pretrain/*/*",
         ),
+        mimicgen=False,
+        mobile=False,
+    ),
+    dict(
+        dataset_type="robocasa",
+        dataset_name="robocasa_pretrain_mg",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/robocasa/v1.0/lmdb/pretrain/*/*",
+        ),
+        mimicgen=True,
+        mobile=False,
+    ),
+    dict(
+        dataset_type="robocasa",
+        dataset_name="robocasa_target",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/robocasa/v1.0/lmdb/target/*/*",
+        ),
+        mobile=False,
     ),
 ]
 
@@ -576,7 +595,9 @@ filter_list = [
     "rh20t_kuka_v2",
     "behavior_manipulation",
     "behavior_navigation",
-    "robocasa",
+    "robocasa_pretrain",
+    "robocasa_pretrain_mg",
+    "robocasa_target",
     # "isaac_pick_place",
     # "agibot_digit",
     # "agilex_ro",
@@ -621,7 +642,9 @@ dataset_sample_weights = dict(
     rh20t_kuka_v2=0.1,
     behavior_manipulation=5,
     behavior_navigation=0,
-    robocasa=5,
+    robocasa_pretrain=3,
+    robocasa_pretrain_mg=2,
+    robocasa_target=3,
 )
 
 use_dataset_sample_weights = False

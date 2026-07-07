@@ -18,16 +18,21 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib
+import importlib.machinery
 import json
 import logging
 import multiprocessing
 import os
 import pkgutil
 import subprocess
+import sys
+import traceback
+import types
 from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import numpy as np
 from holobrain_robocasa_policy import (
@@ -41,16 +46,129 @@ from robo_orchard_lab.utils import log_basic_config
 logger = logging.getLogger(__file__)
 DEFAULT_VIDEO_CAMERAS = ("robot0_agentview_center", *ROBOCASA_CAMERAS)
 LOG_FORMAT = "%(asctime)s %(levelname)s %(filename)s:%(lineno)d | %(message)s"
+ROBOCASA_MODEL_ASSET_DIRS = (
+    "fixtures",
+    "textures",
+    "objects",
+    "generative_textures",
+)
 
 
-def prepare_robocasa_runtime(assets_root: str) -> None:
+def _find_package_dir(package_name: str) -> Path:
+    package_parts = package_name.split(".")
+    for search_path in sys.path:
+        base_path = Path(search_path or os.getcwd())
+        package_dir = base_path.joinpath(*package_parts)
+        if (package_dir / "__init__.py").is_file():
+            return package_dir
+    raise ModuleNotFoundError(f"Cannot find package `{package_name}`.")
+
+
+def _make_package_module(
+    module_name: str,
+    package_dir: Path,
+) -> types.ModuleType:
+    module = types.ModuleType(module_name)
+    module.__file__ = str(package_dir / "__init__.py")
+    module.__path__ = [str(package_dir)]
+    module.__package__ = module_name
+    module.__spec__ = importlib.machinery.ModuleSpec(
+        module_name,
+        loader=None,
+        is_package=True,
+    )
+    return module
+
+
+def _bootstrap_robocasa_assets_root(assets_root: str) -> None:
+    """Set assets root before RoboCasa eager imports build registries."""
+    registry_module = sys.modules.get(
+        "robocasa.models.objects.kitchen_object_utils"
+    )
+    if registry_module is not None:
+        registry_assets_root = str(
+            Path(registry_module.BASE_ASSET_ZOO_PATH).parent
+        )
+        if Path(registry_assets_root) != Path(assets_root):
+            raise RuntimeError(
+                "RoboCasa object registry was imported before "
+                f"--assets_root was applied. Registry assets root is "
+                f"`{registry_assets_root}`, requested `{assets_root}`."
+            )
+
+    robocasa_module = sys.modules.get("robocasa")
+    if robocasa_module is None:
+        robocasa_dir = _find_package_dir("robocasa")
+        robocasa_module = _make_package_module("robocasa", robocasa_dir)
+        sys.modules["robocasa"] = robocasa_module
+    else:
+        robocasa_dir = Path(robocasa_module.__path__[0])
+
+    models_module = sys.modules.get("robocasa.models")
+    if models_module is None:
+        models_dir = robocasa_dir / "models"
+        models_module = _make_package_module("robocasa.models", models_dir)
+        sys.modules["robocasa.models"] = models_module
+
+    models_module.assets_root = assets_root
+    robocasa_module.models = models_module
+
+
+def prepare_robocasa_runtime(assets_root: str | None) -> None:
     os.environ.setdefault("MUJOCO_GL", "egl")
     os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
+    if assets_root is not None:
+        _bootstrap_robocasa_assets_root(assets_root)
+    else:
+        import robocasa.models  # noqa: F401
+
+
+def rewrite_robocasa_model_asset_paths(
+    xml_str: str,
+    assets_root: str,
+) -> str:
+    """Redirect RoboCasa kitchen XML assets to the configured assets root."""
+    root = ET.fromstring(xml_str)
+    asset = root.find("asset")
+    if asset is None:
+        return xml_str
+
+    for elem in asset:
+        normalized_path = (elem.get("file") or "").replace("\\", "/")
+        _, marker, asset_rel_path = normalized_path.partition(
+            "/models/assets/"
+        )
+        if (
+            elem.tag in {"mesh", "texture"}
+            and marker
+            and asset_rel_path.startswith(ROBOCASA_MODEL_ASSET_DIRS)
+        ):
+            elem.set("file", str(Path(assets_root) / asset_rel_path))
+
+    return ET.tostring(root, encoding="unicode")
+
+
+def patch_robocasa_xml_asset_paths() -> None:
+    """Make RoboCasa texture paths honor robocasa.models.assets_root."""
+    import robocasa.environments.kitchen.kitchen as kitchen_module
     import robocasa.models
 
-    if assets_root is not None:
-        robocasa.models.assets_root = assets_root
+    kitchen_cls = kitchen_module.Kitchen
+    if getattr(kitchen_cls, "_robo_orchard_asset_path_patch", False):
+        return
+
+    original_edit_model_xml = kitchen_cls.edit_model_xml
+
+    def edit_model_xml(self: Any, xml_str: str) -> str:
+        xml_str = original_edit_model_xml(self, xml_str)
+        return rewrite_robocasa_model_asset_paths(
+            xml_str,
+            robocasa.models.assets_root,
+        )
+
+    kitchen_cls.edit_model_xml = edit_model_xml
+    kitchen_cls._robo_orchard_asset_path_patch = True
 
 
 def register_robocasa_gym_envs() -> None:
@@ -63,6 +181,8 @@ def register_robocasa_gym_envs() -> None:
             package.__name__ + ".",
         ):
             importlib.import_module(module.name)
+
+    patch_robocasa_xml_asset_paths()
 
     import robocasa.wrappers.gym_wrapper  # noqa: F401
 
@@ -125,52 +245,21 @@ def configure_robocasa_env_absolute_action(env: Any) -> None:
     )
 
 
-def save_video_frame(
-    writer: Any,
-    env: Any,
-    camera_name: str,
-) -> None:
-    frame = env.sim.render(
-        height=512,
-        width=768,
-        camera_name=camera_name,
-    )[::-1]
-    writer.append_data(frame)
-
-
 def parse_video_cameras(video_camera: str | None) -> tuple[str, ...]:
-    if video_camera is None:
-        return DEFAULT_VIDEO_CAMERAS
-    video_camera = video_camera.strip()
-    if not video_camera:
-        return DEFAULT_VIDEO_CAMERAS
-    if video_camera.lower() == "default":
+    video_camera = (video_camera or "").strip()
+    if not video_camera or video_camera.lower() == "default":
         return DEFAULT_VIDEO_CAMERAS
 
-    cameras = []
-    seen = set()
-    for camera in video_camera.split(","):
-        camera = camera.strip()
-        if camera and camera not in seen:
-            cameras.append(camera)
-            seen.add(camera)
+    cameras = tuple(
+        dict.fromkeys(
+            camera.strip()
+            for camera in video_camera.split(",")
+            if camera.strip()
+        )
+    )
     if not cameras:
         raise ValueError("--video_camera must contain at least one camera.")
-    return tuple(cameras)
-
-
-def video_path_for_camera(
-    save_video_path: Path,
-    camera_name: str,
-    *,
-    multi_camera: bool,
-) -> Path:
-    if not multi_camera:
-        return save_video_path
-    safe_camera_name = camera_name.replace("/", "_").replace(".", "_")
-    return save_video_path.with_name(
-        f"{save_video_path.stem}_{safe_camera_name}{save_video_path.suffix}"
-    )
+    return cameras
 
 
 @contextlib.contextmanager
@@ -212,19 +301,16 @@ def run_trial(
 
         save_video_path.parent.mkdir(parents=True, exist_ok=True)
         multi_camera = len(video_cameras) > 1
-        writers = {
-            camera_name: imageio.get_writer(
-                str(
-                    video_path_for_camera(
-                        save_video_path,
-                        camera_name,
-                        multi_camera=multi_camera,
-                    )
-                ),
-                fps=20,
-            )
-            for camera_name in video_cameras
-        }
+        for camera_name in video_cameras:
+            video_path = save_video_path
+            if multi_camera:
+                safe_camera_name = camera_name.replace("/", "_")
+                safe_camera_name = safe_camera_name.replace(".", "_")
+                video_path = save_video_path.with_name(
+                    f"{save_video_path.stem}_{safe_camera_name}"
+                    f"{save_video_path.suffix}"
+                )
+            writers[camera_name] = imageio.get_writer(str(video_path), fps=20)
 
     try:
         obs, info = env.reset(seed=seed)
@@ -242,7 +328,13 @@ def run_trial(
             steps_executed += 1
 
             for camera_name, writer in writers.items():
-                save_video_frame(writer, env, camera_name)
+                writer.append_data(
+                    env.sim.render(
+                        height=512,
+                        width=768,
+                        camera_name=camera_name,
+                    )[::-1]
+                )
 
             if steps_executed % 10 == 0:
                 logger.info(f"Eval: {steps_executed} / {horizon}")
@@ -267,12 +359,24 @@ def evaluate_task(
     task_dir = output_dir / task_name
     task_dir.mkdir(parents=True, exist_ok=True)
     with task_log_file(task_dir / "log.txt"):
-        return _evaluate_task(
-            task_name=task_name,
-            policy=policy,
-            args=args,
-            task_dir=task_dir,
-        )
+        try:
+            return _evaluate_task(
+                task_name=task_name,
+                policy=policy,
+                args=args,
+                task_dir=task_dir,
+            )
+        except Exception as exc:
+            logger.exception("RoboCasa task %s failed.", task_name)
+            return write_empty_task_result(
+                task_name,
+                args,
+                task_dir,
+                "failed",
+                type(exc).__name__,
+                str(exc),
+                traceback.format_exc(),
+            )
 
 
 def _evaluate_task(
@@ -314,12 +418,19 @@ def _evaluate_task(
             )
             trial_result["seed"] = seed
             results.append(trial_result)
+            num_finished_trials = len(results)
+            num_success_trials = sum(int(x["success"]) for x in results)
+            current_success_rate = num_success_trials / num_finished_trials
             logger.info(
-                "Finished task=%s trial=%d success=%s steps=%d",
+                "Finished task=%s trial=%d success=%s steps=%d "
+                "current_success_rate=%.4f successes=%d/%d",
                 task_name,
                 trial_id,
                 trial_result["success"],
                 trial_result["steps"],
+                current_success_rate,
+                num_success_trials,
+                num_finished_trials,
             )
     finally:
         env.close()
@@ -331,16 +442,86 @@ def _evaluate_task(
     )
     summary = {
         "task_name": task_name,
+        "status": "completed",
         "split": args.split,
         "horizon": horizon,
         "num_trials": len(results),
         "success_rate": success_rate,
         "trials": results,
     }
-    with open(task_dir / "results.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=4)
+    write_task_result(task_dir, summary)
     logger.info("Task %s success_rate=%.4f", task_name, success_rate)
     return summary
+
+
+def write_missing_task_result(
+    *,
+    task_name: str,
+    args: argparse.Namespace,
+    task_dir: Path,
+    reason: str,
+) -> dict[str, Any]:
+    return write_empty_task_result(
+        task_name,
+        args,
+        task_dir,
+        "missing",
+        "MissingResult",
+        reason,
+    )
+
+
+def write_empty_task_result(
+    task_name: str,
+    args: argparse.Namespace,
+    task_dir: Path,
+    status: str,
+    error_type: str,
+    error: str,
+    traceback_text: str = "",
+) -> dict[str, Any]:
+    return write_task_result(
+        task_dir,
+        {
+            "task_name": task_name,
+            "status": status,
+            "split": args.split,
+            "horizon": args.horizon,
+            "num_trials": 0,
+            "success_rate": 0.0,
+            "trials": [],
+            "error_type": error_type,
+            "error": error,
+            "traceback": traceback_text,
+        },
+    )
+
+
+def write_task_result(
+    task_dir: Path,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    with open(task_dir / "results.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=4)
+    return summary
+
+
+def _record_task_result(
+    task_results: list[dict[str, Any]],
+    task_result: dict[str, Any],
+    shared_results: Any | None,
+    log_task_completion: bool,
+    total_tasks: int,
+) -> None:
+    task_results.append(task_result)
+    if shared_results is not None:
+        shared_results[task_result["task_name"]] = task_result
+    if log_task_completion:
+        _log_main_task_result(
+            task_result,
+            completed_tasks=len(task_results),
+            total_tasks=total_tasks,
+        )
 
 
 def build_policy(args: argparse.Namespace) -> HoloBrainRoboCasaPolicy:
@@ -412,6 +593,48 @@ def allocate_tasks_to_gpus(
     return task_groups
 
 
+def _log_main_task_result(
+    task_result: dict[str, Any],
+    *,
+    completed_tasks: int,
+    total_tasks: int,
+) -> None:
+    status = task_result.get("status", "completed")
+    trials = task_result.get("trials", [])
+    num_trials = int(task_result.get("num_trials", len(trials)))
+    num_success_trials = sum(int(x["success"]) for x in trials)
+    log_fn = logger.warning if status in {"failed", "missing"} else logger.info
+    log_fn(
+        "Main process received task=%s status=%s success_rate=%.4f "
+        "successes=%d/%d completed_tasks=%d/%d error=%s",
+        task_result["task_name"],
+        status,
+        task_result["success_rate"],
+        num_success_trials,
+        num_trials,
+        completed_tasks,
+        total_tasks,
+        task_result.get("error"),
+    )
+
+
+def _log_new_main_task_results(
+    *,
+    shared_results: Any,
+    logged_task_names: set[str],
+    task_names: list[str],
+) -> None:
+    for task_name in task_names:
+        if task_name in logged_task_names or task_name not in shared_results:
+            continue
+        logged_task_names.add(task_name)
+        _log_main_task_result(
+            dict(shared_results[task_name]),
+            completed_tasks=len(logged_task_names),
+            total_tasks=len(task_names),
+        )
+
+
 def evaluate_task_group(
     *,
     gpu_id: str | None,
@@ -419,14 +642,44 @@ def evaluate_task_group(
     args: argparse.Namespace,
     output_dir: Path,
     shared_results: Any | None = None,
+    log_task_completion: bool = False,
+    total_tasks: int | None = None,
 ) -> list[dict[str, Any]]:
     if gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
 
-    prepare_robocasa_runtime(args.assets_root)
-    register_robocasa_gym_envs()
-    logger.info("Worker gpu=%s task_names=%s", gpu_id, task_names)
-    policy = build_policy(args)
+    try:
+        prepare_robocasa_runtime(args.assets_root)
+        register_robocasa_gym_envs()
+        logger.info("Worker gpu=%s task_names=%s", gpu_id, task_names)
+        policy = build_policy(args)
+    except Exception as exc:
+        task_results = []
+        for task_name in task_names:
+            task_dir = output_dir / task_name
+            task_dir.mkdir(parents=True, exist_ok=True)
+            with task_log_file(task_dir / "log.txt"):
+                logger.exception(
+                    "RoboCasa worker failed before evaluating task %s.",
+                    task_name,
+                )
+                task_result = write_empty_task_result(
+                    task_name,
+                    args,
+                    task_dir,
+                    "failed",
+                    type(exc).__name__,
+                    str(exc),
+                    traceback.format_exc(),
+                )
+            _record_task_result(
+                task_results,
+                task_result,
+                shared_results,
+                log_task_completion,
+                total_tasks or len(task_names),
+            )
+        return task_results
 
     task_results = []
     for task_name in task_names:
@@ -436,9 +689,13 @@ def evaluate_task_group(
             args=args,
             output_dir=output_dir,
         )
-        task_results.append(task_result)
-        if shared_results is not None:
-            shared_results[task_name] = task_result
+        _record_task_result(
+            task_results,
+            task_result,
+            shared_results,
+            log_task_completion,
+            total_tasks or len(task_names),
+        )
     return task_results
 
 
@@ -468,6 +725,8 @@ def run_evaluation(
             task_names=gpu_task_names,
             args=args,
             output_dir=output_dir,
+            log_task_completion=True,
+            total_tasks=len(task_names),
         )
 
     ctx = multiprocessing.get_context("spawn")
@@ -488,26 +747,50 @@ def run_evaluation(
         process.start()
         processes.append(process)
 
-    failed_workers = []
-    for process in processes:
-        process.join()
-        if process.exitcode != 0:
-            failed_workers.append(process.exitcode)
+    logged_task_names = set()
+    while any(process.is_alive() for process in processes):
+        _log_new_main_task_results(
+            shared_results=shared_results,
+            logged_task_names=logged_task_names,
+            task_names=task_names,
+        )
+        for process in processes:
+            process.join(timeout=0.2)
+
+    _log_new_main_task_results(
+        shared_results=shared_results,
+        logged_task_names=logged_task_names,
+        task_names=task_names,
+    )
+    failed_workers = [
+        process.exitcode for process in processes if process.exitcode != 0
+    ]
     if failed_workers:
-        raise RuntimeError(
-            f"RoboCasa eval worker failed with exit code(s): {failed_workers}"
+        logger.warning(
+            "RoboCasa eval worker failed with exit code(s): %s. "
+            "Returning available task results.",
+            failed_workers,
         )
 
     result_by_task = dict(shared_results)
-    missing_tasks = [
-        task_name
-        for task_name in task_names
-        if task_name not in result_by_task
-    ]
+    missing_tasks = [x for x in task_names if x not in result_by_task]
     if missing_tasks:
-        raise RuntimeError(
-            f"RoboCasa eval finished without results for: {missing_tasks}"
+        logger.warning(
+            "RoboCasa eval finished without results for task(s): %s",
+            missing_tasks,
         )
+        reason = "Worker exited without reporting a result for this task."
+        for task_name in missing_tasks:
+            task_dir = output_dir / task_name
+            task_dir.mkdir(parents=True, exist_ok=True)
+            with open(task_dir / "log.txt", "a", encoding="utf-8") as f:
+                f.write(f"{reason}\n")
+            result_by_task[task_name] = write_missing_task_result(
+                task_name=task_name,
+                args=args,
+                task_dir=task_dir,
+                reason=reason,
+            )
     return [result_by_task[task_name] for task_name in task_names]
 
 
@@ -526,10 +809,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task_set", type=str, default="target50")
     parser.add_argument("--task_names", type=str, default=None)
     parser.add_argument("--split", type=str, default="target")
-    parser.add_argument("--num_trials_per_task", type=int, default=10)
+    parser.add_argument("--num_trials_per_task", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--horizon", type=int, default=None)
-    parser.add_argument("--valid_action_step", type=int, default=8)
+    parser.add_argument("--valid_action_step", type=int, default=32)
     parser.add_argument("--camera_height", type=int, default=256)
     parser.add_argument("--camera_width", type=int, default=256)
     parser.add_argument("--assets_root", type=str, default=None)
@@ -577,22 +860,46 @@ def main() -> None:
         args=args,
         output_dir=output_dir,
     )
+    failed_task_names = [
+        result["task_name"]
+        for result in task_results
+        if result.get("status") == "failed"
+    ]
+    missing_task_names = [
+        result["task_name"]
+        for result in task_results
+        if result.get("status") == "missing"
+    ]
+    completed_task_results = [
+        result
+        for result in task_results
+        if result.get("status", "completed") == "completed"
+    ]
+    task_success_rates = {
+        result["task_name"]: result["success_rate"] for result in task_results
+    }
     mean_success_rate = (
-        sum(x["success_rate"] for x in task_results) / len(task_results)
-        if task_results
+        sum(x["success_rate"] for x in completed_task_results)
+        / len(completed_task_results)
+        if completed_task_results
         else 0.0
     )
     final_output = {
         "overall_summary": {
             "task_set": args.task_set,
             "split": args.split,
+            "num_requested_tasks": len(task_names),
             "num_tasks": len(task_results),
+            "num_completed_tasks": len(completed_task_results),
             "average_success_rate": mean_success_rate,
+            "num_failed_tasks": len(failed_task_names),
+            "num_missing_tasks": len(missing_task_names),
+            "failed_task_names": failed_task_names,
+            "missing_task_names": missing_task_names,
             "elapsed": str(datetime.now() - start_time),
+            **task_success_rates,
         },
-        "tasks_detail": {
-            result["task_name"]: result for result in task_results
-        },
+        "tasks_detail": task_results,
     }
     with open(output_dir / "results.json", "w", encoding="utf-8") as f:
         json.dump(final_output, f, indent=4)
