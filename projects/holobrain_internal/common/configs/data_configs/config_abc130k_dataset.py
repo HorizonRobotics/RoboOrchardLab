@@ -178,24 +178,25 @@ def build_transforms(
     ).tolist()
     joint_mask = ([True] * num_joint_per_arm + [False]) * 2
 
-    # AddItems injects the per-dataset constants that used to live on the
-    # dataset object (T_base2world / T_base2ego) plus the loss weights
-    # consumed by the trainer. horizon's config_agilex_dataset.py does the
-    # same thing — dataset stays generic, transforms carry the constants.
+    state_loss_weights = loss_weights * 0.2
+    fk_loss_weight = loss_weights * 1.8
+    state_loss_weights = state_loss_weights.tolist()
+    fk_loss_weight = fk_loss_weight.tolist()
+
     if mode == "training":
         add_data_relative_items = dict(
             type=AddItems,
-            T_base2world=t_base2world,
+            state_loss_weights=state_loss_weights,
+            fk_loss_weight=fk_loss_weight,
             T_base2ego=t_base2ego,
-            state_loss_weights=loss_weights,
-            fk_loss_weight=loss_weights,
+            T_base2world=t_base2world,
             joint_mask=joint_mask,
         )
     else:
         add_data_relative_items = dict(
             type=AddItems,
-            T_base2world=t_base2world,
             T_base2ego=t_base2ego,
+            T_base2world=t_base2world,
             joint_mask=joint_mask,
         )
 
@@ -203,16 +204,9 @@ def build_transforms(
         type=SimpleStateSampling,
         hist_steps=config["hist_steps"],
         pred_steps=config["pred_steps"],
-        # ABC130k joint layout: [L_arm(6), L_gripper, R_arm(6), R_gripper].
-        # Only override the gripper columns with master (action) values; arm
-        # pred stays from the real state signal.
         use_master_gripper=True,
         use_master_joint=False,
         gripper_indices=[6, 13],
-        # Keep robotwin's pred timing (pred_state = state[step+1:step+1+K]).
-        # horizon's default 1e-3 would skip static frames forward, which would
-        # change arm pred timing across the whole dataset.
-        static_threshold=0,
     )
     resize = dict(
         type=Resize,
