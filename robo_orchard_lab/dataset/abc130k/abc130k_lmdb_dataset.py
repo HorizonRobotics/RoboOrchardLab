@@ -34,7 +34,7 @@ class ABC130kLmdbDataset(BaseLmdbManipulationDataset):
     This dataset follows the same LMDB organization as horizon manipulation:
     ``index / meta / image / depth``. Intrinsics and extrinsics have been
     packed with a per-episode correction pass (see
-    ``abc130k_export_lmdb_packer.py``):
+    ``abc130k_lmdb_packer.py``):
 
     * ``intrinsic_corrected``: K reconciled with the saved image resolution
       (some publisher K's belonged to a different D405 streaming mode).

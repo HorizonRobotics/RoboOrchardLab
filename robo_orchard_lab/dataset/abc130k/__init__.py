@@ -14,7 +14,6 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from .abc130k_export_lmdb_packer import ABC130kExportLmdbPacker
 from .abc130k_lmdb_dataset import ABC130kLmdbDataset
 
-__all__ = ["ABC130kLmdbDataset", "ABC130kExportLmdbPacker"]
+__all__ = ["ABC130kLmdbDataset"]

@@ -8,64 +8,351 @@
 #
 #       http://www.apache.org/licenses/LICENSE-2.0
 
-"""Multi-worker ABC130k MCAP -> LMDB packer with filtering and stats.
+"""ABC130k LMDB packer — one-shot single pack + task/chunk orchestrator.
 
-Workers parse MCAP, validate calibration, JPEG-encode frames, and return a
-payload dict. The main process writes payloads to LMDB sequentially (LMDB
-writers are not multi-process safe). Filter reasons are accumulated and
-reported at the end.
+Single self-contained entry point. Two modes selected at CLI parse time:
 
-Filters:
-  - zedx_station: episode is from a ZED-X bimanual station (4 camera streams,
-    no /top-camera). MJCF wrist extrinsics in cameras.yaml are only valid for
-    RealSense D405 wrist mounts, so ZED-X is unusable until we get a
-    per-station calibration.
-  - bad_intrinsic: a camera's K can't be reconciled to its saved image size
-    (cx=0, fx=0, or correct_k_to_image_size can't snap to a known D405 native
-    mode). The episode is skipped rather than silently producing wrong
-    projections.
-  - missing_state: state/action streams are absent or empty.
-  - no_top_camera: no top camera stream of any kind.
-  - decode_error: video decode or other unexpected error.
+  A) **Single pack** — ``--input_path`` present. Runs
+     ``ABC130kMPLmdbPacker`` in-process on that path. The orchestrator
+     mode below re-invokes ``python -m ...abc130k_lmdb_packer`` with
+     ``--input_path`` for each chunk, so this is also the per-chunk
+     subprocess entry point.
+
+  B) **Orchestrator (task/chunk fan-out)** — ``--data_root`` or
+     ``--complete_tasks_json`` present. Walks the tasks, splits each
+     into N-episode chunks, and launches one ``--input_path``
+     subprocess per chunk. Chunk-level subprocess isolation is
+     deliberate: the packer's ``Pool(processes=num_workers)`` is spawned
+     on construction, so a fresh chunk = fresh pool = clean process
+     state — a crashy episode in chunk N cannot poison chunk N+1's
+     workers.
+
+Usage — orchestrator (recommended for cloud packing runs)::
+
+    python -m robo_orchard_lab.dataset.abc130k.abc130k_lmdb_packer \\
+        --data_root /horizon-bucket/.../ABC-130k/data/train \\
+        --output_root /horizon-bucket/.../ABC_130k/lmdb_train \\
+        --episodes_per_lmdb 200 \\
+        --num_workers 16 \\
+        --num_steps_per_shard 64 \\
+        --num_shards 50 --shard_idx 0 \\
+        --skip_existing
+
+Usage — single pack (a single ``<output_root>/<chunk>/`` slice)::
+
+    python -m robo_orchard_lab.dataset.abc130k.abc130k_lmdb_packer \\
+        --input_path /path/to/task_a/episode_0000 \\
+        --output_path /out/root/task_a/chunk_000 \\
+        --num_workers 16 \\
+        --num_steps_per_shard 64 \\
+        --stats_path /out/root/task_a/chunk_000/pack_stats.json
 """
 
+from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import glob
+import json
 import logging
 import math
 import multiprocessing as mp
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import traceback
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
 
-from robo_orchard_lab.dataset.abc130k.abc130k_export_lmdb_packer import (
-    ABC_MAIN_T_WORLD_CAMERA,
-    CALIB_TOPICS,
-    CAMERAS,
-    D405_NATIVE_HEIGHTS,
-    D405_NATIVE_WIDTHS,
-    STATE_TOPICS,
-    T_MUJOCO_CAM_TO_CV_CAM,
-    TICK_NS,
-    TOP_TOPIC_CANDIDATES,
-    X264,
-    ABC130kEpisode,
-    ABC130kExtrinsicsFK,
-    correct_intrinsics_dict,
-    probe,
-)
 from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
     BaseLmdbManipulationDataPacker,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# RealSense D405 native streaming modes.
+D405_NATIVE_WIDTHS = (1920, 1280, 848, 640, 480)
+D405_NATIVE_HEIGHTS = {1920: 1080, 1280: 720, 848: 480, 640: 480, 480: 270}
+
+TICK_NS = 33333333  # int(1e9 / 30)
+TOP_TOPIC_CANDIDATES = ("/top-left-camera", "/top-right-camera", "/top-camera")
+CAMERAS = [("left", "/left-wrist-camera"), ("right", "/right-wrist-camera")]
+STATE_TOPICS = [
+    ("/left-arm-state", 6),
+    ("/left-ee-state", 1),
+    ("/right-arm-state", 6),
+    ("/right-ee-state", 1),
+]
+CALIB_TOPICS = {
+    "/top-camera-info": "top",
+    "/left-wrist-camera-info": "left",
+    "/right-wrist-camera-info": "right",
+    "/top-left-camera-info": "top",
+    "/top-right-camera-info": "top",
+}
+X264 = [
+    "-c:v",
+    "libx264",
+    "-preset",
+    "fast",
+    "-crf",
+    "18",
+    "-bf",
+    "0",
+    "-pix_fmt",
+    "yuv420p",
+]
+
+# Static reference camera poses from:
+# abc-main/assets/put_bottles/assets/i2rt_yam/cameras.yaml
+# Values are T_world_camera (world->camera) at zero-joint posture.
+ABC_MAIN_T_WORLD_CAMERA = {
+    "top": np.array(
+        [
+            [0.0, 0.8660264716999262, -0.49999815031155626, 0.08600512],
+            [-1.0000000000000002, 0.0, 0.0, 1.734723475976807e-18],
+            [0.0, 0.49999815031155626, 0.8660264716999262, 1.70432053],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    ),
+    "left": np.array(
+        [
+            [0.0, 0.766656164198587, -0.642057883602647, 0.42480000000000007],
+            [-1.0000000000000004, 0.0, 0.0, 0.3083],
+            [0.0, 0.642057883602647, 0.766656164198587, 1.0190000000000001],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    ),
+    "right": np.array(
+        [
+            [0.0, 0.766656164198587, -0.642057883602647, 0.42480000000000007],
+            [-1.0000000000000004, 0.0, 0.0, -0.3117],
+            [0.0, 0.642057883602647, 0.766656164198587, 1.0190000000000001],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    ),
+}
+
+# MuJoCo camera frame -> CV/ROS optical frame:
+# x right, y up, z back  ->  x right, y down, z forward
+T_MUJOCO_CAM_TO_CV_CAM = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
+
+# yam.xml bakes a 180 deg X-rotation into the MJCF `<camera>` element that
+# sits on top of the URDF `*_camera_frame` link.
+T_CAMFRAME_TO_MJCAM = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float64)
+
+# 14-d joint vector layout used by RobotState in MCAP:
+#   [L_joint1..6, L_gripper, R_joint1..6, R_gripper]
+ABC130K_JOINT_TO_URDF = [
+    "left_joint1",
+    "left_joint2",
+    "left_joint3",
+    "left_joint4",
+    "left_joint5",
+    "left_joint6",
+    None,  # left gripper
+    "right_joint1",
+    "right_joint2",
+    "right_joint3",
+    "right_joint4",
+    "right_joint5",
+    "right_joint6",
+    None,  # right gripper
+]
+ABC130K_CAMERA_TO_URDF_LINK = {
+    "top": "top_camera_frame",
+    "left": "left_camera_frame",
+    "right": "right_camera_frame",
+}
+
+
+def _correct_k_to_image_size(K, image_width, image_height):  # noqa: N803
+    """Reconcile a possibly-stale 3x3 K with the actual saved image size."""
+    K = np.array(K, dtype=np.float64).copy()  # noqa: N806
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    candidates = [(w, abs(cx - w / 2.0)) for w in D405_NATIVE_WIDTHS]
+    native_w, dist = min(candidates, key=lambda x: x[1])
+    if dist > native_w * 0.1:
+        logger.warning(
+            "_correct_k_to_image_size: cx=%.1f doesn't match any known D405 "
+            "native mode for a %dx%d image; K left unchanged.",
+            cx,
+            image_width,
+            image_height,
+        )
+        return K, False
+    if native_w == image_width:
+        return K, False
+    if native_w > image_width:
+        K[0, 2] = cx - (native_w - image_width) / 2.0
+        native_h = D405_NATIVE_HEIGHTS.get(native_w, image_height)
+        if native_h > image_height:
+            K[1, 2] = cy - (native_h - image_height) / 2.0
+    else:
+        scale_w = image_width / native_w
+        native_h = D405_NATIVE_HEIGHTS.get(native_w, image_height)
+        scale_h = image_height / native_h if native_h > 0 else scale_w
+        K[0, 0] *= scale_w
+        K[0, 2] *= scale_w
+        K[1, 1] *= scale_h
+        K[1, 2] *= scale_h
+    return K, True
+
+
+def _reference_world2cam_cv(cam_name):
+    world_t_cam_mj = ABC_MAIN_T_WORLD_CAMERA.get(cam_name)
+    if world_t_cam_mj is None:
+        return None
+    cam_t_world_mj = np.linalg.inv(world_t_cam_mj)
+    return T_MUJOCO_CAM_TO_CV_CAM @ cam_t_world_mj
+
+
+class ABC130kExtrinsicsFK:
+    """Reusable URDF-FK helper for ABC130k wrist-camera extrinsics."""
+
+    def __init__(
+        self,
+        urdf_path,
+        joint_to_urdf=None,
+        camera_to_urdf_link=None,
+    ):
+        self.urdf_path = urdf_path
+        self.joint_to_urdf = (
+            list(joint_to_urdf)
+            if joint_to_urdf is not None
+            else list(ABC130K_JOINT_TO_URDF)
+        )
+        self.camera_to_urdf_link = dict(
+            camera_to_urdf_link
+            if camera_to_urdf_link is not None
+            else ABC130K_CAMERA_TO_URDF_LINK
+        )
+        self._chain = None
+        self._qdim = 0
+        self._qpos_idx = None
+        self._setup()
+
+    def _setup(self):
+        try:
+            import pytorch_kinematics as pk
+        except ImportError as e:
+            raise RuntimeError(
+                f"ABC130k FK requested with urdf_path={self.urdf_path!r} "
+                "but pytorch_kinematics is not installed."
+            ) from e
+        chain = pk.build_chain_from_urdf(open(self.urdf_path, "rb").read())
+        all_joints = [j.name for j in chain.get_joints()]
+        qpos_idx = {}
+        for data_idx, urdf_name in enumerate(self.joint_to_urdf):
+            if urdf_name is None:
+                continue
+            if urdf_name not in all_joints:
+                raise ValueError(
+                    f"joint {urdf_name!r} not present in URDF {self.urdf_path}"
+                )
+            qpos_idx[data_idx] = all_joints.index(urdf_name)
+        self._chain = chain
+        self._qdim = len(all_joints)
+        self._qpos_idx = qpos_idx
+        logger.info(
+            "ABC130k FK: %s cameras=%s",
+            os.path.basename(self.urdf_path),
+            list(self.camera_to_urdf_link.keys()),
+        )
+
+    def compute(self, camera_names, joint_positions):
+        import torch
+
+        joint_positions = np.asarray(joint_positions, dtype=np.float64)
+        num_steps = joint_positions.shape[0]
+        qs = np.zeros((num_steps, self._qdim), dtype=np.float32)
+        for data_idx, q_idx in self._qpos_idx.items():
+            qs[:, q_idx] = joint_positions[:, data_idx]
+        poses = self._chain.forward_kinematics(torch.from_numpy(qs))
+        extrinsics = {}
+        for cam_name in camera_names:
+            link_name = self.camera_to_urdf_link.get(cam_name)
+            zero_ref = _reference_world2cam_cv(cam_name)
+            if link_name is None:
+                if zero_ref is None:
+                    continue
+                extrinsics[cam_name] = np.broadcast_to(
+                    zero_ref, (num_steps, 4, 4)
+                ).copy()
+                continue
+            link_mats = (
+                poses[link_name].get_matrix().numpy().astype(np.float64)
+            )
+            t_world_cam_mj = link_mats @ T_CAMFRAME_TO_MJCAM
+            t_cam_world_mj = np.linalg.inv(t_world_cam_mj)
+            t_world2cam = T_MUJOCO_CAM_TO_CV_CAM @ t_cam_world_mj
+            extrinsics[cam_name] = t_world2cam
+        return extrinsics
+
+
+def correct_intrinsics_dict(intrinsic, image_shapes):
+    """Apply `_correct_k_to_image_size` to each camera K."""
+    corrected = {}
+    note = {}
+    for cam_name, k in intrinsic.items():
+        shape = image_shapes.get(cam_name)
+        if shape is None:
+            corrected[cam_name] = k
+            continue
+        img_h, img_w = shape
+        fixed_k, was_changed = _correct_k_to_image_size(k, img_w, img_h)
+        corrected[cam_name] = fixed_k
+        note[cam_name] = bool(was_changed)
+    return corrected, note
+
+
+def probe(path, *entries):
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            *entries,
+            "-of",
+            "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return [int(x) for x in out.split(",") if x]
+
+
+@dataclass
+class ABC130kEpisode:
+    kind: str
+    episode_dir: Path
+    mcap_path: Optional[Path] = None
+    bin_path: Optional[Path] = None
+    video_path: Optional[Path] = None
+    meta_path: Optional[Path] = None
 
 
 ZEDX_WRIST_RESOLUTION = (1920, 1200)
@@ -1381,7 +1668,7 @@ def _worker_entry(args):
     return parse_episode(episode_dir_str, state_dim, action_dim)
 
 
-def build_parser():
+def _build_pack_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input_path",
@@ -1478,12 +1765,410 @@ def build_parser():
     return parser
 
 
-def main():
-    args = build_parser().parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+# --------------------------------------------------------------------------- #
+# Orchestrator: task discovery, chunking, per-chunk subprocess dispatch.
+# --------------------------------------------------------------------------- #
+# This module is also its own per-chunk subprocess entry point. The
+# orchestrator invokes ``python -m <this>`` for each chunk, which lands
+# in single-pack mode and routes to ABC130kMPLmdbPacker.
+_ORCHESTRATOR_WORKER_MODULE = (
+    "robo_orchard_lab.dataset.abc130k.abc130k_lmdb_packer"
+)
+
+
+def _chunk(seq, size):
+    for i in range(0, len(seq), size):
+        yield i // size, seq[i : i + size]
+
+
+def _chunk_output_dir(output_root, task_name, chunk_idx):
+    return Path(output_root) / task_name / f"chunk_{chunk_idx:03d}"
+
+
+def _scandir_names(path):
+    try:
+        with os.scandir(path) as it:
+            return [e.name for e in it]
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        logger.warning("scandir failed on %s: %s", path, exc)
+        return []
+
+
+def _discover_from_root(data_root, scandir_threads=32):
+    """Walk ``data_root/<task>/episode_*/`` and return the task->episodes map.
+
+    No completeness check — for a fully-copied dataset, just enumerate
+    everything. Uses ``os.scandir`` + a thread pool because each per-task
+    listing on network FS is one blocking round-trip.
+    """
+    data_root = Path(data_root)
+    task_names = sorted(
+        n for n in _scandir_names(data_root) if not n.startswith(".")
     )
+    logger.info(
+        "Discovery: %d task dirs under %s",
+        len(task_names),
+        data_root,
+    )
+
+    def _list_eps(task_name):
+        task_dir = data_root / task_name
+        eps = sorted(
+            n for n in _scandir_names(task_dir) if n.startswith("episode_")
+        )
+        return task_name, eps
+
+    n_threads = min(max(1, int(scandir_threads)), max(1, len(task_names)))
+    tasks = []
+    with cf.ThreadPoolExecutor(max_workers=n_threads) as pool:
+        futs = [pool.submit(_list_eps, t) for t in task_names]
+        for i, fut in enumerate(cf.as_completed(futs), 1):
+            task_name, eps = fut.result()
+            tasks.append(
+                {
+                    "task": task_name,
+                    "episode_count": len(eps),
+                    "episodes": eps,
+                }
+            )
+            if i % 50 == 0 or i == len(task_names):
+                logger.info(
+                    "  discovered %d/%d tasks (last=%s, %d eps)",
+                    i,
+                    len(task_names),
+                    task_name,
+                    len(eps),
+                )
+    tasks.sort(key=lambda x: x["task"])
+    return tasks
+
+
+def _chunk_is_done(chunk_dir):
+    """A chunk is "done" iff ``pack_stats.json`` records ``kept > 0``.
+
+    Presence of ``index/`` + ``meta/`` + ``image/`` alone is NOT enough:
+    LMDB pre-allocates ``data.mdb`` so an empty env still shows non-zero
+    file sizes. We hit exactly that trap once — every episode inside the
+    packer returned ``error="mcap deps missing"`` but the LMDB was
+    initialized, so a naive dir-based heuristic falsely marked those
+    chunks "done" for the next ``--skip_existing`` pass.
+    """
+    stats_path = chunk_dir / "pack_stats.json"
+    if not stats_path.is_file():
+        return False
+    try:
+        with open(stats_path) as f:
+            s = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return int(s.get("kept", 0)) > 0
+
+
+def _wipe_partial_pack(out_dir):
+    """Remove index/meta/image/depth subdirs of a previously crashed pack.
+
+    Called before a chunk is (re)packed. Without this, LMDB entries whose
+    keys don't match the new pack pass become orphan bytes (not referenced
+    by index, waste disk but harmless). Cleaning up is safe when
+    ``_chunk_is_done`` returned False (kept<=0), and LMDB envs re-init
+    cleanly on fresh dirs.
+    """
+    for sub in ("index", "meta", "image", "depth"):
+        partial = out_dir / sub
+        if partial.exists():
+            shutil.rmtree(partial, ignore_errors=True)
+
+
+def _run_chunk_subprocess(
+    input_path,
+    out_dir,
+    args,
+    stats_path,
+    log_path,
+):
+    """Dispatch one chunk pack as an isolated subprocess.
+
+    Returning the wall-clock and rc so the caller can accumulate stats.
+    """
+    cmd = [
+        sys.executable,
+        "-u",
+        "-m",
+        _ORCHESTRATOR_WORKER_MODULE,
+        "--input_path",
+        input_path,
+        "--output_path",
+        str(out_dir),
+        "--num_workers",
+        str(args.num_workers),
+        "--num_steps_per_shard",
+        str(args.num_steps_per_shard),
+        "--stats_path",
+        str(stats_path),
+        "--joint_stats_subsample",
+        str(args.joint_stats_subsample),
+        "--joint_stats_bins",
+        str(args.joint_stats_bins),
+    ]
+    # Forward URDF override if the caller set one — otherwise the child's
+    # default (baked into _build_pack_parser above) is used.
+    if args.urdf_path is not None:
+        cmd += ["--urdf_path", str(args.urdf_path)]
+    t0 = time.perf_counter()
+    with open(log_path, "w") as logf:
+        proc = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT)
+    return proc.returncode, time.perf_counter() - t0
+
+
+def _read_pack_stats(stats_path):
+    """Return ``(kept, err)`` for a chunk's pack_stats.json.
+
+    Returns ``(None, None)`` if the file is missing or unparseable.
+    """
+    if not stats_path.is_file():
+        return None, None
+    try:
+        with open(stats_path) as sf:
+            s = json.load(sf)
+        return int(s.get("kept", 0)), int(s.get("counts", {}).get("error", 0))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(
+            "  could not parse pack_stats.json at %s (%s)", stats_path, e
+        )
+        return None, None
+
+
+def _load_task_list(args):
+    """Return (candidate_root, tasks) per the CLI source flags."""
+    if args.data_root:
+        tasks = _discover_from_root(
+            args.data_root,
+            scandir_threads=args.scandir_threads,
+        )
+        candidate_root = Path(args.data_root)
+        logger.info(
+            "Discovered %d tasks directly from %s",
+            len(tasks),
+            args.data_root,
+        )
+        return candidate_root, tasks
+
+    if not args.candidate_root:
+        raise SystemExit(
+            "--candidate_root is required when using --complete_tasks_json"
+        )
+    with open(args.complete_tasks_json) as f:
+        report = json.load(f)
+    tasks = report.get("complete_tasks", [])
+    candidate_root = Path(args.candidate_root)
+    logger.info(
+        "Loaded %d complete tasks from %s",
+        len(tasks),
+        args.complete_tasks_json,
+    )
+    return candidate_root, tasks
+
+
+def _slice_task_shard(tasks, num_shards, shard_idx):
+    """Return the contiguous ``tasks[start:end)`` slice for this shard.
+
+    Task-level slicing means every chunk of a given task ends up on the
+    same job, keeping per-task output cohesive on one machine and logs
+    easy to follow. Sizes may vary between shards because episode counts
+    per task vary.
+    """
+    if num_shards < 1:
+        raise SystemExit("--num_shards must be >= 1")
+    if not (0 <= shard_idx < num_shards):
+        raise SystemExit(f"--shard_idx must be in [0, {num_shards})")
+    n_all_tasks = len(tasks)
+    if num_shards == 1:
+        logger.info("Sharding: single job, packing all %d tasks.", n_all_tasks)
+        return tasks
+    start = n_all_tasks * shard_idx // num_shards
+    end = n_all_tasks * (shard_idx + 1) // num_shards
+    my = tasks[start:end]
+    logger.info(
+        "Sharding: shard %d/%d handles tasks[%d:%d) of %d "
+        "(%d tasks in this shard)",
+        shard_idx,
+        num_shards,
+        start,
+        end,
+        n_all_tasks,
+        len(my),
+    )
+    return my
+
+
+def _plan_summary(my_tasks, per_chunk):
+    total_chunks = 0
+    total_episodes = 0
+    for t in my_tasks:
+        eps = t["episodes"]
+        total_episodes += len(eps)
+        if per_chunk is None:
+            total_chunks += 1
+        else:
+            total_chunks += (len(eps) + per_chunk - 1) // per_chunk
+    logger.info(
+        "Plan (this shard): %d tasks, %d episodes, %d chunks (%s eps/chunk).",
+        len(my_tasks),
+        total_episodes,
+        total_chunks,
+        "task" if per_chunk is None else per_chunk,
+    )
+    return total_chunks
+
+
+def _orchestrate(args):
+    """Task/chunk fan-out entry point (mode B).
+
+    Reads (or discovers) the task list, slices for this shard, then packs
+    each chunk in an isolated subprocess. Handles ``--skip_existing`` and
+    silent-failure detection (rc=0 but all episodes errored).
+    """
+    candidate_root, tasks = _load_task_list(args)
+
+    if args.task_names:
+        include = set(args.task_names)
+        tasks = [t for t in tasks if t["task"] in include]
+        logger.info("Filtered to %d tasks via --task_names.", len(tasks))
+
+    if args.max_tasks is not None and args.max_tasks > 0:
+        tasks = tasks[: args.max_tasks]
+        logger.info("Capped to first %d tasks (--max_tasks).", len(tasks))
+
+    output_root = Path(args.output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    per_chunk = args.episodes_per_lmdb if args.episodes_per_lmdb > 0 else None
+
+    my_tasks = _slice_task_shard(tasks, args.num_shards, args.shard_idx)
+    total_chunks = _plan_summary(my_tasks, per_chunk)
+
+    if args.dry_run:
+        for t in my_tasks[:5]:
+            eps = t["episodes"]
+            chunks = list(_chunk(eps, per_chunk or len(eps)))
+            for chunk_idx, chunk_eps in chunks[:3]:
+                out_dir = _chunk_output_dir(output_root, t["task"], chunk_idx)
+                logger.info(
+                    "  [dry] task=%s chunk=%03d eps=%d -> %s",
+                    t["task"],
+                    chunk_idx,
+                    len(chunk_eps),
+                    out_dir,
+                )
+        return 0
+
+    n_ok = 0
+    n_skipped = 0
+    n_failed = 0
+    t_start = time.perf_counter()
+
+    for task_i, t in enumerate(my_tasks, 1):
+        task_name = t["task"]
+        eps = t["episodes"]
+        task_dir = candidate_root / task_name
+        chunks = list(_chunk(eps, per_chunk or len(eps)))
+        logger.info(
+            "[task %d/%d] %s: %d episodes -> %d chunks",
+            task_i,
+            len(my_tasks),
+            task_name,
+            len(eps),
+            len(chunks),
+        )
+        for chunk_idx, chunk_eps in chunks:
+            out_dir = _chunk_output_dir(output_root, task_name, chunk_idx)
+            if args.skip_existing and _chunk_is_done(out_dir):
+                logger.info(
+                    "  chunk_%03d: already packed, skipping (%s)",
+                    chunk_idx,
+                    out_dir,
+                )
+                n_skipped += 1
+                continue
+            _wipe_partial_pack(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            input_path = ",".join(str(task_dir / ep) for ep in chunk_eps)
+            stats_path = out_dir / "pack_stats.json"
+            log_path = out_dir / "pack.log"
+            try:
+                rc, dt = _run_chunk_subprocess(
+                    input_path, out_dir, args, stats_path, log_path
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "  chunk_%03d: subprocess launch failed: %s",
+                    chunk_idx,
+                    e,
+                )
+                n_failed += 1
+                if args.stop_on_failure:
+                    return 1
+                continue
+
+            kept, err = _read_pack_stats(stats_path)
+            # rc==0 is necessary but not sufficient: we've historically hit
+            # runs where 100% of episodes returned error="mcap deps missing"
+            # while the packer still exited cleanly. Also verify
+            # pack_stats.json shows kept>0 (or every episode was a legit
+            # filter skip, not a hard error).
+            if rc == 0 and kept is not None and err > 0 and kept == 0:
+                n_failed += 1
+                logger.error(
+                    "  chunk_%03d: SILENT FAILURE (rc=0 but all %d "
+                    "episodes returned error). See %s",
+                    chunk_idx,
+                    err,
+                    log_path,
+                )
+                if args.stop_on_failure:
+                    return 1
+            elif rc == 0:
+                n_ok += 1
+                logger.info(
+                    "  chunk_%03d: OK (%d eps, %.1fs, kept=%s err=%s) -> %s",
+                    chunk_idx,
+                    len(chunk_eps),
+                    dt,
+                    kept,
+                    err,
+                    out_dir,
+                )
+            else:
+                n_failed += 1
+                logger.error(
+                    "  chunk_%03d: FAILED rc=%d (%d eps, %.1fs); log=%s",
+                    chunk_idx,
+                    rc,
+                    len(chunk_eps),
+                    dt,
+                    log_path,
+                )
+                if args.stop_on_failure:
+                    return 1
+
+    dt = time.perf_counter() - t_start
+    logger.info(
+        "Done in %.1fs. chunks: ok=%d skipped=%d failed=%d "
+        "(this shard planned=%d)",
+        dt,
+        n_ok,
+        n_skipped,
+        n_failed,
+        total_chunks,
+    )
+    return 0 if n_failed == 0 else 2
+
+
+# --------------------------------------------------------------------------- #
+# Single-pack mode: run the underlying ABC130kMPLmdbPacker in-process.
+# This is what each orchestrator-spawned subprocess lands in.
+# --------------------------------------------------------------------------- #
+def _run_single_pack(args):
     os.makedirs(args.output_path, exist_ok=True)
     packer = ABC130kMPLmdbPacker(
         input_path=args.input_path,
@@ -1499,10 +2184,158 @@ def main():
         scandir_threads=args.scandir_threads,
         joint_stats_subsample=args.joint_stats_subsample,
         joint_stats_bins=args.joint_stats_bins,
-        urdf_path=args.urdf_path or None,
+        # Empty string keeps the "no FK" behaviour parity with the old
+        # CLI. Default (None) falls back to build_parser's baked-in URDF.
+        urdf_path=args.urdf_path if args.urdf_path else None,
     )
     packer()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Unified argparse — reuses _build_pack_parser() (single-pack flags:
+# state_dim, commit_step, urdf_path, ...) so per-chunk args stay in one
+# place; then layers the orchestrator-only args on top with a mutually
+# exclusive source group.
+# --------------------------------------------------------------------------- #
+def build_parser():
+    # Start from the single-pack parser so every flag it exposes is
+    # accepted here verbatim. Then override ``--input_path`` to no longer
+    # be required — orchestrator mode uses ``--data_root`` instead.
+    parser = _build_pack_parser()
+    for act in parser._actions:  # noqa: SLF001 — intentional argparse mutate
+        if getattr(act, "dest", None) == "input_path":
+            act.required = False
+            break
+    # ``--output_path`` is also only required in single-pack mode; make
+    # it optional here and validate below once we know the mode.
+    for act in parser._actions:  # noqa: SLF001
+        if getattr(act, "dest", None) == "output_path":
+            act.required = False
+            break
+
+    orch = parser.add_argument_group(
+        "orchestrator",
+        "Task/chunk fan-out (mutually exclusive with --input_path).",
+    )
+    src = orch.add_mutually_exclusive_group()
+    src.add_argument(
+        "--data_root",
+        help=(
+            "Dataset root that contains ``<task>/episode_*/`` directly. "
+            "Walk it and pack every task. Preferred when the copy is "
+            "complete — no completeness JSON needed."
+        ),
+    )
+    src.add_argument(
+        "--complete_tasks_json",
+        help=(
+            "Path to select_complete_tasks.py output. Use this when the "
+            "candidate root is only partially copied and you want to pack "
+            "only the tasks whose episode set matches the reference."
+        ),
+    )
+    orch.add_argument(
+        "--candidate_root",
+        help=(
+            "Only used with --complete_tasks_json: root that holds the "
+            "episode dirs (should match candidate_root in the JSON, but "
+            "pass explicitly so we don't chase a stale reference path)."
+        ),
+    )
+    orch.add_argument(
+        "--output_root",
+        help="Chunks land at <output_root>/<task>/chunk_XXX/.",
+    )
+    orch.add_argument(
+        "--episodes_per_lmdb",
+        type=int,
+        default=200,
+        help="How many episodes per chunk. Set to 0 for one LMDB per task.",
+    )
+    orch.add_argument(
+        "--task_names",
+        nargs="*",
+        default=None,
+        help="Optional whitelist of task names.",
+    )
+    orch.add_argument(
+        "--max_tasks",
+        type=int,
+        default=None,
+        help="Optional cap on number of tasks to pack (debug).",
+    )
+    orch.add_argument(
+        "--num_shards",
+        type=int,
+        default=1,
+        help=(
+            "Split the sorted task list into N contiguous slices so that "
+            "N cluster jobs can pack in parallel across machines. Task-"
+            "level slicing means every chunk of a given task ends up on "
+            "the same job. Sizes may vary between shards because task "
+            "episode counts vary."
+        ),
+    )
+    orch.add_argument(
+        "--shard_idx",
+        type=int,
+        default=0,
+        help="Which shard [0, num_shards) this invocation handles.",
+    )
+    orch.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip a chunk if its output dir already looks packed.",
+    )
+    orch.add_argument(
+        "--dry_run",
+        action="store_true",
+        help="Print the subprocess plan and exit without packing.",
+    )
+    orch.add_argument(
+        "--stop_on_failure",
+        action="store_true",
+        help=(
+            "Abort after the first chunk that returns a non-zero exit "
+            "code. Default is to log and continue so a single bad chunk "
+            "doesn't kill the whole night."
+        ),
+    )
+    return parser
+
+
+def _decide_mode(args):
+    single = bool(args.input_path)
+    orchestrator = bool(args.data_root or args.complete_tasks_json)
+    if single and orchestrator:
+        raise SystemExit(
+            "--input_path (single pack) and --data_root / "
+            "--complete_tasks_json (orchestrator) are mutually exclusive."
+        )
+    if not single and not orchestrator:
+        raise SystemExit(
+            "Pass either --input_path (single-pack mode) or one of "
+            "--data_root / --complete_tasks_json (orchestrator mode)."
+        )
+    if single and not args.output_path:
+        raise SystemExit("--output_path is required in single-pack mode.")
+    if orchestrator and not args.output_root:
+        raise SystemExit("--output_root is required in orchestrator mode.")
+    return "single" if single else "orchestrator"
+
+
+def main():
+    args = build_parser().parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    mode = _decide_mode(args)
+    if mode == "single":
+        return _run_single_pack(args)
+    return _orchestrate(args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

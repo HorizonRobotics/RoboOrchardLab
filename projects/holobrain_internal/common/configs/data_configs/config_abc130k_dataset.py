@@ -56,7 +56,22 @@ dataset_config = dict(
         # without every branch guessing the frame.
         T_base2world=np.eye(4).tolist(),
         T_base2ego=np.eye(4).tolist(),
-        scale_shift=[[1.0, 0.0]] * 14,
+        scale_shift=[
+            [0.352101557, -0.456893168],  # left_joint1
+            [0.475206616, 1.345365714],  # left_joint2
+            [0.476462012, 1.053014417],  # left_joint3
+            [0.536535479, -0.231537762],  # left_joint4
+            [0.421533844, 0.137028558],  # left_joint5
+            [0.523023279, -0.413514429],  # left_joint6
+            [0.406151585, 0.460548091],  # left_gripper
+            [0.368711112, 0.511299894],  # right_joint1
+            [0.450517247, 1.446781509],  # right_joint2
+            [0.479298040, 1.138074794],  # right_joint3
+            [0.506920394, -0.265883101],  # right_joint4
+            [0.433787882, -0.122359766],  # right_joint5
+            [0.516657226, 0.309457587],  # right_joint6
+            [0.378533170, 0.413475551],  # right_gripper
+        ],
         num_joint=14,
         cam_names=["top", "left", "right"],
     ),
@@ -129,7 +144,6 @@ def build_transforms(
         ConvertDataType,
         DualArmKinematics,
         GetProjectionMat,
-        ImageChannelFlip,
         ItemSelection,
         JointStateNoise,
         MoveEgoToCam,
@@ -152,8 +166,8 @@ def build_transforms(
     )
 
     num_joint_per_arm = num_joint // 2 - 1
-    joint_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
-    ee_state_loss_weights = [1, 2, 2, 2, 0.2, 0.2, 0.2, 0.2]
+    joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
+    ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
     loss_weights = np.array(
         [
             [joint_state_loss_weights] * num_joint_per_arm
@@ -204,10 +218,9 @@ def build_transforms(
         type=Resize,
         dst_wh=config.get("dst_wh", (308, 252)),
     )
-    img_channel_flip = dict(type=ImageChannelFlip, output_channel=[2, 1, 0])
     to_tensor = dict(type=ToTensor)
     ego_to_cam = dict(type=MoveEgoToCam)
-    projection_mat = dict(type=GetProjectionMat, target_coordinate="world")
+    projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
         convert_map=_build_convert_map(with_depth),
@@ -226,7 +239,6 @@ def build_transforms(
         value_sampling,
         state_sampling,
         resize,
-        img_channel_flip,
         to_tensor,
         ego_to_cam,
         projection_mat,
