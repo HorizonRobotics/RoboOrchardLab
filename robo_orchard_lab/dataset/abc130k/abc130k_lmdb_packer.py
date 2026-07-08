@@ -777,7 +777,58 @@ def _discover_episodes(
     ]
 
 
-def parse_episode(episode_dir_str, state_dim=14, action_dim=14):
+def _compute_static_mask(
+    joint_positions,
+    ticks_ns,
+    static_threshold,
+    head_time_to_filter,
+    tile_time_to_filter,
+):
+    """Return a boolean keep-mask matching the horizon_manipulation packer.
+
+    Semantics (mirrors ``PiperMcapPacker._pack`` in mcap_packer.py):
+
+      * A frame is "moving" if the max abs diff against the previous frame
+        exceeds ``static_threshold`` on any joint. Frame 0 is always moving.
+      * ``head_time_to_filter`` / ``tile_time_to_filter`` (both in **seconds**)
+        define a protection window at the start / end of the episode:
+        inside that window, only moving frames are kept; outside, every
+        frame is kept regardless. Set either to ``None`` or ``<=0`` to
+        disable that side. To filter static frames across the whole
+        episode, pass a large number (e.g. ``1e8``).
+
+    ``ticks_ns`` is a monotone int64 array of nanoseconds (the 30Hz aligned
+    ticks); the function does its own ns->s conversion internally.
+    """
+    n = joint_positions.shape[0]
+    static_mask = np.ones(n, dtype=bool)  # True = keep
+    if static_threshold is None or static_threshold <= 0 or n <= 1:
+        return static_mask
+    moving = np.any(
+        np.abs(np.diff(joint_positions, axis=0)) > float(static_threshold),
+        axis=1,
+    )
+    static_mask[1:] = moving
+
+    time_mask = np.zeros(n, dtype=bool)  # True = inside protection window
+    t_s = (ticks_ns - ticks_ns[0]).astype(np.float64) / 1e9
+    if head_time_to_filter is not None and head_time_to_filter > 0:
+        time_mask |= t_s < float(head_time_to_filter)
+    if tile_time_to_filter is not None and tile_time_to_filter > 0:
+        tail_s = (ticks_ns[-1] - ticks_ns).astype(np.float64) / 1e9
+        time_mask |= tail_s < float(tile_time_to_filter)
+    # Keep if the frame is moving OR outside the protection window.
+    return static_mask | np.logical_not(time_mask)
+
+
+def parse_episode(
+    episode_dir_str,
+    state_dim=14,
+    action_dim=14,
+    static_threshold=None,
+    head_time_to_filter=None,
+    tile_time_to_filter=None,
+):
     """Top-level pickleable worker function.
 
     Returns one of:
@@ -787,6 +838,11 @@ def parse_episode(episode_dir_str, state_dim=14, action_dim=14):
 
     All results are tagged with the worker PID and wall-clock duration so
     the main process can log parallelism.
+
+    ``static_threshold`` / ``head_time_to_filter`` / ``tile_time_to_filter``
+    control static-frame filtering — see ``_apply_static_filter`` for the
+    exact semantics. Filtering happens inside the worker so the discarded
+    ticks never make it through JPEG encoding + IPC.
     """
     import time
 
@@ -814,6 +870,9 @@ def parse_episode(episode_dir_str, state_dim=14, action_dim=14):
             action_dim,
             make_reader,
             DecoderFactory,
+            static_threshold=static_threshold,
+            head_time_to_filter=head_time_to_filter,
+            tile_time_to_filter=tile_time_to_filter,
         )
     except Exception as e:  # noqa: BLE001
         result = {
@@ -834,6 +893,9 @@ def _parse_episode_inner(
     action_dim,
     make_reader,
     DecoderFactory,  # noqa: N803
+    static_threshold=None,
+    head_time_to_filter=None,
+    tile_time_to_filter=None,
 ):
     row_width = state_dim + action_dim  # noqa: F841 (parity with old packer)
 
@@ -1069,6 +1131,34 @@ def _parse_episode_inner(
         [left_act, left_act_gripper, right_act, right_act_gripper],
         axis=1,
     )
+
+    # Static-frame filter — drop ticks where |Δjoint_positions| stays below
+    # `static_threshold` inside the head/tail protection windows. Applied
+    # here (before video decode) so JPEGs are never encoded for dropped
+    # ticks. Skipping this drops peak worker RSS + IPC payload dramatically
+    # for long episodes with a static settle at the start/end.
+    num_steps_raw = num_steps
+    keep_mask = _compute_static_mask(
+        joint_positions,
+        ticks,
+        static_threshold=static_threshold,
+        head_time_to_filter=head_time_to_filter,
+        tile_time_to_filter=tile_time_to_filter,
+    )
+    num_kept = int(keep_mask.sum())
+    if num_kept < 1:
+        return {
+            "status": "skip",
+            "reason": "all_static",
+            "episode_name": episode_name,
+            "detail": f"raw_steps={num_steps_raw}",
+        }
+    if num_kept < num_steps_raw:
+        ticks = ticks[keep_mask]
+        timestamp = ticks
+        joint_positions = joint_positions[keep_mask]
+        joint_actions = joint_actions[keep_mask]
+        num_steps = int(ticks.shape[0])
 
     camera_names = [_camera_name_from_topic(t) for t in active_cam_topics]
     intrinsic = {}
@@ -1323,6 +1413,25 @@ def _parse_episode_inner(
         t0_ns=int(timestamp[0]),
         tick_ns=None,
         num_steps=int(num_steps),
+        num_steps_raw=int(num_steps_raw),
+        static_filter=dict(
+            static_threshold=(
+                float(static_threshold)
+                if static_threshold is not None
+                else None
+            ),
+            head_time_to_filter=(
+                float(head_time_to_filter)
+                if head_time_to_filter is not None
+                else None
+            ),
+            tile_time_to_filter=(
+                float(tile_time_to_filter)
+                if tile_time_to_filter is not None
+                else None
+            ),
+            num_dropped=int(num_steps_raw - num_steps),
+        ),
     )
 
     payload = dict(
@@ -1369,6 +1478,9 @@ class ABC130kMPLmdbPacker(BaseLmdbManipulationDataPacker):
         urdf_path=None,
         joint_to_urdf=None,
         camera_to_urdf_link=None,
+        static_threshold=None,
+        head_time_to_filter=None,
+        tile_time_to_filter=None,
         **kwargs,
     ):
         super().__init__(input_path, output_path, **kwargs)
@@ -1378,6 +1490,21 @@ class ABC130kMPLmdbPacker(BaseLmdbManipulationDataPacker):
         self.num_steps_per_shard = num_steps_per_shard
         self.stats_path = stats_path
         self.joint_stats_bins = int(joint_stats_bins)
+        # Static-frame filter params — forwarded to every worker. See
+        # `_compute_static_mask` for semantics. All-None disables filtering.
+        self.static_threshold = (
+            float(static_threshold) if static_threshold is not None else None
+        )
+        self.head_time_to_filter = (
+            float(head_time_to_filter)
+            if head_time_to_filter is not None
+            else None
+        )
+        self.tile_time_to_filter = (
+            float(tile_time_to_filter)
+            if tile_time_to_filter is not None
+            else None
+        )
         # FK runs on the main process against every payload as it arrives.
         # This keeps the workers pickling-friendly (a `pytorch_kinematics`
         # chain isn't) and adds ~milliseconds per episode next to minutes of
@@ -1525,7 +1652,15 @@ class ABC130kMPLmdbPacker(BaseLmdbManipulationDataPacker):
 
         episode_dirs = [str(e.episode_dir) for e in self.episodes]
         worker_args = [
-            (d, self.state_dim, self.action_dim) for d in episode_dirs
+            (
+                d,
+                self.state_dim,
+                self.action_dim,
+                self.static_threshold,
+                self.head_time_to_filter,
+                self.tile_time_to_filter,
+            )
+            for d in episode_dirs
         ]
 
         def consume(result, ep_id_holder):
@@ -1593,7 +1728,7 @@ class ABC130kMPLmdbPacker(BaseLmdbManipulationDataPacker):
 
         if self.num_workers == 1:
             for i, args in enumerate(worker_args):
-                consume(parse_episode(*args), [i])
+                consume(_worker_entry(args), [i])
         else:
             ctx = mp.get_context("spawn")
             with ctx.Pool(processes=self.num_workers) as pool:
@@ -1670,8 +1805,22 @@ class ABC130kMPLmdbPacker(BaseLmdbManipulationDataPacker):
 
 
 def _worker_entry(args):
-    episode_dir_str, state_dim, action_dim = args
-    return parse_episode(episode_dir_str, state_dim, action_dim)
+    (
+        episode_dir_str,
+        state_dim,
+        action_dim,
+        static_threshold,
+        head_time_to_filter,
+        tile_time_to_filter,
+    ) = args
+    return parse_episode(
+        episode_dir_str,
+        state_dim,
+        action_dim,
+        static_threshold=static_threshold,
+        head_time_to_filter=head_time_to_filter,
+        tile_time_to_filter=tile_time_to_filter,
+    )
 
 
 def _build_pack_parser():
@@ -1766,6 +1915,44 @@ def _build_pack_parser():
             "Path to the YAM dual-arm URDF used to run FK for per-step "
             "wrist-camera extrinsics (`extrinsic_corrected`). Pass empty "
             "string to skip FK and store only zero-joint references."
+        ),
+    )
+    parser.add_argument(
+        "--static_threshold",
+        type=float,
+        default=1e-3,
+        help=(
+            "Max abs delta on ANY joint below which the tick is treated as "
+            "static (units match `joint_positions`, typically radians / "
+            "gripper units). Combined with the head/tail protection windows "
+            "below: static ticks inside the window are dropped, ticks "
+            "outside the window are always kept. Set <=0 to disable "
+            "filtering entirely. Default matches horizon_manipulation's "
+            "mcap_packer."
+        ),
+    )
+    parser.add_argument(
+        "--head_time_to_filter",
+        type=float,
+        default=1e8,
+        help=(
+            "Protection window at the START of the episode, in SECONDS. "
+            "Static ticks whose (t - t0) < head_time_to_filter are eligible "
+            "for filtering. Default 1e8 matches mcap_packer — effectively "
+            "'the whole episode', so all static frames are dropped. Set "
+            "<=0 to disable head filtering entirely."
+        ),
+    )
+    parser.add_argument(
+        "--tile_time_to_filter",
+        type=float,
+        default=None,
+        help=(
+            "Protection window at the END of the episode, in SECONDS. "
+            "Static ticks whose (t_end - t) < tile_time_to_filter are "
+            "eligible for filtering. Default None matches mcap_packer — "
+            "no tail-side filter (head window already covers everything "
+            "when its default 1e8 is used)."
         ),
     )
     return parser
@@ -1920,6 +2107,15 @@ def _run_chunk_subprocess(
     # default (baked into _build_pack_parser above) is used.
     if args.urdf_path is not None:
         cmd += ["--urdf_path", str(args.urdf_path)]
+    # Forward static-frame filter params. Only forward flags whose value is
+    # not None — argparse `type=float` on the child would choke on "None",
+    # and the tile_time_to_filter default is legitimately None.
+    if args.static_threshold is not None:
+        cmd += ["--static_threshold", str(args.static_threshold)]
+    if args.head_time_to_filter is not None:
+        cmd += ["--head_time_to_filter", str(args.head_time_to_filter)]
+    if args.tile_time_to_filter is not None:
+        cmd += ["--tile_time_to_filter", str(args.tile_time_to_filter)]
     t0 = time.perf_counter()
     with open(log_path, "w") as logf:
         proc = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT)
@@ -2193,6 +2389,9 @@ def _run_single_pack(args):
         # Empty string keeps the "no FK" behaviour parity with the old
         # CLI. Default (None) falls back to build_parser's baked-in URDF.
         urdf_path=args.urdf_path if args.urdf_path else None,
+        static_threshold=args.static_threshold,
+        head_time_to_filter=args.head_time_to_filter,
+        tile_time_to_filter=args.tile_time_to_filter,
     )
     packer()
     return 0

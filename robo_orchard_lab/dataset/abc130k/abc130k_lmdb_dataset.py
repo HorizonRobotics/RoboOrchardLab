@@ -91,30 +91,6 @@ class ABC130kLmdbDataset(HorizonManipulationLmdbDataset):
             **kwargs,
         )
 
-    def get_depths(self, lmdb_index, data):
-        """Fabricate a zero depth tensor per camera at the RGB resolution.
-
-        ABC130K has no depth stream — the packer stores nothing under
-        ``depth_lmdbs``. Reading images first (they're already fetched
-        earlier in ``__getitem__``) gives us the exact per-camera H/W so
-        the fake depth stays in lockstep with any resize/crop augmentation
-        the transform pipeline applies later. Zeros are the natural
-        placeholder: BatchDepthProbGTGenerator treats depth ≤ 0 as invalid
-        (weight 0), so the depth loss branch contributes nothing even if
-        the model is configured with ``with_depth_loss=True``.
-        """
-        imgs = data.get("imgs")
-        if imgs is None:
-            # Belt-and-braces: fall back to reading raw shapes if for some
-            # reason images weren't loaded first. Matches horizon's return
-            # shape (list of HxW arrays, no channel dim).
-            raise RuntimeError(
-                "ABC130kLmdbDataset.get_depths requires imgs to be loaded "
-                "first so the fabricated depth matches RGB resolution. "
-                "Ensure `load_image=True` when `load_depth=True`."
-            )
-        depths = [np.zeros(img.shape[:2], dtype=np.float32) for img in imgs]
-        return {"depths": depths}
 
     def get_intrinsic(self, lmdb_index, data):
         """Prefer ``intrinsic_corrected`` (K reconciled with image size).

@@ -21,16 +21,6 @@ from dataset_factory import processor_register, train_dataset_register
 
 DATA_TYPE = "abc130k"
 
-# ABC130K itself is RGB-only, but the dataset fabricates a zero depth tensor
-# per sample (see ABC130kLmdbDataset.get_depths) so this run stays on the
-# same model architecture as depth-carrying datasets (agilex, robotwin) —
-# no config fork needed. `BatchDepthProbGTGenerator` treats depth ≤ 0 as
-# invalid (weight 0), so the depth loss branch contributes nothing at
-# training time. Flip this back to False once the source dataset is
-# re-packed with real D405 depth.
-ABC130K_HAS_DEPTH = True
-
-
 dataset_config = dict(
     abc130k_dual_arm=dict(
         urdf="./urdf/abc130k_dual_arm.urdf",
@@ -86,21 +76,10 @@ dataset_config = dict(
 )
 
 
-def _build_convert_map(with_depth):
-    convert_map = dict(
-        imgs="float32",
-        image_wh="float32",
-        projection_mat="float32",
-        embodiedment_mat="float32",
-    )
-    if with_depth:
-        convert_map["depths"] = "float32"
-    return convert_map
-
-
-def _build_item_selection_keys(mode, with_depth):
+def _build_item_selection_keys(mode):
     keys = [
         "imgs",
+        "depths",
         "image_wh",
         "projection_mat",
         "embodiedment_mat",
@@ -110,8 +89,6 @@ def _build_item_selection_keys(mode, with_depth):
         "text",
         "joint_mask",
     ]
-    if with_depth:
-        keys.insert(1, "depths")
 
     if mode == "training":
         keys.extend(
@@ -152,6 +129,7 @@ def build_transforms(
     t_base2ego,
     scale_shift,
     num_joint,
+    cam_names,
 ):
     # ABC130k stays on the horizon_manipulation transform pipeline (same
     # source of truth as agilex): SimpleStateSampling handles the gripper
@@ -173,8 +151,6 @@ def build_transforms(
         UnsqueezeBatch,
     )
     from robo_orchard_lab.transforms import ValueSampling
-
-    with_depth = config.get("with_depth", True) and ABC130K_HAS_DEPTH
 
     num_joint_per_arm = num_joint // 2 - 1
     joint_mask = ([True] * num_joint_per_arm + [False]) * 2
@@ -240,14 +216,22 @@ def build_transforms(
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")
     convert_dtype = dict(
         type=ConvertDataType,
-        convert_map=_build_convert_map(with_depth),
+        convert_map=dict(
+            imgs="float32",
+            depths="float32",
+            image_wh="float32",
+            projection_mat="float32",
+            embodiedment_mat="float32",
+        ),
     )
     kinematics = dict(type=MultiArmKinematics, **kinematics_config)
     scale_shift_t = dict(type=AddScaleShift, scale_shift=scale_shift)
     item_selection = dict(
         type=ItemSelection,
-        keys=_build_item_selection_keys(mode, with_depth),
+        keys=_build_item_selection_keys(mode),
     )
+    padding_depths = np.zeros([len(cam_names), 2, 2]).tolist()
+    add_padding_depths = dict(type=AddItems, depths=padding_depths)
 
     value_sampling = (
         dict(
@@ -281,6 +265,7 @@ def build_transforms(
             value_sampling,
             state_sampling,
             random_crop_padding,
+            add_padding_depths,
             resize,
             to_tensor,
             ego_to_cam,
@@ -296,6 +281,7 @@ def build_transforms(
             add_data_relative_items,
             value_sampling,
             state_sampling,
+            add_padding_depths,
             resize,
             to_tensor,
             ego_to_cam,
@@ -310,6 +296,7 @@ def build_transforms(
         transforms = [
             add_data_relative_items,
             state_sampling,
+            add_padding_depths,
             resize,
             to_tensor,
             ego_to_cam,
@@ -344,6 +331,7 @@ def _build_dataset(
         data_config["T_base2ego"],
         data_config["scale_shift"],
         data_config["num_joint"],
+        data_config["cam_names"],
     )
     if callable(data_paths):
         data_paths = data_paths()
@@ -355,7 +343,7 @@ def _build_dataset(
         dataset_name=dataset_name,
         cam_names=data_config["cam_names"],
         reset_step=500,
-        load_depth=config.get("with_depth", True) and ABC130K_HAS_DEPTH,
+        load_depth=False,
         # Required when reading sharded LMDB packs (num_steps_per_shard set).
         # Harmless for flat packs.
         hist_steps=config.get("hist_steps"),
@@ -405,7 +393,7 @@ def _build_processor(config, setting_type):
     return HoloBrainProcessor(
         HoloBrainProcessorCfg(
             load_image=True,
-            load_depth=config["with_depth"] and ABC130K_HAS_DEPTH,
+            load_depth=False,
             valid_action_step=None,
             transforms=transforms,
             cam_names=data_config["cam_names"],
