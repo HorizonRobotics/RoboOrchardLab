@@ -586,10 +586,25 @@ def allocate_tasks_to_gpus(
     if not gpu_ids:
         return [(None, list(task_names))]
 
+    from robocasa.utils.dataset_registry_utils import get_task_horizon
+
     num_workers = min(len(gpu_ids), len(task_names))
     task_groups = [(gpu_ids[i], []) for i in range(num_workers)]
-    for index, task_name in enumerate(task_names):
-        task_groups[index % num_workers][1].append(task_name)
+    worker_horizons = [0 for _ in range(num_workers)]
+    task_horizons = [
+        (task_name, get_task_horizon(task_name), index)
+        for index, task_name in enumerate(task_names)
+    ]
+    for task_name, task_horizon, _ in sorted(
+        task_horizons,
+        key=lambda item: (-item[1], item[2]),
+    ):
+        worker_index = min(
+            range(num_workers),
+            key=lambda index: (worker_horizons[index], index),
+        )
+        task_groups[worker_index][1].append(task_name)
+        worker_horizons[worker_index] += task_horizon
     return task_groups
 
 

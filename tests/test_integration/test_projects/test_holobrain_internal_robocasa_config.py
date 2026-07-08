@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -301,15 +302,41 @@ def test_robocasa_eval_bootstraps_assets_root_before_robocasa_import(
         sys.modules.update(saved_modules)
 
 
-def test_robocasa_eval_allocates_tasks_round_robin(robocasa_common_dir):
+def test_robocasa_eval_balances_tasks_by_horizon(
+    robocasa_common_dir,
+    monkeypatch,
+):
     from robocasa_eval import allocate_tasks_to_gpus
+
+    task_horizons = {
+        "task_a": 100,
+        "task_b": 300,
+        "task_c": 200,
+        "task_d": 100,
+        "task_e": 50,
+    }
+    registry_utils_module = types.ModuleType(
+        "robocasa.utils.dataset_registry_utils"
+    )
+    registry_utils_module.get_task_horizon = task_horizons.__getitem__
+    monkeypatch.setitem(sys.modules, "robocasa", types.ModuleType("robocasa"))
+    monkeypatch.setitem(
+        sys.modules,
+        "robocasa.utils",
+        types.ModuleType("robocasa.utils"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "robocasa.utils.dataset_registry_utils",
+        registry_utils_module,
+    )
 
     assert allocate_tasks_to_gpus(
         ["task_a", "task_b", "task_c", "task_d", "task_e"],
         ["0", "1"],
     ) == [
-        ("0", ["task_a", "task_c", "task_e"]),
-        ("1", ["task_b", "task_d"]),
+        ("0", ["task_b", "task_d"]),
+        ("1", ["task_c", "task_a", "task_e"]),
     ]
     assert allocate_tasks_to_gpus(["task_a"], ["0", "1"]) == [
         ("0", ["task_a"])
