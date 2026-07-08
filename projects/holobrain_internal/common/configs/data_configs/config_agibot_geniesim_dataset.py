@@ -29,7 +29,12 @@ pred_interval = 1
 
 g2_kinematics_config = dict(
     urdf="./urdf/G2_omnipicker_no_warnings.urdf",
-    arm_joint_id=[list(range(5, 12)), list(range(20, 27))],
+    arm_joint_id=[
+        list(range(5, 12)),
+        list(range(20, 27)),
+        list(range(35, 38)),
+        list(range(5)),
+    ],
     arm_link_keys=[
         [
             "arm_l_link1",
@@ -49,24 +54,30 @@ g2_kinematics_config = dict(
             "arm_r_link6",
             "arm_r_end_link",
         ],
+        [
+            "head_link1",
+            "head_link2",
+            "head_link3",
+        ],
+        [
+            "body_link1",
+            "body_link2",
+            "body_link3",
+            "body_link4",
+            "body_link5",
+        ],
     ],
     finger_keys=[
         ["gripper_l_center_link"],
         ["gripper_r_center_link"],
+        [],
+        [],
     ],
-    head_joint_id=list(range(35, 38)),
-    head_link_keys=[
-        "head_link1",
-        "head_link2",
-        "head_link3",
-    ],
-    body_joint_id=list(range(5)),
-    body_link_keys=[
-        "body_link1",
-        "body_link2",
-        "body_link3",
-        "body_link4",
-        "body_link5",
+    arm_connection_joint_indices=[
+        [None, None, None, 0],
+        [None, None, None, 0],
+        [None, None, None, 0],
+        [0, 0, 0, None],
     ],
 )
 
@@ -75,6 +86,8 @@ g2_deploy_camera_kinematics_config = {
     "finger_keys": [
         ["gripper_l_base_link"],
         ["gripper_r_base_link"],
+        [],
+        [],
     ],
 }
 
@@ -103,17 +116,17 @@ def build_transforms(config, mode, calibration=None, kinematics_config=None):
     import numpy as np
 
     from robo_orchard_lab.dataset.agibot_geniesim.transforms import (
-        GenieSim3CalibrationToExtrinsic,
-        GenieSim3Kinematics,
         ZeroRobotState,
     )
     from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
         AddItems,
+        CalibrationToExtrinsic,
         ConvertDataType,
         GetProjectionMat,
         ItemSelection,
         JointStateNoise,
         MoveEgoToCam,
+        MultiArmKinematics,
         Resize,
         SimpleStateSampling,
         ToTensor,
@@ -210,7 +223,10 @@ def build_transforms(config, mode, calibration=None, kinematics_config=None):
         ),
     )
 
-    kinematics = dict(type=GenieSim3Kinematics, **kinematics_config)
+    kinematics = dict(
+        type=MultiArmKinematics,
+        **kinematics_config,
+    )
     zero_robot_state = dict(
         type=ZeroRobotState,
         keys=config.get("zero_robot_state_keys", ["hist_robot_state"]),
@@ -291,7 +307,7 @@ def build_transforms(config, mode, calibration=None, kinematics_config=None):
         ]
     elif mode == "deploy":
         calib_to_ext = dict(
-            type=GenieSim3CalibrationToExtrinsic,
+            type=CalibrationToExtrinsic,
             calibration=calibration,
             cam_ee_joint_indices=dict(
                 hand_left=7,

@@ -685,6 +685,29 @@ class ItemSelection:
 
 
 class MultiArmKinematics:
+    """Computes multi-chain robot forward kinematics and joint distances.
+
+    This transform converts joint-space trajectories into per-joint robot
+    states. Each "arm" in this class is a serial chain segment described by
+    its actuated URDF joint indices and output link keys. Despite the name,
+    the segments do not have to be physical arms: callers may also model
+    head, torso, body, or other serial chains as additional arms when they
+    should participate in the same robot-state tensor.
+
+    Output ordering follows the input configuration exactly. For each arm,
+    robot states are emitted for all `arm_link_keys`, followed by one gripper
+    state when either `finger_keys[i]` is non-empty or `ee_to_gripper[i]` is
+    provided. If multiple finger links are configured for one arm, their
+    poses are averaged into a single gripper state to keep one gripper slot
+    per arm.
+
+    The `joint_relative_pos` matrix is computed as shortest-path distances on
+    a joint graph. Consecutive joints within each arm are connected by unit
+    edges. Connections between arms are controlled by
+    `arm_connection_joint_indices`. By default, all arms are connected at
+    their first joint, preserving the historical dual-arm behavior.
+    """
+
     def __init__(
         self,
         urdf,
@@ -692,7 +715,38 @@ class MultiArmKinematics:
         arm_joint_id=None,
         finger_keys=None,
         ee_to_gripper=None,
+        arm_connection_joint_indices=None,
     ):
+        """Initialize the multi-arm kinematics transform.
+
+        Args:
+            urdf (str): Path to the URDF file used to build the kinematic
+                chain.
+            arm_link_keys (list[list[str]]): Output link names for each arm.
+                The order defines the robot-state joint order for the arm.
+            arm_joint_id (list[list[int]], optional): URDF joint indices for
+                each arm. The joint values from the input state are scattered
+                into these indices before running forward kinematics.
+            finger_keys (list[list[str]], optional): Finger or gripper link
+                names for each arm. All finger poses for one arm are averaged
+                into one gripper state. Default is one empty list per arm.
+            ee_to_gripper (list[list[list[float]] | None], optional): Optional
+                homogeneous transforms from the last configured end-effector
+                link to a synthetic gripper frame. It is mutually exclusive
+                with `finger_keys[i]` for the same arm. Default is `None` for
+                every arm.
+            arm_connection_joint_indices (list[int] | list[list[int | None]],
+                optional): Joint graph connections between arms used only for
+                `joint_relative_pos`.
+
+                When `None`, all arms are connected at joint index 0. A 1D
+                list gives one shared connection joint per arm and connects
+                every arm pair through those joints. A 2D matrix gives the
+                per-pair connection point: `matrix[i][j]` is the joint index
+                on arm `i` that connects to arm `j`, and `None` means no edge
+                for that direction. For each connected pair, both directions
+                must be defined.
+        """
         super().__init__()
         self.urdf = urdf
         self.chain = pk.build_chain_from_urdf(open(urdf, "rb").read())
@@ -722,65 +776,184 @@ class MultiArmKinematics:
             self.ee_to_gripper = ee_to_gripper
         else:
             self.ee_to_gripper = [None] * self.num_arms
+        self.arm_connection_joint_indices = arm_connection_joint_indices
 
         self.num_joints = 0
         self.num_keys = 0
+        self.arm_num_joints = []
         for i, single_arm_link_keys in enumerate(self.arm_link_keys):
-            self.num_joints += len(single_arm_link_keys)
-            self.num_joints += (
+            num_joints = len(single_arm_link_keys) + (
                 len(self.finger_keys[i]) > 0
                 or self.ee_to_gripper[i] is not None
-            )  # Gripper
+            )  # One extra robot-state slot is reserved for the gripper.
+            self.arm_num_joints.append(num_joints)
+            self.num_joints += num_joints
             self.num_keys += len(single_arm_link_keys)
             self.num_keys += len(self.finger_keys[i])
             self.num_keys += self.ee_to_gripper[i] is not None
         self.get_joint_relative_pos()
 
     def get_joint_relative_pos(self):
-        joint_relative_pos = []
-        for i, single_arm_joint_id_a in enumerate(self.arm_joint_id):
-            joint_ids_a = torch.arange(
-                len(single_arm_joint_id_a)
-                + (
-                    len(self.finger_keys[i]) > 0
-                    or self.ee_to_gripper[i] is not None
-                )
-            )
-            joint_relative_pos_per_arm = []
-            for j, single_arm_joint_id_b in enumerate(self.arm_joint_id):
-                if j == i:
-                    joint_ids_b = joint_ids_a
-                else:
-                    joint_ids_b = torch.arange(
-                        -1,
-                        -(
-                            len(single_arm_joint_id_b)
-                            + 1
-                            + (len(self.finger_keys[j]) > 0)
-                        ),
-                        -1,
+        """Build the pairwise shortest-path distance matrix between joints.
+
+        The matrix indexes the flattened robot-state joint order. For each
+        arm, adjacent joints are connected with distance 1. Inter-arm edges
+        are added from `arm_connection_joint_indices`, then Floyd-Warshall is
+        used to compute shortest-path distances between all joints.
+
+        The result is stored in `self._joint_relative_pos` and returned via
+        the `joint_relative_pos` property as a clone.
+        """
+        connection_matrix = self._get_arm_connection_matrix()
+        graph = torch.full(
+            (self.num_joints, self.num_joints),
+            fill_value=self.num_joints + 1,
+            dtype=torch.long,
+        )
+        graph.fill_diagonal_(0)
+
+        arm_start_indices = []
+        start_idx = 0
+        for num_joints in self.arm_num_joints:
+            arm_start_indices.append(start_idx)
+            if num_joints > 1:
+                # Serial joints in one arm are adjacent in robot-state order.
+                joint_ids = torch.arange(start_idx, start_idx + num_joints)
+                graph[joint_ids[:-1], joint_ids[1:]] = 1
+                graph[joint_ids[1:], joint_ids[:-1]] = 1
+            start_idx += num_joints
+
+        for i in range(self.num_arms):
+            for j in range(i + 1, self.num_arms):
+                idx_i = connection_matrix[i][j]
+                idx_j = connection_matrix[j][i]
+                if idx_i is None and idx_j is None:
+                    continue
+                if idx_i is None or idx_j is None:
+                    raise ValueError(
+                        "arm_connection_joint_indices must define both "
+                        f"sides for arm pair ({i}, {j}) or neither side."
                     )
-                joint_relative_pos_per_arm.append(
-                    torch.abs(joint_ids_a[:, None] - joint_ids_b)
-                )
-            joint_relative_pos_per_arm = torch.cat(
-                joint_relative_pos_per_arm, dim=1
+                joint_i = arm_start_indices[i] + idx_i
+                joint_j = arm_start_indices[j] + idx_j
+                graph[joint_i, joint_j] = 1
+                graph[joint_j, joint_i] = 1
+
+        # Floyd-Warshall on a tiny dense graph keeps the logic simple and
+        # supports arbitrary arm connection matrices.
+        for k in range(self.num_joints):
+            graph = torch.minimum(
+                graph,
+                graph[:, k : k + 1] + graph[k : k + 1],
             )
-            joint_relative_pos.append(joint_relative_pos_per_arm)
-        self._joint_relative_pos = torch.cat(joint_relative_pos, dim=0)
+
+        self._joint_relative_pos = graph
         assert self._joint_relative_pos.shape[0] == self.num_joints
         assert self._joint_relative_pos.shape[1] == self.num_joints
 
+    def _get_arm_connection_matrix(self):
+        """Normalize arm connection input into a square matrix.
+
+        Returns:
+            list[list[int | None]]: A `num_arms x num_arms` matrix. Diagonal
+            entries are always `None`; off-diagonal entries are local joint
+            indices or `None` when the arm pair is not connected.
+        """
+        indices = self.arm_connection_joint_indices
+        if indices is None:
+            indices = [0] * self.num_arms
+
+        if not isinstance(indices, (list, tuple)):
+            raise TypeError(
+                "arm_connection_joint_indices must be None, a 1D list, "
+                "or a 2D list."
+            )
+        if len(indices) != self.num_arms:
+            raise ValueError(
+                "arm_connection_joint_indices length must equal "
+                f"num_arms={self.num_arms}, got {len(indices)}."
+            )
+
+        if all(not isinstance(x, (list, tuple)) for x in indices):
+            self._validate_connection_indices(indices)
+            return [
+                [None if i == j else indices[i] for j in range(self.num_arms)]
+                for i in range(self.num_arms)
+            ]
+
+        if not all(isinstance(x, (list, tuple)) for x in indices):
+            raise TypeError(
+                "arm_connection_joint_indices must be either a 1D list "
+                "or a 2D list, not a mixed structure."
+            )
+        if any(len(row) != self.num_arms for row in indices):
+            raise ValueError(
+                "2D arm_connection_joint_indices must have shape "
+                f"({self.num_arms}, {self.num_arms})."
+            )
+
+        matrix = []
+        for i, row in enumerate(indices):
+            matrix_row = []
+            for j, idx in enumerate(row):
+                if j == i:
+                    matrix_row.append(None)
+                    continue
+                if idx is not None:
+                    self._validate_connection_index(i, idx)
+                matrix_row.append(idx)
+            matrix.append(matrix_row)
+        return matrix
+
+    def _validate_connection_indices(self, indices):
+        """Validate a 1D connection-index list."""
+        for arm_idx, joint_idx in enumerate(indices):
+            self._validate_connection_index(arm_idx, joint_idx)
+
+    def _validate_connection_index(self, arm_idx, joint_idx):
+        """Validate one local connection joint index for an arm.
+
+        Args:
+            arm_idx (int): Arm index in `self.arm_link_keys`.
+            joint_idx (int): Local robot-state joint index within that arm.
+        """
+        if not isinstance(joint_idx, int):
+            raise TypeError(
+                "arm_connection_joint_indices values must be int or None, "
+                f"got {type(joint_idx)} for arm {arm_idx}."
+            )
+        if not 0 <= joint_idx < self.arm_num_joints[arm_idx]:
+            raise ValueError(
+                "arm_connection_joint_indices contains out-of-range "
+                f"index {joint_idx} for arm {arm_idx}; valid range is "
+                f"[0, {self.arm_num_joints[arm_idx] - 1}]."
+            )
+
     def __eq__(self, other):
+        """Compare kinematics instances by URDF path."""
         if isinstance(other, MultiArmKinematics):
             return self.urdf == other.urdf
         return False
 
     @property
     def joint_relative_pos(self):
+        """Return a clone of the cached joint-relative-position matrix."""
         return torch.clone(self._joint_relative_pos)
 
     def __call__(self, data):
+        """Apply the transform to a sample dictionary.
+
+        Args:
+            data (dict): Sample containing `pred_joint_state` and/or
+                `hist_joint_state`. If neither exists, `joint_state` is used.
+                Each joint-state tensor is expected to have shape
+                `(..., num_joints)`.
+
+        Returns:
+            dict: The input dictionary updated with `pred_robot_state`,
+            `hist_robot_state`, or `robot_state`, plus `joint_relative_pos`
+            and `kinematics`.
+        """
         joint_states = []
         valid_keys = []
         for key in ["pred_joint_state", "hist_joint_state"]:
@@ -809,6 +982,29 @@ class MultiArmKinematics:
     def joint_state_to_robot_state(
         self, joint_state, embodiedment_mat=None, return_matrix=False
     ):
+        """Convert joint states to robot states through forward kinematics.
+
+        Args:
+            joint_state (torch.Tensor): Joint-state tensor with shape
+                `(..., num_joints)`. Values are ordered by arm, with one
+                gripper value slot after each arm when that arm has a gripper.
+                Gripper value slots are carried into the output state but are
+                not scattered into the URDF chain.
+            embodiedment_mat (torch.Tensor, optional): Optional homogeneous
+                transform(s) applied to every output link pose. It may be a
+                single `[4, 4]` matrix or batched matrices broadcastable after
+                flattening the leading dimensions.
+            return_matrix (bool, optional): If True, return pose matrices with
+                shape `(..., num_keys, 4, 4)` instead of robot-state vectors.
+                Default is False.
+
+        Returns:
+            torch.Tensor: If `return_matrix` is False, returns a tensor of
+            shape `(..., num_joints, 8)`. The last dimension is
+            `[joint_value, x, y, z, qw, qx, qy, qz]`. If `return_matrix` is
+            True, returns homogeneous matrices with shape
+            `(..., num_keys, 4, 4)`.
+        """
         from pytorch3d.transforms import matrix_to_quaternion
 
         input_shape = joint_state.shape
@@ -828,6 +1024,8 @@ class MultiArmKinematics:
         start = 0
         for i, single_arm_joint_id in enumerate(self.arm_joint_id):
             num_joint = len(single_arm_joint_id)
+            # Input state contains one optional gripper slot after each arm,
+            # but only actuated arm joints are written into the URDF chain.
             all_joint_state[..., single_arm_joint_id] = joint_state[
                 ..., start : start + num_joint
             ]
@@ -855,8 +1053,6 @@ class MultiArmKinematics:
                 num_finger_keys += 1
 
             split_size.extend([len(single_arm_link_keys), num_finger_keys])
-        # link_poses = link_poses[0].stack(*link_poses[1:])
-        # link_poses = link_poses.get_matrix()  # [N * xxx, 4, 4]
         link_poses = torch.cat(link_poses)
 
         if embodiedment_mat is not None:
@@ -883,6 +1079,8 @@ class MultiArmKinematics:
         results = list(robot_states.split(split_size))
         for i in range(self.num_arms):
             if results[i * 2 + 1].shape[0] > 1:
+                # Multiple finger links represent one gripper state in the
+                # policy/state tensor, so average their FK poses.
                 results[i * 2 + 1] = results[i * 2 + 1].mean(
                     dim=0, keepdim=True
                 )

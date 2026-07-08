@@ -68,13 +68,11 @@ def build_lmdb_transforms(
         IdentityTransform,
         ItemSelection,
         MoveEgoToCam,
+        MultiArmKinematics,
         Resize,
         SimpleStateSampling,
         ToTensor,
         UnsqueezeBatch,
-    )
-    from robo_orchard_lab.dataset.interna1.transforms import (
-        InternA1MultiArmKinematics,
     )
 
     if depth_restore:
@@ -288,7 +286,7 @@ def build_lmdb_transforms(
     else:
         raise ValueError(f"Unsupported robot type: {robot_type}")
 
-    kinematics = dict(type=InternA1MultiArmKinematics, **kinematics_config)
+    kinematics = dict(type=MultiArmKinematics, **kinematics_config)
 
     if do_calib_to_ext:
         calib_to_ext = dict(

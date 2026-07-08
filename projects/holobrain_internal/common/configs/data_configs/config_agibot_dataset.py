@@ -28,31 +28,33 @@ DATA_TYPE = "agibot"
 kinematics_config = dict(
     agibot=dict(
         urdf="./urdf/G1_120s_dual.urdf",
-        left_arm_joint_id=list(range(7)),  # AgiBot: 7 joints per arm
-        right_arm_joint_id=list(
-            range(8, 15)
-        ),  # AgiBot: joints 8-14 for right arm
-        left_arm_link_keys=[
-            "Joint1_l",
-            "Joint2_l",
-            "Joint3_l",
-            "Joint4_l",
-            "Joint5_l",
-            "Joint6_l",
-            "Joint7_l",
+        arm_joint_id=[
+            list(range(2, 9)),  # Joint1_l - Joint7_l in the URDF chain
+            list(range(17, 24)),  # Joint1_r - Joint7_r in the URDF chain
+            [1, 0],  # joint_body_pitch, joint_lift_body in the URDF chain
         ],
-        right_arm_link_keys=[
-            "Joint1_r",
-            "Joint2_r",
-            "Joint3_r",
-            "Joint4_r",
-            "Joint5_r",
-            "Joint6_r",
-            "Joint7_r",
+        arm_link_keys=[
+            [
+                "Link1_l",
+                "Link2_l",
+                "Link3_l",
+                "Link4_l",
+                "Link5_l",
+                "Link6_l",
+                "Link7_l",
+            ],
+            [
+                "Link1_r",
+                "Link2_r",
+                "Link3_r",
+                "Link4_r",
+                "Link5_r",
+                "Link6_r",
+                "Link7_r",
+            ],
+            ["link-pitch_body", "link-up-down_body"],
         ],
-        left_finger_keys=["Joint7_l"],  # AgiBot uses Joint7 as end effector
-        right_finger_keys=["Joint7_r"],
-        use_ee_state=True,
+        finger_keys=[["gripper_center"], ["right_gripper_center"], []],
     )
 )
 
@@ -88,27 +90,28 @@ agibot_scale_shift = [
 def build_transforms(config, reference_img_path):
     from robo_orchard_lab.dataset.agibot.transforms import (
         AddItems,
-        AddScaleShift,
-        AgiBotDualArmKinematics,
         ConvertDataType,
         GetProjectionMat,
+        IdentityTransform,
         ItemSelection,
         JointSelection,
+        LoadReferenceImages,
+        MoveEgoToCam,
         Resize,
+        SimpleResize,
         SimpleStateSampling,
+        TextAug,
         ToTensor,
         UpSampleJointState,
-        MoveEgoToCam,
-        TextAug,
-        LoadReferenceImages,
-        IdentityTransform,
-        SimpleResize,
     )
-
+    from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
+        MultiArmKinematics,
+    )
     from robo_orchard_lab.transforms import ValueSampling
 
-
-    with_reference_imgs = reference_img_path is not None and config.get("with_reference_imgs", False)
+    with_reference_imgs = reference_img_path is not None and config.get(
+        "with_reference_imgs", False
+    )
     if with_reference_imgs:
         load_reference_img = LoadReferenceImages(reference_img_path)
         reference_img_dst_wh = config.get("reference_img_dst_wh", (224, 224))
@@ -153,38 +156,7 @@ def build_transforms(config, reference_img_path):
         )
     )
 
-    # AgiBot dual-arm kinematics configuration (shared for alpha and beta)
-    kinematics = AgiBotDualArmKinematics(**kinematics_config["agibot"])
-
-    scale_shift = AddScaleShift(
-        scale_shift=(
-            agibot_scale_shift
-            if not config.get("relative")
-            else [
-                # Relative mode scale_shift for 20 joints
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (0.015, 0),  # left arm + gripper
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (1, 0),
-                (0.015, 0),  # right arm + gripper
-                (1, 0),
-                (1, 0),  # head joints
-                (1, 0),
-                (1, 0),  # body joints
-            ]
-        ),
-    )
+    kinematics = MultiArmKinematics(**kinematics_config["agibot"])
 
     item_selection = ItemSelection(
         keys=[
@@ -205,8 +177,6 @@ def build_transforms(config, reference_img_path):
             "subtask",
             "state_loss_weights",
             "fk_loss_weight",
-            "T_world2cam",
-            "intrinsic",
             "joint_mask",
             "value",
             *(["reference_imgs"] if with_reference_imgs else []),
@@ -242,7 +212,7 @@ def build_transforms(config, reference_img_path):
             + [lift_weights] * 2  # lift joints (2)
         ]
     )  # 1, num_joint, 8
-    joint_mask = ([True] * 7 + [False]) * 2 + [False, True]
+    joint_mask = ([True] * 7 + [False]) * 2 + [True, False]
 
     add_data_relative_items = AddItems(
         state_loss_weights=loss_weight * l1,
@@ -250,6 +220,7 @@ def build_transforms(config, reference_img_path):
         T_base2ego=np.eye(4),
         T_base2world=np.eye(4),
         joint_mask=np.array(joint_mask),
+        joint_scale_shift=np.array(agibot_scale_shift, dtype=np.float32),
     )
 
     text_aug = TextAug()
@@ -265,10 +236,9 @@ def build_transforms(config, reference_img_path):
         joint_upsample,
         ego_to_cam,
         projection_mat,
-        scale_shift,
         convert_dtype,
+        joint_selection,  # Filter joint states and scale_shift to no-head
         kinematics,
-        joint_selection,  # Filter robot_state and joint_scale_shift to 16 joints
         text_aug,
         item_selection,
     ]

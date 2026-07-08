@@ -23,6 +23,32 @@ dataset_config = dict(
     aloha_v1=dict(
         kinematics_config=dict(
             urdf="./urdf/arx5/arx5_description_isaac.urdf",
+            arm_link_keys=[
+                [
+                    "fl_link1",
+                    "fl_link2",
+                    "fl_link3",
+                    "fl_link4",
+                    "fl_link5",
+                    "fl_link6",
+                ],
+                [
+                    "fr_link1",
+                    "fr_link2",
+                    "fr_link3",
+                    "fr_link4",
+                    "fr_link5",
+                    "fr_link6",
+                ],
+            ],
+            arm_joint_id=[
+                [10, 11, 12, 13, 14, 15],
+                [18, 19, 20, 21, 22, 23],
+            ],
+            finger_keys=[
+                ["fl_link7", "fl_link8"],
+                ["fr_link7", "fr_link8"],
+            ],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -57,6 +83,32 @@ dataset_config = dict(
     aloha_v2=dict(
         kinematics_config=dict(
             urdf="./urdf/arx5/arx5_description_isaac.urdf",
+            arm_link_keys=[
+                [
+                    "fl_link1",
+                    "fl_link2",
+                    "fl_link3",
+                    "fl_link4",
+                    "fl_link5",
+                    "fl_link6",
+                ],
+                [
+                    "fr_link1",
+                    "fr_link2",
+                    "fr_link3",
+                    "fr_link4",
+                    "fr_link5",
+                    "fr_link6",
+                ],
+            ],
+            arm_joint_id=[
+                [10, 11, 12, 13, 14, 15],
+                [18, 19, 20, 21, 22, 23],
+            ],
+            finger_keys=[
+                ["fl_link7", "fl_link8"],
+                ["fr_link7", "fr_link8"],
+            ],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -91,26 +143,26 @@ dataset_config = dict(
     ur5_wsg=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_ur5_wsg.urdf",
-            left_arm_link_keys=[
-                "left_shoulder_link",
-                "left_upper_arm_link",
-                "left_forearm_link",
-                "left_wrist_1_link",
-                "left_wrist_2_link",
-                "left_wrist_3_link",
+            arm_link_keys=[
+                [
+                    "left_shoulder_link",
+                    "left_upper_arm_link",
+                    "left_forearm_link",
+                    "left_wrist_1_link",
+                    "left_wrist_2_link",
+                    "left_wrist_3_link",
+                ],
+                [
+                    "right_shoulder_link",
+                    "right_upper_arm_link",
+                    "right_forearm_link",
+                    "right_wrist_1_link",
+                    "right_wrist_2_link",
+                    "right_wrist_3_link",
+                ],
             ],
-            left_finger_keys=["left_finger_left"],
-            right_arm_link_keys=[
-                "right_shoulder_link",
-                "right_upper_arm_link",
-                "right_forearm_link",
-                "right_wrist_1_link",
-                "right_wrist_2_link",
-                "right_wrist_3_link",
-            ],
-            right_finger_keys=["right_finger_left"],
-            left_arm_joint_id=list(range(6)),
-            right_arm_joint_id=list(range(8, 14)),
+            arm_joint_id=[list(range(6)), list(range(8, 14))],
+            finger_keys=[["left_finger_left"], ["right_finger_left"]],
         ),
         T_base2world=[
             [1, 0, 0, 0],
@@ -140,26 +192,26 @@ dataset_config = dict(
     arx_x5a=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_arx_x5a.urdf",
-            left_arm_link_keys=[
-                "left_link1",
-                "left_link2",
-                "left_link3",
-                "left_link4",
-                "left_link5",
-                "left_link6",
+            arm_link_keys=[
+                [
+                    "left_link1",
+                    "left_link2",
+                    "left_link3",
+                    "left_link4",
+                    "left_link5",
+                    "left_link6",
+                ],
+                [
+                    "right_link1",
+                    "right_link2",
+                    "right_link3",
+                    "right_link4",
+                    "right_link5",
+                    "right_link6",
+                ],
             ],
-            left_finger_keys=["left_link7"],
-            right_arm_link_keys=[
-                "right_link1",
-                "right_link2",
-                "right_link3",
-                "right_link4",
-                "right_link5",
-                "right_link6",
-            ],
-            right_finger_keys=["right_link7"],
-            left_arm_joint_id=list(range(6)),
-            right_arm_joint_id=list(range(8, 14)),
+            arm_joint_id=[list(range(6)), list(range(8, 14))],
+            finger_keys=[["left_link7"], ["right_link7"]],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -189,28 +241,31 @@ dataset_config = dict(
     franka_panda=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_panda.urdf",
-            left_arm_link_keys=[
-                "panda_left_link1",
-                "panda_left_link2",
-                "panda_left_link3",
-                "panda_left_link4",
-                "panda_left_link5",
-                "panda_left_link6",
-                "panda_left_link7",
+            arm_link_keys=[
+                [
+                    "panda_left_link1",
+                    "panda_left_link2",
+                    "panda_left_link3",
+                    "panda_left_link4",
+                    "panda_left_link5",
+                    "panda_left_link6",
+                    "panda_left_link7",
+                ],
+                [
+                    "panda_right_link1",
+                    "panda_right_link2",
+                    "panda_right_link3",
+                    "panda_right_link4",
+                    "panda_right_link5",
+                    "panda_right_link6",
+                    "panda_right_link7",
+                ],
             ],
-            left_finger_keys=["left_panda_rightfinger"],
-            right_arm_link_keys=[
-                "panda_right_link1",
-                "panda_right_link2",
-                "panda_right_link3",
-                "panda_right_link4",
-                "panda_right_link5",
-                "panda_right_link6",
-                "panda_right_link7",
+            arm_joint_id=[list(range(7)), list(range(9, 16))],
+            finger_keys=[
+                ["left_panda_rightfinger"],
+                ["right_panda_rightfinger"],
             ],
-            right_finger_keys=["right_panda_rightfinger"],
-            left_arm_joint_id=list(range(7)),
-            right_arm_joint_id=list(range(9, 16)),
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -242,26 +297,26 @@ dataset_config = dict(
     piper=dict(
         kinematics_config=dict(
             urdf="./urdf/robotwin2_dual_arm_piper.urdf",
-            left_arm_link_keys=[
-                "left_link1",
-                "left_link2",
-                "left_link3",
-                "left_link4",
-                "left_link5",
-                "left_link6",
+            arm_link_keys=[
+                [
+                    "left_link1",
+                    "left_link2",
+                    "left_link3",
+                    "left_link4",
+                    "left_link5",
+                    "left_link6",
+                ],
+                [
+                    "right_link1",
+                    "right_link2",
+                    "right_link3",
+                    "right_link4",
+                    "right_link5",
+                    "right_link6",
+                ],
             ],
-            left_finger_keys=["left_link7"],
-            right_arm_link_keys=[
-                "right_link1",
-                "right_link2",
-                "right_link3",
-                "right_link4",
-                "right_link5",
-                "right_link6",
-            ],
-            right_finger_keys=["right_link7"],
-            left_arm_joint_id=list(range(6)),
-            right_arm_joint_id=list(range(8, 14)),
+            arm_joint_id=[list(range(6)), list(range(8, 14))],
+            finger_keys=[["left_link7"], ["right_link7"]],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -302,11 +357,13 @@ def build_transforms(
 ):
     import numpy as np
 
+    from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
+        MultiArmKinematics,
+    )
     from robo_orchard_lab.dataset.robotwin.transforms import (
         AddItems,
         AddScaleShift,
         ConvertDataType,
-        DualArmKinematics,
         GetProjectionMat,
         IdentityTransform,
         ImageChannelFlip,
@@ -402,7 +459,7 @@ def build_transforms(
         ),
     )
 
-    kinematics = dict(type=DualArmKinematics, **kinematics_config)
+    kinematics = dict(type=MultiArmKinematics, **kinematics_config)
 
     scale_shift = dict(type=AddScaleShift, scale_shift=scale_shift)
 

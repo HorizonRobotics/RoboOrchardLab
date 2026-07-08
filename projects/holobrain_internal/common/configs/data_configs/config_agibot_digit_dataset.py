@@ -120,7 +120,12 @@ scale_shift = [
 cam_names = ["left", "right", "middle"]
 g1_kinematics_config = dict(
     urdf="./urdf/G1_omnipicker.urdf",
-    arm_joint_id=[list(range(4, 11)), list(range(19, 26))],
+    arm_joint_id=[
+        list(range(4, 11)),
+        list(range(19, 26)),
+        [2, 3],
+        [0, 1],
+    ],
     arm_link_keys=[
         [
             "arm_l_link1",
@@ -140,22 +145,29 @@ g1_kinematics_config = dict(
             "arm_r_link6",
             "arm_r_end_link",
         ],
+        [
+            "head_link1",
+            "head_link2",
+        ],
+        [
+            "body_link1",
+            "body_link2",
+        ],
     ],
     finger_keys=[
         ["gripper_l_center_link"],
         ["gripper_r_center_link"],
+        [],
+        [],
     ],
-    head_joint_id=[2, 3],
-    head_link_keys=[
-        "head_link1",
-        "head_link2",
-    ],
-    body_joint_id=[0, 1],
-    body_link_keys=[
-        "body_link1",
-        "body_link2",
+    arm_connection_joint_indices=[
+        [None, None, None, 0],
+        [None, None, None, 0],
+        [None, None, None, 0],
+        [0, 0, 0, None],
     ],
 )
+
 
 def build_transforms(
     config,
@@ -168,7 +180,6 @@ def build_transforms(
     import numpy as np
 
     from robo_orchard_lab.dataset.agibot_digit.transforms import (
-        AgiBotOmniPickerKinematics,
         ArrowDataParse,
         SimpleStateSampling,
     )
@@ -179,6 +190,7 @@ def build_transforms(
         GetProjectionMat,
         ItemSelection,
         MoveEgoToCam,
+        MultiArmKinematics,
         Resize,
         ToTensor,
         UnsqueezeBatch,
@@ -262,7 +274,7 @@ def build_transforms(
     )
 
     kinematics = dict(
-        type=AgiBotOmniPickerKinematics,
+        type=MultiArmKinematics,
         **kinematics_config,
     )
 

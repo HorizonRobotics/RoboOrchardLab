@@ -31,38 +31,43 @@ DATA_TYPE = "behavior"
 BEHAVIOR1K_CONFIG = dict(
     kinematics_config=dict(
         urdf="./urdf/r1_pro_with_gripper.urdf",
-        torso_link_keys=[
-            "torso_link1",
-            "torso_link2",
-            "torso_link3",
-            "torso_link4",
+        arm_joint_id=[
+            list(range(6, 10)),
+            list(range(10, 17)),
+            list(range(19, 26)),
         ],
-        left_arm_link_keys=[
-            "left_arm_link1",
-            "left_arm_link2",
-            "left_arm_link3",
-            "left_arm_link4",
-            "left_arm_link5",
-            "left_arm_link6",
-            "left_arm_link7",
+        arm_link_keys=[
+            [
+                "torso_link1",
+                "torso_link2",
+                "torso_link3",
+                "torso_link4",
+            ],
+            [
+                "left_arm_link1",
+                "left_arm_link2",
+                "left_arm_link3",
+                "left_arm_link4",
+                "left_arm_link5",
+                "left_arm_link6",
+                "left_arm_link7",
+            ],
+            [
+                "right_arm_link1",
+                "right_arm_link2",
+                "right_arm_link3",
+                "right_arm_link4",
+                "right_arm_link5",
+                "right_arm_link6",
+                "right_arm_link7",
+            ],
         ],
-        left_finger_keys=[
-            "left_gripper_finger_link1",
-            # "left_gripper_finger_link2",
+        finger_keys=[
+            [],
+            ["left_gripper_finger_link1"],
+            ["right_gripper_finger_link1"],
         ],
-        right_arm_link_keys=[
-            "right_arm_link1",
-            "right_arm_link2",
-            "right_arm_link3",
-            "right_arm_link4",
-            "right_arm_link5",
-            "right_arm_link6",
-            "right_arm_link7",
-        ],
-        right_finger_keys=[
-            "right_gripper_finger_link1",
-            # "right_gripper_finger_link2",
-        ],
+        arm_connection_joint_indices=[3, 0, 0],
     ),
     scale_shift=[
         # torso
@@ -108,11 +113,13 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
         ItemSelection,
         JointStateNoise,
         MoveEgoToCam,
-        R1ProDualArmKinematics,
         Resize,
         SimpleStateSampling,
         ToTensor,
         UnsqueezeBatch,
+    )
+    from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
+        MultiArmKinematics,
     )
 
     joint_mask = (
@@ -146,7 +153,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
             embodiedment_mat="float32",
         ),
     )
-    kinematics = dict(type=R1ProDualArmKinematics, **kinematics_config)
+    kinematics = dict(type=MultiArmKinematics, **kinematics_config)
     scale_shift = dict(type=AddScaleShift, scale_shift=scale_shift)
 
     item_selection = dict(
@@ -159,21 +166,16 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
             "embodiedment_mat",
             "hist_robot_state",
             "pred_robot_state",
-            "hist_joint_state",
-            "pred_joint_state",
             "mobile_traj",
             "joint_relative_pos",
             "joint_scale_shift",
             "kinematics",
             "text",
             "subtask_text",
-            "skill_text",
             "uuid",
             "pred_mask",
             "state_loss_weights",
             "fk_loss_weight",
-            "T_world2cam",
-            "intrinsic",
             "joint_mask",
         ],
     )
