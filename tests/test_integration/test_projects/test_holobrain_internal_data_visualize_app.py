@@ -527,6 +527,143 @@ def test_validation_mode_can_be_selected_and_built_lazily():
     assert build_calls == [["val_dataset"]]
 
 
+@pytest.mark.parametrize(
+    ("mode", "mode_specs_attr", "fallback_specs_attr"),
+    [
+        ("training", "training_datasets", "validation_datasets"),
+        ("validation", "validation_datasets", "training_datasets"),
+    ],
+)
+def test_mode_can_build_from_fallback_spec(
+    tmp_path,
+    mode,
+    mode_specs_attr,
+    fallback_specs_attr,
+):
+    dataset_name = f"{mode}_fallback"
+    specs_path = tmp_path / "dataset_specs.py"
+    specs_path.write_text(
+        "\n".join(
+            [
+                f"{mode_specs_attr} = None",
+                f"{fallback_specs_attr} = [",
+                "    {",
+                "        'dataset_type': 'fake',",
+                f"        'dataset_name': '{dataset_name}',",
+                "        'sample_weight': 2,",
+                "    },",
+                "]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    build_calls = []
+
+    def build_dataset(config):
+        build_calls.append(
+            {
+                "selected": config[mode_specs_attr],
+                "specs": app_module._load_dataset_specs(
+                    config,
+                    mode_specs_attr,
+                ),
+            }
+        )
+        return _fake_concat(_FakeDataset())
+
+    handle = _make_handle(
+        name=dataset_name,
+        dataset=None,
+        visualizer=None,
+        datasets={},
+        visualizers={},
+        config={"dataset_specs": str(specs_path)},
+        **{f"build_{mode}_dataset": build_dataset},
+    )
+    client = _make_client(handle=handle)
+
+    response = client.get(f"/api/episodes/0/0?mode={mode}")
+
+    assert response.status_code == 200
+    assert response.get_json()["mode"] == mode
+    assert build_calls == [
+        {
+            "selected": [dataset_name],
+            "specs": [
+                {
+                    "dataset_type": "fake",
+                    "dataset_name": dataset_name,
+                }
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "mode_specs_attr", "fallback_specs_attr"),
+    [
+        ("training", "training_datasets", "validation_datasets"),
+        ("validation", "validation_datasets", "training_datasets"),
+    ],
+)
+def test_mode_prefers_matching_spec(
+    tmp_path,
+    mode,
+    mode_specs_attr,
+    fallback_specs_attr,
+):
+    specs_path = tmp_path / "dataset_specs.py"
+    specs_path.write_text(
+        "\n".join(
+            [
+                f"{mode_specs_attr} = [",
+                "    {",
+                f"        'dataset_type': '{mode}_fake',",
+                "        'dataset_name': 'shared',",
+                "    },",
+                "]",
+                f"{fallback_specs_attr} = [",
+                "    {",
+                "        'dataset_type': 'fallback_fake',",
+                "        'dataset_name': 'shared',",
+                "    },",
+                "]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    build_calls = []
+
+    def build_dataset(config):
+        build_calls.append(
+            app_module._load_dataset_specs(config, mode_specs_attr)
+        )
+        return _fake_concat(_FakeDataset())
+
+    handle = _make_handle(
+        name="shared",
+        dataset=None,
+        visualizer=None,
+        datasets={},
+        visualizers={},
+        config={"dataset_specs": str(specs_path)},
+        **{f"build_{mode}_dataset": build_dataset},
+    )
+    client = _make_client(handle=handle)
+
+    response = client.get(f"/api/episodes/0/0?mode={mode}")
+
+    assert response.status_code == 200
+    assert build_calls == [
+        [
+            {
+                "dataset_type": f"{mode}_fake",
+                "dataset_name": "shared",
+            }
+        ]
+    ]
+
+
 def test_unsupported_mode_returns_client_error():
     handle = _make_handle(
         name="train_only",

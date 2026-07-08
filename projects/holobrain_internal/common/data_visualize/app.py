@@ -289,6 +289,36 @@ def _load_dataset_specs(
     return getattr(spec_module, specs_attr)
 
 
+def _prepare_mode_dataset_specs(
+    cfg: dict[str, Any],
+    dataset_name: str,
+    specs_attr: str,
+) -> str | None:
+    fallback_specs_attr = (
+        "validation_datasets"
+        if specs_attr == "training_datasets"
+        else "training_datasets"
+    )
+    dataset_spec = None
+    for candidate_attr in (specs_attr, fallback_specs_attr):
+        for candidate_spec in _load_dataset_specs(cfg, candidate_attr) or []:
+            if _dataset_spec_name(candidate_spec) != dataset_name:
+                continue
+            dataset_spec = copy.deepcopy(candidate_spec)
+            dataset_spec.pop("sample_weight", None)
+            break
+        if dataset_spec is not None:
+            break
+    if dataset_spec is None:
+        return None
+    module_name = f"_holobrain_data_visualize_specs_{id(cfg)}"
+    spec_module = ModuleType(module_name)
+    setattr(spec_module, specs_attr, [dataset_spec])
+    sys.modules[module_name] = spec_module
+    cfg["dataset_specs"] = module_name
+    return module_name
+
+
 def _load_module_from_ref(module_ref: str) -> ModuleType:
     if module_ref.endswith(".py") or os.path.exists(module_ref):
         module_path = module_ref
@@ -711,9 +741,18 @@ def _ensure_dataset_built(handle: DatasetHandle, mode: str) -> None:
             raise RuntimeError(f"Dataset {handle.name} is not configured.")
         cfg = copy.deepcopy(handle.config)
         cfg[config_key] = [handle.name]
+        specs_module_name = _prepare_mode_dataset_specs(
+            cfg,
+            handle.name,
+            config_key,
+        )
         start_time = time.monotonic()
         logger.info("Building dataset %s in %s mode", handle.name, mode)
-        concat_dataset = build_dataset(cfg)
+        try:
+            concat_dataset = build_dataset(cfg)
+        finally:
+            if specs_module_name is not None:
+                sys.modules.pop(specs_module_name, None)
         if concat_dataset is None:
             raise UnsupportedDatasetModeError(
                 f"Dataset {handle.name} does not support {mode} mode."
