@@ -259,6 +259,57 @@ def test_filter_by_regex_date_prefix(tmp_path: Path):
     }
 
 
+def test_multi_embodiment_episode_is_treated_as_one_combination(
+    tmp_path: Path,
+):
+    episode_dir = (
+        tmp_path / "jinqi.huo" / "fold_t_shirt" / "episode_2026_06_30-18_01_34"
+    )
+    create_episode(episode_dir, 1782838894, 90_000_000_000)
+    (episode_dir / "episode_meta.json").write_text(
+        json.dumps(
+            {
+                "metas": {
+                    "embodiment": [
+                        "piper_x",
+                        "hexfellow",
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records = scan_episode_records_parallel(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].embodiment == "hexfellow_piper_x"
+    assert app_module.parse_record_embodiments("hexfellow,piper_x") == [
+        "hexfellow_piper_x"
+    ]
+
+    summary = build_summary(records, tmp_path)
+    assert summary["totals"]["by_embodiment"] == {"hexfellow_piper_x": 1}
+    assert summary["episodes"][0]["embodiment"] == "hexfellow_piper_x"
+
+    combo_filtered = build_summary_with_filters(
+        records, tmp_path, FilterOptions(embodiment="hexfellow_piper_x")
+    )
+    single_label_filtered = build_summary_with_filters(
+        records, tmp_path, FilterOptions(embodiment="piper_x")
+    )
+    assert combo_filtered["total_episodes"] == 1
+    assert single_label_filtered["total_episodes"] == 0
+
+    groups = app_module.split_records_by_combination(records)
+    assert list(groups.keys()) == [
+        ("jinqi.huo", "fold_t_shirt", "hexfellow_piper_x")
+    ]
+
+    selection = app_module.derive_submit_selection(records, FilterOptions())
+    assert selection["embodiment"] == "hexfellow_piper_x"
+
+
 def test_date_prefix_matcher_falls_back_for_invalid_regex():
     assert date_prefix_matches("2024_03_[-11_30_00", "2024_03_[")
     assert not date_prefix_matches("2024_04_[-11_30_00", "2024_03_[")

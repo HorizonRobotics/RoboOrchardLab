@@ -48,6 +48,12 @@ from flask import (
 )
 from pydantic import BaseModel, ConfigDict
 
+from robo_orchard_lab.dataset.horizon_manipulation.tools.utils import (
+    DEFAULT_EPISODE_EMBODIMENT,
+    normalize_embodiment_items,
+    read_episode_embodiment_tag,
+)
+
 
 def load_dotenv_file(env_path: Path) -> None:
     if not env_path.exists():
@@ -202,7 +208,7 @@ def rebuild_env_content(
 
 
 SCAN_MAX_WORKERS = max(2, min(os.cpu_count() or 4, 8))
-DEFAULT_EMBODIMENT = "piper"
+DEFAULT_EMBODIMENT = DEFAULT_EPISODE_EMBODIMENT
 
 
 class EpisodeRecord(BaseModel):
@@ -238,9 +244,7 @@ def normalize_date_prefixes(value: str) -> list[str]:
     return parse_filter_items(normalize_filter(value))
 
 
-def date_prefix_matches(
-    episode_time_prefix: str, pattern: str | None
-) -> bool:
+def date_prefix_matches(episode_time_prefix: str, pattern: str | None) -> bool:
     """Return whether an episode timestamp prefix matches a query pattern.
 
     Valid patterns are treated as regular expressions. Invalid regular
@@ -336,8 +340,8 @@ def split_records_by_combination(
     """Group records by (user_name, task_name, embodiment) combination.
 
     Each group is guaranteed to have exactly one user, one task, and one
-    embodiment. Records with multiple embodiments are replicated across the
-    relevant groups.
+    embodiment. Records whose source metadata contains multiple embodiment
+    labels are treated as one combined embodiment.
     """
     groups: dict[tuple[str, str, str], list[EpisodeRecord]] = {}
     for record in records:
@@ -1195,34 +1199,14 @@ def read_duration_hours(episode_dir: Path) -> float:
 
 
 def read_embodiment_tag(episode_dir: Path) -> str:
-    episode_meta_path = episode_dir / "episode_meta.json"
-    if not episode_meta_path.exists():
-        return ""
-
-    try:
-        payload = json.loads(episode_meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-
-    metas = payload.get("metas")
-    if not isinstance(metas, dict):
-        return ""
-
-    embodiment = metas.get("embodiment") or metas.get("embodiedment")
-    if not isinstance(embodiment, list):
-        return ""
-
-    normalized = sorted(
-        item.strip().lower()
-        for item in embodiment
-        if isinstance(item, str) and item.strip()
-    )
-    return ",".join(normalized)
+    return read_episode_embodiment_tag(episode_dir)
 
 
 def parse_record_embodiments(value: str) -> list[str]:
     items = parse_filter_items(value)
-    return items or [DEFAULT_EMBODIMENT]
+    if not items:
+        return [DEFAULT_EMBODIMENT]
+    return [normalize_embodiment_items(items)]
 
 
 def resolve_embodiment(value: str) -> str:

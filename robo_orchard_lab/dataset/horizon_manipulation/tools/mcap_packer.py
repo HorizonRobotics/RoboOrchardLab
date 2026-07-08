@@ -29,8 +29,10 @@ from mcap_ros2.decoder import DecoderFactory
 from scipy.spatial.transform import Rotation
 
 from robo_orchard_lab.dataset.horizon_manipulation.tools.utils import (
+    episode_matches_embodiment,
     format_time,
     get_frequency,
+    normalize_embodiment_name,
     pose_to_mat,
     sample,
 )
@@ -72,12 +74,14 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
         tile_time_to_filter: float = None,
         date_prefix: str = None,
         num_steps_per_shard: int = None,
+        embodiment: str | None = None,
         **kwargs,
     ):
         super().__init__(input_path, output_path, **kwargs)
         self.calibration_dict = self.calibration_process(calibration_dict)
         self.task_names = task_names
         self.user_names = user_names
+        self.embodiment = normalize_embodiment_name(embodiment)
         self.chain = pk.build_chain_from_urdf(open(urdf, "rb").read())
         self.static_threshold = static_threshold
         self.head_time_to_filter = head_time_to_filter
@@ -183,6 +187,10 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
 
                         if self.date_prefix is not None and not any(
                             [time.startswith(x) for x in self.date_prefix]
+                        ):
+                            continue
+                        if self.embodiment and not episode_matches_embodiment(
+                            path, self.embodiment
                         ):
                             continue
                         episodes.append([path, user, task, time])
@@ -767,5 +775,6 @@ if __name__ == "__main__":
         date_prefix=args.date_prefix,
         num_steps_per_shard=args.num_steps_per_shard,
         calibration_dict=calibration_dict,
+        embodiment=args.embodiment,
     )
     packer()

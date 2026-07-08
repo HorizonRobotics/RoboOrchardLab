@@ -38,6 +38,7 @@ MANUAL_REVIEW_TEMPLATE_PATH = (
 INSPECT_ERROR_LOG_TEMPLATE_PATH = (
     Path(__file__).resolve().parent / "templates" / "inspect_error_log.html"
 )
+DEFAULT_EPISODE_EMBODIMENT = "piper"
 
 REPORT_COLUMNS = [
     "mcap_path",
@@ -112,6 +113,65 @@ def get_h264_encoder() -> str:
         if encoder in encoders:
             return encoder
     raise RuntimeError("No supported H.264 encoder found in ffmpeg")
+
+
+def normalize_embodiment_items(value: list[Any]) -> str:
+    """Return the canonical name for one or more embodiment labels."""
+
+    normalized = sorted(
+        {
+            item.strip().lower()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        }
+    )
+    return "_".join(normalized)
+
+
+def normalize_embodiment_name(value: str | None) -> str:
+    """Normalize a requested embodiment name or comma-separated combination."""
+
+    if value is None:
+        return ""
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if len(items) > 1:
+        return normalize_embodiment_items(items)
+    return items[0].lower() if items else ""
+
+
+def read_episode_embodiment_tag(episode_dir: str | os.PathLike[str]) -> str:
+    """Read and normalize the embodiment tag stored in episode metadata."""
+
+    episode_meta_path = Path(episode_dir) / "episode_meta.json"
+    if not episode_meta_path.exists():
+        return ""
+
+    try:
+        payload = json.loads(episode_meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    metas = payload.get("metas")
+    if not isinstance(metas, dict):
+        return ""
+
+    embodiment = metas.get("embodiment") or metas.get("embodiedment")
+    if not isinstance(embodiment, list):
+        return ""
+
+    return normalize_embodiment_items(embodiment)
+
+
+def episode_matches_embodiment(
+    episode_dir: str | os.PathLike[str], embodiment: str | None
+) -> bool:
+    """Return whether an episode belongs to the requested embodiment."""
+
+    requested = normalize_embodiment_name(embodiment)
+    if not requested:
+        return True
+    actual = read_episode_embodiment_tag(episode_dir)
+    return (actual or DEFAULT_EPISODE_EMBODIMENT) == requested
 
 
 class FfmpegVideoWriter:

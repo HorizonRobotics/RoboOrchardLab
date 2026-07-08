@@ -48,6 +48,7 @@ from robo_orchard_lab.dataset.horizon_manipulation.tools.utils import (
     build_report_row,
     concat_videos,
     count_topics,
+    episode_matches_embodiment,
     format_numeric_detail_table,
     format_rule_detail_lines,
     format_text_detail_table,
@@ -57,6 +58,7 @@ from robo_orchard_lab.dataset.horizon_manipulation.tools.utils import (
     get_frequency,
     iter_logged_topics,
     iter_rule_results,
+    normalize_embodiment_name,
     pose_to_mat,
     sample,
     topic_sort_key,
@@ -123,6 +125,7 @@ class PiperMcapChecker:
         inspect_config=None,
         inspect_config_path: str | None = None,
         enable_ffmpeg_log: bool = False,
+        embodiment: str | None = None,
         **kwargs,
     ):
         self.input_path = input_path
@@ -130,6 +133,7 @@ class PiperMcapChecker:
         self.calibration_dict = self.calibration_process(calibration_dict)
         self.task_names = task_names
         self.user_names = user_names
+        self.embodiment = normalize_embodiment_name(embodiment)
         self.chain = pk.build_chain_from_urdf(open(urdf, "rb").read())
         self.static_threshold = static_threshold
         self.head_time_to_filter = head_time_to_filter
@@ -289,6 +293,10 @@ class PiperMcapChecker:
 
                         if self.date_prefix is not None and not any(
                             [time.startswith(x) for x in self.date_prefix]
+                        ):
+                            continue
+                        if self.embodiment and not episode_matches_embodiment(
+                            path, self.embodiment
                         ):
                             continue
                         episodes.append([path, user, task, time])
@@ -1638,6 +1646,7 @@ if __name__ == "__main__":
         date_prefix=args.date_prefix,
         calibration_dict=calibration_dict,
         num_workers=args.num_workers,
+        embodiment=args.embodiment,
         inspect_config=build_default_inspect_config()
         if args.inspect_config is None
         else load_inspect_config(args.inspect_config),
