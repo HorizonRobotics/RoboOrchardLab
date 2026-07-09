@@ -16,6 +16,7 @@
 
 # ruff: noqa: F401
 
+from .config_abc130k_dataset import *
 from .config_agibot_dataset import *
 from .config_agibot_digit_dataset import *
 from .config_agibot_geniesim_dataset import *

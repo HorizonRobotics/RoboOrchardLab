@@ -84,6 +84,14 @@ TRAINING_DATASETS = [
         ],
         reference_img_path=f"{DATA_BASE}/reference_imgs/robotwin2_0",
     ),
+    dict(
+        dataset_type="abc130k",
+        dataset_name="abc130k",
+        setting_type="abc130k_dual_arm",
+        data_paths=lambda: _glob_sorted(
+            "/horizon-bucket/robot_lab/users/zhengmao.sun-labs/datasets/ABC_130k/train/*/*/",
+        ),
+    ),
     # ================ agilex ===================
     dict(
         dataset_type="agilex",
@@ -564,6 +572,7 @@ filter_list = [
     "robotwin2_0_arx_x5a",
     "robotwin2_0_franka_panda",
     "robotwin2_0_piper",
+    "abc130k",
     "challenge",
     "challenge_finetune",
     "challenge_self_collect",
@@ -610,6 +619,7 @@ dataset_sample_weights = dict(
     robotwin2_0_ur5_wsg=1,
     robotwin2_0_arx_x5a=1,
     robotwin2_0_franka_panda=1,
+    abc130k=1,
     robotwin2_0_piper=1,
     challenge=2,
     challenge_finetune=0.1,
