@@ -35,8 +35,8 @@ config = dict(
     with_cot=False,
     dataset_specs="dataset_specs",
     deploy_specs="deploy_specs",
-    # vlm_pretrain="./ckpt/Qwen3-VL-4B-Instruct",
     vlm_pretrain="./ckpt/Qwen2.5-VL-3B-Instruct",
+    # vlm_pretrain="./ckpt/Qwen3.5-2B", dst_wh=(352, 256), patch_size=32,
     num_vlm_layers=1,
     freeze_vlm=False,
     checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
@@ -118,8 +118,8 @@ def build_model(config):
         AdaRMSNorm,
         HoloBrain_Qwen2_5_VL,
         HoloBrain_Qwen2_5_VLConfig,
-        HoloBrain_Qwen3VL,
-        HoloBrain_Qwen3VLConfig,
+        HoloBrain_Qwen3_5_VL,
+        HoloBrain_Qwen3_5_VLConfig,
         HoloBrainActionDecoder,
         HoloBrainActionLoss,
         HoloBrainDecoderBaseConfig,
@@ -145,10 +145,11 @@ def build_model(config):
         SwinTransformer,
     )
 
-    if "qwen3" in config["vlm_pretrain"].lower():
+    vlm_pretrain = config["vlm_pretrain"].lower()
+    if "qwen3.5" in vlm_pretrain or "qwen3_5" in vlm_pretrain:
         patch_size = 32
-        model_class = HoloBrain_Qwen3VL
-        model_config = HoloBrain_Qwen3VLConfig
+        model_class = HoloBrain_Qwen3_5_VL
+        model_config = HoloBrain_Qwen3_5_VLConfig
     else:
         patch_size = 28
         model_class = HoloBrain_Qwen2_5_VL

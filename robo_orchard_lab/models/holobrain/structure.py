@@ -150,9 +150,11 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
                 torch_dtype=torch.bfloat16,
             )
         if not hasattr(self.vlm, "language_model"):
-            logger.warning("Deprecated, please use `transformers` >= 4.57.1.")
-            self.vlm.language_model = self.vlm.model
+            self.vlm.language_model = self.vlm.model.language_model
+        if not hasattr(self.vlm.model, "get_rope_index"):
             self.vlm.model.get_rope_index = self.vlm.get_rope_index
+        if not hasattr(self.vlm, "visual"):
+            self.vlm.visual = self.vlm.model.visual
 
         if self.cfg.freeze_vlm:
             self.vlm.eval()
@@ -461,60 +463,29 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
             return model_outs, feature_maps, text_dict, loss_depth
         return model_outs, feature_maps, text_dict
 
-    def _forward_vlm(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        pixel_values=None,
-        image_grid_thw=None,
-    ):
-        inputs_embeds = self.vlm.language_model.embed_tokens(input_ids)
-        if pixel_values is not None:
-            pixel_values = pixel_values.type(self.vlm.visual.dtype)
-            image_embeds = self.vlm.visual(
-                pixel_values, grid_thw=image_grid_thw
+    def _forward_vlm(self, **vlm_inputs):
+        input_ids = vlm_inputs.get("input_ids")
+        if (
+            input_ids is not None
+            and "mm_token_type_ids" not in vlm_inputs
+            and (
+                vlm_inputs.get("image_grid_thw") is not None
+                or vlm_inputs.get("video_grid_thw") is not None
             )
-            n_image_tokens = (
-                (input_ids == self.vlm.config.image_token_id).sum().item()
-            )
-            n_image_features = image_embeds.shape[0]
-            if n_image_tokens != n_image_features:
-                raise ValueError(
-                    "Image features and image tokens do not match: "
-                    f"tokens: {n_image_tokens}, features {n_image_features}"
-                )
+        ):
+            mm_token_type_ids = torch.zeros_like(input_ids)
+            mm_token_type_ids[input_ids == self.vlm.config.image_token_id] = 1
+            video_token_id = getattr(self.vlm.config, "video_token_id", None)
+            if video_token_id is not None:
+                mm_token_type_ids[input_ids == video_token_id] = 2
+            vlm_inputs["mm_token_type_ids"] = mm_token_type_ids
 
-            mask = input_ids == self.vlm.config.image_token_id
-            mask_unsqueezed = mask.unsqueeze(-1)
-            mask_expanded = mask_unsqueezed.expand_as(inputs_embeds)
-            image_mask = mask_expanded.to(inputs_embeds.device)
-
-            image_embeds = image_embeds.to(
-                inputs_embeds.device, inputs_embeds.dtype
-            )
-            inputs_embeds = inputs_embeds.masked_scatter(
-                image_mask, image_embeds
-            )
-
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(inputs_embeds.device)
-
-        position_ids, _rope_deltas = self.vlm.model.get_rope_index(
-            input_ids,
-            image_grid_thw=image_grid_thw,
-            attention_mask=attention_mask,
-        )
-
-        outputs = self.vlm.language_model(
-            input_ids=None,
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=False,
+        return self.vlm.model(
+            **vlm_inputs,
             output_hidden_states=True,
             return_dict=True,
+            use_cache=False,
         )
-        return outputs
 
     @torch.no_grad()
     def _generate_vlm(self, inputs):

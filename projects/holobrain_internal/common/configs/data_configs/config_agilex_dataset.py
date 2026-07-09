@@ -327,13 +327,17 @@ dataset_config = dict(
         load_extrinsic=True,
     ),
     horizon_piper_435_low_beijing=dict(
-        default_calibration=default_calibrations["horizon_piper_435_low_beijing"],
+        default_calibration=default_calibrations[
+            "horizon_piper_435_low_beijing"
+        ],
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_piper_435_low_shanghai=dict(
-        default_calibration=default_calibrations["horizon_piper_435_low_shanghai"],
+        default_calibration=default_calibrations[
+            "horizon_piper_435_low_shanghai"
+        ],
         urdf="./urdf/piper_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
@@ -379,10 +383,13 @@ dataset_config = dict(
             "wipe_wine",
             "move_chair",
         ],
-        default_calibration=default_calibrations["horizon_piper_435_low_beijing"],
+        default_calibration=default_calibrations[
+            "horizon_piper_435_low_beijing"
+        ],
         load_extrinsic=True,
     ),
 )
+
 
 def build_transforms(
     config,

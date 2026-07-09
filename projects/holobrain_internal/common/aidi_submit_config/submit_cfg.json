@@ -1,7 +1,7 @@
 {
     "job_name": "holobrain_alldata",
     "workspace_folder": "submit-holobrain",
-    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-transformers5102",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 8,

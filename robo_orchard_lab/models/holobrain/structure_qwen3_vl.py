@@ -114,6 +114,11 @@ class HoloBrain_Qwen3VL(HoloBrain_Qwen2_5_VL):  # noqa: N801
                 dtype=torch.bfloat16,
             )
 
+        if not hasattr(self.vlm, "language_model"):
+            self.vlm.language_model = self.vlm.model.language_model
+        if not hasattr(self.vlm, "visual"):
+            self.vlm.visual = self.vlm.model.visual
+
         if self.cfg.freeze_vlm:
             self.vlm.eval()
             self.vlm.requires_grad_(False)

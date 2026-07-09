@@ -256,8 +256,8 @@ if __name__ == "__main__":
             "h5py",
         ],
         "holobrain_0": [
-            "torch>=2.6.0",
-            "transformers<=4.57.1",
+            "torch>=2.8.0",
+            "transformers<=5.10.2",
             "pytorch3d>=0.7.8",
             "pytorch-kinematics",
             "ninja",

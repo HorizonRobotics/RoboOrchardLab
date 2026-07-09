@@ -23,6 +23,9 @@ from robo_orchard_lab.models.holobrain.structure import (
     HoloBrain_Qwen2_5_VL,
     TextTemplate,
 )
+from robo_orchard_lab.models.holobrain.structure_qwen3_5 import (
+    HoloBrain_Qwen3_5_VL,
+)
 
 
 def _build_uninitialized_holobrain():
@@ -139,3 +142,33 @@ class TestHoloBrainReferenceImageMasks:
         assert text_dict["text_token_mask"].tolist() == [
             [False, True, True, True]
         ]
+
+
+class TestHoloBrainQwen35:
+    """Tests for Qwen3.5 VLM input adaptation."""
+
+    def test_forward_vlm_builds_mm_token_type_ids_when_missing(self):
+        model = HoloBrain_Qwen3_5_VL.__new__(HoloBrain_Qwen3_5_VL)
+        captured = {}
+
+        class FakeVLMModel:
+            def __call__(self, **kwargs):
+                captured.update(kwargs)
+                return {"hidden_states": ()}
+
+        model.vlm = SimpleNamespace(
+            config=SimpleNamespace(image_token_id=99, video_token_id=98),
+            model=FakeVLMModel(),
+        )
+
+        model._forward_vlm(
+            input_ids=torch.tensor([[1, 99, 2, 98, 3]]),
+            attention_mask=torch.ones(1, 5),
+            pixel_values=torch.zeros(1, 3),
+            image_grid_thw=torch.tensor([[1, 2, 2]]),
+        )
+
+        assert captured["mm_token_type_ids"].tolist() == [[0, 1, 0, 2, 0]]
+        assert captured["output_hidden_states"] is True
+        assert captured["return_dict"] is True
+        assert captured["use_cache"] is False

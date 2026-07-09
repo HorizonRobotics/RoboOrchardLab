@@ -46,6 +46,10 @@ from .structure import (
     HoloBrain_Qwen2_5_VLConfig,
     TextTemplate,
 )
+from .structure_qwen3_5 import (
+    HoloBrain_Qwen3_5_VL,
+    HoloBrain_Qwen3_5_VLConfig,
+)
 from .structure_qwen3_vl import (
     HoloBrain_Qwen3VL,
     HoloBrain_Qwen3VLConfig,

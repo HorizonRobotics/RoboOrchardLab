@@ -30,11 +30,34 @@ from safetensors.torch import (
     load_model as safetensors_load_model,
     save_model as safetensors_save_model,
 )
-from transformers.modeling_utils import (
-    get_parameter_device,
-    get_parameter_dtype,
-)
 from typing_extensions import Self, deprecated
+
+try:
+    from transformers.modeling_utils import (
+        get_parameter_device,
+        get_parameter_dtype,
+    )
+except ImportError:
+
+    def get_parameter_device(module: torch.nn.Module) -> torch.device:
+        for tensor in module.parameters(recurse=True):
+            return tensor.device
+        for tensor in module.buffers(recurse=True):
+            return tensor.device
+        return torch.device("cpu")
+
+    def get_parameter_dtype(module: torch.nn.Module) -> torch.dtype:
+        fallback = None
+        for tensor in module.parameters(recurse=True):
+            fallback = tensor.dtype
+            if tensor.is_floating_point():
+                return tensor.dtype
+        for tensor in module.buffers(recurse=True):
+            fallback = tensor.dtype
+            if tensor.is_floating_point():
+                return tensor.dtype
+        return fallback or torch.float32
+
 
 from robo_orchard_lab.utils.huggingface import (
     auto_add_repo_type,
@@ -123,7 +146,7 @@ class TorchModelMixin(
 
     @property
     def dtype(self) -> torch.dtype:
-        return get_parameter_dtype(self)  # type: ignore
+        return get_parameter_dtype(self)
 
     @property
     def accelerate_model_id(self) -> int:
