@@ -89,7 +89,7 @@ TRAINING_DATASETS = [
         dataset_name="abc130k",
         setting_type="abc130k_dual_arm",
         data_paths=lambda: _glob_sorted(
-            "/horizon-bucket/robot_lab/users/zhengmao.sun-labs/ABC_130k/lmdb_train/*/*/",
+            "/horizon-bucket/robot_lab/users/zhengmao.sun-labs/datasets/ABC_130k/train/*/*/",
         ),
     ),
     # ================ agilex ===================
