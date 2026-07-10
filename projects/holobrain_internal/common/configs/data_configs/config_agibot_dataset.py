@@ -276,6 +276,6 @@ def build_datasets(
         cam_names=None,
         dataset_name=dataset_name,
         instruction_reader=instruction_reader,
-        reset_step=500,
+        reset_step=200,
     )
     return dataset

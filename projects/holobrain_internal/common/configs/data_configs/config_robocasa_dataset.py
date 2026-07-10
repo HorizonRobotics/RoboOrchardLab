@@ -153,7 +153,7 @@ def build_datasets(
         transforms=build_transforms(config, mode),
         lazy_init=lazy_init or mode != "training",
         dataset_name=dataset_name,
-        reset_step=1000,
+        reset_step=500,
         load_depth=False,
         cam_names=CAMERA_NAMES,
         hist_steps=config["hist_steps"],

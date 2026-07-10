@@ -342,7 +342,7 @@ def _build_dataset(
         transforms=transforms,
         dataset_name=dataset_name,
         cam_names=data_config["cam_names"],
-        reset_step=500,
+        reset_step=200,
         load_depth=False,
         # Required when reading sharded LMDB packs (num_steps_per_shard set).
         # Harmless for flat packs.

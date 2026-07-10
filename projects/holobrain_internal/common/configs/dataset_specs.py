@@ -23,11 +23,22 @@ from glob import glob
 DATA_BASE = os.environ.get("HOLOBRAIN_DATA_BASE", "./data")
 
 
-def _glob_sorted(*patterns: str) -> list[str]:
+def _glob_sorted(
+    *patterns: str,
+    exclude_patterns: None | list[str] | str = None
+) -> list[str]:
     data_paths = []
     for pattern in patterns:
         data_paths.extend(glob(pattern))
-    return sorted(set(data_paths))
+    data_paths = sorted(set(data_paths))
+    if exclude_patterns is not None:
+        if isinstance(exclude_patterns, str):
+            exclude_patterns = [exclude_patterns]
+        exclude_paths = []
+        for exclude in exclude_patterns:
+            exclude_paths.extend(glob(exclude))
+        data_paths = [x for x in data_paths if x not in exclude_paths]
+    return data_paths
 
 
 TRAINING_DATASETS = [
@@ -89,7 +100,8 @@ TRAINING_DATASETS = [
         dataset_name="abc130k",
         setting_type="abc130k_dual_arm",
         data_paths=lambda: _glob_sorted(
-            "/horizon-bucket/robot_lab/users/zhengmao.sun-labs/datasets/ABC_130k/train/*/*/",
+            f"{DATA_BASE}/abc_130k/lmdb/train/*/*/",
+            f"{DATA_BASE}/abc_130k/lmdb/val/*/*/",
         ),
     ),
     # ================ agilex ===================
@@ -156,8 +168,30 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_beijing/xuewu.lin-two_fold_towel-20250710",
             f"{DATA_BASE}/horizon_beijing/xuewu.lin-two_fold_towel-20250712",
             f"{DATA_BASE}/horizon_beijing/zhixu.zhao-*",
+            f"{DATA_BASE}/horizon_beijing/*-stamp_positioning-*",
+            f"{DATA_BASE}/horizon_beijing/*-wipe_the_blackboard-*",
+            f"{DATA_BASE}/horizon_beijing/*-scoop_with_a_small_spoon-*",
             f"{DATA_BASE}/horizon_beijing/*-fold_paper_box-*",
             f"{DATA_BASE}/horizon_beijing/*-place_objects_to_basket-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_object_to_location-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_object_to_drawer-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_object_to_blow-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_object_to_plate-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_object_in_bag-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_pen_to_holder-*",
+            f"{DATA_BASE}/horizon_beijing/*-arrange_flowers-*",
+            f"{DATA_BASE}/horizon_beijing/*-open_cabinet-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_phone_to_stand-*",
+            f"{DATA_BASE}/horizon_beijing/*-pour_the_drink-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_drinks_on_shelf-*",
+            f"{DATA_BASE}/horizon_beijing/*-organize_books-*",
+            f"{DATA_BASE}/horizon_beijing/*-block_sorting-*",
+            f"{DATA_BASE}/horizon_beijing/*-stack_plates-*",
+            f"{DATA_BASE}/horizon_beijing/*-stack_bowls-*",
+            f"{DATA_BASE}/horizon_beijing/*-organize_utensils-*",
+            f"{DATA_BASE}/horizon_beijing/*-place_to_slot_hard-*",
+            f"{DATA_BASE}/horizon_beijing/*-close_laptop_lid-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_beijing/*-piper_x-*"],
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -595,15 +629,15 @@ filter_list = [
     "table30v2_arx5",
     "table30v2_aloha",
     "table30v2_dos_w1",
-    "rh20t_flexiv",
-    "rh20t_flexiv_v2",
-    "rh20t_ur5",
-    "rh20t_ur5_v2",
-    "rh20t_franka",
-    "rh20t_kuka",
-    "rh20t_kuka_v2",
+    # "rh20t_flexiv",
+    # "rh20t_flexiv_v2",
+    # "rh20t_ur5",
+    # "rh20t_ur5_v2",
+    # "rh20t_franka",
+    # "rh20t_kuka",
+    # "rh20t_kuka_v2",
     "behavior_manipulation",
-    "behavior_navigation",
+    # "behavior_navigation",
     "robocasa_pretrain",
     "robocasa_pretrain_mg",
     "robocasa_target",
@@ -619,7 +653,7 @@ dataset_sample_weights = dict(
     robotwin2_0_ur5_wsg=1,
     robotwin2_0_arx_x5a=1,
     robotwin2_0_franka_panda=1,
-    abc130k=1,
+    abc130k=8,
     robotwin2_0_piper=1,
     challenge=2,
     challenge_finetune=0.1,
@@ -632,7 +666,7 @@ dataset_sample_weights = dict(
     agibot=10,
     agibot_geniesim3_challenge=2,
     droid=5,
-    egodex=10,
+    egodex=8,
     interna1_arx_lift2=10,
     interna1_agile_split_aloha=10,
     libero_goal=0.1,
