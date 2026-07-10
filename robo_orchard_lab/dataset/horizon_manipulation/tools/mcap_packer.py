@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -28,6 +29,9 @@ from mcap.reader import make_reader
 from mcap_ros2.decoder import DecoderFactory
 from scipy.spatial.transform import Rotation
 
+from robo_orchard_lab.dataset.horizon_manipulation.tools.lmdb_pack_log import (
+    write_pack_log,
+)
 from robo_orchard_lab.dataset.horizon_manipulation.tools.utils import (
     episode_matches_embodiment,
     format_time,
@@ -691,30 +695,11 @@ class PiperMcapPacker(BaseLmdbManipulationDataPacker):
             )
         self.index_pack_file.write("__len__", num_valid_ep)
         self.close()
+        self._write_pack_log()
 
-    def add_error_tag(self, error_uuid_list):
-        from robo_orchard_lab.dataset.lmdb.base_lmdb_dataset import (
-            BaseIndexData,
-        )
-        from robo_orchard_lab.dataset.lmdb.lmdb_wrapper import Lmdb
-
-        self.index_pack_file = Lmdb(
-            os.path.join(self.output_path, "index"),
-            writable=True,
-            commit_step=1,
-            **self.lmdb_kwargs,
-        )
-        for episode_idx in self.index_pack_file.keys():
-            if episode_idx == "__len__":
-                continue
-            meta = BaseIndexData.model_validate(
-                self.index_pack_file.get(episode_idx)
-            )
-            if meta.uuid in error_uuid_list:
-                logger.info(f"Find error data: {meta.uuid}")
-                meta.error = True
-                self.write_index(episode_idx, meta.model_dump())
-        self.index_pack_file.close()
+    def _write_pack_log(self):
+        pack_log_path = write_pack_log(Path(self.output_path), overwrite=True)
+        logger.info("Wrote LMDB pack log: %s", pack_log_path)
 
 
 if __name__ == "__main__":

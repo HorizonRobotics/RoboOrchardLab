@@ -156,6 +156,29 @@ def test_packer_input_path_handler_treats_missing_embodiment_as_piper(
     assert episodes[0][0] == str(episode_dir)
 
 
+def test_packer_write_pack_log_overwrites_existing_file(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls = []
+
+    def fake_write_pack_log(lmdb_path, *, overwrite=False):
+        calls.append((lmdb_path, overwrite))
+        return lmdb_path / "pack_log.json"
+
+    monkeypatch.setattr(
+        "robo_orchard_lab.dataset.horizon_manipulation.tools.mcap_packer."
+        "write_pack_log",
+        fake_write_pack_log,
+    )
+    packer = object.__new__(PiperMcapPacker)
+    packer.output_path = str(tmp_path)
+
+    PiperMcapPacker._write_pack_log(packer)
+
+    assert calls == [(tmp_path, True)]
+
+
 def test_checker_input_path_handler_filters_by_combined_embodiment(
     tmp_path: Path,
 ):
