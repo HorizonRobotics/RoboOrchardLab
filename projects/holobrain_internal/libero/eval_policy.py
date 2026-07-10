@@ -20,13 +20,16 @@ import json
 import logging
 import os
 
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/robo_orchard_matplotlib")
+
 import numpy as np
 import robosuite.utils.transform_utils as T  # noqa: N812
 import torch
 import tqdm
 import yaml
-from libero.libero import benchmark
 from libero_utils import (
+    get_benchmark_module,
     get_libero_agentview_image,
     get_libero_dummy_action,
     get_libero_env,
@@ -52,6 +55,18 @@ MAX_STEPS = {
     "libero_10": 520,  # longest training demo has 505 steps
     "libero_90": 400,  # longest training demo has 373 steps
 }
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in {"1", "true", "yes", "y"}:
+        return True
+    if value in {"0", "false", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid bool value: {value}")
+
 
 torch.serialization.add_safe_globals(
     [
@@ -86,7 +101,12 @@ def run_task(args, config, task_id, task_suite):
     initial_states = task_suite.get_task_init_states(task_id)
 
     # Initialize LIBERO environment and task description
-    env, task_description = get_libero_env(task, resolution=256)
+    env, task_description = get_libero_env(
+        task,
+        resolution=256,
+        benchmark_name=args.benchmark,
+        benchmark_root=args.benchmark_root,
+    )
 
     # Start episodes
     task_episodes, task_successes = 0, 0
@@ -218,7 +238,12 @@ def main(args, config):
     task_suite_name = args.task_suite
     os.makedirs(args.output_dir, exist_ok=True)
 
-    benchmark_dict = benchmark.get_benchmark_dict()
+    benchmark_module = get_benchmark_module(
+        args.benchmark,
+        args.benchmark_module,
+        args.benchmark_root,
+    )
+    benchmark_dict = benchmark_module.get_benchmark_dict()
     task_suite = benchmark_dict[task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
     task_id = args.task_id
@@ -246,11 +271,32 @@ def main(args, config):
 def parse_args_and_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default="libero",
+        choices=["libero", "libero_plus"],
+    )
+    parser.add_argument(
+        "--benchmark_module",
+        type=str,
+        default=None,
+        help=(
+            "Optional module override that provides get_benchmark_dict(). "
+            "Useful when a LIBERO-Plus checkout uses a custom import path."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark_root",
+        type=str,
+        default=None,
+        help="Optional local checkout root for the selected benchmark.",
+    )
     parser.add_argument("--task_suite", type=str, required=True)
     parser.add_argument("--task_id", type=int, required=True)
     parser.add_argument("--num_trials_per_task", type=int, default=1)
     parser.add_argument("--num_steps_wait", type=int, default=10)
-    parser.add_argument("--save_video", type=bool, default=True)
+    parser.add_argument("--save_video", type=parse_bool, default=True)
     parser.add_argument("--output_dir", type=str, default="eval_result")
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
     args = parser.parse_args()

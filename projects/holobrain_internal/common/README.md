@@ -125,25 +125,31 @@ Before running the evaluation, make sure you have:
 - Cloned the LIBERO repo:
 ```bash
 git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
+git clone https://github.com/sylvestf/LIBERO-plus.git
 cd LIBERO
 pip install -r requirements.txt # Please note the specific Torch version requirements.
+cd ../LIBERO-plus
+pip install -r requirements.txt
+pip install -r extra_requirements.txt
 ```
+LIBERO-Plus also requires system ImageMagick/MagickWand libraries and its
+assets. Follow `LIBERO-plus/README.md` to install packages such as
+`libmagickwand-dev` and extract `assets.zip` into
+`LIBERO-plus/libero/libero/assets`.
 ### Run Evaluation
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1  # Specify GPUs (e.g., use 2 GPUs)
-export PYTHONPATH=$PYTHONPATH:.  # Ensure eval_policy.py can be found
-export LIBERO_DIR=$WORKING_PATH/LIBERO 
-cp -r projects/holobrain_internal/common/holobrain_libero_policy $LIBERO_DIR
-cp -r projects/holobrain_internal/common/libero_eval.py $LIBERO_DIR
-cp projects/holobrain_internal/libero/eval_policy.py $LIBERO_DIR
-cp projects/holobrain_internal/libero/libero_utils.py $LIBERO_DIR
+export LIBERO_ROOT=$WORKING_PATH/LIBERO
+export LIBERO_PLUS_ROOT=$WORKING_PATH/LIBERO-plus
 
 model_config="[http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/](http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/)..." # URL or local path
 vlm_ckpt_dir="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt"
 urdf_dir="/horizon-bucket/robot_lab/users/xuewu.lin/urdf"
 
 # Option 1: Run a specific benchmark suite (e.g., libero_goal)
-python3 libero_eval.py \
+python3 projects/holobrain_internal/common/libero_eval.py \
+    --benchmark libero \
+    --libero_root ${LIBERO_ROOT} \
     --model_config ${model_config} \
     --model_prefix model_0 \
     --vlm_ckpt_dir ${vlm_ckpt_dir} \
@@ -151,16 +157,38 @@ python3 libero_eval.py \
     --model_processor libero_processor \
     --task_suite libero_goal \
     --num_trials_per_task 50 \
+    --processes_per_gpu 1 \
     --save_video True
 
 # Run ALL benchmark suites (spatial, object, goal, 10). Set --task_suite to -1
-python3 libero_eval.py \
+python3 projects/holobrain_internal/common/libero_eval.py \
+    --benchmark libero \
+    --libero_root ${LIBERO_ROOT} \
     --model_config ${model_config} \
     --model_prefix model_0 \
     --vlm_ckpt_dir ${vlm_ckpt_dir} \
     --urdf_dir ${urdf_dir} \
     --model_processor libero_processor \
     --num_trials_per_task 50 \
+    --processes_per_gpu 1 \
+    --save_video True
+```
+
+Run LIBERO-Plus using the same entry and policy adapter. If your
+LIBERO-Plus checkout exposes get_benchmark_dict() from a custom import path,
+pass it with --benchmark_module.
+```bash
+python3 projects/holobrain_internal/common/libero_eval.py \
+    --benchmark libero_plus \
+    --libero_plus_root ${LIBERO_PLUS_ROOT} \
+    --model_config ${model_config} \
+    --model_prefix model_0 \
+    --vlm_ckpt_dir ${vlm_ckpt_dir} \
+    --urdf_dir ${urdf_dir} \
+    --model_processor libero_processor \
+    --task_suite libero_goal \
+    --num_trials_per_task 50 \
+    --processes_per_gpu 1 \
     --save_video True
 ```
 ## Cluster run

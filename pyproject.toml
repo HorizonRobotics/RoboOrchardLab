@@ -70,6 +70,7 @@ exclude = [
     "*agibot*",
     "robotwin",
     "LIBERO",
+    "LIBERO-plus",
     "submit-*",
 ]
 
