@@ -1,0 +1,22 @@
+adapter: rh20t
+config:
+  module: data_configs.config_rh20t_dataset
+  getter: get_kinematics_config
+  key: franka
+  aligned_key: franka_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - panda_link1
+      - panda_link2
+      - panda_link3
+      - panda_link4
+      - panda_link5
+      - panda_link6
+      - panda_link7
+    ee:
+      parent: panda_link7
+      rotate_z_deg: 45
+      gripper_forward: 0.255
+
+camera_references: []

@@ -1,0 +1,46 @@
+# RoboTwin aloha (v1 + v2) URDF alignment manifest.
+#
+# aloha_v1 and aloha_v2 share the same physical robot and the same
+# aligned URDF asset (`arx5_description_isaac.urdf`); a single manifest
+# / aligned folder backs both dataset-config keys.
+#
+# The origin URDF's last actuated link (`fl_link6` / `fr_link6`) is
+# rotated by 270 degrees around +Z to reach the right/down/front EE
+# convention. Stage 2 inserts `<parent>_ee` children; stage 3 inserts a
+# `<parent>_ee_gripper_end` fixed child per arm at
+# [0, 0, gripper_forward] in the EE frame.
+
+adapter: robotwin
+config:
+  module: data_configs.config_robotwin_dataset
+  getter: get_dataset_config
+  key: [aloha_v1, aloha_v2]
+  aligned_key: [aloha_v1_urdf_v2, aloha_v2_urdf_v2]
+
+arms:
+  - arm_link_keys:
+      - fl_link1
+      - fl_link2
+      - fl_link3
+      - fl_link4
+      - fl_link5
+      - fl_link6
+    ee:
+      parent: fl_link6
+      rotate_z_deg: 270
+      gripper_forward: 0.155
+  - arm_link_keys:
+      - fr_link1
+      - fr_link2
+      - fr_link3
+      - fr_link4
+      - fr_link5
+      - fr_link6
+    ee:
+      parent: fr_link6
+      rotate_z_deg: 270
+      gripper_forward: 0.155
+
+camera_references:
+  - fl_link6
+  - fr_link6

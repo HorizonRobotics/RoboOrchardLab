@@ -1,0 +1,37 @@
+adapter: agilex
+config:
+  module: data_configs.config_agilex_dataset
+  getter: get_dataset_config
+  key: horizon_piper_x_435
+  aligned_key: horizon_piper_x_435_urdf_v2
+
+mesh_search_roots:
+  - piper
+
+arms:
+  - arm_link_keys:
+      - left_link1
+      - left_link2
+      - left_link3
+      - left_link4
+      - left_link5
+      - left_link6
+    ee:
+      parent: left_link6
+      rotate_z_deg: 0
+      gripper_forward: 0.14
+  - arm_link_keys:
+      - right_link1
+      - right_link2
+      - right_link3
+      - right_link4
+      - right_link5
+      - right_link6
+    ee:
+      parent: right_link6
+      rotate_z_deg: 0
+      gripper_forward: 0.14
+
+camera_references:
+  - left_link6
+  - right_link6

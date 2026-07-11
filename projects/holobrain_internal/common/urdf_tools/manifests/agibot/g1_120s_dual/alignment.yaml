@@ -1,0 +1,34 @@
+adapter: agibot
+config:
+  module: data_configs.config_agibot_dataset
+  getter: get_robot_profiles
+  key: agibot
+  aligned_key: agibot_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - Link1_l
+      - Link2_l
+      - Link3_l
+      - Link4_l
+      - Link5_l
+      - Link6_l
+      - Link7_l
+    ee:
+      parent: Link7_l
+      rotate_z_deg: 0
+      gripper_forward: 0.258
+  - arm_link_keys:
+      - Link1_r
+      - Link2_r
+      - Link3_r
+      - Link4_r
+      - Link5_r
+      - Link6_r
+      - Link7_r
+    ee:
+      parent: Link7_r
+      rotate_z_deg: 0
+      gripper_forward: 0.258
+
+camera_references: []

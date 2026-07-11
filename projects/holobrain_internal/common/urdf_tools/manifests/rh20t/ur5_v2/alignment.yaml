@@ -1,0 +1,21 @@
+adapter: rh20t
+config:
+  module: data_configs.config_rh20t_dataset
+  getter: get_kinematics_config
+  key: ur5_v2
+  aligned_key: ur5_v2_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - shoulder_link
+      - upper_arm_link
+      - forearm_link
+      - wrist_1_link
+      - wrist_2_link
+      - wrist_3_link
+    ee:
+      parent: wrist_3_link
+      rotate_z_deg: 0
+      gripper_forward: 0.35
+
+camera_references: []

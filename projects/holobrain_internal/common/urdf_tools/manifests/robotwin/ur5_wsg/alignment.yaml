@@ -1,0 +1,46 @@
+# RoboTwin UR5-WSG URDF alignment manifest.
+#
+# The UR5 arms' last actuated link (`left_wrist_3_link` /
+# `right_wrist_3_link`) is already convention-compliant, so
+# `rotate_z_deg == 0` and no `*_ee` child is inserted. A
+# `<parent>_gripper_end` fixed child is still emitted per arm at
+# [0, 0, gripper_forward] in the wrist-3 frame; it becomes the single
+# `finger_keys` entry consumed by the runtime kinematics.
+
+adapter: robotwin
+config:
+  module: data_configs.config_robotwin_dataset
+  getter: get_dataset_config
+  key: ur5_wsg
+  aligned_key: ur5_wsg_urdf_v2
+
+mesh_search_roots:
+  - /horizon-bucket/robot_lab2/users/xuewu.lin/code/robotwin/assets/embodiments/ur5-wsg
+
+arms:
+  - arm_link_keys:
+      - left_shoulder_link
+      - left_upper_arm_link
+      - left_forearm_link
+      - left_wrist_1_link
+      - left_wrist_2_link
+      - left_wrist_3_link
+    ee:
+      parent: left_wrist_3_link
+      rotate_z_deg: 0
+      gripper_forward: 0.236
+  - arm_link_keys:
+      - right_shoulder_link
+      - right_upper_arm_link
+      - right_forearm_link
+      - right_wrist_1_link
+      - right_wrist_2_link
+      - right_wrist_3_link
+    ee:
+      parent: right_wrist_3_link
+      rotate_z_deg: 0
+      gripper_forward: 0.236
+
+camera_references:
+  - left_wrist_3_link
+  - right_wrist_3_link

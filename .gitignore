@@ -181,3 +181,12 @@ compile_commands.json
 *.mex*
 .claude/settings.local.json
 .env
+
+# URDF alignment keeps local visualization mesh copies, but does not track them.
+projects/holobrain_internal/common/urdf_align/**/*meshes/
+projects/holobrain_internal/common/urdf_align/**/*graphics/
+# Aligned URDF assets are hosted in a shared bucket and symlinked into
+# ``projects/holobrain_internal/common/urdf_align/``. Manifests
+# (``urdf_tools/manifests/``) are the git-tracked source of truth; the
+# URDF asset tree itself is not.
+projects/holobrain_internal/common/urdf_align/

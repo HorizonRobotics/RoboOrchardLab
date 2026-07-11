@@ -1,0 +1,38 @@
+adapter: behavior
+config:
+  module: data_configs.config_behavior_dataset
+  getter: get_robot_profiles
+  key: behavior
+  aligned_key: behavior_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - left_arm_link1
+      - left_arm_link2
+      - left_arm_link3
+      - left_arm_link4
+      - left_arm_link5
+      - left_arm_link6
+      - left_arm_link7
+    ee:
+      parent: left_arm_link7
+      gripper_end:
+        attach_link: left_gripper_link
+        xyz: [0.0, 0.0, -0.08]
+        rpy: [180.0, 0.0, -90.0]
+  - arm_link_keys:
+      - right_arm_link1
+      - right_arm_link2
+      - right_arm_link3
+      - right_arm_link4
+      - right_arm_link5
+      - right_arm_link6
+      - right_arm_link7
+    ee:
+      parent: right_arm_link7
+      gripper_end:
+        attach_link: right_gripper_link
+        xyz: [0.0, 0.0, -0.08]
+        rpy: [180.0, 0.0, -90.0]
+
+camera_references: []

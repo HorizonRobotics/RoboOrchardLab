@@ -1,0 +1,22 @@
+adapter: table30v2
+config:
+  module: data_configs.config_table30v2_dataset
+  getter: get_dataset_config
+  key: arx5
+  aligned_key: arx5_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - link1
+      - link2
+      - link3
+      - link4
+      - link5
+      - link6
+    ee:
+      parent: link6
+      rotate_z_deg: 270
+      gripper_forward: 0.158
+
+camera_references:
+  - recorded_ee_link

@@ -1,0 +1,45 @@
+# RoboTwin ARX X5A URDF alignment manifest.
+#
+# The origin URDF's last actuated link (`left_link6` / `right_link6`)
+# is rotated by 270 degrees around +Z to reach the right/down/front EE
+# convention. Stage 2 inserts `<parent>_ee` children; stage 3 inserts a
+# `<parent>_ee_gripper_end` fixed child per arm at
+# [0, 0, gripper_forward] in the EE frame.
+
+adapter: robotwin
+config:
+  module: data_configs.config_robotwin_dataset
+  getter: get_dataset_config
+  key: arx_x5a
+  aligned_key: arx_x5a_urdf_v2
+
+mesh_search_roots:
+  - /horizon-bucket/robot_lab2/users/xuewu.lin/code/robotwin/assets/embodiments/ARX-X5
+
+arms:
+  - arm_link_keys:
+      - left_link1
+      - left_link2
+      - left_link3
+      - left_link4
+      - left_link5
+      - left_link6
+    ee:
+      parent: left_link6
+      rotate_z_deg: 270
+      gripper_forward: 0.158
+  - arm_link_keys:
+      - right_link1
+      - right_link2
+      - right_link3
+      - right_link4
+      - right_link5
+      - right_link6
+    ee:
+      parent: right_link6
+      rotate_z_deg: 270
+      gripper_forward: 0.158
+
+camera_references:
+  - left_link6
+  - right_link6

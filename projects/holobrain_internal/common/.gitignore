@@ -1,0 +1,5 @@
+# Transformer-generated aligned URDFs live under urdf_align/. Their mesh
+# subtrees are regenerated on every `python -m ...urdf_tools.cli align <case>`
+# run by mirroring the packer config's source URDF tree, so they should
+# never be tracked.
+urdf_align/**/*meshes/

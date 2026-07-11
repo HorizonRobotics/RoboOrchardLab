@@ -1,0 +1,49 @@
+# Genie G1 (InternData-A1) URDF alignment manifest.
+#
+# The G1 origin URDF is already convention-compliant at each arm's last
+# link (`arm_l_end_link` / `arm_r_end_link`), so `rotate_z_deg == 0` and
+# no `*_ee` child is inserted. A `<parent>_gripper_end` fixed child is
+# still emitted per arm at [0, 0, gripper_forward] in the end-link
+# frame; it becomes the single `finger_keys` entry consumed by the
+# runtime kinematics.
+#
+# Camera references (`arm_l_link6` / `arm_r_link6`) are upstream of the
+# end link and unrotated by alignment, so no `*_camera_mount_compat`
+# child is expected here.
+
+adapter: interna1
+config:
+  module: data_configs.config_interna1_dataset
+  getter: get_dataset_lmdb_config
+  key: interna1_genieg1
+  aligned_key: interna1_genieg1_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - arm_l_link1
+      - arm_l_link2
+      - arm_l_link3
+      - arm_l_link4
+      - arm_l_link5
+      - arm_l_link6
+      - arm_l_end_link
+    ee:
+      parent: arm_l_end_link
+      rotate_z_deg: 0
+      gripper_forward: 0.258
+  - arm_link_keys:
+      - arm_r_link1
+      - arm_r_link2
+      - arm_r_link3
+      - arm_r_link4
+      - arm_r_link5
+      - arm_r_link6
+      - arm_r_end_link
+    ee:
+      parent: arm_r_end_link
+      rotate_z_deg: 0
+      gripper_forward: 0.258
+
+camera_references:
+  - arm_l_link6
+  - arm_r_link6

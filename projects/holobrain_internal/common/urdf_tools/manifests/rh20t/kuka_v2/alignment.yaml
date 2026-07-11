@@ -1,0 +1,22 @@
+adapter: rh20t
+config:
+  module: data_configs.config_rh20t_dataset
+  getter: get_kinematics_config
+  key: kuka_v2
+  aligned_key: kuka_v2_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - lbr_iiwa_link_1
+      - lbr_iiwa_link_2
+      - lbr_iiwa_link_3
+      - lbr_iiwa_link_4
+      - lbr_iiwa_link_5
+      - lbr_iiwa_link_6
+      - lbr_iiwa_link_7
+    ee:
+      parent: lbr_iiwa_link_7
+      rotate_z_deg: 270
+      gripper_forward: 0.3027788150581747
+
+camera_references: []

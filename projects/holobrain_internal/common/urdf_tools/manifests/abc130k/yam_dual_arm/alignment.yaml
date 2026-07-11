@@ -1,0 +1,34 @@
+adapter: abc130k
+config:
+  module: data_configs.config_abc130k_dataset
+  getter: get_dataset_config
+  key: abc130k_dual_arm
+  aligned_key: abc130k_dual_arm_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - left_link_1
+      - left_link_2
+      - left_link_3
+      - left_link_4
+      - left_link_5
+      - left_link_6
+    ee:
+      parent: left_link_6
+      rotate_z_deg: 180
+      gripper_forward: 0.13
+  - arm_link_keys:
+      - right_link_1
+      - right_link_2
+      - right_link_3
+      - right_link_4
+      - right_link_5
+      - right_link_6
+    ee:
+      parent: right_link_6
+      rotate_z_deg: 180
+      gripper_forward: 0.13
+
+camera_references:
+  - left_link_6
+  - right_link_6
