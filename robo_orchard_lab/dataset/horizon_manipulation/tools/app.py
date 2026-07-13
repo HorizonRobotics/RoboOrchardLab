@@ -490,9 +490,6 @@ def build_initial_submit_config(
         get_submit_template_path(source).read_text(encoding="utf-8")
     )
     cmd = template.get("cmd", [])
-    output_path = (
-        "/horizon-bucket/robot_lab/users/xuewu.lin/self-collected-data"
-    )
     input_path = str(base_path)
     joined_user_names = ",".join(selection["user_names"])
     joined_task_names = ",".join(selection["task_names"])
@@ -512,10 +509,6 @@ def build_initial_submit_config(
             cmd[index] = f"embodiment={embodiment}"
         elif item.startswith("input_path="):
             cmd[index] = f"input_path={input_path}"
-        elif item.startswith("output_path=") and source == "pack":
-            # For 'check', output_path is fixed to /job_data inside the job
-            # container and is intentionally not overridden here.
-            cmd[index] = f"output_path={output_path}"
 
     template["cmd"] = cmd
     job_name_parts = [f"data-{source}", *selection["user_names"]]

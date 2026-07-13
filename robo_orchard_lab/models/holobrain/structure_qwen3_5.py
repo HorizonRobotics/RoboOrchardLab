@@ -78,6 +78,8 @@ class HoloBrain_Qwen3_5_VL(HoloBrain_Qwen2_5_VL):  # noqa: N801
             assert self.cfg.freeze_vlm, (
                 "The VLM's state_dict must be saved when it is not frozen."
             )
+        self.with_cot = self.cfg.with_cot
+
         vlm_pretrain = os.path.expanduser(self.cfg.vlm_pretrain)
         if self.cfg.load_vlm_checkpoint:
             self.vlm = Qwen3_5ForConditionalGeneration.from_pretrained(
