@@ -120,6 +120,7 @@ TRAINING_DATASETS = [
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
         ],
+        load_extrinsic=False,
     ),
     dict(
         dataset_type="agilex",
@@ -129,6 +130,7 @@ TRAINING_DATASETS = [
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
         ],
+        load_extrinsic=False,
     ),
     dict(
         dataset_type="agilex",

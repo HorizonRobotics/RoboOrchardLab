@@ -356,7 +356,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_OLD_URDF),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "front"],
-        load_extrinsic=False,
         depth_restore=True,
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "challenge").hex[:4], 16),
     ),
@@ -366,7 +365,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_URDF),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "front"],
-        load_extrinsic=False,
     ),
     challenge_self_collect=dict(
         default_calibration=default_calibrations["challenge"],
@@ -374,7 +372,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_URDF),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
-        load_extrinsic=True,
     ),
     horizon_piper_435_low_beijing=dict(
         default_calibration=default_calibrations[
@@ -384,7 +381,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_URDF),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
-        load_extrinsic=True,
     ),
     horizon_piper_435_low_shanghai=dict(
         default_calibration=default_calibrations[
@@ -394,7 +390,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_URDF),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
-        load_extrinsic=True,
     ),
     horizon_piper_435_high=dict(
         default_calibration=default_calibrations["horizon_piper_435_high"],
@@ -402,7 +397,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_URDF),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
-        load_extrinsic=True,
     ),
     horizon_piper_x_435=dict(
         default_calibration=default_calibrations["horizon_piper_x_435"],
@@ -410,7 +404,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_X_URDF, use_ee_links=False),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
-        load_extrinsic=True,
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "piper_x").hex[:4], 16),
     ),
     horizon_piper_x_405_455=dict(
@@ -419,7 +412,6 @@ dataset_config = dict(
         kinematics_config=_piper_kinematics(_PIPER_X_URDF, use_ee_links=False),
         cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
-        load_extrinsic=True,
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "piper_x").hex[:4], 16),
     ),
     # Agilex External Dataset
@@ -448,7 +440,6 @@ dataset_config = dict(
         default_calibration=default_calibrations[
             "horizon_piper_435_low_beijing"
         ],
-        load_extrinsic=True,
     ),
 )
 
@@ -804,6 +795,7 @@ def build_dataset(
     instruction_paths=None,
     lazy_init=True,
     truncated_subtask=False,
+    load_extrinsic=True,  # if false, `default_calibration` will be used
 ):
     from robo_orchard_lab.dataset.horizon_manipulation import (
         HorizonManipulationLmdbDataset,
@@ -822,7 +814,7 @@ def build_dataset(
         cam_ref_links=data_config.get("cam_ref_links"),
         default_calibration=data_config.get("default_calibration"),
         depth_restore=config.get("depth_restore", False),
-        do_calib_to_ext=not data_config.get("load_extrinsic", False),
+        do_calib_to_ext=not load_extrinsic,
         truncated_subtask=truncated_subtask,
     )
     if instruction_paths is not None:
@@ -838,7 +830,7 @@ def build_dataset(
         dataset_name=dataset_name,
         cam_names=data_config["cam_names"],
         task_names=data_config.get("task_names"),
-        load_extrinsic=data_config.get("load_extrinsic", False),
+        load_extrinsic=load_extrinsic,
         load_calibration=data_config.get("load_calibration", False),
         instruction_reader=instruction_reader,
         flag=data_config.get(
