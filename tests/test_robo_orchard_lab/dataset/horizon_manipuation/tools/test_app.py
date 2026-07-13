@@ -1677,13 +1677,9 @@ def test_submit_job_task_api_exposes_running_logs(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         app_module.subprocess,
         "Popen",
-        lambda cmd,
-        stdout,
-        stderr,
-        text,
-        bufsize,
-        env,
-        cwd=None: FakeProcess(),
+        lambda cmd, stdout, stderr, text, bufsize, env, cwd=None: (
+            FakeProcess()
+        ),
     )
 
     client = app.test_client()

@@ -28,7 +28,7 @@ DEFAULT_DATA_PATHS = [
 pred_interval = 1
 
 g2_kinematics_config = dict(
-    urdf="./urdf/agibot_digital/G2_omnipicker_no_warnings.urdf",
+    urdf=("./urdf/agibot_digital/g2_omnipicker/g2_omnipicker.urdf"),
     arm_joint_id=[
         list(range(5, 12)),
         list(range(20, 27)),
@@ -52,7 +52,7 @@ g2_kinematics_config = dict(
             "arm_r_link4",
             "arm_r_link5",
             "arm_r_link6",
-            "arm_r_end_link",
+            "arm_r_end_link_ee",
         ],
         [
             "head_link1",
@@ -68,8 +68,8 @@ g2_kinematics_config = dict(
         ],
     ],
     finger_keys=[
-        ["gripper_l_center_link"],
-        ["gripper_r_center_link"],
+        ["arm_l_end_link_gripper_end"],
+        ["arm_r_end_link_gripper_end"],
         [],
         [],
     ],
@@ -81,15 +81,13 @@ g2_kinematics_config = dict(
     ],
 )
 
-g2_deploy_camera_kinematics_config = {
-    **g2_kinematics_config,
-    "finger_keys": [
-        ["gripper_l_base_link"],
-        ["gripper_r_base_link"],
-        [],
-        [],
-    ],
-}
+
+def get_kinematics_config():
+    """Return the geniesim kinematics dict consumed by the align tool.
+    """
+
+    return {"agibot_geniesim": g2_kinematics_config}
+
 
 cam_names = ["hand_left", "hand_right", "top_head"]
 depth_scales = [10000.0, 10000.0, 1000.0]
@@ -312,10 +310,10 @@ def build_transforms(config, mode, calibration=None, kinematics_config=None):
             cam_ref_links=dict(
                 hand_left="gripper_l_base_link",
                 hand_right="gripper_r_base_link",
-                top_head="head_link3",
+                top_head="head_link3_camera_mount_compat",
             ),
             cam_names=cam_names,
-            **g2_deploy_camera_kinematics_config,
+            **g2_kinematics_config,
         )
         item_selection = dict(
             type=ItemSelection,

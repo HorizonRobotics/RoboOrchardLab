@@ -119,7 +119,7 @@ scale_shift = [
 
 cam_names = ["left", "right", "middle"]
 g1_kinematics_config = dict(
-    urdf="./urdf/agibot_digital/G1_omnipicker.urdf",
+    urdf="./urdf/agibot_digital/g1_omnipicker/g1_omnipicker.urdf",
     arm_joint_id=[
         list(range(4, 11)),
         list(range(19, 26)),
@@ -155,8 +155,8 @@ g1_kinematics_config = dict(
         ],
     ],
     finger_keys=[
-        ["gripper_l_center_link"],
-        ["gripper_r_center_link"],
+        ["arm_l_end_link_gripper_end"],
+        ["arm_r_end_link_gripper_end"],
         [],
         [],
     ],
@@ -167,6 +167,13 @@ g1_kinematics_config = dict(
         [0, 0, 0, None],
     ],
 )
+
+
+def get_kinematics_config():
+    """Return the digit kinematics dict consumed by the align tool.
+    """
+
+    return {"agibot_digit": g1_kinematics_config}
 
 
 def build_transforms(

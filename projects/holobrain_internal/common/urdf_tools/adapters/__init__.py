@@ -79,6 +79,7 @@ def _ensure_registered() -> None:
     from projects.holobrain_internal.common.urdf_tools.adapters import (  # noqa: F401,E501
         abc130k,
         agibot,
+        agibot_digital,
         agilex,
         behavior,
         droid,

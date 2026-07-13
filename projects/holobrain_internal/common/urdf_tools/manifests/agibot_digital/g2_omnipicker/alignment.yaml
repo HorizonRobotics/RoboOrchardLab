@@ -1,0 +1,37 @@
+adapter: agibot_digital
+config:
+  module: data_configs.config_agibot_geniesim_dataset
+  getter: get_kinematics_config
+  key: agibot_geniesim
+  aligned_key: agibot_geniesim_urdf_v2
+
+arms:
+  - arm_link_keys:
+      - arm_l_link1
+      - arm_l_link2
+      - arm_l_link3
+      - arm_l_link4
+      - arm_l_link5
+      - arm_l_link6
+      - arm_l_end_link
+    ee:
+      parent: arm_l_end_link
+      rotate_z_deg: 0
+      gripper_forward: 0.14308
+  - arm_link_keys:
+      - arm_r_link1
+      - arm_r_link2
+      - arm_r_link3
+      - arm_r_link4
+      - arm_r_link5
+      - arm_r_link6
+      - arm_r_end_link
+    ee:
+      parent: arm_r_end_link
+      rotate_z_deg: 180
+      gripper_forward: 0.14308
+
+camera_references:
+  - gripper_l_base_link
+  - gripper_r_base_link
+  - head_link3

@@ -573,9 +573,7 @@ def _cases_from_manifest_path(
     )
 
     cases: list[UrdfAlignmentCase] = []
-    for key, aligned_key in zip(
-        config.keys, config.aligned_keys, strict=True
-    ):
+    for key, aligned_key in zip(config.keys, config.aligned_keys, strict=True):
         per_key_config = ConfigWiring(
             module=config.module,
             getter=config.getter,

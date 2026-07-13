@@ -24,8 +24,7 @@ DATA_BASE = os.environ.get("HOLOBRAIN_DATA_BASE", "./data")
 
 
 def _glob_sorted(
-    *patterns: str,
-    exclude_patterns: None | list[str] | str = None
+    *patterns: str, exclude_patterns: None | list[str] | str = None
 ) -> list[str]:
     data_paths = []
     for pattern in patterns:
