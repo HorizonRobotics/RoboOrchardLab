@@ -102,6 +102,7 @@ class HoloBrain_Qwen3_5_VL(HoloBrain_Qwen2_5_VL):  # noqa: N801
             self.vlm.eval()
             self.vlm.requires_grad_(False)
         else:
+            self.vlm.model.language_model.gradient_checkpointing_enable()
             if self.cfg.freeze_vision:
                 vision_model.eval()
                 vision_model.requires_grad_(False)
@@ -151,6 +152,7 @@ class HoloBrain_Qwen3_5_VL(HoloBrain_Qwen2_5_VL):  # noqa: N801
 
     @torch.no_grad()
     def _generate_vlm(self, inputs):
+        self.vlm.model.language_model.gradient_checkpointing_disable()
         outputs = self.vlm.generate(
             **inputs,
             max_new_tokens=256,

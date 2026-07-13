@@ -432,6 +432,7 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
             )
         else:
             main_img_mask = None
+
         if not self.with_cot:
             vlm_outputs = self._forward_vlm(**vlm_inputs)
         else:
@@ -489,6 +490,7 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
 
     @torch.no_grad()
     def _generate_vlm(self, inputs):
+        self.vlm.language_model.gradient_checkpointing_disable()
         outputs = self.vlm.generate(
             **inputs,
             max_new_tokens=256,
