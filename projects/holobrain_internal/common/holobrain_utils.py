@@ -457,6 +457,11 @@ class HolobrainVideoVisualizer:
             img = imgs[cam_idx].copy()
             drew_overlay = False
 
+            # Draw order (bottom -> top):
+            #   1. Real EE + intermediate joint frames (crisp).
+            #   2. Predicted future EE frames (semi-transparent).
+            # A single BGR<->RGB flip runs at the end so all overlays
+            # share the same color convention (RGB=XYZ on-screen).
             if projection_mat is not None and robot_state is not None:
                 joints = HolobrainVideoVisualizer._project_joints_to_2d(
                     robot_state, projection_mat[cam_idx], ee_indices
@@ -601,8 +606,13 @@ class HolobrainVideoVisualizer:
 
         for ax in range(3):
             if axis_colors is None:
+                # RGB=XYZ on-screen after the final BGR->RGB flip in
+                # get_vis_imgs: ax=0 (X) -> red channel post-flip, ax=1 (Y)
+                # -> green, ax=2 (Z) -> blue. Setting index (2 - ax) here
+                # is what puts the channel in the correct slot regardless
+                # of the upstream image's original channel order.
                 color = [0, 0, 0]
-                color[ax] = 255
+                color[2 - ax] = 255
             else:
                 color = axis_colors[ax]
             cv2.line(

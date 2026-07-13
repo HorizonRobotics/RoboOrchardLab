@@ -107,7 +107,7 @@ DATA_TYPE = "isaac"
 
 ROBOT_PROFILES = dict(
     piperx=dict(
-        urdf="./urdf/piper_x_description_dualarm.urdf",
+        urdf="./urdf/agilex/piper_x/piper_x_description_dualarm.urdf",
         cam_names=["left", "right", "middle"],
         joint_mask=([True] * 6 + [False]) * 2,
         gripper_indices=[6, 13],
@@ -146,7 +146,7 @@ ROBOT_PROFILES = dict(
             [-0.0, 0.0],
         ],
         kinematics_config=dict(
-            urdf="./urdf/piper_x_description_dualarm.urdf",
+            urdf="./urdf/agilex/piper_x/piper_x_description_dualarm.urdf",
             arm_joint_id=[list(range(6)), list(range(8, 14))],
             arm_link_keys=[
                 [
@@ -168,7 +168,13 @@ ROBOT_PROFILES = dict(
             ],
             finger_keys=[["left_link7"], ["right_link7"]],
         ),
-        calib_to_ext_kwargs=dict(cam_ee_joint_indices=dict(left=5, right=12)),
+        calib_to_ext_kwargs=dict(
+            cam_ref_links=dict(
+                left_hand_camera="left_link6",
+                right_hand_camera="right_link6",
+                static_camera=None,
+            )
+        ),
         arrow_cam_names=[
             "left_hand_camera",
             "right_hand_camera",
@@ -218,7 +224,13 @@ ROBOT_PROFILES = dict(
             ],
             finger_keys=[["panda_leftfinger"]],
         ),
-        calib_to_ext_kwargs=dict(cam_ee_joint_indices=dict(wrist_camera=5)),
+        calib_to_ext_kwargs=dict(
+            cam_ref_links=dict(
+                ext1_camera=None,
+                ext2_camera=None,
+                wrist_camera="panda_link6",
+            )
+        ),
         arrow_cam_names=["ext1_camera", "ext2_camera", "wrist_camera"],
     ),
 )

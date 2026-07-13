@@ -4,7 +4,7 @@ Internal users can create the expected local resource links with:
 
 ```bash
 ln -s /horizon-bucket/robot_lab2/datasets/all_data projects/holobrain_internal/common/data
-ln -s /horizon-bucket/robot_lab/users/xuewu.lin/urdf projects/holobrain_internal/common/urdf
+ln -s /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 projects/holobrain_internal/common/urdf
 ln -s /horizon-bucket/robot_lab/users/xuewu.lin/ckpt projects/holobrain_internal/common/ckpt
 ```
 
@@ -39,7 +39,7 @@ task_names=place_empty_cup,stack_blocks_three
 task_config=demo_clean
 model_config="xxx"  # local directory or the http url
 vlm_ckpt_dir="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt"
-urdf_dir="/horizon-bucket/robot_lab/users/xuewu.lin/urdf"
+urdf_dir="/horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711"
 
 python3 robotwin_eval.py \
     --task_names ${task_names} \
@@ -94,7 +94,7 @@ export PYTHONPATH=python/robo_orchard_lab:$PYTHONPATH
 cd $ORCHARD_ISAAC_DIR
 
 vlm_ckpt_dir=/horizon-bucket/robot_lab/users/xuewu.lin/ckpt
-urdf_dir=/horizon-bucket/robot_lab/users/xuewu.lin/urdf
+urdf_dir=/horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711
 seed=100000
 task_names=stack_block_two,place_mouse_pad
 model_config="xxx"  # local directory or the http url
@@ -144,7 +144,7 @@ export LIBERO_PLUS_ROOT=$WORKING_PATH/LIBERO-plus
 
 model_config="[http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/](http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/)..." # URL or local path
 vlm_ckpt_dir="/horizon-bucket/robot_lab/users/xuewu.lin/ckpt"
-urdf_dir="/horizon-bucket/robot_lab/users/xuewu.lin/urdf"
+urdf_dir="/horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711"
 
 # Option 1: Run a specific benchmark suite (e.g., libero_goal)
 python3 projects/holobrain_internal/common/libero_eval.py \
@@ -308,7 +308,7 @@ python3 robochallenge_eval.py \
   --model_config "${model_config}" \
   --model_processor "${model_processor}" \
   --instruction "${instruction}" \
-  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \
+  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \
   --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \
   --visualize_output_file ./test_${embodiment}.mp4 \
   --mock
@@ -322,7 +322,7 @@ python3 robochallenge_eval.py \
   --submission_id ${submission_id} \
   --model_config "${model_config}" \
   --model_processor "${model_processor}" \
-  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \
+  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \
   --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \
   --visualize_output_file ./test_${embodiment}.mp4
 ```

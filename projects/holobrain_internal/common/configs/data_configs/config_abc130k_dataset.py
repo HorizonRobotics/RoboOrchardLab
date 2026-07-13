@@ -23,7 +23,7 @@ DATA_TYPE = "abc130k"
 
 dataset_config = dict(
     abc130k_dual_arm=dict(
-        urdf="./urdf/abc130k_dual_arm.urdf",
+        urdf="./urdf/abc130k/yam_dual_arm/yam_dual_arm.urdf",
         cam_names=["left", "right", "top"],
         # ABC130k extrinsics are baked in world coordinates by the packer's
         # URDF FK pass, so base==world and ego is identity too. Kept as
@@ -32,7 +32,7 @@ dataset_config = dict(
         T_base2world=np.eye(4).tolist(),
         T_base2ego=np.eye(4).tolist(),
         kinematics_config=dict(
-            urdf="./urdf/abc130k_dual_arm.urdf",
+            urdf="./urdf/abc130k/yam_dual_arm/yam_dual_arm.urdf",
             arm_joint_id=[list(range(6)), list(range(8, 14))],
             arm_link_keys=[
                 [
@@ -41,7 +41,7 @@ dataset_config = dict(
                     "left_link_3",
                     "left_link_4",
                     "left_link_5",
-                    "left_link_6",
+                    "left_link_6_ee",
                 ],
                 [
                     "right_link_1",
@@ -49,10 +49,13 @@ dataset_config = dict(
                     "right_link_3",
                     "right_link_4",
                     "right_link_5",
-                    "right_link_6",
+                    "right_link_6_ee",
                 ],
             ],
-            finger_keys=[["left_grasp_site"], ["right_grasp_site"]],
+            finger_keys=[
+                ["left_link_6_gripper_end"],
+                ["right_link_6_gripper_end"],
+            ],
         ),
         scale_shift=[
             [0.352101557, -0.456893168],  # left_joint1
@@ -74,6 +77,10 @@ dataset_config = dict(
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "abc130k").hex[:4], 16),
     ),
 )
+
+
+def get_dataset_config():
+    return dataset_config
 
 
 def _build_item_selection_keys(mode):

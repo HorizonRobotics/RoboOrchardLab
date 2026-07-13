@@ -27,7 +27,7 @@ DATA_TYPE = "agibot"
 
 kinematics_config = dict(
     agibot=dict(
-        urdf="./urdf/G1_120s_dual.urdf",
+        urdf="./urdf/agibot/g1_120s_dual/G1_120s_dual.urdf",
         arm_joint_id=[
             list(range(2, 9)),  # Joint1_l - Joint7_l in the URDF chain
             list(range(17, 24)),  # Joint1_r - Joint7_r in the URDF chain
@@ -54,7 +54,7 @@ kinematics_config = dict(
             ],
             ["link-pitch_body", "link-up-down_body"],
         ],
-        finger_keys=[["gripper_center"], ["right_gripper_center"], []],
+        finger_keys=[["Link7_l_gripper_end"], ["Link7_r_gripper_end"], []],
     )
 )
 
@@ -85,6 +85,17 @@ agibot_scale_shift = [
     [0.076923081, 0.274950588],  # joint_lift_body
 ]
 
+
+ROBOT_PROFILES = {
+    "agibot": dict(
+        kinematics_config=kinematics_config["agibot"],
+        scale_shift=agibot_scale_shift,
+    ),
+}
+
+
+def get_robot_profiles():
+    return ROBOT_PROFILES
 
 
 def build_transforms(config, reference_img_path):
@@ -156,7 +167,8 @@ def build_transforms(config, reference_img_path):
         )
     )
 
-    kinematics = MultiArmKinematics(**kinematics_config["agibot"])
+    robot_profile = ROBOT_PROFILES["agibot"]
+    kinematics = MultiArmKinematics(**robot_profile["kinematics_config"])
 
     item_selection = ItemSelection(
         keys=[
@@ -220,7 +232,9 @@ def build_transforms(config, reference_img_path):
         T_base2ego=np.eye(4),
         T_base2world=np.eye(4),
         joint_mask=np.array(joint_mask),
-        joint_scale_shift=np.array(agibot_scale_shift, dtype=np.float32),
+        joint_scale_shift=np.array(
+            robot_profile["scale_shift"], dtype=np.float32
+        ),
     )
 
     text_aug = TextAug()
@@ -276,6 +290,6 @@ def build_datasets(
         cam_names=None,
         dataset_name=dataset_name,
         instruction_reader=instruction_reader,
-        reset_step=200,
+        reset_step=500,
     )
     return dataset

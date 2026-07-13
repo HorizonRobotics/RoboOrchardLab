@@ -22,25 +22,105 @@ DATA_TYPE = "interna1"
 def get_dataset_lmdb_config():
     dataset_lmdb_config = dict(
         interna1_arx_lift2=dict(
-            urdf="./urdf/InternData-A1_urdf/ARX_Lift2_fix/lift.urdf",
+            urdf="./urdf/interna1/arx_lift2/arx_lift2.urdf",
             cam_names=["hand_left", "hand_right", "head"],
             robot_type="ARX Lift-2",
             task_names=None,
             load_extrinsic=True,
+            kinematics_config=dict(
+                urdf="./urdf/interna1/arx_lift2/arx_lift2.urdf",
+                arm_joint_id=[list(range(6, 12)), list(range(14, 20))],
+                arm_link_keys=[
+                    [
+                        "L_arm_link11",
+                        "L_arm_link12",
+                        "L_arm_link13",
+                        "L_arm_link14",
+                        "L_arm_link15",
+                        "L_arm_link16_ee",
+                    ],
+                    [
+                        "R_arm_link21",
+                        "R_arm_link22",
+                        "R_arm_link23",
+                        "R_arm_link24",
+                        "R_arm_link25",
+                        "R_arm_link26_ee",
+                    ],
+                ],
+                finger_keys=[
+                    ["L_arm_link16_gripper_end"],
+                    ["R_arm_link26_gripper_end"],
+                ],
+            ),
         ),
         interna1_agile_split_aloha=dict(
-            urdf="./urdf/InternData-A1_urdf/AgileX_Split_Aloha_piper100/split_aloha_mid_360_with_piper.sanitized.urdf",
+            urdf="./urdf/interna1/agile_split_aloha/agile_split_aloha.urdf",
             cam_names=["hand_left", "hand_right", "head"],
             robot_type="AgileX Split Aloha",
             task_names=None,
             load_extrinsic=True,
+            kinematics_config=dict(
+                urdf="./urdf/interna1/agile_split_aloha/agile_split_aloha.urdf",
+                arm_joint_id=[list(range(9, 15)), list(range(17, 23))],
+                arm_link_keys=[
+                    [
+                        "left/link1",
+                        "left/link2",
+                        "left/link3",
+                        "left/link4",
+                        "left/link5",
+                        "left/link6_ee",
+                    ],
+                    [
+                        "right/link1",
+                        "right/link2",
+                        "right/link3",
+                        "right/link4",
+                        "right/link5",
+                        "right/link6_ee",
+                    ],
+                ],
+                finger_keys=[
+                    ["left/link6_gripper_end"],
+                    ["right/link6_gripper_end"],
+                ],
+            ),
         ),
         interna1_genieg1=dict(
-            urdf="./urdf/InternData-A1_urdf/G1_120s/G1_120s.urdf",
+            urdf="./urdf/interna1/g1_120s/g1_120s.urdf",
             cam_names=["hand_left", "hand_right", "head"],
             robot_type="Genie-1",
             task_names=None,
             load_extrinsic=True,
+            kinematics_config=dict(
+                urdf="./urdf/interna1/g1_120s/g1_120s.urdf",
+                arm_joint_id=[list(range(4, 11)), list(range(19, 26))],
+                arm_link_keys=[
+                    [
+                        "arm_l_link1",
+                        "arm_l_link2",
+                        "arm_l_link3",
+                        "arm_l_link4",
+                        "arm_l_link5",
+                        "arm_l_link6",
+                        "arm_l_end_link",
+                    ],
+                    [
+                        "arm_r_link1",
+                        "arm_r_link2",
+                        "arm_r_link3",
+                        "arm_r_link4",
+                        "arm_r_link5",
+                        "arm_r_link6",
+                        "arm_r_end_link",
+                    ],
+                ],
+                finger_keys=[
+                    ["arm_l_end_link_gripper_end"],
+                    ["arm_r_end_link_gripper_end"],
+                ],
+            ),
         ),
     )
 
@@ -52,6 +132,8 @@ def build_lmdb_transforms(
     mode,
     urdf,
     robot_type,
+    kinematics_config,
+    cam_names=None,
     calibration=None,
     depth_restore=False,
     do_calib_to_ext=False,
@@ -141,94 +223,8 @@ def build_lmdb_transforms(
             embodiedment_mat="float32",
         ),
     )
-    arx_kinematics_config = dict(
-        urdf=urdf,
-        arm_joint_id=[list(range(6, 12)), list(range(14, 20))],
-        arm_link_keys=[
-            [
-                "L_arm_link11",
-                "L_arm_link12",
-                "L_arm_link13",
-                "L_arm_link14",
-                "L_arm_link15",
-                "L_arm_link16",
-            ],
-            [
-                "R_arm_link21",
-                "R_arm_link22",
-                "R_arm_link23",
-                "R_arm_link24",
-                "R_arm_link25",
-                "R_arm_link26",
-            ],
-        ],
-        finger_keys=[["left_arm_tcp_link"], ["right_arm_tcp_link"]],
-    )
-    agilex_kinematics_config = dict(
-        urdf=urdf,
-        arm_joint_id=[list(range(9, 15)), list(range(17, 23))],
-        arm_link_keys=[
-            [
-                "left/link1",
-                "left/link2",
-                "left/link3",
-                "left/link4",
-                "left/link5",
-                "left/link6",
-            ],
-            [
-                "right/link1",
-                "right/link2",
-                "right/link3",
-                "right/link4",
-                "right/link5",
-                "right/link6",
-            ],
-        ],
-        finger_keys=[
-            [
-                "left/link7",
-            ],
-            [
-                "right/link7",
-            ],
-        ],
-    )
-    genie1_kinematics_config = dict(
-        urdf=urdf,
-        arm_joint_id=[list(range(4, 11)), list(range(19, 26))],
-        arm_link_keys=[
-            [
-                "arm_l_link1",
-                "arm_l_link2",
-                "arm_l_link3",
-                "arm_l_link4",
-                "arm_l_link5",
-                "arm_l_link6",
-                "arm_l_end_link",
-            ],
-            [
-                "arm_r_link1",
-                "arm_r_link2",
-                "arm_r_link3",
-                "arm_r_link4",
-                "arm_r_link5",
-                "arm_r_link6",
-                "arm_r_end_link",
-            ],
-        ],
-        finger_keys=[
-            [
-                "gripper_l_center_link",
-            ],
-            [
-                "gripper_r_center_link",
-            ],
-        ],
-    )
 
     if robot_type == "ARX Lift-2":
-        kinematics_config = arx_kinematics_config
         scale_shift = [
             [2.620290994644165, 0.5263252258300781],
             [1.9029523134231567, 1.7795947790145874],
@@ -246,7 +242,6 @@ def build_lmdb_transforms(
             [0.05000000074505806, 0.05000000074505806],
         ]
     elif robot_type == "AgileX Split Aloha":
-        kinematics_config = agilex_kinematics_config
         scale_shift = [
             [1.478021398, 0.10237011399999996],
             [1.453678296, 1.4043815520000003],
@@ -264,7 +259,13 @@ def build_lmdb_transforms(
             [0.03857, 0.036329999999999994],
         ]
     elif robot_type == "Genie-1":
-        kinematics_config = genie1_kinematics_config
+        cam_ref_links = dict(
+            hand_left="arm_l_link6",
+            hand_right="arm_r_link6",
+            left="arm_l_link6",
+            right="arm_r_link6",
+            head=None,
+        )
         scale_shift = [
             [1.478021398, 0.10237011399999996],
             [1.453678296, 1.4043815520000003],
@@ -289,10 +290,29 @@ def build_lmdb_transforms(
     kinematics = dict(type=MultiArmKinematics, **kinematics_config)
 
     if do_calib_to_ext:
+        if robot_type == "ARX Lift-2":
+            cam_ref_links = dict(
+                hand_left="L_arm_link16",
+                hand_right="R_arm_link26",
+                left="L_arm_link16",
+                right="R_arm_link26",
+                head=None,
+            )
+        elif robot_type == "AgileX Split Aloha":
+            cam_ref_links = dict(
+                hand_left="left/link6",
+                hand_right="right/link6",
+                left="left/link6",
+                right="right/link6",
+                head=None,
+            )
+        elif robot_type != "Genie-1":
+            raise ValueError(f"Unsupported robot type: {robot_type}")
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
             calibration=calibration,
-            cam_ee_joint_indices=dict(left=5, right=12),
+            cam_ref_links=cam_ref_links,
+            cam_names=cam_names,
             **kinematics_config,
         )
     else:
@@ -423,9 +443,11 @@ def _build_lmdb_dataset(
         mode,
         urdf=data_config["urdf"],
         robot_type=data_config["robot_type"],
+        cam_names=data_config["cam_names"],
         calibration=data_config.get("calibration"),
         depth_restore=config.get("depth_restore", False),
         do_calib_to_ext=not data_config.get("load_extrinsic", False),
+        kinematics_config=data_config["kinematics_config"],
     )
     if isinstance(data_paths, list):
         data_paths = sorted(data_paths)
@@ -476,9 +498,11 @@ def _build_processor(config, setting_type):
         mode="deploy",
         urdf=data_config["urdf"],
         robot_type=data_config["robot_type"],
+        cam_names=data_config["cam_names"],
         calibration=data_config.get("calibration"),
         depth_restore=config.get("depth_restore", False),
         do_calib_to_ext=True,
+        kinematics_config=data_config["kinematics_config"],
     )
     return HoloBrainProcessor(
         HoloBrainProcessorCfg(

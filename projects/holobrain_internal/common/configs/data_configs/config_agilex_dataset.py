@@ -305,10 +305,56 @@ default_calibrations = dict(
 )
 
 
+def _piper_kinematics(urdf: str, use_ee_links: bool = True) -> dict:
+    left_wrist_link = "left_link6_ee" if use_ee_links else "left_link6"
+    right_wrist_link = "right_link6_ee" if use_ee_links else "right_link6"
+    return dict(
+        urdf=urdf,
+        arm_joint_id=[list(range(6)), list(range(8, 14))],
+        arm_link_keys=[
+            [
+                "left_link1",
+                "left_link2",
+                "left_link3",
+                "left_link4",
+                "left_link5",
+                left_wrist_link,
+            ],
+            [
+                "right_link1",
+                "right_link2",
+                "right_link3",
+                "right_link4",
+                "right_link5",
+                right_wrist_link,
+            ],
+        ],
+        finger_keys=[
+            ["left_link6_gripper_end"],
+            ["right_link6_gripper_end"],
+        ],
+    )
+
+
+_PIPER_CAM_REF_LINKS = dict(
+    left="left_link6",
+    right="right_link6",
+    front=None,
+    middle=None,
+    mid=None,
+)
+
+_PIPER_OLD_URDF = "./urdf/agilex/piper_old/piper_description_dualarm_old.urdf"
+_PIPER_URDF = "./urdf/agilex/piper/piper_description_dualarm.urdf"
+_PIPER_X_URDF = "./urdf/agilex/piper_x/piper_x_description_dualarm.urdf"
+
+
 dataset_config = dict(
     challenge=dict(
         default_calibration=default_calibrations["challenge"],
-        urdf="./urdf/piper_description_dualarm_old.urdf",
+        urdf=_PIPER_OLD_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_OLD_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
         depth_restore=True,
@@ -316,13 +362,17 @@ dataset_config = dict(
     ),
     challenge_finetune=dict(
         default_calibration=default_calibrations["challenge"],
-        urdf="./urdf/piper_description_dualarm.urdf",
+        urdf=_PIPER_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "front"],
         load_extrinsic=False,
     ),
     challenge_self_collect=dict(
         default_calibration=default_calibrations["challenge"],
-        urdf="./urdf/piper_description_dualarm.urdf",
+        urdf=_PIPER_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
@@ -330,7 +380,9 @@ dataset_config = dict(
         default_calibration=default_calibrations[
             "horizon_piper_435_low_beijing"
         ],
-        urdf="./urdf/piper_description_dualarm.urdf",
+        urdf=_PIPER_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
@@ -338,33 +390,43 @@ dataset_config = dict(
         default_calibration=default_calibrations[
             "horizon_piper_435_low_shanghai"
         ],
-        urdf="./urdf/piper_description_dualarm.urdf",
+        urdf=_PIPER_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_piper_435_high=dict(
         default_calibration=default_calibrations["horizon_piper_435_high"],
-        urdf="./urdf/piper_description_dualarm.urdf",
+        urdf=_PIPER_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
     ),
     horizon_piper_x_435=dict(
         default_calibration=default_calibrations["horizon_piper_x_435"],
-        urdf="./urdf/piper_x_description_dualarm.urdf",
+        urdf=_PIPER_X_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_X_URDF, use_ee_links=False),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "piper_x").hex[:4], 16),
     ),
     horizon_piper_x_405_455=dict(
         default_calibration=default_calibrations["horizon_piper_x_405_455"],
-        urdf="./urdf/piper_x_description_dualarm.urdf",
+        urdf=_PIPER_X_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_X_URDF, use_ee_links=False),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "middle"],
         load_extrinsic=True,
         flag=int(uuid.uuid5(uuid.NAMESPACE_DNS, "piper_x").hex[:4], 16),
     ),
     # Agilex External Dataset
     agilex=dict(
-        urdf="./urdf/piper_description_dualarm.urdf",
+        urdf=_PIPER_URDF,
+        kinematics_config=_piper_kinematics(_PIPER_URDF),
+        cam_ref_links=_PIPER_CAM_REF_LINKS,
         cam_names=["left", "right", "mid"],
         task_names=[
             "fold_towel",
@@ -391,10 +453,17 @@ dataset_config = dict(
 )
 
 
+def get_dataset_config():
+    return dataset_config
+
+
 def build_transforms(
     config,
     mode,
     urdf,
+    cam_names=None,
+    kinematics_config=None,
+    cam_ref_links=None,
     default_calibration=None,
     depth_restore=False,
     do_calib_to_ext=False,
@@ -513,36 +582,46 @@ def build_transforms(
         else None
     )
 
-    kinematics_config = dict(
-        urdf=urdf,
-        arm_joint_id=[list(range(6)), list(range(8, 14))],
-        arm_link_keys=[
-            [
-                "left_link1",
-                "left_link2",
-                "left_link3",
-                "left_link4",
-                "left_link5",
-                "left_link6",
+    if kinematics_config is None:
+        kinematics_config = dict(
+            urdf=urdf,
+            arm_joint_id=[list(range(6)), list(range(8, 14))],
+            arm_link_keys=[
+                [
+                    "left_link1",
+                    "left_link2",
+                    "left_link3",
+                    "left_link4",
+                    "left_link5",
+                    "left_link6",
+                ],
+                [
+                    "right_link1",
+                    "right_link2",
+                    "right_link3",
+                    "right_link4",
+                    "right_link5",
+                    "right_link6",
+                ],
             ],
-            [
-                "right_link1",
-                "right_link2",
-                "right_link3",
-                "right_link4",
-                "right_link5",
-                "right_link6",
-            ],
-        ],
-        finger_keys=[["left_link7"], ["right_link7"]],
-    )
+            finger_keys=[["left_link7"], ["right_link7"]],
+        )
+    if cam_ref_links is None:
+        cam_ref_links = dict(
+            left="left_link6",
+            right="right_link6",
+            front=None,
+            middle=None,
+            mid=None,
+        )
     kinematics = dict(type=MultiArmKinematics, **kinematics_config)
 
     if do_calib_to_ext:
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
             calibration=default_calibration,
-            cam_ee_joint_indices=dict(left=5, right=12),
+            cam_ref_links=cam_ref_links,
+            cam_names=cam_names,
             **kinematics_config,
         )
     else:
@@ -738,6 +817,9 @@ def build_dataset(
         config,
         mode,
         urdf=data_config["urdf"],
+        cam_names=data_config["cam_names"],
+        kinematics_config=data_config.get("kinematics_config"),
+        cam_ref_links=data_config.get("cam_ref_links"),
         default_calibration=data_config.get("default_calibration"),
         depth_restore=config.get("depth_restore", False),
         do_calib_to_ext=not data_config.get("load_extrinsic", False),
@@ -780,6 +862,9 @@ def _build_processor(config, setting_type):
         config,
         mode="deploy",
         urdf=data_config["urdf"],
+        cam_names=data_config["cam_names"],
+        kinematics_config=data_config.get("kinematics_config"),
+        cam_ref_links=data_config.get("cam_ref_links"),
         default_calibration=data_config.get("default_calibration"),
         depth_restore=config.get("depth_restore", False),
         do_calib_to_ext=True,
@@ -811,6 +896,9 @@ def build_processors(
         config,
         mode="deploy",
         urdf=data_config["urdf"],
+        cam_names=data_config["cam_names"],
+        kinematics_config=data_config.get("kinematics_config"),
+        cam_ref_links=data_config.get("cam_ref_links"),
         default_calibration=data_config.get("default_calibration"),
         depth_restore=config.get("depth_restore", False),
         do_calib_to_ext=True,

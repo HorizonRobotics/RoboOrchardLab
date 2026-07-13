@@ -22,7 +22,7 @@
         "  --model_config '/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/holobrain_v9_qwen25' \\",
         "  --model_prefix model \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
-        "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
         "  --model_processor libero_processor \\",
         "  --task_suite libero_10,libero_goal,libero_object,libero_spatial \\",
         "  --num_trials_per_task 1 \\",

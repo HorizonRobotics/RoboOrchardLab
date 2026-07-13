@@ -34,32 +34,10 @@ kinematics_config = dict(
                 "link7",
             ]
         ],
-        ee_to_gripper=[
-            [
-                [
-                    -0.9999682379372994,
-                    -0.0003115185599020969,
-                    0.007964048766817892,
-                    0.0018707328290231695,
-                ],
-                [
-                    0.0002697238991081376,
-                    -0.9999861904061724,
-                    -0.005248451768744473,
-                    -0.0018856685642450247,
-                ],
-                [
-                    0.007965573776675915,
-                    -0.0052461369728042375,
-                    0.9999545128060932,
-                    0.28286744101103084,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["link7_gripper_end"]],
     ),
     flexiv_v2=dict(
-        urdf="./urdf/rh20t/flexiv/robot_pvt3.urdf",
+        urdf="./urdf/rh20t/flexiv_v2/robot_pvt3.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -72,32 +50,10 @@ kinematics_config = dict(
                 "link7",
             ]
         ],
-        ee_to_gripper=[
-            [
-                [
-                    -0.9999999999997691,
-                    -5.018992113630731e-07,
-                    -4.5744708197323086e-07,
-                    -0.0006724132390504289,
-                ],
-                [
-                    5.018989525192326e-07,
-                    -0.9999999999997136,
-                    5.659501833159083e-07,
-                    -0.0004777270276046519,
-                ],
-                [
-                    -4.574473660118027e-07,
-                    5.659499537211986e-07,
-                    0.9999999999997349,
-                    0.30901697384099314,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["link7_gripper_end"]],
     ),
     ur5=dict(
-        urdf="./urdf/rh20t/ur5/urdf/ur5.urdf",
+        urdf="./urdf/rh20t/ur5/ur5.urdf",
         arm_joint_id=[list(range(6))],
         arm_link_keys=[
             [
@@ -106,35 +62,13 @@ kinematics_config = dict(
                 "forearm_link",
                 "wrist_1_link",
                 "wrist_2_link",
-                "ee_link",
+                "wrist_3_link",
             ]
         ],
-        ee_to_gripper=[
-            [
-                [
-                    -0.002713943065656337,
-                    0.012277433350014431,
-                    0.9999209464469541,
-                    0.25119763364695097,
-                ],
-                [
-                    -0.0024159064921715568,
-                    0.9999216303125459,
-                    -0.012283998897830235,
-                    -0.0025412466253584053,
-                ],
-                [
-                    -0.9999933989326416,
-                    -0.0024490535798068207,
-                    -0.0026840692438490693,
-                    -0.0006492160913159628,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["wrist_3_link_gripper_end"]],
     ),
     ur5_v2=dict(
-        urdf="./urdf/rh20t/ur5/urdf/ur5.urdf",
+        urdf="./urdf/rh20t/ur5_v2/ur5.urdf",
         arm_joint_id=[list(range(6))],
         arm_link_keys=[
             [
@@ -143,35 +77,10 @@ kinematics_config = dict(
                 "forearm_link",
                 "wrist_1_link",
                 "wrist_2_link",
-                "ee_link",
+                "wrist_3_link",
             ]
         ],
-        # finger_keys=[
-        #     "ee_link",
-        # ],
-        ee_to_gripper=[
-            [
-                [
-                    -0.004435816872433704,
-                    0.010919962535273251,
-                    0.9999299288337928,
-                    0.2611471763838254,
-                ],
-                [
-                    -0.005368504697076875,
-                    0.999925358971501,
-                    -0.010943639032521862,
-                    -0.0019415587115155853,
-                ],
-                [
-                    -0.9999749784905956,
-                    -0.0054164563476855375,
-                    -0.0043770494398595785,
-                    -0.001164169820553302,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["wrist_3_link_gripper_end"]],
     ),
     franka=dict(
         urdf="./urdf/rh20t/franka/franka_womaterial.urdf",
@@ -184,36 +93,10 @@ kinematics_config = dict(
                 "panda_link4",
                 "panda_link5",
                 "panda_link6",
-                "panda_link7",
+                "panda_link7_ee",
             ]
         ],
-        # finger_keys=[
-        #     "panda_leftfinger",
-        #     "panda_rightfinger"
-        # ],
-        ee_to_gripper=[
-            [
-                [
-                    -0.7076175266820617,
-                    -0.7065911742703078,
-                    -0.0019454342511294877,
-                    -6.720066328061262e-05,
-                ],
-                [
-                    0.7065926133386217,
-                    -0.7076190196453096,
-                    -0.00043476207271402615,
-                    -7.592247260656084e-05,
-                ],
-                [
-                    -0.0010696186662914014,
-                    -0.0016809409343306674,
-                    0.9999965605763904,
-                    0.2103617170588283,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["panda_link7_gripper_end"]],
     ),
     kuka=dict(
         urdf="./urdf/rh20t/kuka/model.urdf",
@@ -226,38 +109,13 @@ kinematics_config = dict(
                 "lbr_iiwa_link_4",
                 "lbr_iiwa_link_5",
                 "lbr_iiwa_link_6",
-                "lbr_iiwa_link_7",
+                "lbr_iiwa_link_7_ee",
             ]
         ],
-        # finger_keys=[
-        #     "lbr_iiwa_link_7",
-        # ],
-        ee_to_gripper=[
-            [
-                [
-                    0.9915242040032483,
-                    -0.1228028699055486,
-                    0.00927475482159916,
-                    0.0032540648729314373,
-                ],
-                [
-                    0.12307464657373286,
-                    0.985421821614017,
-                    -0.10413776946492038,
-                    -0.001039395901507895,
-                ],
-                [
-                    0.00510715769626161,
-                    0.10445746318983228,
-                    0.9938860838781031,
-                    0.3036302427015539,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["lbr_iiwa_link_7_gripper_end"]],
     ),
     kuka_v2=dict(
-        urdf="./urdf/rh20t/kuka/model.urdf",
+        urdf="./urdf/rh20t/kuka_v2/model.urdf",
         arm_joint_id=[list(range(7))],
         arm_link_keys=[
             [
@@ -267,35 +125,10 @@ kinematics_config = dict(
                 "lbr_iiwa_link_4",
                 "lbr_iiwa_link_5",
                 "lbr_iiwa_link_6",
-                "lbr_iiwa_link_7",
+                "lbr_iiwa_link_7_ee",
             ]
         ],
-        # finger_keys=[
-        #     "lbr_iiwa_link_7",
-        # ],
-        ee_to_gripper=[
-            [
-                [
-                    0.995777469513335,
-                    -0.07689974945457902,
-                    0.00813664770461177,
-                    0.005159095772118501,
-                ],
-                [
-                    0.07726590170277187,
-                    0.9925531775292902,
-                    -0.06683514852839949,
-                    0.0022704843385951035,
-                ],
-                [
-                    -0.0007654728486078227,
-                    0.06725245715640088,
-                    0.9967486626004483,
-                    0.3027788150581747,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        ],
+        finger_keys=[["lbr_iiwa_link_7_gripper_end"]],
     ),
 )
 
@@ -384,6 +217,10 @@ scale_shift_config = dict(
         ]
     ),
 )
+
+
+def get_kinematics_config():
+    return kinematics_config
 
 
 def build_transforms(config, mode, scale_shift, kinematics_config):

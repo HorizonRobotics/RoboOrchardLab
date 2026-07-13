@@ -296,7 +296,11 @@ def build_transforms(
     elif mode == "deploy":
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
-            cam_ee_joint_indices=dict(left=5, right=12),
+            cam_ref_links=dict(
+                left="left_link6",
+                right="right_link6",
+                middle=None,
+            ),
             **kinematics_config,
         )
         item_selection = dict(

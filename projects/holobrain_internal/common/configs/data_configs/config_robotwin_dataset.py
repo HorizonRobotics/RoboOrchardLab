@@ -22,7 +22,7 @@ DATA_TYPE = "robotwin"
 dataset_config = dict(
     aloha_v1=dict(
         kinematics_config=dict(
-            urdf="./urdf/arx5/arx5_description_isaac.urdf",
+            urdf="./urdf/robotwin/aloha/aloha.urdf",
             arm_link_keys=[
                 [
                     "fl_link1",
@@ -30,7 +30,7 @@ dataset_config = dict(
                     "fl_link3",
                     "fl_link4",
                     "fl_link5",
-                    "fl_link6",
+                    "fl_link6_ee",
                 ],
                 [
                     "fr_link1",
@@ -38,7 +38,7 @@ dataset_config = dict(
                     "fr_link3",
                     "fr_link4",
                     "fr_link5",
-                    "fr_link6",
+                    "fr_link6_ee",
                 ],
             ],
             arm_joint_id=[
@@ -46,8 +46,8 @@ dataset_config = dict(
                 [18, 19, 20, 21, 22, 23],
             ],
             finger_keys=[
-                ["fl_link7", "fl_link8"],
-                ["fr_link7", "fr_link8"],
+                ["fl_link6_gripper_end"],
+                ["fr_link6_gripper_end"],
             ],
         ),
         T_base2world=[
@@ -82,7 +82,7 @@ dataset_config = dict(
     ),
     aloha_v2=dict(
         kinematics_config=dict(
-            urdf="./urdf/arx5/arx5_description_isaac.urdf",
+            urdf="./urdf/robotwin/aloha/aloha.urdf",
             arm_link_keys=[
                 [
                     "fl_link1",
@@ -90,7 +90,7 @@ dataset_config = dict(
                     "fl_link3",
                     "fl_link4",
                     "fl_link5",
-                    "fl_link6",
+                    "fl_link6_ee",
                 ],
                 [
                     "fr_link1",
@@ -98,7 +98,7 @@ dataset_config = dict(
                     "fr_link3",
                     "fr_link4",
                     "fr_link5",
-                    "fr_link6",
+                    "fr_link6_ee",
                 ],
             ],
             arm_joint_id=[
@@ -106,8 +106,8 @@ dataset_config = dict(
                 [18, 19, 20, 21, 22, 23],
             ],
             finger_keys=[
-                ["fl_link7", "fl_link8"],
-                ["fr_link7", "fr_link8"],
+                ["fl_link6_gripper_end"],
+                ["fr_link6_gripper_end"],
             ],
         ),
         T_base2world=[
@@ -142,7 +142,7 @@ dataset_config = dict(
     ),
     ur5_wsg=dict(
         kinematics_config=dict(
-            urdf="./urdf/robotwin2_dual_arm_ur5_wsg.urdf",
+            urdf="./urdf/robotwin/ur5_wsg/robotwin2_dual_arm_ur5_wsg.urdf",
             arm_link_keys=[
                 [
                     "left_shoulder_link",
@@ -162,7 +162,10 @@ dataset_config = dict(
                 ],
             ],
             arm_joint_id=[list(range(6)), list(range(8, 14))],
-            finger_keys=[["left_finger_left"], ["right_finger_left"]],
+            finger_keys=[
+                ["left_wrist_3_link_gripper_end"],
+                ["right_wrist_3_link_gripper_end"],
+            ],
         ),
         T_base2world=[
             [1, 0, 0, 0],
@@ -191,7 +194,7 @@ dataset_config = dict(
     ),
     arx_x5a=dict(
         kinematics_config=dict(
-            urdf="./urdf/robotwin2_dual_arm_arx_x5a.urdf",
+            urdf="./urdf/robotwin/arx_x5a/robotwin2_dual_arm_arx_x5a.urdf",
             arm_link_keys=[
                 [
                     "left_link1",
@@ -199,7 +202,7 @@ dataset_config = dict(
                     "left_link3",
                     "left_link4",
                     "left_link5",
-                    "left_link6",
+                    "left_link6_ee",
                 ],
                 [
                     "right_link1",
@@ -207,11 +210,14 @@ dataset_config = dict(
                     "right_link3",
                     "right_link4",
                     "right_link5",
-                    "right_link6",
+                    "right_link6_ee",
                 ],
             ],
             arm_joint_id=[list(range(6)), list(range(8, 14))],
-            finger_keys=[["left_link7"], ["right_link7"]],
+            finger_keys=[
+                ["left_link6_gripper_end"],
+                ["right_link6_gripper_end"],
+            ],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -240,7 +246,7 @@ dataset_config = dict(
     ),
     franka_panda=dict(
         kinematics_config=dict(
-            urdf="./urdf/robotwin2_dual_arm_panda.urdf",
+            urdf="./urdf/robotwin/franka_panda/franka_panda.urdf",
             arm_link_keys=[
                 [
                     "panda_left_link1",
@@ -249,7 +255,7 @@ dataset_config = dict(
                     "panda_left_link4",
                     "panda_left_link5",
                     "panda_left_link6",
-                    "panda_left_link7",
+                    "panda_left_link7_ee",
                 ],
                 [
                     "panda_right_link1",
@@ -258,13 +264,13 @@ dataset_config = dict(
                     "panda_right_link4",
                     "panda_right_link5",
                     "panda_right_link6",
-                    "panda_right_link7",
+                    "panda_right_link7_ee",
                 ],
             ],
             arm_joint_id=[list(range(7)), list(range(9, 16))],
             finger_keys=[
-                ["left_panda_rightfinger"],
-                ["right_panda_rightfinger"],
+                ["panda_left_link7_gripper_end"],
+                ["panda_right_link7_gripper_end"],
             ],
         ),
         T_base2world=[
@@ -296,7 +302,7 @@ dataset_config = dict(
     ),
     piper=dict(
         kinematics_config=dict(
-            urdf="./urdf/robotwin2_dual_arm_piper.urdf",
+            urdf="./urdf/robotwin/piper/robotwin2_dual_arm_piper.urdf",
             arm_link_keys=[
                 [
                     "left_link1",
@@ -304,7 +310,7 @@ dataset_config = dict(
                     "left_link3",
                     "left_link4",
                     "left_link5",
-                    "left_link6",
+                    "left_link6_ee",
                 ],
                 [
                     "right_link1",
@@ -312,11 +318,14 @@ dataset_config = dict(
                     "right_link3",
                     "right_link4",
                     "right_link5",
-                    "right_link6",
+                    "right_link6_ee",
                 ],
             ],
             arm_joint_id=[list(range(6)), list(range(8, 14))],
-            finger_keys=[["left_link7"], ["right_link7"]],
+            finger_keys=[
+                ["left_link6_gripper_end"],
+                ["right_link6_gripper_end"],
+            ],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -344,6 +353,18 @@ dataset_config = dict(
         cam_names=["left_camera", "right_camera", "head_camera"],
     ),
 )
+
+
+def get_dataset_config():
+    """Return the dataset config mapping.
+
+    Provided so the URDF alignment tooling (and other consumers that need a
+    single, uniform entry point across dataset families) can invoke a getter
+    the same way it does for InternA1. The training / evaluation code paths
+    continue to reference the module-level ``dataset_config`` dict directly.
+    """
+
+    return dataset_config
 
 
 def build_transforms(

@@ -119,7 +119,7 @@ scale_shift = [
 
 cam_names = ["left", "right", "middle"]
 g1_kinematics_config = dict(
-    urdf="./urdf/G1_omnipicker.urdf",
+    urdf="./urdf/agibot_digital/G1_omnipicker.urdf",
     arm_joint_id=[
         list(range(4, 11)),
         list(range(19, 26)),

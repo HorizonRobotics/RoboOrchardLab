@@ -16,7 +16,7 @@
         "  --task_names place_empty_cup,adjust_bottle,stack_blocks_three,beat_block_hammer,handover_mic,blocks_ranking_rgb,blocks_ranking_size,lift_pot,open_laptop,open_microwave,place_cans_plasticbox,rotate_qrcode,move_pillbottle_pad,stack_bowls_three,dump_bin_bigbin,place_dual_shoes \\",
         "  --model_config '/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/HoloBrain_v0.0_Qwen' \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
-        "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
         "  --model_processor robotwin2_0_processor \\",
         "  --model_prefix model \\",
         "  --test_num 50"

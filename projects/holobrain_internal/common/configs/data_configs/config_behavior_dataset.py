@@ -30,7 +30,7 @@ DATA_TYPE = "behavior"
 
 BEHAVIOR1K_CONFIG = dict(
     kinematics_config=dict(
-        urdf="./urdf/r1_pro_with_gripper.urdf",
+        urdf="./urdf/behavior/r1_pro/r1_pro_with_gripper.urdf",
         arm_joint_id=[
             list(range(6, 10)),
             list(range(10, 17)),
@@ -64,8 +64,8 @@ BEHAVIOR1K_CONFIG = dict(
         ],
         finger_keys=[
             [],
-            ["left_gripper_finger_link1"],
-            ["right_gripper_finger_link1"],
+            ["left_arm_link7_gripper_end"],
+            ["right_arm_link7_gripper_end"],
         ],
         arm_connection_joint_indices=[3, 0, 0],
     ),
@@ -101,6 +101,14 @@ BEHAVIOR1K_CONFIG = dict(
         "head",
     ],
 )
+
+BEHAVIOR_PROFILES = {
+    "behavior": BEHAVIOR1K_CONFIG,
+}
+
+
+def get_robot_profiles():
+    return BEHAVIOR_PROFILES
 
 
 def build_transforms(config, mode, kinematics_config, scale_shift):

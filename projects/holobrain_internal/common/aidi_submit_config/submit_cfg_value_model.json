@@ -10,7 +10,7 @@
     "cmd": [
         "ulimit -n 65536",
         "ln -s /horizon-bucket/robot_lab2/datasets/all_data ${WORKING_PATH}/data",
-        "ln -s /horizon-bucket/robot_lab/users/xuewu.lin/urdf ${WORKING_PATH}/urdf",
+        "ln -s /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 ${WORKING_PATH}/urdf",
         "ln -s /horizon-bucket/robot_lab/users/xuewu.lin/ckpt ${WORKING_PATH}/ckpt",
         "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH"
     ],

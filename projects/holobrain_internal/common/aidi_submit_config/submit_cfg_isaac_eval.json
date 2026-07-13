@@ -18,7 +18,7 @@
         "  --task_names stack_block_two,place_mouse_pad \\",
         "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/mengao.zhao/plat_gpu/2026-01-15/10-23/sem_three_task_seed0-499_v4_1e5-20260115-102352.215470/output/checkpoints/checkpoint_5/' \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
-        "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
         "  --model_processor piper_processor \\",
         "  --model_prefix model_0 \\",
         "  --test_num 100 \\",

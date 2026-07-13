@@ -19,6 +19,44 @@ from dataset_factory import train_dataset_register
 DATA_TYPE = "droid"
 
 
+ROBOT_PROFILES = {
+    "droid": dict(
+        scale_shift=[
+            [2.6668646335601807, 0.001893758773803711],
+            [1.5998390913009644, -0.01578366756439209],
+            [2.6882522106170654, 0.007451534271240234],
+            [1.2947392910718918, -1.6108455210924149],
+            [2.6663869619369507, -0.004207730293273926],
+            [2.0163204446434975, 2.2652585729956627],
+            [2.758755087852478, -0.003111720085144043],
+            [-0.5, 0.5],
+        ],
+        kinematics_config=dict(
+            urdf="./urdf/droid/franka_panda/panda.urdf",
+            arm_joint_id=[list(range(7))],
+            arm_link_keys=[
+                [
+                    "panda_link1",
+                    "panda_link2",
+                    "panda_link3",
+                    "panda_link4",
+                    "panda_link5",
+                    "panda_link6",
+                    "panda_link7_ee",
+                ]
+            ],
+            finger_keys=[
+                ["panda_link7_gripper_end"],
+            ],
+        ),
+    ),
+}
+
+
+def get_robot_profiles():
+    return ROBOT_PROFILES
+
+
 def build_transforms(config, mode):
     import numpy as np
     import torch
@@ -52,16 +90,8 @@ def build_transforms(config, mode):
 
     t_base2ego = np.eye(4)
     t_base2world = np.eye(4)
-    scale_shift = [
-        [2.6668646335601807, 0.001893758773803711],
-        [1.5998390913009644, -0.01578366756439209],
-        [2.6882522106170654, 0.007451534271240234],
-        [1.2947392910718918, -1.6108455210924149],
-        [2.6663869619369507, -0.004207730293273926],
-        [2.0163204446434975, 2.2652585729956627],
-        [2.758755087852478, -0.003111720085144043],
-        [-0.5, 0.5],
-    ]
+    robot_profile = ROBOT_PROFILES["droid"]
+    scale_shift = robot_profile["scale_shift"]
 
     joint_state_loss_weights = [1, 0, 0, 0, 0, 0, 0, 0]
     ee_state_loss_weights = [1, 1, 1, 1, 0.1, 0.1, 0.1, 0.1]
@@ -118,24 +148,7 @@ def build_transforms(config, mode):
         )
     )
 
-    kinematics = MultiArmKinematics(
-        urdf="./urdf/franka_description/panda.urdf",
-        arm_joint_id=[list(range(7))],
-        arm_link_keys=[
-            [
-                "panda_link1",
-                "panda_link2",
-                "panda_link3",
-                "panda_link4",
-                "panda_link5",
-                "panda_link6",
-                "panda_link7",
-            ]
-        ],
-        finger_keys=[
-            ["left_inner_finger"],
-        ],
-    )
+    kinematics = MultiArmKinematics(**robot_profile["kinematics_config"])
 
     with_reference_imgs = config.get("with_reference_imgs", False)
     if with_reference_imgs:

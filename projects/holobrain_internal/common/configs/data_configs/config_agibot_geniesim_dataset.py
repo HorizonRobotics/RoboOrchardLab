@@ -28,7 +28,7 @@ DEFAULT_DATA_PATHS = [
 pred_interval = 1
 
 g2_kinematics_config = dict(
-    urdf="./urdf/G2_omnipicker_no_warnings.urdf",
+    urdf="./urdf/agibot_digital/G2_omnipicker_no_warnings.urdf",
     arm_joint_id=[
         list(range(5, 12)),
         list(range(20, 27)),
@@ -309,10 +309,10 @@ def build_transforms(config, mode, calibration=None, kinematics_config=None):
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
             calibration=calibration,
-            cam_ee_joint_indices=dict(
-                hand_left=7,
-                hand_right=15,
-                top_head=18,
+            cam_ref_links=dict(
+                hand_left="gripper_l_base_link",
+                hand_right="gripper_r_base_link",
+                top_head="head_link3",
             ),
             cam_names=cam_names,
             **g2_deploy_camera_kinematics_config,

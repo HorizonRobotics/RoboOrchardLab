@@ -22,7 +22,7 @@
         "echo worker_rank=${worker_rank} worker_num=${worker_num} infer_host=${infer_host}:${infer_port}",
         "mkdir -p ${HOLOBRAIN_DIR}",
         "ln -sfn /horizon-bucket/robot_lab/users/xuewu.lin/ckpt ckpt",
-        "ln -sfn /horizon-bucket/robot_lab/users/xuewu.lin/urdf urdf",
+        "ln -sfn /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 urdf",
         "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
         "export PATH=/opt/holobrain/bin:${PATH}",
         "HOLOBRAIN_LOG_FILE=${HOLOBRAIN_DIR}/holobrain_inference_server_worker_${worker_rank}_of_${worker_num}.log",

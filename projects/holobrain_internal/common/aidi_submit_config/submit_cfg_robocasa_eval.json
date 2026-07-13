@@ -13,7 +13,7 @@
         "python3 robocasa_eval.py \\",
         "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-07-04/23-00/bcloud-bj-zone1-9cef9a7b6f3c/holobrain_robocasa_targetfinetune_0a285bda_77b9_11f1_9be0_1d433b603abb/output/checkpoints/checkpoint_40/' \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
-        "  --urdf_dir /horizon-bucket/robot_lab/users/xuewu.lin/urdf \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
         "  --model_processor robocasa_processor \\",
         "  --model_prefix model \\",
     "      --task_names 'CloseBlenderLid,CloseFridge,CloseToasterOvenDoor,CoffeeSetupMug,OpenCabinet,OpenDrawer,OpenStandMixerHead,PickPlaceCounterToCabinet,PickPlaceCounterToStove,PickPlaceDrawerToCounter,PickPlaceSinkToCounter,PickPlaceToasterToCounter,SlideDishwasherRack,TurnOffStove,TurnOnElectricKettle,TurnOnMicrowave,TurnOnSinkFaucet,ArrangeBreadBasket,ArrangeTea,BreadSelection,CategorizeCondiments,CuttingToolSelection,GatherTableware,HeatKebabSandwich,KettleBoiling,LoadDishwasher,PanTransfer,PortionHotDogs,PreSoakPan,PrepareCoffee,RecycleBottlesByType,RinseSinkBasin,ScrubCuttingBoard,SetUpCuttingStation,StackBowlsCabinet,StirVegetables,WaffleReheat,WashFruitColander,WashLettuce,WeighIngredients' \\",

@@ -29,7 +29,7 @@ DATA_TYPE = "table30v2"
 dataset_config = dict(
     ur5=dict(
         kinematics=dict(
-            urdf="./urdf/ur5_wsg_gripper.urdf",
+            urdf="./urdf/table30v2/ur5/ur5_wsg_gripper.urdf",
             arm_joint_id=[list(range(6))],
             arm_link_keys=[
                 [
@@ -41,7 +41,7 @@ dataset_config = dict(
                     "wrist_3_link",
                 ],
             ],
-            finger_keys=[["fingertip_tip_center_link"]],
+            finger_keys=[["wrist_3_link_gripper_end"]],
         ),
         scale_shift=[
             [0.844146, 0.063639],  # joint0
@@ -54,11 +54,11 @@ dataset_config = dict(
         ],
         cam_names=["cam_arm", "cam_global"],
         ee_link=[["tool0"]],
-        cam_ee_joint_indices=dict(cam_arm=6),
+        cam_ref_links=dict(cam_arm="tool0", cam_global=None),
     ),
     arx5=dict(
         kinematics=dict(
-            urdf="./urdf/X5A_recorded_ee.urdf",
+            urdf="./urdf/table30v2/arx5/X5A_recorded_ee.urdf",
             arm_joint_id=[list(range(6))],
             arm_link_keys=[
                 [
@@ -67,10 +67,10 @@ dataset_config = dict(
                     "link3",
                     "link4",
                     "link5",
-                    "link6",
+                    "link6_ee",
                 ],
             ],
-            finger_keys=[["recorded_ee_link"]],
+            finger_keys=[["link6_gripper_end"]],
         ),
         scale_shift=[
             [1.803617, 0.073052],  # joint0
@@ -82,11 +82,15 @@ dataset_config = dict(
             [0.043551, 0.043694],  # gripper
         ],
         cam_names=["cam_arm", "cam_side", "cam_global"],
-        cam_ee_joint_indices=dict(cam_arm=6),
+        cam_ref_links=dict(
+            cam_arm="recorded_ee_link",
+            cam_side=None,
+            cam_global=None,
+        ),
     ),
     aloha=dict(
         kinematics=dict(
-            urdf="./urdf/piper_description_dualarm.urdf",
+            urdf="./urdf/table30v2/aloha/piper_description_dualarm.urdf",
             arm_joint_id=[list(range(6)), list(range(8, 14))],
             arm_link_keys=[
                 [
@@ -95,7 +99,7 @@ dataset_config = dict(
                     "left_link3",
                     "left_link4",
                     "left_link5",
-                    "left_link6",
+                    "left_link6_ee",
                 ],
                 [
                     "right_link1",
@@ -103,10 +107,13 @@ dataset_config = dict(
                     "right_link3",
                     "right_link4",
                     "right_link5",
-                    "right_link6",
+                    "right_link6_ee",
                 ],
             ],
-            finger_keys=[["left_link7"], ["right_link7"]],
+            finger_keys=[
+                ["left_link6_gripper_end"],
+                ["right_link6_gripper_end"],
+            ],
         ),
         scale_shift=[
             [1.469177, -0.128763],  # left_joint0
@@ -124,12 +131,16 @@ dataset_config = dict(
             [2.990137, 0.013127],  # right_joint5
             [0.054850, 0.052250],  # right_gripper
         ],
-        cam_ee_joint_indices=dict(cam_left_wrist=5, cam_right_wrist=12),
+        cam_ref_links=dict(
+            cam_left_wrist="left_link6",
+            cam_right_wrist="right_link6",
+            cam_high=None,
+        ),
         cam_names=["cam_left_wrist", "cam_right_wrist", "cam_high"],
     ),
     dos_w1=dict(
         kinematics=dict(
-            urdf="./urdf/dos-w1.urdf",
+            urdf="./urdf/table30v2/dos_w1/dos-w1.urdf",
             arm_joint_id=[list(range(6)), list(range(8, 14))],
             arm_link_keys=[
                 [
@@ -138,7 +149,7 @@ dataset_config = dict(
                     "left_link3",
                     "left_link4",
                     "left_link5",
-                    "left_link6",
+                    "left_link6_ee",
                 ],
                 [
                     "right_link1",
@@ -146,10 +157,13 @@ dataset_config = dict(
                     "right_link3",
                     "right_link4",
                     "right_link5",
-                    "right_link6",
+                    "right_link6_ee",
                 ],
             ],
-            finger_keys=[["left_end_link"], ["right_end_link"]],
+            finger_keys=[
+                ["left_link6_gripper_end"],
+                ["right_link6_gripper_end"],
+            ],
         ),
         scale_shift=[
             [1.489090, -0.648508],  # left_joint0
@@ -167,10 +181,18 @@ dataset_config = dict(
             [3.013848, 0.001907],  # right_joint5
             [0.036022, 0.035387],  # right_gripper
         ],
-        cam_ee_joint_indices=dict(cam_left_wrist=6, cam_right_wrist=13),
+        cam_ref_links=dict(
+            cam_left_wrist="left_end_link",
+            cam_right_wrist="right_end_link",
+            cam_high=None,
+        ),
         cam_names=["cam_left_wrist", "cam_right_wrist", "cam_high"],
     ),
 )
+
+
+def get_dataset_config():
+    return dataset_config
 
 
 camera_parameters_file = "./data/table30v2/lmdb/default_camera_parameters.json"
@@ -183,7 +205,7 @@ def build_transforms(
     scale_shift,
     kinematics_config,
     do_calib_to_ext,
-    cam_ee_joint_indices,
+    cam_ref_links,
     ee_link,
     default_calibration,
     default_intrinsic,
@@ -290,7 +312,8 @@ def build_transforms(
             kinematics_config["finger_keys"] = ee_link
         calib_to_ext = dict(
             type=CalibrationToExtrinsic,
-            cam_ee_joint_indices=cam_ee_joint_indices,
+            cam_ref_links=cam_ref_links,
+            cam_names=cam_names,
             **kinematics_config,
         )
     else:
@@ -480,7 +503,7 @@ def _build_dataset(
         data_config["scale_shift"],
         data_config["kinematics"],
         do_calib_to_ext=not load_extrinsic,
-        cam_ee_joint_indices=data_config["cam_ee_joint_indices"],
+        cam_ref_links=data_config["cam_ref_links"],
         ee_link=data_config.get("ee_link"),
         default_calibration=default_calibration,
         default_intrinsic=default_intrinsic,
@@ -539,7 +562,7 @@ def _build_processor(config, setting_type):
         data_config["scale_shift"],
         data_config["kinematics"],
         do_calib_to_ext=True,
-        cam_ee_joint_indices=data_config["cam_ee_joint_indices"],
+        cam_ref_links=data_config["cam_ref_links"],
         ee_link=data_config.get("ee_link"),
         default_calibration=default_calibration,
         default_intrinsic=default_intrinsic,

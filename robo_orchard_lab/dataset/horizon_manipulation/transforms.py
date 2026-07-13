@@ -1008,33 +1008,9 @@ class MultiArmKinematics:
         from pytorch3d.transforms import matrix_to_quaternion
 
         input_shape = joint_state.shape
-        joint_state = joint_state.to(torch.float32)
-
-        if joint_state.device.type == "cpu":
-            chain = self.chain
-        else:
-            if self.chain_gpu.device != joint_state.device:
-                self.chain_gpu.to(device=joint_state.device)
-            chain = self.chain_gpu
-
-        all_joint_state = torch.zeros(
-            [*input_shape[:-1], len(chain.get_joints())]
-        ).to(joint_state)
-
-        start = 0
-        for i, single_arm_joint_id in enumerate(self.arm_joint_id):
-            num_joint = len(single_arm_joint_id)
-            # Input state contains one optional gripper slot after each arm,
-            # but only actuated arm joints are written into the URDF chain.
-            all_joint_state[..., single_arm_joint_id] = joint_state[
-                ..., start : start + num_joint
-            ]
-            start += num_joint + (
-                len(self.finger_keys[i]) > 0
-                or self.ee_to_gripper[i] is not None
-            )
-        all_joint_state = all_joint_state.flatten(end_dim=-2)
-        link_poses_dict = chain.forward_kinematics(all_joint_state)
+        link_poses_dict = self._forward_kinematics_from_packed_joint_state(
+            joint_state
+        )
 
         link_poses = []
         split_size = []
@@ -1089,9 +1065,39 @@ class MultiArmKinematics:
         robot_states = robot_states.permute(1, 0, 2)
         robot_states = robot_states.reshape(*input_shape[:-1], -1, 7)
         robot_states = torch.cat(
-            [joint_state[..., None], robot_states], dim=-1
+            [joint_state[..., None].to(torch.float32), robot_states], dim=-1
         )
         return robot_states
+
+    def _forward_kinematics_from_packed_joint_state(self, joint_state):
+        """Run FK from policy-ordered joint state."""
+
+        joint_state = joint_state.to(torch.float32)
+
+        if joint_state.device.type == "cpu":
+            chain = self.chain
+        else:
+            if self.chain_gpu.device != joint_state.device:
+                self.chain_gpu.to(device=joint_state.device)
+            chain = self.chain_gpu
+
+        all_joint_state = torch.zeros(
+            [*joint_state.shape[:-1], len(chain.get_joints())]
+        ).to(joint_state)
+
+        start = 0
+        for i, single_arm_joint_id in enumerate(self.arm_joint_id):
+            num_joint = len(single_arm_joint_id)
+            # Input state contains one optional gripper slot after each arm,
+            # but only actuated arm joints are written into the URDF chain.
+            all_joint_state[..., single_arm_joint_id] = joint_state[
+                ..., start : start + num_joint
+            ]
+            start += num_joint + (
+                len(self.finger_keys[i]) > 0
+                or self.ee_to_gripper[i] is not None
+            )
+        return chain.forward_kinematics(all_joint_state.flatten(end_dim=-2))
 
 
 class CalibrationToExtrinsic(MultiArmKinematics):
@@ -1099,7 +1105,7 @@ class CalibrationToExtrinsic(MultiArmKinematics):
         self,
         urdf,
         calibration=None,
-        cam_ee_joint_indices: dict = None,
+        cam_ref_links: dict | None = None,
         cam_names=None,
         **kwargs,
     ):
@@ -1108,9 +1114,9 @@ class CalibrationToExtrinsic(MultiArmKinematics):
             self.calibration = self.calibration_handler(calibration)
         else:
             self.calibration = None
-        if cam_ee_joint_indices is None:
-            cam_ee_joint_indices = dict(left=5, right=12)
-        self.cam_ee_joint_indices = cam_ee_joint_indices
+        if cam_ref_links is None:
+            cam_ref_links = dict(left="left_link6", right="right_link6")
+        self.cam_ref_links = cam_ref_links
         self.cam_names = cam_names
 
     def calibration_handler(self, calibration):
@@ -1132,20 +1138,50 @@ class CalibrationToExtrinsic(MultiArmKinematics):
             calibrations = self.calibration
         if calibrations is None:
             return data
-        current_joint_pose = self.joint_state_to_robot_state(
-            data["hist_joint_state"][-1][None], return_matrix=True
-        )[0]
         cam_names = data.get("cam_names", self.cam_names)
+        if cam_names is None:
+            cam_names = list(calibrations.keys())
+        missing_cams = [
+            cam for cam in cam_names if cam not in self.cam_ref_links
+        ]
+        if missing_cams:
+            raise KeyError(
+                "cam_ref_links missing camera(s): " + ", ".join(missing_cams)
+            )
+        ref_links = tuple(
+            dict.fromkeys(
+                link
+                for cam in cam_names
+                for link in (self.cam_ref_links[cam],)
+                if link is not None
+            )
+        )
+        ref_poses = {}
+        if ref_links:
+            link_poses_dict = self._forward_kinematics_from_packed_joint_state(
+                data["hist_joint_state"][-1][None]
+            )
+            missing_links = [
+                link for link in ref_links if link not in link_poses_dict
+            ]
+            if missing_links:
+                raise KeyError(
+                    "URDF link(s) not reachable from FK chain: "
+                    + ", ".join(missing_links)
+                )
+            ref_poses = {
+                link: link_poses_dict[link].get_matrix()[0]
+                for link in ref_links
+            }
         t_base2cam_list = []
         for cam in cam_names:
             calibration = torch.clone(calibrations[cam])
-            if cam not in self.cam_ee_joint_indices:
+            ref_link = self.cam_ref_links[cam]
+            if ref_link is None:
                 t_base2cam = calibration
             else:
-                idx = self.cam_ee_joint_indices[cam]
                 t_ee2cam = calibration
-                t_ee2base = torch.eye(4)
-                t_ee2base = current_joint_pose[idx]
+                t_ee2base = ref_poses[ref_link]
                 t_base2cam = t_ee2cam @ torch.linalg.inv(t_ee2base).to(
                     t_ee2cam
                 )
