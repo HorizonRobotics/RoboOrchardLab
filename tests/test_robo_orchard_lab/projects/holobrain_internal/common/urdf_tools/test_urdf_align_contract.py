@@ -46,11 +46,6 @@ from xml.etree import ElementTree
 
 import pytest
 import torch
-from conftest import (
-    alignment_cases,
-    require_resolved,
-    wrist_axis_alignment_cases,
-)
 
 from projects.holobrain_internal.common.urdf_tools.cases import (
     UrdfAlignmentCase,
@@ -65,6 +60,11 @@ from projects.holobrain_internal.common.urdf_tools.fk_baseline import (
 from projects.holobrain_internal.common.urdf_tools.transform import (
     _format_aligned_urdf,
     apply_alignment,
+)
+from test_robo_orchard_lab.projects.holobrain_internal.common.urdf_tools.conftest import (  # noqa: E501
+    alignment_cases,
+    require_resolved,
+    wrist_axis_alignment_cases,
 )
 
 # ---------------------------------------------------------------------------

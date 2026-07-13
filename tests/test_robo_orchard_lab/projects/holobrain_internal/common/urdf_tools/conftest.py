@@ -29,11 +29,35 @@ here so:
 """
 
 from __future__ import annotations
+import sys
 from pathlib import Path
 
 import pytest
 
-from projects.holobrain_internal.common.urdf_tools.cases import (
+# The urdf_tools tests import product code with
+# ``from projects.holobrain_internal.…``. ``projects/`` is a plain
+# directory at the repo root — it isn't installed as a package (the
+# top-level ``pyproject.toml`` only ships ``robo_orchard_lab``) — so the
+# import only resolves when the repo root is on ``sys.path``. Under the
+# ``make test_ut`` target pytest is launched from ``build/test``, so
+# neither cwd nor the pytest rootdir put the repo root on ``sys.path``
+# by default; prepend it explicitly here.
+#
+# The sibling ``__init__.py`` files under ``tests/…/projects/…`` exist
+# for the other half of the puzzle: without them, pytest's rootdir walk
+# would register ``tests/…/projects/`` as an implicit namespace package
+# named ``projects`` at collection time, and that cached module would
+# shadow the real package regardless of ``sys.path``, producing
+# ``ModuleNotFoundError: No module named 'projects.holobrain_internal'``
+# at conftest-import time (which is what CI previously hit). With inits
+# in place, this test tree is collected under
+# ``test_robo_orchard_lab.projects.…`` and does not compete with the
+# real top-level ``projects``.
+_REPO_ROOT = Path(__file__).resolve().parents[6]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from projects.holobrain_internal.common.urdf_tools.cases import (  # noqa: E402
     UrdfAlignmentCase,
     default_alignment_cases,
 )

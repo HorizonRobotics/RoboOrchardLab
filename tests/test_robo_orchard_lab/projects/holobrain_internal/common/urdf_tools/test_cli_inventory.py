@@ -26,9 +26,17 @@ operators run by hand.
 
 from __future__ import annotations
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+# ``projects/`` is not an installed package, so a plain ``python -m
+# projects.…`` fails whenever the subprocess's cwd is not the repo root
+# (in CI pytest launches from ``build/test``). Point ``PYTHONPATH`` at
+# the repo root so the CLI import resolves the same way it does when a
+# developer runs the tool by hand from the repo top level.
+_REPO_ROOT = Path(__file__).resolve().parents[6]
 
 
 def _write_tiny_urdf(path: Path) -> None:
@@ -63,6 +71,11 @@ def test_inventory_cli_writes_json(tmp_path: Path):
     )
     output_path = tmp_path / "inventory.json"
 
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_REPO_ROOT}{os.pathsep}{existing}" if existing else str(_REPO_ROOT)
+    )
     subprocess.check_call(
         [
             sys.executable,
@@ -77,7 +90,8 @@ def test_inventory_cli_writes_json(tmp_path: Path):
             "urdf",
             "--output",
             str(output_path),
-        ]
+        ],
+        env=env,
     )
 
     inventory = json.loads(output_path.read_text(encoding="utf-8"))

@@ -28,13 +28,17 @@ below, so those unit tests were tautological.
 from __future__ import annotations
 
 import pytest
-from conftest import alignment_cases, repo_root, require_resolved
 
 from projects.holobrain_internal.common.urdf_tools.cases import (
     UrdfAlignmentCase,
 )
 from projects.holobrain_internal.common.urdf_tools.config_wiring import (
     verify_case_config_wiring,
+)
+from test_robo_orchard_lab.projects.holobrain_internal.common.urdf_tools.conftest import (  # noqa: E501
+    alignment_cases,
+    repo_root,
+    require_resolved,
 )
 
 

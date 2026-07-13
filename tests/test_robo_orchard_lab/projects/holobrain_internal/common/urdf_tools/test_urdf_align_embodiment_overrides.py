@@ -39,10 +39,14 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import numpy as np
-from conftest import alignment_case, repo_root, require_resolved
 
 from projects.holobrain_internal.common.urdf_tools.cases import (
     UrdfAlignmentCase,
+)
+from test_robo_orchard_lab.projects.holobrain_internal.common.urdf_tools.conftest import (  # noqa: E501
+    alignment_case,
+    repo_root,
+    require_resolved,
 )
 
 # ---------------------------------------------------------------------------
