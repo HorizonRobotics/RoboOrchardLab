@@ -56,7 +56,7 @@ from projects.holobrain_internal.common.urdf_tools.transform.camera import (
 from projects.holobrain_internal.common.urdf_tools.transform.ee_frames import (
     insert_ee_children,
 )
-from projects.holobrain_internal.common.urdf_tools.transform.gripper_end import (
+from projects.holobrain_internal.common.urdf_tools.transform.gripper_end import (  # noqa: E501
     insert_gripper_end_children,
 )
 

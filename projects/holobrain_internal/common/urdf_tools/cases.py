@@ -26,8 +26,9 @@ in practice a symlink to a shared bucket; not git-tracked.
 The manifest declares:
 
 * ``adapter`` — packer family (``interna1``, ``robotwin``);
-* ``config`` — dataset-config module + getter + one-or-more keys (base + aligned)
-  identifying the packer entries this embodiment backs;
+* ``config`` — dataset-config module + getter + one-or-more keys
+  (base + aligned) identifying the packer entries this embodiment
+  backs;
 * ``arms`` — per-arm kinematic chain and EE spec
   (``arm_link_keys``, ``ee.{parent, rotate_z_deg, gripper_forward}``);
 * ``camera_references`` — bare list of URDF link names whose FK pose must be
@@ -161,7 +162,7 @@ class EeFrameSpec:
 
     @property
     def child(self) -> str:
-        """Convention: the ``*_ee`` child link name is always ``<parent>_ee``."""
+        """Convention: the ``*_ee`` child link name is ``<parent>_ee``."""
 
         return f"{self.parent}_ee"
 
@@ -189,11 +190,12 @@ class GripperEndSpec:
 
     Computed from :class:`ArmSpec` at load time.
 
-    - ``attach_link`` is where the fixed joint's ``<parent>`` points: on the
-      default path, when the arm's EE rotates (``rotate_z_deg != 0``), it is
-      ``<parent>_ee``; when the arm's last link is already convention-compliant,
-      it is ``<parent>``. When an override is present, it is the override's
-      ``attach_link`` (a real link, e.g. the gripper link).
+    - ``attach_link`` is where the fixed joint's ``<parent>`` points: on
+      the default path, when the arm's EE rotates (``rotate_z_deg != 0``),
+      it is ``<parent>_ee``; when the arm's last link is already
+      convention-compliant, it is ``<parent>``. When an override is
+      present, it is the override's ``attach_link`` (a real link, e.g.
+      the gripper link).
     - ``child`` is the emitted ``<link name>``. It is uniformly named
       ``f"{ee.parent}_gripper_end"`` regardless of which path sets the attach
       link, so the runtime ``finger_keys`` slug stays short and identical
@@ -224,9 +226,12 @@ class AlignmentSpec:
 
     @property
     def ee_frames(self) -> tuple[EeFrameSpec, ...]:
-        """Per-arm EE specs. ``rotate_z_deg == 0`` entries are still returned;
-        the stage 2 transformer skips them internally so callers do not need
-        to filter."""
+        """Return per-arm EE specs.
+
+        ``rotate_z_deg == 0`` entries are still returned; the stage 2
+        transformer skips them internally so callers do not need to
+        filter.
+        """
 
         return tuple(arm.ee for arm in self.arms)
 
@@ -568,7 +573,9 @@ def _cases_from_manifest_path(
     )
 
     cases: list[UrdfAlignmentCase] = []
-    for key, aligned_key in zip(config.keys, config.aligned_keys):
+    for key, aligned_key in zip(
+        config.keys, config.aligned_keys, strict=True
+    ):
         per_key_config = ConfigWiring(
             module=config.module,
             getter=config.getter,
@@ -869,9 +876,11 @@ def _resolve_aligned_urdf_path(
 ) -> tuple[Path, bool]:
     """Locate the aligned URDF for a manifest under the parallel align tree.
 
-    Manifests live at ``<manifest_root>/<dataset>/<embodiment>/alignment.yaml``
-    and their aligned URDFs live at ``<align_root>/<dataset>/<embodiment>/*.urdf``
-    (the ``urdf_align/`` tree is a symlink to a shared bucket, not git-tracked).
+    Manifests live at
+    ``<manifest_root>/<dataset>/<embodiment>/alignment.yaml`` and their
+    aligned URDFs live at
+    ``<align_root>/<dataset>/<embodiment>/*.urdf`` (the ``urdf_align/``
+    tree is a symlink to a shared bucket, not git-tracked).
 
     Returns ``(aligned_urdf_path, resolved)`` where ``resolved`` is ``True``
     when the aligned URDF file exists on disk. When no URDF is found (bucket
@@ -954,8 +963,9 @@ def _read_urdf_actuated_joint_names(urdf_path: Path) -> tuple[str, ...]:
     """Return actuated joint names from a URDF file in declaration order.
 
     Actuated types are ``revolute``, ``continuous``, and ``prismatic``.
-    Fixed / mimic joints do not contribute to the FK sample vector, so they
-    are excluded. Mirrors ``pytorch_kinematics.Chain.get_joint_parameter_names``.
+    Fixed / mimic joints do not contribute to the FK sample vector, so
+    they are excluded. Mirrors
+    ``pytorch_kinematics.Chain.get_joint_parameter_names``.
     """
 
     actuated_types = {"revolute", "continuous", "prismatic"}

@@ -113,7 +113,8 @@ def copy_urdf_asset_tree(
     # `shutil.copy2` preserves the source mode bits; some upstream URDF assets
     # are shipped read-only (0555), which would then prevent the transformer
     # from overwriting the aligned URDF in-place. Add owner-write so the align
-    # pipeline can rewrite the file it just staged, without changing readability.
+    # pipeline can rewrite the file it just staged, without changing
+    # readability.
     _ensure_owner_writable(target_urdf)
     copied_files: list[Path] = [target_urdf]
     skipped_meshes: list[str] = []
@@ -160,7 +161,11 @@ def rewrite_resolved_package_uris(
     text = urdf_bytes.decode("utf-8")
 
     def _sub(match: re.Match[str]) -> str:
-        prefix, filename, suffix = match.group(1), match.group(2), match.group(3)
+        prefix, filename, suffix = (
+            match.group(1),
+            match.group(2),
+            match.group(3),
+        )
         replacement = package_uri_rewrites.get(filename)
         if replacement is None:
             return match.group(0)

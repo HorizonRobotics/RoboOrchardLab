@@ -134,9 +134,10 @@ def _move_link_geometry(
 ) -> None:
     """Move `<inertial>`, `<visual>`, `<collision>` from parent to ee link.
 
-    The moved element's ``<origin>`` is re-expressed by ``S⁻¹`` (left-multiplied)
-    so its world-frame pose is invariant across the frame change from the
-    parent link into the rotated ``*_ee`` child link. Inertia tensor
+    The moved element's ``<origin>`` is re-expressed by ``S⁻¹``
+    (left-multiplied) so its world-frame pose is invariant across the
+    frame change from the parent link into the rotated ``*_ee`` child
+    link. Inertia tensor
     components stay untouched (the inertial ``<origin>`` rotation absorbs the
     frame change).
     """
@@ -211,7 +212,7 @@ def _ee_joint_already_applied(
     expected_child: str,
     expected_s: np.ndarray,
 ) -> bool:
-    """Return True when `joint` matches the fixed EE joint this stage would emit.
+    """Return True when `joint` matches the EE fixed joint we would emit.
 
     Used as an idempotency guard: on a re-run over an already-aligned URDF,
     the ``<parent>_ee_joint`` fixed joint plus its ``<parent>_ee`` child link

@@ -98,9 +98,7 @@ def _nearest_actuated_child_link(
         parent = joint.find("parent")
         assert parent is not None
         current = parent.attrib["link"]
-    raise AssertionError(
-        f"No actuated ancestor joint found for link {link!r}"
-    )
+    raise AssertionError(f"No actuated ancestor joint found for link {link!r}")
 
 
 def _link_full_pose_matches(
@@ -338,9 +336,7 @@ def test_aligned_urdf_exposes_gripper_end_child_per_arm(
         )
         joint = joints_by_child[gripper_end.child]
         assert joint.attrib.get("type") == "fixed"
-        assert (
-            joint.find("parent").attrib["link"] == gripper_end.attach_link
-        )
+        assert joint.find("parent").attrib["link"] == gripper_end.attach_link
 
         assert gripper_end.child in link_poses
         assert gripper_end.attach_link in link_poses

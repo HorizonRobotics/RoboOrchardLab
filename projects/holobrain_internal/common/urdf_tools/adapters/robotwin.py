@@ -40,9 +40,7 @@ class RobotwinAdapter(DatasetAdapter):
 
     packer_module = "config_robotwin_dataset"
 
-    def resolve_urdf_path(
-        self, entry: Mapping[str, Any]
-    ) -> Optional[str]:
+    def resolve_urdf_path(self, entry: Mapping[str, Any]) -> Optional[str]:
         """Read ``entry["kinematics_config"]["urdf"]`` from a nested entry."""
 
         kinematics = entry.get("kinematics_config")

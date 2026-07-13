@@ -228,10 +228,10 @@ def _gripper_end_joint_already_applied(
     if len(xyz) != 3 or len(rpy) != 3:
         return False
     tol = 1e-9
-    for got, want in zip(xyz, expected_xyz):
+    for got, want in zip(xyz, expected_xyz, strict=True):
         if abs(got - want) > tol:
             return False
-    for got, want in zip(rpy, expected_rpy):
+    for got, want in zip(rpy, expected_rpy, strict=True):
         if abs(got - want) > tol:
             return False
     return True

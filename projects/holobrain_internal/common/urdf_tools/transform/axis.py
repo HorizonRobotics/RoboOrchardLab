@@ -31,9 +31,10 @@ The rewrite:
        ``S⁻¹``.
     5. Rewrite the joint's ``<axis>`` to ``0 0 1``.
 
-Inertia tensor values are left untouched: because the ``<inertial>`` ``<origin>``
-is also rotated by ``S⁻¹``, the CoM's rotation matrix relative to the world
-frame is unchanged, and the tensor stays expressed in the same physical frame.
+Inertia tensor values are left untouched: because the ``<inertial>``
+``<origin>`` is also rotated by ``S⁻¹``, the CoM's rotation matrix
+relative to the world frame is unchanged, and the tensor stays expressed
+in the same physical frame.
 """
 
 from __future__ import annotations

@@ -307,9 +307,7 @@ def _named_joint_tensor(
     for sample_idx, sample in enumerate(joint_samples):
         for joint_name in joint_names:
             if joint_name not in joint_index:
-                raise KeyError(
-                    f"Joint {joint_name!r} is missing from URDF"
-                )
+                raise KeyError(f"Joint {joint_name!r} is missing from URDF")
             positions[sample_idx, joint_index[joint_name]] = float(
                 sample.get(joint_name, 0.0)
             )

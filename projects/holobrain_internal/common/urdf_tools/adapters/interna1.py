@@ -40,9 +40,7 @@ class InternA1Adapter(DatasetAdapter):
 
     packer_module = "config_interna1_dataset"
 
-    def resolve_urdf_path(
-        self, entry: Mapping[str, Any]
-    ) -> Optional[str]:
+    def resolve_urdf_path(self, entry: Mapping[str, Any]) -> Optional[str]:
         """Read ``entry["urdf"]`` from a flat InternA1-schema entry."""
 
         value = entry.get("urdf")
