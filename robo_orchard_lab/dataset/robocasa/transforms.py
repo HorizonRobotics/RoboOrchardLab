@@ -89,38 +89,49 @@ class SimpleStateSampling:
 
 
 class TransformRobotState:
+    """Sandwich the robot-state pose between two SE(3) transforms.
+
+    ``pose_new = transform @ pose @ transform_right``
+    """
+
     def __call__(self, data):
         embodiedment_mat = data["embodiedment_mat"]
+        ee_frame_alignment = data.get("ee_frame_alignment")
         data["hist_robot_state"] = self._apply_transform(
-            data["hist_robot_state"], embodiedment_mat
+            data["hist_robot_state"], embodiedment_mat, ee_frame_alignment
         )
         if "pred_robot_state" in data:
             data["pred_robot_state"] = self._apply_transform(
-                data["pred_robot_state"], embodiedment_mat
+                data["pred_robot_state"], embodiedment_mat, ee_frame_alignment
             )
         return data
 
     def _apply_transform(
-        self, robot_state: torch.Tensor, transform: torch.Tensor
+        self,
+        robot_state: torch.Tensor,
+        transform: torch.Tensor,
+        transform_right: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        device = robot_state.device
+        dtype = robot_state.dtype
         original_shape = robot_state.shape
         state_flat = robot_state.reshape(-1, 8)
         joint_val = state_flat[:, :1]
         pos = state_flat[:, 1:4]
         quat = state_flat[:, 4:]
 
-        transform = transform.to(
-            device=robot_state.device, dtype=robot_state.dtype
+        r_mats = quaternion_to_matrix(quat)
+        t_mats = torch.eye(4, device=device, dtype=dtype).repeat(
+            state_flat.shape[0], 1, 1
         )
-        transform_rot = transform[..., :3, :3]
-        transform_pos = transform[..., :3, 3]
-
-        pos_new = (
-            torch.matmul(transform_rot, pos.unsqueeze(-1)).squeeze(-1)
-            + transform_pos
-        )
-        quat_new = matrix_to_quaternion(
-            transform_rot @ quaternion_to_matrix(quat)
-        )
+        t_mats[:, :3, :3] = r_mats
+        t_mats[:, :3, 3] = pos
+        t_new = transform.to(device, dtype) @ t_mats
+        if transform_right is not None:
+            t_new = t_new @ torch.as_tensor(
+                transform_right, device=device, dtype=dtype
+            )
+        pos_new = t_new[:, :3, 3]
+        quat_new = matrix_to_quaternion(t_new[:, :3, :3])
         res = torch.cat([joint_val, pos_new, quat_new], dim=-1)
         return res.reshape(original_shape)

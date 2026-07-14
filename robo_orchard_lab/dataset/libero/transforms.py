@@ -110,18 +110,24 @@ class RobotStateJitter:
 
 
 class TransformRobotState:
+    """Sandwich the robot-state pose between two SE(3) transforms.
+
+    ``pose_new = transform @ pose @ transform_right``
+    """
+
     def __call__(self, data):
         embodiedment_mat = data["embodiedment_mat"]
+        ee_frame_alignment = data.get("ee_frame_alignment")
         data["hist_robot_state"] = self._apply_transform(
-            data["hist_robot_state"], embodiedment_mat
+            data["hist_robot_state"], embodiedment_mat, ee_frame_alignment
         )
         if "pred_robot_state" in data:
             data["pred_robot_state"] = self._apply_transform(
-                data["pred_robot_state"], embodiedment_mat
+                data["pred_robot_state"], embodiedment_mat, ee_frame_alignment
             )
         return data
 
-    def _apply_transform(self, robot_state, transform):
+    def _apply_transform(self, robot_state, transform, transform_right=None):
         device = robot_state.device
         dtype = robot_state.dtype
         original_shape = robot_state.shape
@@ -136,6 +142,10 @@ class TransformRobotState:
         t_mats[:, :3, :3] = r_mats
         t_mats[:, :3, 3] = pos
         t_new = transform.to(device, dtype) @ t_mats
+        if transform_right is not None:
+            t_new = t_new @ torch.as_tensor(
+                transform_right, device=device, dtype=dtype
+            )
         pos_new = t_new[:, :3, 3]
         quat_new = matrix_to_quaternion(t_new[:, :3, :3])
         res = torch.cat([joint_val, pos_new, quat_new], dim=-1)

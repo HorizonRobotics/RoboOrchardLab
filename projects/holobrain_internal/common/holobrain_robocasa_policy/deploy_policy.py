@@ -171,7 +171,14 @@ def _normalize_quaternion(quat: np.ndarray) -> np.ndarray:
 def _apply_inverse_embodiment(
     robot_state: torch.Tensor,
     embodiedment_mat: torch.Tensor,
+    ee_frame_alignment: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    """Invert the training-time SE(3) sandwich on a batch of robot states.
+
+    Mirrors ``TransformRobotState`` but with both transforms inverted:
+    ``pose_orig = inv(embodiedment_mat) @ pose @ inv(ee_frame_alignment)``.
+    Both transforms are full 4x4 SE(3) matrices.
+    """
     transform = torch.linalg.inv(embodiedment_mat)
     state_flat = robot_state.reshape(-1, ROBOCASA_STATE_DIM)
     joint_val = state_flat[:, :1]
@@ -186,6 +193,14 @@ def _apply_inverse_embodiment(
     t_mats[:, :3, :3] = r_mats
     t_mats[:, :3, 3] = pos
     t_new = transform.to(robot_state.device, robot_state.dtype) @ t_mats
+    if ee_frame_alignment is not None:
+        # Invert the training-time ee-frame alignment
+        align_mat = torch.as_tensor(
+            ee_frame_alignment,
+            device=robot_state.device,
+            dtype=robot_state.dtype,
+        )
+        t_new = t_new @ torch.linalg.inv(align_mat)
     pos_new = t_new[:, :3, 3]
     quat_new = matrix_to_quaternion(t_new[:, :3, :3])
     ret = torch.cat([joint_val, pos_new, quat_new], dim=-1)
@@ -537,9 +552,13 @@ class HoloBrainRoboCasaPolicy:
         pose[..., 0] = 1 - pose[..., 0] * 2
         if pose.ndim == 3 and pose.shape[1] == 1:
             pose = pose.squeeze(1)
+        ee_frame_alignment = model_input.get("ee_frame_alignment")
+        if ee_frame_alignment is not None:
+            ee_frame_alignment = ee_frame_alignment[0]
         target_state = _apply_inverse_embodiment(
             pose,
             model_input["embodiedment_mat"][0],
+            ee_frame_alignment,
         )
         output.pose = target_state
         return output

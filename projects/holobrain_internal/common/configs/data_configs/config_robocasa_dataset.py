@@ -51,11 +51,20 @@ def build_transforms(config, mode):
     ]
     loss_weights = (loss_weights * temporal_weights).tolist()
 
+    # 90 degree around z axis, right-multiplied on action/state frames.
+    ee_frame_alignment = [
+        [0.0, -1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
     add_data_relative_items = dict(
         type=AddItems,
         joint_mask=(False,),
         joint_relative_pos=((0,),),
         joint_scale_shift=((0.5, 0.5),),
+        ee_frame_alignment=ee_frame_alignment,
         noise_type="local_joint_local_pose",
         depths=np.zeros([3, 2, 2]).tolist(),  # 3 cameras, fake size: [2, 2]
     )
@@ -84,6 +93,7 @@ def build_transforms(config, mode):
         depths="float32",
         projection_mat="float32",
         embodiedment_mat="float32",
+        ee_frame_alignment="float32",
         hist_robot_state="float32",
         pred_robot_state="float32",
         joint_scale_shift="float32",
@@ -97,6 +107,7 @@ def build_transforms(config, mode):
         "depths",
         "projection_mat",
         "embodiedment_mat",
+        "ee_frame_alignment",
         "hist_robot_state",
         "pred_robot_state",
         "joint_scale_shift",

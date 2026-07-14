@@ -81,7 +81,8 @@ _POS_END = 4  # indices 1:4
 _QUAT_START = 4  # indices 4:8
 
 
-def apply_transform(robot_state, transform):
+def apply_transform(robot_state, transform, transform_right=None):
+    """Sandwich the robot-state pose between two 4x4 SE(3) matrices."""
     device = robot_state.device
     dtype = robot_state.dtype
     original_shape = robot_state.shape
@@ -96,6 +97,10 @@ def apply_transform(robot_state, transform):
     t_mats[:, :3, :3] = r_mats
     t_mats[:, :3, 3] = pos
     t_new = transform.to(device, dtype) @ t_mats
+    if transform_right is not None:
+        t_new = t_new @ torch.as_tensor(
+            transform_right, device=device, dtype=dtype
+        )
     pos_new = t_new[:, :3, 3]
     quat_new = matrix_to_quaternion(t_new[:, :3, :3])
     res = torch.cat([joint_val, pos_new, quat_new], dim=-1)
@@ -179,7 +184,22 @@ class HoloBrainPolicy:
         model_outs = self.model(data)
         actions = self.processor.post_process(model_outs, data).pose.squeeze(1)
         inv_embodiedment_mat = torch.linalg.inv(data["embodiedment_mat"])
-        actions = apply_transform(actions, inv_embodiedment_mat)
+        ee_frame_alignment = data.get("ee_frame_alignment")
+        inv_ee_frame_alignment = None
+        if ee_frame_alignment is not None:
+            # Invert the training-time ee-frame alignment
+            inv_ee_frame_alignment = torch.linalg.inv(
+                torch.as_tensor(
+                    ee_frame_alignment,
+                    device=actions.device,
+                    dtype=actions.dtype,
+                )
+            )
+        actions = apply_transform(
+            actions,
+            inv_embodiedment_mat,
+            transform_right=inv_ee_frame_alignment,
+        )
         actions[..., -4:] = F.normalize(actions[..., -4:], p=2, dim=-1)
         valid_action_step = 8
         actions = actions[:valid_action_step].cpu().numpy()

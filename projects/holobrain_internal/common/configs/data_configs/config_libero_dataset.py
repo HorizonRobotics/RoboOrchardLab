@@ -49,6 +49,13 @@ def build_transforms(config, mode):
         ]
     ).tolist()
     t_base2world = np.eye(4).tolist()
+    # 180 degree around z axis, right-multiplied on action/state frames.
+    ee_frame_alignment = [
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
     joint_mask = (False,)
     joint_scale_shift = ((0.5, 0.5),)
     joint_relative_pos = (0,)
@@ -75,6 +82,7 @@ def build_transforms(config, mode):
         type=AddItems,
         T_base2ego=t_base2ego,
         T_base2world=t_base2world,
+        ee_frame_alignment=ee_frame_alignment,
         joint_mask=joint_mask,
         joint_relative_pos=joint_relative_pos,
         joint_scale_shift=joint_scale_shift,
@@ -111,6 +119,7 @@ def build_transforms(config, mode):
             image_wh="float32",
             projection_mat="float32",
             embodiedment_mat="float32",
+            ee_frame_alignment="float32",
             hist_robot_state="float32",
             pred_robot_state="float32",
             joint_scale_shift="float32",
@@ -126,6 +135,7 @@ def build_transforms(config, mode):
                 "image_wh",
                 "projection_mat",
                 "embodiedment_mat",
+                "ee_frame_alignment",
                 "hist_robot_state",
                 "pred_robot_state",
                 "joint_scale_shift",
@@ -161,6 +171,7 @@ def build_transforms(config, mode):
                 "image_wh",
                 "projection_mat",
                 "embodiedment_mat",
+                "ee_frame_alignment",
                 "hist_robot_state",
                 "pred_robot_state",
                 "joint_scale_shift",
@@ -194,6 +205,7 @@ def build_transforms(config, mode):
                 "image_wh",
                 "projection_mat",
                 "embodiedment_mat",
+                "ee_frame_alignment",
                 "hist_robot_state",
                 "pred_robot_state",
                 "joint_scale_shift",
