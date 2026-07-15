@@ -29,7 +29,10 @@ from robo_orchard_lab.dataset.robot import (
     IterableWithLenDataset,
 )
 from robo_orchard_lab.pipeline.hooks import StatsMonitorConfig
-from robo_orchard_lab.pipeline.hooks.mixin import PipelineHookArgs
+from robo_orchard_lab.pipeline.hooks.mixin import (
+    MicroStepProgressState,
+    PipelineHookArgs,
+)
 
 
 class ArrayDataset(Dataset):
@@ -106,6 +109,21 @@ def test_estimate_data_stats(mock_accelerator, mock_dataloader):
     assert monitor.batch_size == 32
     assert monitor.total_batch_size == 32 * 4
     assert monitor.steps_per_epoch == 100
+
+
+def test_estimate_data_stats_converts_known_length_to_committed_steps(
+    mock_accelerator,
+    mock_dataloader,
+):
+    """Known-length dataloaders should infer committed optimizer steps."""
+
+    mock_accelerator.gradient_accumulation_steps = 3
+    monitor = StatsMonitorConfig()()
+
+    monitor._estimate_data_stats(mock_accelerator, mock_dataloader)
+
+    assert len(mock_dataloader) == 100
+    assert monitor.steps_per_epoch == 34
 
 
 def test_estimate_data_stats_uses_dataset_side_batch_size(
@@ -259,6 +277,44 @@ def test_estimate_remaining_time():
     assert remaining_time is not None and remaining_time > 0
 
 
+def test_estimate_remaining_time_uses_committed_step_count():
+    """Committed step 10 of 100 leaves 90 optimizer steps."""
+
+    monitor = StatsMonitorConfig()()
+
+    remaining_time = monitor._estimate_remaining_time(
+        avg_step_time=2.0,
+        current_step=10,
+        current_epoch=0,
+        start_step=0,
+        start_epoch=0,
+        max_step=100,
+        max_epoch=None,
+        steps_per_epoch=100,
+    )
+
+    assert remaining_time == pytest.approx(180.0)
+
+
+def test_estimate_remaining_time_with_resume_and_max_epoch():
+    """Resume estimates use absolute committed optimizer-step progress."""
+
+    monitor = StatsMonitorConfig()()
+
+    remaining_time = monitor._estimate_remaining_time(
+        avg_step_time=3.0,
+        current_step=23,
+        current_epoch=2,
+        start_step=20,
+        start_epoch=2,
+        max_step=None,
+        max_epoch=4,
+        steps_per_epoch=10,
+    )
+
+    assert remaining_time == pytest.approx(51.0)
+
+
 def test_on_step_end(mocker, mock_hook_args):
     """Test the on_step_end method."""
     mock_logger = mocker.patch("robo_orchard_lab.pipeline.hooks.stats.logger")
@@ -272,16 +328,72 @@ def test_on_step_end(mocker, mock_hook_args):
         time.time() - 0.5
     )  # Simulate 0.5 seconds per step
 
-    mock_hook_args.global_step_id = 10  # Step 10 not reached
+    mock_hook_args.global_step_id = 9
+    mock_hook_args.step_id = 9
+    mock_hook_args.is_optimizer_step_committed = True
+    mock_hook_args.micro_step = MicroStepProgressState(
+        global_step_id=9,
+        last_optimizer_step_size=1,
+    )
 
-    with monitor.begin("on_step", mock_hook_args):
+    with monitor.begin("on_optimizer_step", mock_hook_args):
         pass
     mock_logger.info.assert_not_called()
 
-    mock_hook_args.global_step_id = 9
-    with monitor.begin("on_step", mock_hook_args):
+    mock_hook_args.global_step_id = 10
+    mock_hook_args.step_id = 10
+    mock_hook_args.micro_step = MicroStepProgressState(
+        global_step_id=10,
+        last_optimizer_step_size=1,
+    )
+    with monitor.begin("on_optimizer_step", mock_hook_args):
         pass
     mock_logger.info.assert_called_once()
+
+
+def test_on_step_end_scales_speed_by_optimizer_step_size(mocker):
+    """StatsMonitor speed should count all micro batches in the update."""
+
+    mock_logger = mocker.patch("robo_orchard_lab.pipeline.hooks.stats.logger")
+    mock_clock = mocker.patch("robo_orchard_lab.pipeline.hooks.stats.time")
+    mock_clock.time.return_value = 100.5
+    accelerator = MagicMock()
+    accelerator.is_main_process = True
+    optimizer = torch.optim.Adam(
+        params=[{"params": torch.nn.Parameter(torch.randn(10)), "lr": 0.01}],
+        lr=0.0,
+    )
+    args = PipelineHookArgs(
+        accelerator=accelerator,
+        dataloader=None,
+        epoch_id=0,
+        step_id=1,
+        global_step_id=1,
+        start_step=0,
+        start_epoch=0,
+        max_step=2,
+        max_epoch=None,
+        optimizer=cast(Any, optimizer),
+        micro_step=MicroStepProgressState(
+            global_step_id=2,
+            last_optimizer_step_size=2,
+        ),
+        is_optimizer_step_committed=True,
+    )
+    monitor = StatsMonitorConfig(
+        batch_size=32,
+        steps_per_epoch=100,
+        step_log_freq=1,
+    )()
+    monitor._start_time = 40.0
+    monitor.total_batch_size = 128
+    monitor._last_step_end_time = 100.0
+
+    with monitor.begin("on_optimizer_step", args):
+        pass
+
+    log_msg = mock_logger.info.call_args.args[0]
+    assert "Training Speed: 512.00" in log_msg
 
 
 def test_on_epoch_end(mocker, mock_hook_args):
@@ -303,3 +415,27 @@ def test_on_epoch_end(mocker, mock_hook_args):
         pass
 
     mock_logger.info.assert_called_once()
+
+
+def test_on_epoch_end_infers_steps_per_epoch_from_observed_resume_epoch(
+    mock_hook_args,
+):
+    """Infer unknown epoch length from observed resume progress."""
+
+    monitor = StatsMonitorConfig(
+        batch_size=32,
+        steps_per_epoch=None,
+        epoch_log_freq=999,
+    )()
+    mock_hook_args.epoch_id = 3
+    mock_hook_args.start_step = 12
+    mock_hook_args.step_id = 12
+    mock_hook_args.global_step_id = 40
+
+    with monitor.begin("on_epoch", mock_hook_args) as monitor_hook_args:
+        monitor._start_time = time.time() - 300
+        monitor.total_batch_size = 32 * 4
+        monitor_hook_args.step_id = 17
+        monitor_hook_args.global_step_id = 45
+
+    assert monitor.steps_per_epoch == 5

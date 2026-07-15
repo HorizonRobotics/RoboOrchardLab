@@ -32,9 +32,9 @@ class ClearCacheHook(PipelineHooks):
     """A Hook to periodically release cached device memory.
 
     This class is designed to work with training pipelines that use hooks
-    for step and epoch management. It integrates with PyTorch's
-    `accelerate.utils.memory.clear_device_cache()` to clear unused memory,
-    helping to avoid out-of-memory (OOM) errors during
+    for committed optimizer-step and epoch management. It integrates with
+    PyTorch's `accelerate.utils.memory.clear_device_cache()` to clear unused
+    memory, helping to avoid out-of-memory (OOM) errors during
     long-running training loops.
 
     Args:
@@ -51,11 +51,15 @@ class ClearCacheHook(PipelineHooks):
             >>> memory_manager = ClearCacheHookConfig(
             >>>     empty_cache_at="step", empty_cache_freq=10
             >>> )()
-            >>> # Simulate a training step
-            >>> hook_args = PipelineHookArgs(global_step_id=9, epoch_id=0)
-            >>> with memory_manager.begin("on_step", hook_args) as hook_args:
-            >>>     ... # Simulate the end of a step
-            # Clears the cache after 10 steps
+            >>> # Simulate a committed optimizer step
+            >>> hook_args = PipelineHookArgs(
+            ...     global_step_id=10,
+            ...     epoch_id=0,
+            ...     is_optimizer_step_committed=True,
+            ... )
+            >>> with memory_manager.begin("on_optimizer_step", hook_args):
+            >>>     ... # Simulate optimizer-step finalization
+            # Clears the cache after 10 committed optimizer steps
 
         Epoch-Based Clearing:
             >>> memory_manager = ClearCacheHookConfig(
@@ -71,14 +75,15 @@ class ClearCacheHook(PipelineHooks):
     def __init__(
         self,
         cfg: ClearCacheHookConfig,
-    ):
+    ) -> None:
         super().__init__()
         self.empty_cache_at = cfg.empty_cache_at
         self.empty_cache_freq = cfg.empty_cache_freq
         self.garbage_collection = cfg.garbage_collection
 
         self.register_hook(
-            "on_step", hook=HookContext.from_callable(after=self._on_step_end)
+            "on_optimizer_step",
+            hook=HookContext.from_callable(after=self._on_step_end),
         )
         self.register_hook(
             "on_epoch",
@@ -86,10 +91,11 @@ class ClearCacheHook(PipelineHooks):
         )
 
     def _on_step_end(self, arg: PipelineHookArgs) -> None:
-        """Hook invoked at the end of a training step.
+        """Hook invoked at the end of a committed optimizer-step scope.
 
         Clears the CUDA cache if `empty_cache_at` is set to "step" and the
-        current step satisfies the clearing frequency (`empty_cache_freq`).
+        current committed optimizer step satisfies the clearing frequency
+        (`empty_cache_freq`).
 
         Args:
             arg (PipelineHookArgs): Arguments passed by the pipeline, including
@@ -98,10 +104,12 @@ class ClearCacheHook(PipelineHooks):
         """
         if arg.exception is not None:
             return
+        if not arg.is_optimizer_step_committed:
+            return
 
         if (
             self.empty_cache_at == "step"
-            and (arg.global_step_id + 1) % self.empty_cache_freq == 0
+            and arg.global_step_id % self.empty_cache_freq == 0
         ):
             clear_device_cache(garbage_collection=self.garbage_collection)
 
@@ -127,21 +135,21 @@ class ClearCacheHook(PipelineHooks):
 
 
 class ClearCacheHookConfig(PipelineHooksConfig[ClearCacheHook]):
-    """Configuration class for ClearCacheHook."""
+    """Configuration for periodic device-cache cleanup."""
 
     class_type: type[ClearCacheHook] = ClearCacheHook
 
     empty_cache_at: Literal["step", "epoch"] = "epoch"
-    """Specifies whether to clear the cache at the end of each step or
-    epoch. Default is "epoch"."""
+    """Specifies whether to clear the cache at the end of each committed
+    optimizer step or epoch. Default is "epoch"."""
 
     empty_cache_freq: int = 1
     """The frequency of cache clearing. For example:
         - If `empty_cache_at="step"`, this clears the cache every
-        `empty_cache_freq` steps.
+        `empty_cache_freq` committed optimizer steps.
         - If `empty_cache_at="epoch"`, this clears the cache every
-        `empty_cache_freq` epochs. Default is 1 (clear after every step
-        or epoch).
+        `empty_cache_freq` epochs. Default is 1 (clear after every committed
+        optimizer step or epoch).
     """
 
     garbage_collection: bool = False

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -66,7 +67,6 @@ class TestPhase:
     workers: int
     junit_xml: str
     html_report: str
-    clean_allure: bool = False
     cov_append: bool = False
 
 
@@ -165,7 +165,6 @@ def build_phases(args: argparse.Namespace) -> list[TestPhase]:
             workers=args.non_sim_workers,
             junit_xml="unittest_non_sim_env.xml",
             html_report="unittest_non_sim_env.html",
-            clean_allure=True,
         ),
         TestPhase(
             name="sim_env",
@@ -229,15 +228,26 @@ def build_pytest_command(
         f"--junitxml={phase.junit_xml}",
         f"--html={phase.html_report}",
     ]
-    if phase.clean_allure:
-        command.append("--clean-alluredir")
     if phase.cov_append:
         command.append("--cov-append")
     return command
 
 
+def prepare_allure_results_dir(args: argparse.Namespace) -> None:
+    """Prepare a clean Allure result directory before pytest workers start."""
+
+    allure_dir = Path(args.allure_dir)
+    if not allure_dir.is_absolute():
+        allure_dir = args.output_dir / allure_dir
+    if allure_dir.exists():
+        shutil.rmtree(allure_dir)
+    allure_dir.mkdir(parents=True, exist_ok=True)
+
+
 def run_pipeline(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        prepare_allure_results_dir(args)
     env = coverage_env(args)
 
     run_command(

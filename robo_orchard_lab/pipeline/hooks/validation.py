@@ -30,16 +30,15 @@ __all__ = ["ValidationHook", "ValidationHookConfig"]
 
 
 class ValidationHook(PipelineHooks):
-    """A hook for evaluating the model during training.
+    """Run a caller-provided evaluation callback at training boundaries.
 
-    This hook allows for evaluation at specified intervals during training,
-    either at the end of each step or at the end of each epoch.
-
+    Step-frequency evaluation is tied to committed optimizer steps through
+    ``on_optimizer_step``. Epoch-frequency evaluation is tied to ``on_epoch``
+    and does not reuse the step schedule.
 
     Args:
         cfg (ValidationHookConfig): The configuration for the ValidationHook.
             Please refer to ValidationHookConfig for details.
-
     """
 
     def __init__(
@@ -60,7 +59,7 @@ class ValidationHook(PipelineHooks):
             )
         if cfg.step_eval_freq is not None:
             self.register_hook(
-                "on_step",
+                "on_optimizer_step",
                 HookContext.from_callable(
                     after=self._on_step_end, before=None
                 ),
@@ -74,18 +73,54 @@ class ValidationHook(PipelineHooks):
                 ),
             )
 
+    def evaluate(self, hook_args: PipelineHookArgs) -> None:
+        """Switch the model to eval mode and call the configured callback.
+
+        Args:
+            hook_args (PipelineHookArgs): Hook context carrying the model to
+                evaluate.
+
+        Raises:
+            ValueError: If the hook context does not carry a model.
+        """
+        if hook_args.model is None:
+            raise ValueError("Model is not set in the hook arguments.")
+        with switch_model_mode(hook_args.model, target_mode="eval"):
+            self.cfg.eval_callback(hook_args.model)
+
+    def need_step_eval(
+        self,
+        hook_args: PipelineHookArgs,
+    ) -> bool:
+        """Checks if step-frequency evaluation is needed.
+
+        This predicate is used only from ``on_optimizer_step`` after-hooks, so
+        step-frequency validation cannot be triggered from epoch-end events.
+        """
+        return (
+            self.step_eval_freq is not None
+            and hook_args.global_step_id % self.step_eval_freq == 0
+        )
+
+    def need_epoch_eval(
+        self,
+        hook_args: PipelineHookArgs,
+    ) -> bool:
+        """Checks if epoch-frequency evaluation is needed.
+
+        This predicate is used only from ``on_epoch`` after-hooks and ignores
+        ``step_eval_freq``.
+        """
+        return (
+            self.epoch_eval_freq is not None
+            and (hook_args.epoch_id + 1) % self.epoch_eval_freq == 0
+        )
+
     def _on_loop_begin(
         self,
         hook_args: PipelineHookArgs,
     ) -> None:
-        """Called at the beginning of the training loop.
-
-        This method checks if evaluation is needed at the beginning of
-        training and calls the evaluation callback if necessary.
-
-        Args:
-            hook_args (PipelineHookArgs): The current training progress state.
-        """
+        """Run optional evaluation before the first training step."""
         if self.cfg.eval_at_begin:
             self.evaluate(hook_args)
 
@@ -93,78 +128,25 @@ class ValidationHook(PipelineHooks):
         self,
         hook_args: PipelineHookArgs,
     ) -> None:
-        """Called at the end of each step.
-
-        This method checks if evaluation is needed based on the current step
-        and calls the evaluation callback if necessary.
-
-        Args:
-            hook_args (PipelineHookArgs): The current training progress state.
-        """
+        """Run step-frequency eval after committed optimizer steps only."""
         if hook_args.exception is not None:
             return
+        if not hook_args.is_optimizer_step_committed:
+            return
 
-        if self.need_eval(hook_args):
+        if self.need_step_eval(hook_args):
             self.evaluate(hook_args)
 
     def _on_epoch_end(
         self,
         hook_args: PipelineHookArgs,
     ) -> None:
-        """Called at the end of each epoch.
-
-        This method checks if evaluation is needed based on the current epoch
-        and calls the evaluation callback if necessary.
-
-        Args:
-            hook_args (PipelineHookArgs): The current training progress state.
-        """
+        """Run epoch-frequency eval after matching epoch scopes only."""
         if hook_args.exception is not None:
             return
 
-        if self.need_eval(hook_args):
+        if self.need_epoch_eval(hook_args):
             self.evaluate(hook_args)
-
-    def evaluate(self, hook_args: PipelineHookArgs) -> None:
-        """Performs evaluation by calling the evaluation callback.
-
-        Args:
-            hook_args (PipelineHookArgs): The current training progress state.
-        """
-        if hook_args.model is None:
-            raise ValueError("Model is not set in the hook arguments.")
-        with switch_model_mode(hook_args.model, target_mode="eval"):
-            self.cfg.eval_callback(hook_args.model)
-
-    def need_eval(
-        self,
-        hook_args: PipelineHookArgs,
-    ) -> bool:
-        """Checks if evaluation is needed based on the current state.
-
-        This method will return True if the current step or epoch matches the
-        specified evaluation frequencies. If both step_eval_freq and
-        epoch_eval_freq are None, return False.
-
-        Args:
-            progress_state (PipelineHookArgs): The current training
-                progress state.
-
-        Returns:
-            bool: True if evaluation is needed, False otherwise.
-        """
-        if (
-            self.step_eval_freq is not None
-            and (hook_args.global_step_id + 1) % self.step_eval_freq == 0
-        ):
-            return True
-        if (
-            self.epoch_eval_freq is not None
-            and (hook_args.epoch_id + 1) % self.epoch_eval_freq == 0
-        ):
-            return True
-
-        return False
 
 
 class ValidationHookConfig(PipelineHooksConfig[ValidationHook]):
@@ -178,8 +160,11 @@ class ValidationHookConfig(PipelineHooksConfig[ValidationHook]):
     is to pass a closure that performs the evaluation.
     """
     step_eval_freq: int | None = None
-    """The frequency of evaluation in terms of  steps. If specified,
-    the evaluation will be performed every `step_eval_freq` steps."""
+    """The frequency of evaluation in committed optimizer-step units.
+
+    If specified, the evaluation will be performed every `step_eval_freq`
+    committed optimizer steps.
+    """
     epoch_eval_freq: int | None = None
     """The frequency of evaluation in terms of epochs. If specified, the
     evaluation will be performed every `epoch_eval_freq` epochs."""

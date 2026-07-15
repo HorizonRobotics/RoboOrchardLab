@@ -20,7 +20,7 @@
 ==========================================================
 In many complex training scenarios, you might need to inject custom logic at various
 points within the training loop (e.g., at the beginning/end of an epoch, or before/after
-a training step). The **robo_orchard_lab** framework provides a powerful and flexible
+a micro step or committed optimizer step). The **robo_orchard_lab** framework provides a powerful and flexible
 Hook system based on :py:class:`~robo_orchard_lab.pipeline.hooks.mixin.PipelineHooks` to achieve this
 without modifying the core training engine.
 
@@ -243,7 +243,7 @@ hooks = []
 #     It contains the actual logic that will be executed at different points (channels)
 #     in the training/evaluation pipeline. In its ``__init__`` method, it registers
 #     its methods (or other callables) to specific channels like "on_loop",
-#     "on_epoch", or "on_step" using ``self.register_hook()``, often with the
+#     "on_epoch", "on_step", or "on_optimizer_step" using ``self.register_hook()``, often with the
 #     help of ``HookContext.from_callable()``.
 #
 # 2.  **The Hook Configuration Class (e.g., ``MyHookConfig``)**: This is a Pydantic
@@ -301,7 +301,7 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
 
 
 class MyHook(PipelineHooks):
-    """A custom hook that logs messages at the beginning and end of loops, epochs, and steps, based on configured frequencies."""
+    """A custom hook that logs messages at configured loop, epoch, and micro-step frequencies."""
 
     def __init__(self, cfg: "MyHookConfig"):
         super().__init__()
@@ -315,7 +315,8 @@ class MyHook(PipelineHooks):
             ),
         )
 
-        # Register step-level hooks
+        # Register micro-step-level hooks. Use "on_optimizer_step" instead
+        # for logic that must run after a committed optimizer update.
         self.register_hook(
             channel="on_step",
             hook=HookContext.from_callable(
@@ -341,14 +342,29 @@ class MyHook(PipelineHooks):
     def _on_loop_end(self, args: PipelineHookArgs):
         logger.info("Ended loop")
 
+    def _micro_step_begin_index(self, args: PipelineHookArgs) -> int:
+        if args.micro_step is None:
+            raise RuntimeError(
+                "on_step micro-step hooks require args.micro_step"
+            )
+        return args.micro_step.epoch_step_id + 1
+
+    def _micro_step_end_index(self, args: PipelineHookArgs) -> int:
+        if args.micro_step is None:
+            raise RuntimeError(
+                "on_step micro-step hooks require args.micro_step"
+            )
+        return args.micro_step.epoch_step_id
+
     def _on_step_begin(self, args: PipelineHookArgs):
-        # Note: step_id is 0-indexed. Adding 1 for 1-indexed frequency check.
-        if (args.step_id + 1) % self.cfg.log_step_freq == 0:
-            logger.info("Begining {}-th step".format(args.step_id))
+        micro_step_index = self._micro_step_begin_index(args)
+        if micro_step_index % self.cfg.log_step_freq == 0:
+            logger.info("Begining {}-th micro step".format(micro_step_index))
 
     def _on_step_end(self, args: PipelineHookArgs):
-        if (args.step_id + 1) % self.cfg.log_step_freq == 0:
-            logger.info("Ended {}-th step".format(args.step_id))
+        micro_step_index = self._micro_step_end_index(args)
+        if micro_step_index % self.cfg.log_step_freq == 0:
+            logger.info("Ended {}-th micro step".format(micro_step_index))
 
     def _on_epoch_begin(self, args: PipelineHookArgs):
         # Note: epoch_id is 0-indexed. Adding 1 for 1-indexed frequency check.

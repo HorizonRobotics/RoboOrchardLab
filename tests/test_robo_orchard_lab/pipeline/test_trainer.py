@@ -17,20 +17,27 @@
 import importlib
 import warnings
 from dataclasses import dataclass
-from typing import Optional, cast
+from types import SimpleNamespace
+from typing import Any, Optional, cast
 from unittest.mock import MagicMock
 
 import pytest
 import torch
 from accelerate import Accelerator
 from accelerate.data_loader import DataLoaderShard
-from accelerate.utils import DataLoaderConfiguration
+from accelerate.utils import (
+    DataLoaderConfiguration,
+    DistributedType,
+    DummyOptim,
+    DummyScheduler,
+)
 from robo_orchard_core.utils.config import ClassType
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 
 import robo_orchard_lab.pipeline as pipeline_module
+import robo_orchard_lab.pipeline.training as training_module
 import robo_orchard_lab.pipeline.training.hook_based_trainer as trainer_module
 from robo_orchard_lab.dataset.robot import (
     DatasetItem,
@@ -39,14 +46,21 @@ from robo_orchard_lab.dataset.robot import (
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     DataLoader as RODataLoader,
 )
+from robo_orchard_lab.pipeline.hooks.grad_clip import (
+    GradientClippingHookConfig,
+)
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
+    MicroStepProgressState,
     PipelineHookArgs,
     PipelineHooks,
 )
+from robo_orchard_lab.pipeline.hooks.optimizer import OptimizerHookConfig
+from robo_orchard_lab.pipeline.training import _deepspeed as deepspeed_training
 from robo_orchard_lab.pipeline.training.hook_based_trainer import (
     HookBasedTrainer,
 )
+from robo_orchard_lab.pipeline.training.trainer import SimpleTrainer
 from robo_orchard_lab.processing.io_processor import (
     EnvelopeIOProcessor,
     EnvelopeIOProcessorCfg,
@@ -391,6 +405,94 @@ class ArrayDatasetItem(DatasetItem[ArrayDataset]):
 
     def _create_dataset(self) -> ArrayDataset:
         return ArrayDataset(self.data)
+
+
+class FakeDeepSpeedEngine:
+    def __init__(self) -> None:
+        self.global_steps = 0
+        self.skipped_steps = 0
+
+
+class FakeDeepSpeedEngineWrapper:
+    def __init__(self, engine: FakeDeepSpeedEngine) -> None:
+        self.engine = engine
+
+
+class FakeDeepSpeedAccelerator:
+    distributed_type = DistributedType.DEEPSPEED
+
+    def __init__(self, engine: FakeDeepSpeedEngine) -> None:
+        self.deepspeed_engine_wrapped = FakeDeepSpeedEngineWrapper(engine)
+
+
+class PrepareOnlyDeepSpeedAccelerator:
+    distributed_type = DistributedType.DEEPSPEED
+
+    def __init__(self, deepspeed_config: dict[str, object]) -> None:
+        self._models: list[torch.nn.Module] = []
+        self.deepspeed_plugin = SimpleNamespace(
+            deepspeed_config=deepspeed_config,
+            gradient_clipping=deepspeed_config.get("gradient_clipping", None),
+        )
+        self.prepare_calls = 0
+        self.prepared_args: tuple[object, ...] = ()
+        self.registered_for_checkpointing: list[object] = []
+
+    def prepare(self, *args):
+        self.prepare_calls += 1
+        self.prepared_args = args
+        return args
+
+    def register_for_checkpointing(self, obj: object) -> None:
+        self.registered_for_checkpointing.append(obj)
+
+
+def _adamw_deepspeed_config() -> dict[str, Any]:
+    return {
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": "auto",
+                "weight_decay": "auto",
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+            },
+        },
+    }
+
+
+def _deepspeed_topology_config() -> dict[str, Any]:
+    return {"zero_optimization": {"stage": 0}}
+
+
+def build_deepspeed_observer_trainer(
+    engine: FakeDeepSpeedEngine,
+) -> HookBasedTrainer:
+    trainer = HookBasedTrainer.__new__(HookBasedTrainer)
+    trainer.accelerator = cast(Accelerator, FakeDeepSpeedAccelerator(engine))
+    trainer.trainer_progress_state = trainer_module.TrainerProgressState()
+    trainer.optimizer = MagicMock()
+    trainer.lr_scheduler = MagicMock()
+    return trainer
+
+
+def build_micro_step_hook_args(
+    trainer: HookBasedTrainer,
+    *,
+    is_optimizer_step_boundary: bool,
+) -> PipelineHookArgs:
+    current_micro_step = (
+        trainer.trainer_progress_state.preview_next_micro_step()
+    )
+    trainer.trainer_progress_state.commit_micro_step(current_micro_step)
+    hook_args = PipelineHookArgs(
+        accelerator=trainer.accelerator,
+        micro_step=trainer.trainer_progress_state.micro_step,
+        is_optimizer_step_boundary=is_optimizer_step_boundary,
+    )
+    trainer.trainer_progress_state.sync_pipeline_hook_arg(hook_args)
+    hook_args.is_optimizer_step_boundary = is_optimizer_step_boundary
+    return hook_args
 
 
 def test_simple_step_processor_with_io_processor():
@@ -842,6 +944,9 @@ def test_legacy_trainer_facades_export_runtime_types():
     assert legacy_trainer_module.SimpleTrainer is SimpleTrainer
     assert pipeline_module.HookBasedTrainer is HookBasedTrainer
     assert pipeline_module.SimpleTrainer is SimpleTrainer
+    assert (
+        training_module.LRSchedulerFactory is trainer_module.LRSchedulerFactory
+    )
 
 
 @pytest.fixture(scope="function")
@@ -878,7 +983,7 @@ def test_trainer_initialization(dummy_trainer):
     assert dummy_trainer.max_epoch == 1
 
 
-def test_hook_based_trainer_rejects_scheduler_coupled_accelerator():
+def test_hook_based_trainer_supports_scheduler_coupled_accelerator():
     model = SimpleModel()
     dataloader = DataLoader(
         TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
@@ -887,19 +992,1365 @@ def test_hook_based_trainer_rejects_scheduler_coupled_accelerator():
     lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
     accelerator = Accelerator(device_placement=True)
 
-    with pytest.raises(
-        ValueError,
-        match="step_scheduler_with_optimizer=False",
-    ):
-        HookBasedTrainer(
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        max_step=1,
+    )
+
+    trainer()
+
+    assert trainer.trainer_progress_state.global_step_id == 1
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.001)
+
+
+def test_hook_based_trainer_supports_manual_scheduler_with_accumulation():
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(
+            torch.tensor(
+                [[0.5, 0.5], [0.25, 0.25], [0.1, 0.2], [0.3, 0.4]],
+                dtype=torch.float32,
+            )
+        ),
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        gradient_accumulation_steps=2,
+        step_scheduler_with_optimizer=False,
+    )
+
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        max_step=2,
+    )
+
+    trainer()
+
+    assert trainer.trainer_progress_state.global_step_id == 2
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0001)
+
+
+def test_trainer_progress_state_tracks_micro_and_optimizer_steps():
+    """Progress state separates micro steps from optimizer steps."""
+    progress = trainer_module.TrainerProgressState()
+
+    first_micro_step = progress.preview_next_micro_step()
+    assert first_micro_step == MicroStepProgressState(
+        epoch_step_id=0,
+        global_step_id=0,
+        index_in_optimizer_step=1,
+        last_optimizer_step_size=0,
+    )
+
+    progress.commit_micro_step(first_micro_step)
+    assert progress.step_id == 0
+    assert progress.global_step_id == 0
+    assert progress.micro_step == MicroStepProgressState(
+        epoch_step_id=1,
+        global_step_id=1,
+        index_in_optimizer_step=1,
+        last_optimizer_step_size=0,
+    )
+
+    progress.commit_optimizer_step(micro_steps=1)
+    assert progress.step_id == 1
+    assert progress.global_step_id == 1
+    assert progress.micro_step == MicroStepProgressState(
+        epoch_step_id=1,
+        global_step_id=1,
+        index_in_optimizer_step=0,
+        last_optimizer_step_size=1,
+    )
+
+    state_dict = progress.state_dict()
+    assert state_dict["schema_version"] == 2
+    restored = trainer_module.TrainerProgressState()
+    restored.load_state_dict(state_dict)
+
+    assert restored == progress
+    assert isinstance(restored.micro_step, MicroStepProgressState)
+
+    progress.update_epoch()
+    assert progress.epoch_id == 1
+    assert progress.step_id == 0
+    assert progress.global_step_id == 1
+    assert progress.micro_step.epoch_step_id == 0
+    assert progress.micro_step.global_step_id == 1
+
+
+def test_trainer_progress_state_rejects_legacy_checkpoint_payload():
+    """Legacy dataloader-step checkpoints should fail with a clear error."""
+
+    progress = trainer_module.TrainerProgressState()
+
+    with pytest.raises(RuntimeError, match="Legacy TrainerProgressState"):
+        progress.load_state_dict(
+            {
+                "epoch_id": 0,
+                "step_id": 3,
+                "global_step_id": 3,
+            }
+        )
+
+
+def test_trainer_progress_state_rejects_unsupported_schema_version():
+    """Unknown progress schemas should fail before partial state mutation."""
+
+    progress = trainer_module.TrainerProgressState()
+
+    with pytest.raises(RuntimeError, match="Unsupported.*schema_version"):
+        progress.load_state_dict(
+            {
+                "schema_version": 999,
+                "epoch_id": 0,
+                "step_id": 0,
+                "global_step_id": 0,
+                "micro_step": {
+                    "epoch_step_id": 0,
+                    "global_step_id": 0,
+                    "index_in_optimizer_step": 0,
+                    "last_optimizer_step_size": 0,
+                },
+            }
+        )
+
+    assert progress == trainer_module.TrainerProgressState()
+
+
+def test_trainer_progress_state_resets_optimizer_step_window():
+    """Progress state can discard an uncommitted accumulation window."""
+    progress = trainer_module.TrainerProgressState()
+    current_micro_step = progress.preview_next_micro_step()
+    progress.commit_micro_step(current_micro_step)
+
+    progress.reset_optimizer_step_window()
+
+    assert progress.global_step_id == 0
+    assert progress.micro_step == MicroStepProgressState(
+        epoch_step_id=1,
+        global_step_id=1,
+        index_in_optimizer_step=0,
+        last_optimizer_step_size=0,
+    )
+
+
+def test_hook_based_trainer_observes_deepspeed_accumulation_boundary():
+    """DeepSpeed progress is committed from engine counters only."""
+    engine = FakeDeepSpeedEngine()
+    trainer = build_deepspeed_observer_trainer(engine)
+
+    first_step_before = deepspeed_training.read_deepspeed_step_snapshot(
+        trainer.accelerator
+    )
+    first_hook_args = build_micro_step_hook_args(
+        trainer,
+        is_optimizer_step_boundary=False,
+    )
+
+    committed = trainer._run_optimizer_step(
+        first_hook_args,
+        is_optimizer_step_boundary=False,
+        micro_steps=first_hook_args.micro_step.index_in_optimizer_step,
+        deepspeed_step_before=first_step_before,
+    )
+
+    assert committed is False
+    assert trainer.trainer_progress_state.global_step_id == 0
+    assert (
+        trainer.trainer_progress_state.micro_step.index_in_optimizer_step == 1
+    )
+
+    second_step_before = deepspeed_training.read_deepspeed_step_snapshot(
+        trainer.accelerator
+    )
+    second_hook_args = build_micro_step_hook_args(
+        trainer,
+        is_optimizer_step_boundary=True,
+    )
+    engine.global_steps = 1
+
+    committed = trainer._run_optimizer_step(
+        second_hook_args,
+        is_optimizer_step_boundary=True,
+        micro_steps=second_hook_args.micro_step.index_in_optimizer_step,
+        deepspeed_step_before=second_step_before,
+    )
+
+    assert committed is True
+    assert trainer.trainer_progress_state.global_step_id == 1
+    assert trainer.trainer_progress_state.micro_step == MicroStepProgressState(
+        epoch_step_id=2,
+        global_step_id=2,
+        index_in_optimizer_step=0,
+        last_optimizer_step_size=2,
+    )
+    trainer.optimizer.step.assert_not_called()
+    trainer.lr_scheduler.step.assert_not_called()
+
+
+def test_hook_based_trainer_observes_deepspeed_skipped_step():
+    """DeepSpeed overflow skip resets the accumulation window only."""
+    engine = FakeDeepSpeedEngine()
+    trainer = build_deepspeed_observer_trainer(engine)
+    step_before = deepspeed_training.read_deepspeed_step_snapshot(
+        trainer.accelerator
+    )
+    hook_args = build_micro_step_hook_args(
+        trainer,
+        is_optimizer_step_boundary=True,
+    )
+    engine.global_steps = 1
+    engine.skipped_steps = 1
+
+    committed = trainer._run_optimizer_step(
+        hook_args,
+        is_optimizer_step_boundary=True,
+        micro_steps=hook_args.micro_step.index_in_optimizer_step,
+        deepspeed_step_before=step_before,
+    )
+
+    assert committed is False
+    assert trainer.trainer_progress_state.global_step_id == 0
+    assert trainer.trainer_progress_state.micro_step == MicroStepProgressState(
+        epoch_step_id=1,
+        global_step_id=1,
+        index_in_optimizer_step=0,
+        last_optimizer_step_size=0,
+    )
+
+
+def test_hook_based_trainer_requires_deepspeed_boundary_step():
+    """DeepSpeed boundary without engine progress fails fast."""
+    engine = FakeDeepSpeedEngine()
+    trainer = build_deepspeed_observer_trainer(engine)
+    step_before = deepspeed_training.read_deepspeed_step_snapshot(
+        trainer.accelerator
+    )
+    hook_args = build_micro_step_hook_args(
+        trainer,
+        is_optimizer_step_boundary=True,
+    )
+
+    with pytest.raises(RuntimeError, match="did not advance"):
+        trainer._run_optimizer_step(
+            hook_args,
+            is_optimizer_step_boundary=True,
+            micro_steps=hook_args.micro_step.index_in_optimizer_step,
+            deepspeed_step_before=step_before,
+        )
+
+
+def test_deepspeed_progress_observer_requires_micro_step():
+    """The DeepSpeed observer fails fast without trainer micro-step state."""
+    engine = FakeDeepSpeedEngine()
+    trainer = build_deepspeed_observer_trainer(engine)
+    step_before = deepspeed_training.read_deepspeed_step_snapshot(
+        trainer.accelerator
+    )
+    assert step_before is not None
+
+    with pytest.raises(RuntimeError, match="PipelineHookArgs.micro_step"):
+        deepspeed_training.commit_deepspeed_optimizer_progress(
+            accelerator=trainer.accelerator,
+            progress_state=trainer.trainer_progress_state,
+            hook_args=PipelineHookArgs(
+                accelerator=trainer.accelerator,
+                is_optimizer_step_boundary=True,
+            ),
+            is_optimizer_step_boundary=True,
+            micro_steps=1,
+            step_before=step_before,
+        )
+
+
+def test_hook_based_trainer_ignores_deprecated_user_optimizer_hook():
+    """Deprecated user OptimizerHook config is a no-op compatibility shim."""
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+
+    with pytest.warns(DeprecationWarning, match="OptimizerHook is deprecated"):
+        trainer = HookBasedTrainer(
             model=model,
             dataloader=dataloader,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             accelerator=accelerator,
             batch_processor=DummyBatchProcessor(),
+            hooks=[OptimizerHookConfig()],
             max_epoch=1,
         )
+
+    trainer()
+
+    assert trainer.trainer_progress_state.global_step_id == 1
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.001)
+
+
+def test_hook_based_trainer_runs_internal_gradient_clipping(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """HookBasedTrainer applies configured grad clipping internally."""
+    clip_calls: list[tuple[int, float, float]] = []
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+
+    def record_clip_grad_norm_(params, max_norm, norm_type):
+        clip_calls.append((len(list(params)), max_norm, norm_type))
+
+    monkeypatch.setattr(
+        accelerator,
+        "clip_grad_norm_",
+        record_clip_grad_norm_,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        grad_clip=GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=1.0,
+            norm_type=2.0,
+        ),
+        max_step=1,
+    )
+
+    trainer()
+
+    assert clip_calls == [(2, 1.0, 2.0)]
+
+
+def test_hook_based_trainer_clips_only_accumulation_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Trainer-owned grad clipping waits for optimizer-step boundaries."""
+
+    events: list[str] = []
+    clip_calls: list[tuple[int, float, float]] = []
+
+    class RecordingSGD(SGD):
+        def step(self, *args, **kwargs):
+            events.append("optimizer_step")
+            return super().step(*args, **kwargs)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.tensor(
+            [[0.5, 0.5], [0.25, 0.25]],
+            dtype=torch.float32,
+        ),
+        batch_size=1,
+    )
+    optimizer = RecordingSGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        gradient_accumulation_steps=2,
+        step_scheduler_with_optimizer=False,
+    )
+
+    def record_clip_grad_norm_(params, max_norm, norm_type):
+        events.append("clip")
+        clip_calls.append((len(list(params)), max_norm, norm_type))
+
+    monkeypatch.setattr(
+        accelerator,
+        "clip_grad_norm_",
+        record_clip_grad_norm_,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        grad_clip=GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=1.0,
+            norm_type=2.0,
+        ),
+        max_step=1,
+    )
+
+    trainer()
+
+    assert events == ["clip", "optimizer_step"]
+    assert clip_calls == [(2, 1.0, 2.0)]
+    assert (
+        trainer.trainer_progress_state.micro_step.last_optimizer_step_size == 2
+    )
+
+
+def test_hook_based_trainer_clips_skipped_boundary_without_commit():
+    """Skipped optimizer boundaries may clip but must not commit progress."""
+
+    events: list[str] = []
+
+    class SkippedStepAccelerator:
+        distributed_type = DistributedType.NO
+        optimizer_step_was_skipped = True
+
+        def clip_grad_norm_(self, params, max_norm, norm_type):
+            del max_norm, norm_type
+            events.append(f"clip:{len(list(params))}")
+
+    param = torch.nn.Parameter(torch.tensor([1.0]))
+    param.grad = torch.tensor([2.0])
+    optimizer = MagicMock()
+    optimizer.param_groups = [{"params": [param]}]
+    trainer = HookBasedTrainer.__new__(HookBasedTrainer)
+    trainer.accelerator = cast(Accelerator, SkippedStepAccelerator())
+    trainer.trainer_progress_state = trainer_module.TrainerProgressState()
+    trainer.optimizer = optimizer
+    trainer.lr_scheduler = MagicMock()
+    trainer._grad_clip = GradientClippingHookConfig(
+        clip_mode="norm",
+        max_norm=1.0,
+    )
+    hook_args = build_micro_step_hook_args(
+        trainer,
+        is_optimizer_step_boundary=True,
+    )
+
+    committed = trainer._run_optimizer_step(
+        hook_args,
+        is_optimizer_step_boundary=True,
+        micro_steps=hook_args.micro_step.index_in_optimizer_step,
+    )
+
+    assert committed is False
+    assert events == ["clip:1"]
+    optimizer.step.assert_called_once()
+    trainer.lr_scheduler.step.assert_not_called()
+    optimizer.zero_grad.assert_called_once()
+    assert trainer.trainer_progress_state.global_step_id == 0
+    assert trainer.trainer_progress_state.micro_step == MicroStepProgressState(
+        epoch_step_id=1,
+        global_step_id=1,
+        index_in_optimizer_step=0,
+        last_optimizer_step_size=0,
+    )
+
+
+def test_hook_based_trainer_rejects_duplicate_gradient_clipping_config():
+    """Logical grad clipping has a single trainer-owned source of truth."""
+
+    with pytest.raises(ValueError, match="Only one gradient clipping"):
+        trainer_module._split_gradient_clipping_config(
+            hooks=[
+                GradientClippingHookConfig(
+                    clip_mode="norm",
+                    max_norm=1.0,
+                )
+            ],
+            grad_clip=GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=1.0,
+            ),
+            is_deepspeed=False,
+        )
+
+
+def test_hook_based_trainer_rejects_direct_hook_with_logical_grad_clip():
+    """A directly constructed legacy hook cannot share trainer ownership."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        legacy_hook = GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=1.0,
+        )()
+
+    with pytest.raises(ValueError, match="already constructed"):
+        trainer_module._split_gradient_clipping_config(
+            hooks=[legacy_hook],
+            grad_clip=GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=1.0,
+            ),
+            is_deepspeed=False,
+        )
+
+
+def test_hook_based_trainer_rejects_direct_grad_clip_hook_for_deepspeed():
+    """DeepSpeed cannot use a late GradientClippingHook instance."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        legacy_hook = GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=1.0,
+        )()
+
+    with pytest.raises(ValueError, match="DeepSpeed gradient clipping"):
+        trainer_module._split_gradient_clipping_config(
+            hooks=[legacy_hook],
+            grad_clip=None,
+            is_deepspeed=True,
+        )
+
+
+def test_hook_based_trainer_allows_opaque_deepspeed_hooks():
+    """Opaque PipelineHooks are not rejected without a grad-clip marker."""
+
+    opaque_hooks = PipelineHooks()
+
+    remaining_hooks, grad_clip = (
+        trainer_module._split_gradient_clipping_config(
+            hooks=[opaque_hooks],
+            grad_clip=None,
+            is_deepspeed=True,
+        )
+    )
+
+    assert remaining_hooks == [opaque_hooks]
+    assert grad_clip is None
+
+
+def test_hook_based_trainer_rejects_direct_hook_before_grad_clip_config():
+    """Direct hook before logical config should not double clip."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        legacy_hook = GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=1.0,
+        )()
+
+    with pytest.raises(ValueError, match="already constructed"):
+        trainer_module._split_gradient_clipping_config(
+            hooks=[
+                legacy_hook,
+                GradientClippingHookConfig(
+                    clip_mode="norm",
+                    max_norm=0.5,
+                ),
+            ],
+            grad_clip=None,
+            is_deepspeed=False,
+        )
+
+
+def test_hook_based_trainer_rejects_multiple_direct_grad_clip_hooks():
+    """Multiple direct legacy hooks would clip the same gradients twice."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        legacy_hooks = [
+            GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=1.0,
+            )(),
+            GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=0.5,
+            )(),
+        ]
+
+    with pytest.raises(ValueError, match="Only one gradient clipping"):
+        trainer_module._split_gradient_clipping_config(
+            hooks=legacy_hooks,
+            grad_clip=None,
+            is_deepspeed=False,
+        )
+
+
+def test_hook_based_trainer_injects_missing_deepspeed_gradient_clipping():
+    """DeepSpeed config receives trainer max_norm before prepare."""
+
+    deepspeed_config: dict[str, object] = {}
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+
+    deepspeed_training.configure_deepspeed_gradient_clipping(
+        accelerator=cast(Accelerator, accelerator),
+        grad_clip=GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=0.25,
+        ),
+    )
+
+    assert deepspeed_config["gradient_clipping"] == 0.25
+    assert accelerator.deepspeed_plugin.gradient_clipping == 0.25
+
+
+def test_hook_based_trainer_overwrites_deepspeed_auto_with_warning(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Trainer grad_clip owns DeepSpeed 'auto' when both are provided."""
+
+    warnings_: list[str] = []
+
+    def record_warning(message: str, *args, **kwargs) -> None:
+        del kwargs
+        warnings_.append(message % args if args else message)
+
+    monkeypatch.setattr(deepspeed_training.logger, "warning", record_warning)
+    deepspeed_config = _adamw_deepspeed_config()
+    deepspeed_config["gradient_clipping"] = "auto"
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+
+    deepspeed_training.configure_deepspeed_gradient_clipping(
+        accelerator=cast(Accelerator, accelerator),
+        grad_clip=GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=0.25,
+        ),
+    )
+
+    assert deepspeed_config["gradient_clipping"] == 0.25
+    assert accelerator.deepspeed_plugin.gradient_clipping == 0.25
+    assert len(warnings_) == 1
+    assert "overriding it with grad_clip.max_norm=0.25" in warnings_[0]
+
+
+def test_hook_based_trainer_accepts_matching_deepspeed_gradient_clipping():
+    """Matching config and trainer grad_clip values share one numeric value."""
+
+    deepspeed_config: dict[str, object] = {"gradient_clipping": "0.25"}
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+
+    deepspeed_training.configure_deepspeed_gradient_clipping(
+        accelerator=cast(Accelerator, accelerator),
+        grad_clip=GradientClippingHookConfig(
+            clip_mode="norm",
+            max_norm=0.25,
+        ),
+    )
+
+    assert deepspeed_config["gradient_clipping"] == 0.25
+    assert accelerator.deepspeed_plugin.gradient_clipping == 0.25
+
+
+def test_hook_based_trainer_materializes_scheduler_factory_before_prepare():
+    """A regular backend binds the factory to its code-owned optimizer."""
+
+    model = SimpleModel()
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    factory_calls: list[torch.optim.Optimizer] = []
+
+    def build_scheduler(
+        actual_optimizer: torch.optim.Optimizer,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        factory_calls.append(actual_optimizer)
+        return StepLR(actual_optimizer, step_size=1, gamma=0.1)
+
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=DataLoader(
+            TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+        ),
+        optimizer=optimizer,
+        lr_scheduler=build_scheduler,
+        accelerator=Accelerator(step_scheduler_with_optimizer=False),
+        batch_processor=DummyBatchProcessor(),
+        max_step=1,
+    )
+
+    assert factory_calls == [optimizer]
+    assert (
+        trainer.lr_scheduler.scheduler.optimizer is trainer.optimizer.optimizer
+    )
+
+
+def test_hook_based_trainer_converts_adamw_factory_before_deepspeed_prepare():
+    """Trainer routes a real AdamW and factory to one DeepSpeed Dummy pair."""
+
+    deepspeed_config = _deepspeed_topology_config()
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+    model = SimpleModel()
+    optimizer = torch.optim.AdamW(
+        [
+            {
+                "params": [model.linear.weight],
+                "lr": 0.01,
+                "weight_decay": 0.001,
+            },
+            {
+                "params": [model.linear.bias],
+                "lr": 0.02,
+                "betas": (0.8, 0.95),
+                "eps": 1e-6,
+            },
+        ],
+        lr=0.1,
+        weight_decay=0.0005,
+    )
+    factory_calls: list[torch.optim.Optimizer] = []
+
+    def build_scheduler(
+        actual_optimizer: torch.optim.Optimizer,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        factory_calls.append(actual_optimizer)
+        return StepLR(actual_optimizer, step_size=1, gamma=0.1)
+
+    HookBasedTrainer(
+        model=model,
+        dataloader=DataLoader(
+            TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+        ),
+        optimizer=optimizer,
+        lr_scheduler=build_scheduler,
+        accelerator=cast(Accelerator, accelerator),
+        batch_processor=DummyBatchProcessor(),
+        max_step=1,
+    )
+
+    assert accelerator.prepare_calls == 1
+    prepared_optimizer = accelerator.prepared_args[2]
+    prepared_scheduler = accelerator.prepared_args[3]
+    assert isinstance(prepared_optimizer, DummyOptim)
+    assert isinstance(prepared_scheduler, DummyScheduler)
+    assert prepared_scheduler.optimizer is prepared_optimizer
+    assert factory_calls == []
+    assert [group["lr"] for group in prepared_optimizer.params] == [0.01, 0.02]
+    assert prepared_optimizer.params[0]["weight_decay"] == 0.001
+    assert prepared_optimizer.params[1]["betas"] == (0.8, 0.95)
+    assert prepared_optimizer.params[1]["eps"] == 1e-6
+    assert all(
+        set(group) == {"params", "lr", "weight_decay", "betas", "eps"}
+        for group in prepared_optimizer.params
+    )
+    assert deepspeed_config["optimizer"] == {
+        "type": "AdamW",
+        "params": {
+            "lr": 0.1,
+            "weight_decay": 0.0005,
+            "betas": [0.9, 0.999],
+            "eps": 1e-8,
+        },
+    }
+
+    actual_optimizer = torch.optim.AdamW(
+        prepared_optimizer.params,
+        lr=0.1,
+        weight_decay=0.0005,
+    )
+    actual_scheduler = prepared_scheduler.lr_scheduler_callable(
+        actual_optimizer
+    )
+    assert actual_scheduler.optimizer is actual_optimizer
+    assert factory_calls == [actual_optimizer]
+
+
+@pytest.mark.parametrize("dummy_kind", ["optimizer", "scheduler"])
+def test_hook_based_trainer_rejects_dummy_inputs_without_deepspeed(
+    dummy_kind: str,
+):
+    """Dummy prepare inputs have no runtime owner on regular backends."""
+
+    parameter = torch.nn.Parameter(torch.ones(1))
+    optimizer = SGD([parameter], lr=0.01)
+    if dummy_kind == "optimizer":
+        dummy_optimizer = DummyOptim(params=[parameter], lr=0.01)
+        optimizer_input = dummy_optimizer
+        scheduler_input = DummyScheduler(
+            optimizer=dummy_optimizer,
+            lr_scheduler_callable=lambda actual_optimizer: StepLR(
+                actual_optimizer,
+                step_size=1,
+            ),
+        )
+    else:
+        optimizer_input = optimizer
+        scheduler_input = DummyScheduler(optimizer=optimizer)
+
+    with pytest.raises(ValueError, match="only with a DeepSpeed accelerator"):
+        trainer_module._resolve_optimizer_scheduler_before_prepare(
+            accelerator=Accelerator(),
+            optimizer=optimizer_input,
+            lr_scheduler=scheduler_input,
+        )
+
+
+def test_deepspeed_prepare_accepts_existing_dummy_pair_and_factory():
+    """Advanced callers can pass a valid dummy pair or a factory."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator(_adamw_deepspeed_config())
+    parameter = torch.nn.Parameter(torch.ones(1))
+    dummy_optimizer = DummyOptim(params=[parameter], lr=0.01)
+
+    def build_scheduler(
+        actual_optimizer: torch.optim.Optimizer,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        return StepLR(actual_optimizer, step_size=1)
+
+    resolved_optimizer, resolved_scheduler = (
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=dummy_optimizer,
+            lr_scheduler=build_scheduler,
+        )
+    )
+    assert resolved_optimizer is dummy_optimizer
+    assert isinstance(resolved_scheduler, DummyScheduler)
+    assert resolved_scheduler.optimizer is dummy_optimizer
+    assert resolved_scheduler.lr_scheduler_callable is build_scheduler
+
+    assert deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+        accelerator=cast(Accelerator, accelerator),
+        optimizer=dummy_optimizer,
+        lr_scheduler=resolved_scheduler,
+    ) == (dummy_optimizer, resolved_scheduler)
+
+
+def test_deepspeed_prepare_accepts_fully_config_owned_dummy_pair():
+    """A config-owned optimizer and scheduler use explicit placeholders."""
+
+    config = _adamw_deepspeed_config()
+    config["scheduler"] = {"type": "WarmupLR"}
+    accelerator = PrepareOnlyDeepSpeedAccelerator(config)
+    parameter = torch.nn.Parameter(torch.ones(1))
+    dummy_optimizer = DummyOptim(params=[parameter], lr=0.01)
+    dummy_scheduler = DummyScheduler(optimizer=dummy_optimizer)
+
+    assert deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+        accelerator=cast(Accelerator, accelerator),
+        optimizer=dummy_optimizer,
+        lr_scheduler=dummy_scheduler,
+    ) == (dummy_optimizer, dummy_scheduler)
+
+
+def test_deepspeed_prepare_rejects_dummy_optimizer_without_config_owner():
+    """DeepSpeed must have a config optimizer before accepting DummyOptim."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator({})
+    dummy_optimizer = DummyOptim(
+        params=[torch.nn.Parameter(torch.ones(1))],
+        lr=0.01,
+    )
+    dummy_scheduler = DummyScheduler(
+        optimizer=dummy_optimizer,
+        lr_scheduler_callable=lambda actual_optimizer: StepLR(
+            actual_optimizer,
+            step_size=1,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="explicit DummyOptim requires"):
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=dummy_optimizer,
+            lr_scheduler=dummy_scheduler,
+        )
+
+
+def test_deepspeed_prepare_rejects_concrete_scheduler_for_real_optimizer():
+    """A concrete scheduler cannot bind the later DeepSpeed optimizer."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator(_deepspeed_topology_config())
+    optimizer = torch.optim.AdamW(
+        [torch.nn.Parameter(torch.ones(1))],
+        lr=1e-4,
+    )
+
+    with pytest.raises(ValueError, match="requires an LRSchedulerFactory"):
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=optimizer,
+            lr_scheduler=StepLR(optimizer, step_size=1),
+        )
+
+
+@pytest.mark.parametrize(
+    ("optimizer", "match"),
+    [
+        (
+            torch.optim.Adam([torch.nn.Parameter(torch.ones(1))], lr=1e-4),
+            "only exact torch.optim.AdamW",
+        ),
+        (
+            torch.optim.AdamW(
+                [torch.nn.Parameter(torch.ones(1))],
+                lr=1e-4,
+                amsgrad=True,
+            ),
+            "amsgrad",
+        ),
+        (
+            torch.optim.AdamW(
+                [
+                    {
+                        "params": [torch.nn.Parameter(torch.ones(1))],
+                        "amsgrad": True,
+                    }
+                ],
+                lr=1e-4,
+            ),
+            "param group 0.*amsgrad",
+        ),
+    ],
+)
+def test_deepspeed_prepare_rejects_unsupported_optimizer_recipe(
+    optimizer: torch.optim.Optimizer,
+    match: str,
+):
+    """Runtime lowering accepts only a supported exact AdamW recipe."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator(_deepspeed_topology_config())
+
+    with pytest.raises((TypeError, ValueError), match=match):
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=optimizer,
+            lr_scheduler=lambda actual_optimizer: StepLR(
+                actual_optimizer,
+                step_size=1,
+            ),
+        )
+
+
+def test_deepspeed_prepare_accepts_adamw_without_newer_defaults():
+    """Older exact AdamW shapes have implicit decoupled weight decay."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator(_deepspeed_topology_config())
+    optimizer = torch.optim.AdamW(
+        [torch.nn.Parameter(torch.ones(1))],
+        lr=1e-4,
+    )
+    optimizer.defaults.pop("decoupled_weight_decay", None)
+    for param_group in optimizer.param_groups:
+        param_group.pop("decoupled_weight_decay", None)
+
+    resolved_optimizer, _ = (
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=optimizer,
+            lr_scheduler=lambda actual_optimizer: StepLR(
+                actual_optimizer,
+                step_size=1,
+            ),
+        )
+    )
+
+    assert isinstance(resolved_optimizer, DummyOptim)
+
+
+def test_deepspeed_prepare_rejects_adamw_with_existing_state():
+    """Lowering must not silently discard already-restored Adam moments."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator(_deepspeed_topology_config())
+    parameter = torch.nn.Parameter(torch.ones(1))
+    optimizer = torch.optim.AdamW([parameter], lr=1e-4)
+    optimizer.state[parameter]["step"] = torch.tensor(1.0)
+
+    with pytest.raises(ValueError, match="pristine AdamW"):
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=optimizer,
+            lr_scheduler=lambda actual_optimizer: StepLR(
+                actual_optimizer,
+                step_size=1,
+            ),
+        )
+
+
+def test_deepspeed_prepare_rejects_config_and_factory_scheduler_owners():
+    """Python factory and config scheduler cannot both own the schedule."""
+
+    config = {
+        **_deepspeed_topology_config(),
+        "scheduler": {"type": "WarmupLR"},
+    }
+    accelerator = PrepareOnlyDeepSpeedAccelerator(config)
+    optimizer = torch.optim.AdamW(
+        [torch.nn.Parameter(torch.ones(1))],
+        lr=1e-4,
+    )
+
+    with pytest.raises(ValueError, match="fully config-owned pair"):
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=optimizer,
+            lr_scheduler=lambda actual_optimizer: StepLR(
+                actual_optimizer,
+                step_size=1,
+            ),
+        )
+
+
+def test_deepspeed_prepare_rejects_duplicate_real_optimizer_source():
+    """Real optimizer lowering cannot coexist with a config optimizer."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator(_adamw_deepspeed_config())
+    optimizer = torch.optim.AdamW(
+        [torch.nn.Parameter(torch.ones(1))],
+        lr=1e-4,
+    )
+
+    with pytest.raises(ValueError, match="must not also define optimizer"):
+        deepspeed_training.prepare_deepspeed_optimizer_scheduler(
+            accelerator=cast(Accelerator, accelerator),
+            optimizer=optimizer,
+            lr_scheduler=lambda actual_optimizer: StepLR(
+                actual_optimizer,
+                step_size=1,
+            ),
+        )
+
+
+def test_hook_based_trainer_rejects_conflicting_deepspeed_gradient_clipping():
+    """Conflicting DeepSpeed config and trainer grad_clip fail fast."""
+
+    deepspeed_config: dict[str, object] = {"gradient_clipping": 0.5}
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+
+    with pytest.raises(ValueError, match="Conflicting gradient clipping"):
+        deepspeed_training.configure_deepspeed_gradient_clipping(
+            accelerator=cast(Accelerator, accelerator),
+            grad_clip=GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=0.25,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("grad_clip", "match"),
+    [
+        (
+            GradientClippingHookConfig(
+                clip_mode="value",
+                clip_value=0.1,
+            ),
+            "supports only norm clipping",
+        ),
+        (
+            GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=0.25,
+                norm_type=1.0,
+            ),
+            "norm_type must be 2.0",
+        ),
+    ],
+)
+def test_hook_based_trainer_rejects_non_equivalent_deepspeed_grad_clip(
+    grad_clip: GradientClippingHookConfig,
+    match: str,
+):
+    """DeepSpeed config injection accepts only equivalent L2 norm clipping."""
+
+    accelerator = PrepareOnlyDeepSpeedAccelerator({})
+
+    with pytest.raises(ValueError, match=match):
+        deepspeed_training.configure_deepspeed_gradient_clipping(
+            accelerator=cast(Accelerator, accelerator),
+            grad_clip=grad_clip,
+        )
+
+
+def test_hook_based_trainer_rejects_deepspeed_norm_without_max_norm():
+    """DeepSpeed clipping cannot be configured without a max norm."""
+
+    grad_clip = GradientClippingHookConfig(
+        clip_mode="norm",
+        max_norm=0.25,
+    )
+    grad_clip.max_norm = None
+    accelerator = PrepareOnlyDeepSpeedAccelerator({})
+
+    with pytest.raises(ValueError, match="requires max_norm"):
+        deepspeed_training.configure_deepspeed_gradient_clipping(
+            accelerator=cast(Accelerator, accelerator),
+            grad_clip=grad_clip,
+        )
+
+
+def test_hook_based_trainer_leaves_deepspeed_auto_without_grad_clip():
+    """Without trainer grad_clip, DeepSpeed auto stays owned by Accelerate."""
+
+    deepspeed_config = _deepspeed_topology_config()
+    deepspeed_config["gradient_clipping"] = "auto"
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=0.01)
+
+    def build_scheduler(
+        actual_optimizer: torch.optim.Optimizer,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        return StepLR(actual_optimizer, step_size=1, gamma=0.1)
+
+    HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=build_scheduler,
+        accelerator=cast(Accelerator, accelerator),
+        batch_processor=DummyBatchProcessor(),
+        max_step=1,
+    )
+
+    assert deepspeed_config["gradient_clipping"] == "auto"
+    assert accelerator.prepare_calls == 1
+
+
+def test_hook_based_trainer_injects_deepspeed_grad_clip_from_raw_hooks():
+    """Raw GradientClippingHookConfig is routed before DeepSpeed prepare."""
+
+    deepspeed_config = _deepspeed_topology_config()
+    accelerator = PrepareOnlyDeepSpeedAccelerator(deepspeed_config)
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=0.01)
+
+    def build_scheduler(
+        actual_optimizer: torch.optim.Optimizer,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        return StepLR(actual_optimizer, step_size=1, gamma=0.1)
+
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=build_scheduler,
+        accelerator=cast(Accelerator, accelerator),
+        batch_processor=DummyBatchProcessor(),
+        hooks=[
+            GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=0.25,
+            )
+        ],
+        max_step=1,
+    )
+
+    assert deepspeed_config["gradient_clipping"] == 0.25
+    assert accelerator.deepspeed_plugin.gradient_clipping == 0.25
+    assert trainer._grad_clip is None
+    assert accelerator.prepare_calls == 1
+
+
+def test_hook_based_trainer_preserves_user_hook_order_before_optimizer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """User on_step after-hooks observe state before optimizer finalization.
+
+    Post-update user hooks should use ``on_optimizer_step`` instead.
+    """
+    events: list[str] = []
+
+    class RecordingSGD(SGD):
+        def step(self, *args, **kwargs):
+            events.append("optimizer_step")
+            return super().step(*args, **kwargs)
+
+    class RecordingStepHook(PipelineHooks):
+        def __init__(self, name: str):
+            super().__init__()
+            self.name = name
+            self.register_hook(
+                "on_step",
+                HookContext.from_callable(after=self.on_step_end),
+            )
+
+        def on_step_end(self, args: PipelineHookArgs):
+            events.append(self.name)
+
+    class RecordingOptimizerStepBeforeHook(PipelineHooks):
+        def __init__(self, name: str):
+            super().__init__()
+            self.name = name
+            self.register_hook(
+                "on_optimizer_step",
+                HookContext.from_callable(before=self.on_optimizer_step_begin),
+            )
+
+        def on_optimizer_step_begin(self, args: PipelineHookArgs):
+            events.append(self.name)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = RecordingSGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+
+    def record_clip_grad_norm_(params, max_norm, norm_type):
+        events.append("clip")
+
+    monkeypatch.setattr(
+        accelerator,
+        "clip_grad_norm_",
+        record_clip_grad_norm_,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        hooks=[
+            RecordingStepHook("first_user_hook"),
+            GradientClippingHookConfig(
+                clip_mode="norm",
+                max_norm=1.0,
+                norm_type=2.0,
+            ),
+            RecordingOptimizerStepBeforeHook("user_optimizer_before"),
+            RecordingStepHook("last_user_hook"),
+        ],
+        max_step=1,
+    )
+
+    trainer()
+
+    assert events == [
+        "first_user_hook",
+        "last_user_hook",
+        "user_optimizer_before",
+        "clip",
+        "optimizer_step",
+    ]
+
+
+def test_simple_trainer_passes_raw_gradient_clipping_hook_config(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """SimpleTrainer must not instantiate grad clip configs before parent."""
+
+    events: list[str] = []
+
+    class RecordingSGD(SGD):
+        def step(self, *args, **kwargs):
+            events.append("optimizer_step")
+            return super().step(*args, **kwargs)
+
+    class RecordingStepHook(PipelineHooks):
+        def __init__(self, name: str):
+            super().__init__()
+            self.name = name
+            self.register_hook(
+                "on_step",
+                HookContext.from_callable(after=self.on_step_end),
+            )
+
+        def on_step_end(self, args: PipelineHookArgs):
+            events.append(self.name)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = RecordingSGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+
+    def record_clip_grad_norm_(params, max_norm, norm_type):
+        events.append("clip")
+
+    monkeypatch.setattr(
+        accelerator,
+        "clip_grad_norm_",
+        record_clip_grad_norm_,
+    )
+    with pytest.warns(DeprecationWarning):
+        trainer = SimpleTrainer(
+            model=model,
+            dataloader=dataloader,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            accelerator=accelerator,
+            batch_processor=DummyBatchProcessor(),
+            hooks=[
+                GradientClippingHookConfig(
+                    clip_mode="norm",
+                    max_norm=1.0,
+                    norm_type=2.0,
+                ),
+                RecordingStepHook("user_hook"),
+            ],
+            max_step=1,
+        )
+
+    trainer()
+
+    assert events == [
+        "user_hook",
+        "clip",
+        "optimizer_step",
+    ]
+
+
+def test_simple_trainer_rejects_duplicate_legacy_and_raw_grad_clip():
+    """SimpleTrainer forwards duplicate logical grad clip sources.
+
+    The parent trainer should then reject the duplicate logical ownership.
+    """
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(torch.tensor([[0.5, 0.5]], dtype=torch.float32)),
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        step_scheduler_with_optimizer=False,
+    )
+
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(ValueError, match="Only one gradient clipping"):
+            SimpleTrainer(
+                model=model,
+                dataloader=dataloader,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                accelerator=accelerator,
+                batch_processor=DummyBatchProcessor(),
+                grad_clip_mode="norm",
+                grad_max_norm=1.0,
+                hooks=[
+                    GradientClippingHookConfig(
+                        clip_mode="norm",
+                        max_norm=1.0,
+                    )
+                ],
+                max_step=1,
+            )
 
 
 def test_hook_based_trainer_prepares_iterable_dataloader_once(
@@ -1001,7 +2452,7 @@ def test_hook_based_trainer_early_break_cleans_accelerate_dataloader_state(
 
 def test_training_loop(dummy_trainer: HookBasedTrainer):
     hook = DummyPipelineHook()
-    dummy_trainer.hooks = hook
+    dummy_trainer.hooks += hook
     dummy_trainer()
 
     assert dummy_trainer.dataloader is not None
@@ -1012,6 +2463,386 @@ def test_training_loop(dummy_trainer: HookBasedTrainer):
     assert hook._on_step_end_cnt == len(dummy_trainer.dataloader)
     assert hook._on_epoch_end_cnt == 1
     assert hook._on_loop_end_cnt == 1
+
+
+def test_hook_based_trainer_counts_optimizer_steps_with_accumulation():
+    """With accumulation, optimizer progress advances only on boundaries."""
+    records: list[tuple[int, int, MicroStepProgressState, bool]] = []
+
+    class RecordingStepHook(PipelineHooks):
+        def __init__(self):
+            super().__init__()
+            self.register_hook(
+                "on_step",
+                HookContext.from_callable(after=self.on_step_end),
+            )
+
+        def on_step_end(self, args: PipelineHookArgs):
+            assert args.micro_step is not None
+            records.append(
+                (
+                    args.step_id,
+                    args.global_step_id,
+                    args.micro_step,
+                    args.is_optimizer_step_boundary,
+                )
+            )
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.tensor(
+            [[0.5, 0.5], [0.25, 0.25], [0.1, 0.2], [0.3, 0.4]],
+            dtype=torch.float32,
+        ),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        gradient_accumulation_steps=2,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        hooks=[RecordingStepHook()],
+        max_step=2,
+    )
+
+    trainer()
+
+    assert trainer.trainer_progress_state.global_step_id == 2
+    assert trainer.trainer_progress_state.step_id == 0
+    assert trainer.trainer_progress_state.micro_step.global_step_id == 4
+    assert (
+        trainer.trainer_progress_state.micro_step.last_optimizer_step_size == 2
+    )
+    assert records == [
+        (
+            0,
+            0,
+            MicroStepProgressState(
+                epoch_step_id=1,
+                global_step_id=1,
+                index_in_optimizer_step=1,
+                last_optimizer_step_size=0,
+            ),
+            False,
+        ),
+        (
+            0,
+            0,
+            MicroStepProgressState(
+                epoch_step_id=2,
+                global_step_id=2,
+                index_in_optimizer_step=2,
+                last_optimizer_step_size=0,
+            ),
+            True,
+        ),
+        (
+            1,
+            1,
+            MicroStepProgressState(
+                epoch_step_id=3,
+                global_step_id=3,
+                index_in_optimizer_step=1,
+                last_optimizer_step_size=2,
+            ),
+            False,
+        ),
+        (
+            1,
+            1,
+            MicroStepProgressState(
+                epoch_step_id=4,
+                global_step_id=4,
+                index_in_optimizer_step=2,
+                last_optimizer_step_size=2,
+            ),
+            True,
+        ),
+    ]
+
+
+def test_hook_based_trainer_runs_optimizer_step_hook_on_boundaries():
+    """on_optimizer_step wraps only optimizer-step boundaries."""
+    records: list[
+        tuple[
+            str,
+            int,
+            int,
+            MicroStepProgressState,
+            bool,
+            bool,
+        ]
+    ] = []
+
+    class RecordingOptimizerStepHook(PipelineHooks):
+        def __init__(self):
+            super().__init__()
+            self.register_hook(
+                "on_optimizer_step",
+                HookContext.from_callable(
+                    before=self.on_optimizer_step_begin,
+                    after=self.on_optimizer_step_end,
+                ),
+            )
+
+        def _record(self, phase: str, args: PipelineHookArgs) -> None:
+            assert args.micro_step is not None
+            records.append(
+                (
+                    phase,
+                    args.step_id,
+                    args.global_step_id,
+                    args.micro_step,
+                    args.is_optimizer_step_boundary,
+                    args.is_optimizer_step_committed,
+                )
+            )
+
+        def on_optimizer_step_begin(self, args: PipelineHookArgs) -> None:
+            self._record("before", args)
+
+        def on_optimizer_step_end(self, args: PipelineHookArgs) -> None:
+            self._record("after", args)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        torch.tensor(
+            [[0.5, 0.5], [0.25, 0.25], [0.1, 0.2], [0.3, 0.4]],
+            dtype=torch.float32,
+        ),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        gradient_accumulation_steps=2,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        hooks=[RecordingOptimizerStepHook()],
+        max_step=2,
+    )
+
+    trainer()
+
+    assert records == [
+        (
+            "before",
+            0,
+            0,
+            MicroStepProgressState(
+                epoch_step_id=2,
+                global_step_id=2,
+                index_in_optimizer_step=2,
+                last_optimizer_step_size=0,
+            ),
+            True,
+            False,
+        ),
+        (
+            "after",
+            1,
+            1,
+            MicroStepProgressState(
+                epoch_step_id=2,
+                global_step_id=2,
+                index_in_optimizer_step=0,
+                last_optimizer_step_size=2,
+            ),
+            True,
+            True,
+        ),
+        (
+            "before",
+            1,
+            1,
+            MicroStepProgressState(
+                epoch_step_id=4,
+                global_step_id=4,
+                index_in_optimizer_step=2,
+                last_optimizer_step_size=2,
+            ),
+            True,
+            False,
+        ),
+        (
+            "after",
+            2,
+            2,
+            MicroStepProgressState(
+                epoch_step_id=4,
+                global_step_id=4,
+                index_in_optimizer_step=0,
+                last_optimizer_step_size=2,
+            ),
+            True,
+            True,
+        ),
+    ]
+
+
+def test_hook_based_trainer_ignores_user_boundary_enable_mutation():
+    """User hook mutation cannot turn a non-boundary into a commit."""
+
+    observed_step_events: list[tuple[int, bool]] = []
+
+    class BoundaryEnablingHook(PipelineHooks):
+        def __init__(self):
+            super().__init__()
+            self.register_hook(
+                "on_step",
+                HookContext.from_callable(
+                    before=None,
+                    after=self.on_step_end,
+                ),
+            )
+
+        def on_step_end(self, args: PipelineHookArgs) -> None:
+            assert args.micro_step is not None
+            observed_step_events.append(
+                (
+                    args.micro_step.global_step_id,
+                    args.is_optimizer_step_boundary,
+                )
+            )
+            if args.micro_step.global_step_id == 1:
+                args.is_optimizer_step_boundary = True
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(
+            torch.tensor(
+                [[0.5, 0.5], [0.25, 0.25]],
+                dtype=torch.float32,
+            )
+        ),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        gradient_accumulation_steps=2,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        hooks=[BoundaryEnablingHook()],
+        max_step=1,
+    )
+
+    trainer()
+
+    assert observed_step_events == [(1, False), (2, True)]
+    assert trainer.trainer_progress_state.global_step_id == 1
+    assert trainer.trainer_progress_state.micro_step.global_step_id == 2
+    assert (
+        trainer.trainer_progress_state.micro_step.last_optimizer_step_size == 2
+    )
+
+
+def test_hook_based_trainer_restores_boundary_snapshot_for_optimizer_hooks():
+    """User hook mutation cannot corrupt optimizer boundary snapshots."""
+
+    optimizer_events: list[tuple[str, bool, int, bool]] = []
+
+    class BoundaryCorruptingHook(PipelineHooks):
+        def __init__(self):
+            super().__init__()
+            self.register_hook(
+                "on_step",
+                HookContext.from_callable(
+                    before=None,
+                    after=self.on_step_end,
+                ),
+            )
+            self.register_hook(
+                "on_optimizer_step",
+                HookContext.from_callable(
+                    before=self.on_optimizer_step_begin,
+                    after=self.on_optimizer_step_end,
+                ),
+            )
+
+        def on_step_end(self, args: PipelineHookArgs) -> None:
+            assert args.micro_step is not None
+            if args.micro_step.global_step_id == 2:
+                args.is_optimizer_step_boundary = False
+                args.micro_step.index_in_optimizer_step = 99
+
+        def _record(self, phase: str, args: PipelineHookArgs) -> None:
+            assert args.micro_step is not None
+            optimizer_events.append(
+                (
+                    phase,
+                    args.is_optimizer_step_boundary,
+                    args.micro_step.index_in_optimizer_step,
+                    args.is_optimizer_step_committed,
+                )
+            )
+
+        def on_optimizer_step_begin(self, args: PipelineHookArgs) -> None:
+            self._record("before", args)
+
+        def on_optimizer_step_end(self, args: PipelineHookArgs) -> None:
+            self._record("after", args)
+
+    model = SimpleModel()
+    dataloader = DataLoader(
+        TensorDataset(
+            torch.tensor(
+                [[0.5, 0.5], [0.25, 0.25]],
+                dtype=torch.float32,
+            )
+        ),
+        batch_size=1,
+    )
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    lr_scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+    accelerator = Accelerator(
+        device_placement=True,
+        gradient_accumulation_steps=2,
+    )
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+        batch_processor=DummyBatchProcessor(),
+        hooks=[BoundaryCorruptingHook()],
+        max_epoch=1,
+    )
+
+    trainer()
+
+    assert optimizer_events == [
+        ("before", True, 2, False),
+        ("after", True, 0, True),
+    ]
+    assert trainer.trainer_progress_state.global_step_id == 1
+    assert trainer.trainer_progress_state.micro_step.global_step_id == 2
+    assert (
+        trainer.trainer_progress_state.micro_step.last_optimizer_step_size == 2
+    )
 
 
 def test_hook_based_trainer_honors_peer_epoch_stop_before_step(
@@ -1265,6 +3096,8 @@ def test_hook_based_trainer_closes_exception_with_exception_abort_reason(
     ]
     assert len(teardown_primary_excs) == 1
     assert isinstance(teardown_primary_excs[0], RuntimeError)
+    assert trainer.trainer_progress_state.global_step_id == 0
+    assert trainer.trainer_progress_state.micro_step.global_step_id == 0
 
 
 def test_optimizer_and_scheduler(dummy_trainer):

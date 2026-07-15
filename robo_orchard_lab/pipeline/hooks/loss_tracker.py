@@ -44,9 +44,17 @@ logger = logging.getLogger(__name__)
 
 
 class LossTracker(PipelineHooks):
+    """Collect micro-step losses and log them on committed optimizer steps.
+
+    The hook reads loss tensors from model outputs at ``on_step`` after-hooks.
+    It does not treat every micro step as a logged training step; logging and
+    reset happen from ``on_optimizer_step`` after-hooks once the trainer knows
+    whether the optimizer boundary committed.
+    """
+
     cfg: LossTrackerConfig
 
-    def __init__(self, cfg: LossTrackerConfig):
+    def __init__(self, cfg: LossTrackerConfig) -> None:
         super().__init__()
         self.cfg = cfg
         self.reset_cached_loss()
@@ -54,12 +62,22 @@ class LossTracker(PipelineHooks):
         self.register_hook(
             "on_step", HookContext.from_callable(after=self._on_step_end)
         )
+        self.register_hook(
+            "on_optimizer_step",
+            HookContext.from_callable(after=self._on_optimizer_step_end),
+        )
 
-    def reset_cached_loss(self):
+    def reset_cached_loss(self) -> None:
+        """Reset the current optimizer-step loss aggregation window."""
+
         self.cached_loss: dict[str, float] = {}
         self.moving_average_count: dict[str, float] = {}
 
-    def update(self, accelerator: Accelerator, model_outputs: ModelOutput):
+    def update(
+        self,
+        accelerator: Accelerator,
+        model_outputs: ModelOutput,
+    ) -> None:
         """Track and update the loss values.
 
         This method tracks detached loss values reduced across distributed
@@ -98,15 +116,15 @@ class LossTracker(PipelineHooks):
             if self.cfg.moving_average:
                 self.moving_average_count[k] += 1
 
-    def _on_step_end(self, args: PipelineHookArgs):
-        """Callback when step ends.
+    def _on_step_end(self, args: PipelineHookArgs) -> None:
+        """Collect loss values at the end of each micro step.
 
-        Logs losses and optionally resets them at the end of a step based
-        on `step_log_freq`.
+        Loss logging is finalized by ``_on_optimizer_step_end`` after the
+        trainer knows whether the optimizer boundary committed.
 
         Args:
-            args (PipelineHookArgs): Arguments containing the current step
-                and epoch IDs.
+            args (PipelineHookArgs): Arguments containing the current
+                micro-step model outputs and training progress.
         """
         if args.exception is not None:
             return
@@ -114,7 +132,16 @@ class LossTracker(PipelineHooks):
         if args.model_outputs is not None:
             self.update(args.accelerator, args.model_outputs)
 
-        if (args.step_id + 1) % self.cfg.step_log_freq == 0:
+    def _on_optimizer_step_end(self, args: PipelineHookArgs) -> None:
+        """Log and reset losses after a committed optimizer step."""
+        if args.exception is not None:
+            return
+
+        if not args.is_optimizer_step_committed:
+            self.reset_cached_loss()
+            return
+
+        if args.global_step_id % self.cfg.step_log_freq == 0:
             # only log in main process
             if args.accelerator.is_main_process:
                 msg = "Epoch[{}/{}] Step[{}] GlobalStep[{}/{}]: ".format(
@@ -122,7 +149,7 @@ class LossTracker(PipelineHooks):
                     args.max_epoch - 1 if args.max_epoch is not None else "NA",
                     args.step_id,
                     args.global_step_id,
-                    args.max_step - 1 if args.max_step is not None else "NA",
+                    args.max_step if args.max_step is not None else "NA",
                 )
                 total_loss = 0
                 for k, v in self.cached_loss.items():
@@ -145,10 +172,12 @@ class LossTracker(PipelineHooks):
 
 
 class LossTrackerConfig(PipelineHooksConfig[LossTracker]):
+    """Configuration for committed optimizer-step loss logging."""
+
     class_type: ClassType[LossTracker] = LossTracker
 
     step_log_freq: int = Field(ge=1, default=5)
-    """The frequency (in steps) to log the loss."""
+    """The frequency in committed optimizer steps to log the loss."""
 
     log_total_loss: bool = False
     """If True, log the total loss as well."""

@@ -15,44 +15,22 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-from unittest.mock import MagicMock
 
-from robo_orchard_lab.pipeline.hooks.mixin import PipelineHookArgs
+import pytest
+
 from robo_orchard_lab.pipeline.hooks.optimizer import OptimizerHook
 
 
-def test_optimizer_hook_skips_scheduler_when_gradients_not_synced():
-    accelerator = MagicMock()
-    accelerator.sync_gradients = False
-    optimizer = MagicMock()
-    lr_scheduler = MagicMock()
-    hook_args = PipelineHookArgs(
-        accelerator=accelerator,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-    )
+def test_training_hooks_compat_import_exports_optimizer_hook_config():
+    """The legacy training.hooks package remains import-compatible."""
+    from robo_orchard_lab.pipeline.training.hooks import OptimizerHookConfig
 
-    OptimizerHook(None)._optimizer_step(hook_args)
-
-    optimizer.step.assert_called_once_with()
-    lr_scheduler.step.assert_not_called()
-    optimizer.zero_grad.assert_called_once_with()
+    assert OptimizerHookConfig.__name__ == "OptimizerHookConfig"
 
 
-def test_optimizer_hook_skips_step_on_context_exception():
-    accelerator = MagicMock()
-    accelerator.sync_gradients = True
-    optimizer = MagicMock()
-    lr_scheduler = MagicMock()
-    hook_args = PipelineHookArgs(
-        accelerator=accelerator,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        exception=RuntimeError("body failed"),
-    )
+def test_optimizer_hook_is_deprecated_noop():
+    """Deprecated OptimizerHook no longer registers optimizer side effects."""
+    with pytest.warns(DeprecationWarning, match="OptimizerHook is deprecated"):
+        hook = OptimizerHook(None)
 
-    OptimizerHook(None)._optimizer_step(hook_args)
-
-    optimizer.step.assert_not_called()
-    lr_scheduler.step.assert_not_called()
-    optimizer.zero_grad.assert_not_called()
+    assert len(hook.hooks["on_step"]) == 0

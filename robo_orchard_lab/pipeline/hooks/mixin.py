@@ -51,6 +51,7 @@ __all__ = [
     "HookContext",
     "PipelineHooks",
     "PipelineHookArgs",
+    "MicroStepProgressState",
     "PipelineHookChanelType",
     "PipelineHooksConfig",
     "ModelOutput",
@@ -77,19 +78,53 @@ class ModelOutputHasLossKeys(ModelOutput, Protocol):
 
 
 @dataclass
-class PipelineHookArgs:
-    """A data class for passing arguments to hook functions.
+class MicroStepProgressState:
+    """Progress for dataloader-batch micro steps in trainer loops.
 
-    This class serves as a container for various parameters and state
-    information required by hooks at different stages of the training or
-    evaluation pipeline. It is designed to be flexible and extensible for
-    different training configurations.
+    The top-level ``step_id`` and ``global_step_id`` fields in
+    ``PipelineHookArgs`` are optimizer-step counters. This state carries the
+    batch-level counters used by ``on_step`` and ``on_batch`` events when
+    gradient accumulation is enabled.
+    """
+
+    epoch_step_id: int = 0
+    """Number of micro steps completed in the current epoch."""
+    global_step_id: int = 0
+    """Number of micro steps completed across all epochs."""
+    index_in_optimizer_step: int = 0
+    """Number of micro steps accumulated in the current optimizer window."""
+    last_optimizer_step_size: int = 0
+    """Number of micro steps used by the last committed optimizer step."""
+
+
+@dataclass
+class PipelineHookArgs:
+    """Mutable event context passed through pipeline hook scopes.
+
+    Hook handlers use this object to inspect trainer-owned runtime objects and
+    the current progress snapshot. ``step_id`` and ``global_step_id`` are
+    committed optimizer-step counters; hooks that need dataloader-batch
+    progress should read ``micro_step`` when it is provided by a trainer loop.
     """
 
     accelerator: Accelerator
     epoch_id: int = 0
     step_id: int = 0
+    """Current optimizer-step id within the epoch."""
     global_step_id: int = 0
+    """Current global optimizer-step id."""
+    micro_step: Optional[MicroStepProgressState] = None
+    """Current micro-step progress, when created by a trainer loop."""
+    is_optimizer_step_boundary: bool = True
+    """Whether this micro step is an optimizer-finalization boundary."""
+    is_optimizer_step_committed: bool = False
+    """Whether the optimizer boundary committed a model update.
+
+    This field is written by ``HookBasedTrainer`` inside the
+    ``on_optimizer_step`` scope after optimizer finalization. It is false for
+    ordinary micro-step events, non-boundary micro steps, and skipped
+    optimizer boundaries.
+    """
     max_epoch: Optional[int] = None
     max_step: Optional[int] = None
     start_epoch: int = 0
@@ -124,7 +159,7 @@ class PipelineHookArgs:
 
         Returns:
             Optional[torch.Tensor]: The detached reduced backward loss, if it
-            was computed for the current step.
+            was computed for the current micro step.
         """
 
         warnings.warn(
@@ -135,7 +170,7 @@ class PipelineHookArgs:
         )
         return self.reduced_backward_loss
 
-    def copy_with_updates(self, **kwargs):
+    def copy_with_updates(self, **kwargs) -> PipelineHookArgs:
         """Create a copy of the current instance with updated attributes.
 
         This method allows you to create a new instance of the class with
@@ -163,18 +198,22 @@ class PipelineHookArgs:
 PipelineHookChanelType: TypeAlias = Literal[
     "on_loop",  # the whole training loop pipeline
     "on_epoch",  # in one epoch pipeline
-    "on_step",  # in one step pipeline.
+    "on_step",  # in one dataloader-step pipeline.
     "on_batch",  # in one batch pipeline
     "on_model_forward",  # only in model forward pipeline
     "on_model_backward",  # only in model backward pipeline
+    "on_optimizer_step",  # around optimizer-step finalization
 ]
 
 
 class PipelineHooks(ClassInitFromConfigMixin):
-    """A class to manage pipeline hooks for training processes.
+    """Registry for context-manager hooks used by trainer pipeline stages.
 
-    This class only accept config class as input for the constructor.
-
+    Each ``on_*`` channel represents a scoped event. ``begin(...)`` enters the
+    channel and runs registered before/after callbacks around the wrapped
+    body. If the body raises, the exception is written to
+    ``PipelineHookArgs.exception`` before it is re-raised so after-hooks can
+    avoid unsafe side effects.
     """
 
     def __init__(self):
@@ -186,6 +225,17 @@ class PipelineHooks(ClassInitFromConfigMixin):
 
     @contextmanager
     def begin(self, channel: PipelineHookChanelType, arg: PipelineHookArgs):
+        """Enter a hook channel context.
+
+        Args:
+            channel (PipelineHookChanelType): The scoped hook channel to enter.
+            arg (PipelineHookArgs): Mutable event context shared by callbacks
+                and the wrapped body.
+
+        Yields:
+            PipelineHookArgs: The same event context object after registered
+            before-hooks have run.
+        """
         with self.hooks[channel].begin(arg) as ctx:
             try:
                 yield ctx

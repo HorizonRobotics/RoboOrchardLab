@@ -121,17 +121,18 @@ def test_on_step_end(mocker, mock_accelerator):
 
     args = PipelineHookArgs(
         accelerator=mock_accelerator,
-        global_step_id=1,  # This step should trigger a checkpoint save
+        global_step_id=2,  # This committed step should trigger a save
         epoch_id=0,
-        step_id=0,
+        step_id=2,
+        is_optimizer_step_committed=True,
     )
 
-    with hook.begin("on_step", args):
+    with hook.begin("on_optimizer_step", args):
         pass
 
     mock_accelerator.save_state.assert_called_once_with("checkpoints")
     mock_logger.info.assert_called_once_with(
-        "Save checkpoint at the end of step 1 to mock_checkpoint_path"
+        "Save checkpoint at the end of step 2 to mock_checkpoint_path"
     )
 
 
@@ -173,11 +174,36 @@ def test_skip_checkpoint_on_step(mocker, mock_accelerator):
         accelerator=mock_accelerator,
         global_step_id=3,  # This step should not trigger a checkpoint save
         epoch_id=0,
-        step_id=0,
+        step_id=3,
+        is_optimizer_step_committed=True,
     )
 
-    with hook.begin("on_step", args):
+    with hook.begin("on_optimizer_step", args):
         pass
+    mock_accelerator.save_state.assert_not_called()
+    mock_logger.info.assert_not_called()
+
+
+def test_checkpoint_skips_uncommitted_optimizer_boundary(
+    mocker,
+    mock_accelerator,
+):
+    """Skipped optimizer boundaries should not save step checkpoints."""
+    mock_logger = mocker.patch(
+        "robo_orchard_lab.pipeline.hooks.checkpoint.logger"
+    )
+    hook = SaveCheckpointConfig(save_root="checkpoints", save_step_freq=1)()
+    args = PipelineHookArgs(
+        accelerator=mock_accelerator,
+        global_step_id=0,
+        epoch_id=0,
+        step_id=0,
+        is_optimizer_step_committed=False,
+    )
+
+    with hook.begin("on_optimizer_step", args):
+        pass
+
     mock_accelerator.save_state.assert_not_called()
     mock_logger.info.assert_not_called()
 
@@ -328,15 +354,16 @@ def test_save_model_hook_on_step_runs_save_on_non_main(mocker, tmp_path):
     args = PipelineHookArgs(
         accelerator=accelerator,
         model=object(),
-        global_step_id=0,
+        global_step_id=1,
         epoch_id=0,
-        step_id=0,
+        step_id=1,
+        is_optimizer_step_committed=True,
     )
 
-    with hook.begin("on_step", args):
+    with hook.begin("on_optimizer_step", args):
         pass
 
-    save_model.assert_called_once_with(args, step_id=0, epoch_id=0)
+    save_model.assert_called_once_with(args, step_id=1, epoch_id=0)
 
 
 def test_save_model_hook_skips_config_without_model_artifact(tmp_path):

@@ -74,23 +74,28 @@ class MetricEntry:
 
 
 class MetricTracker(PipelineHooks):
-    """A hook for updating and logging metrics."""
+    """Update metrics from batches and log/reset them at trainer boundaries.
+
+    Subclasses implement ``update_metric`` to consume batch outputs from
+    ``on_batch``. Step-level logging and reset are driven by committed
+    optimizer-step progress from ``on_optimizer_step``.
+    """
 
     def __init__(
         self,
         cfg: MetricTrackerConfig,
     ) -> None:
-        """Initialization.
+        """Register batch-update and boundary-logging callbacks.
 
         Args:
             metric_entrys (MetricEntry|Sequence[MetricEntry]): Single
                 or multiple metric entries to update.
             reset_by (Literal["epoch", "step"], optional): Basis for resetting
-                metrics; either "epoch" or "step".
+                metrics; either "epoch" or committed optimizer "step".
             reset_freq (int, optional): Frequency to reset metrics.
                 Defaults to 1.
-            step_log_freq (int, optional): Frequency to log at the step level.
-                Defaults to 512.
+            step_log_freq (int, optional): Frequency to log at the committed
+                optimizer-step level. Defaults to 512.
             epoch_log_freq (int, optional): Frequency to log at the epoch
                 level. Defaults to 1.
             log_main_process_only (int, optional): Only logging in the main
@@ -118,7 +123,7 @@ class MetricTracker(PipelineHooks):
             hook=HookContext.from_callable(after=self._on_batch_end),
         )
         self.register_hook(
-            channel="on_step",
+            channel="on_optimizer_step",
             hook=HookContext.from_callable(after=self._on_step_end),
         )
         self.register_hook(
@@ -206,21 +211,25 @@ class MetricTracker(PipelineHooks):
         self.update_metric(args.batch, args.model_outputs)
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Callback when step ends.
+        """Handle committed optimizer-step metric logging and reset.
 
-        Logs metrics and optionally resets them at the end of a step based
-        on `step_log_freq`.
+        Logs metrics and optionally resets them at the end of a committed
+        optimizer-step scope based on `step_log_freq`.
 
         Args:
-            args (PipelineHookArgs): Arguments containing the current step
-                and epoch IDs.
+            args (PipelineHookArgs): Arguments containing the current
+                committed optimizer step and epoch IDs.
         """
         if args.exception is not None:
+            return
+        if not args.is_optimizer_step_committed:
+            if self.reset_by == "step":
+                self._reset()
             return
 
         if (
             self.step_log_freq > 0
-            and (args.step_id + 1) % self.step_log_freq == 0
+            and args.global_step_id % self.step_log_freq == 0
         ):
             prefix = "Epoch[{}] Step[{}] GlobalStep[{}]: ".format(
                 args.epoch_id, args.step_id, args.global_step_id
@@ -231,7 +240,7 @@ class MetricTracker(PipelineHooks):
 
         if (
             self.reset_by == "step"
-            and (args.global_step_id + 1) % self.reset_freq == 0
+            and args.global_step_id % self.reset_freq == 0
         ):
             self._reset()
 
@@ -264,16 +273,21 @@ class MetricTracker(PipelineHooks):
 
 
 class MetricTrackerConfig(PipelineHooksConfig[MetricTracker]):
+    """Configuration for batch metric tracking and boundary logging."""
+
     class_type: ClassType[MetricTracker] = MetricTracker
 
     metric_entrys: Sequence[MetricEntry] | MetricEntry
     """Single or multiple metric entries to update."""
     reset_by: Literal["epoch", "step"] = "epoch"
-    """Frequency basis for metric reset ("epoch" or "step")."""
+    """Frequency basis for metric reset.
+
+    Uses either "epoch" or committed optimizer "step".
+    """
     reset_freq: int = 1
     """Frequency to reset metrics."""
     step_log_freq: int = 512
-    """Frequency of logging at the step level."""
+    """Frequency of logging at the committed optimizer-step level."""
     epoch_log_freq: int = 1
     """Frequency of logging at the epoch level."""
     log_main_process_only: bool = True

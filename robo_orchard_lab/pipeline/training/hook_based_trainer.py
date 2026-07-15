@@ -14,7 +14,10 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from dataclasses import dataclass
+from collections.abc import (
+    Callable,
+    Iterable as IterableABC,
+)
 from typing import Any, Iterable
 
 import torch
@@ -22,6 +25,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.optimizer import AcceleratedOptimizer
 from accelerate.scheduler import AcceleratedScheduler
+from accelerate.utils import DummyOptim, DummyScheduler
 from robo_orchard_core.utils.config import Config
 from torch.utils.data import DataLoader
 
@@ -32,25 +36,34 @@ from robo_orchard_lab.dataset.robot._prefetch import (
 )
 from robo_orchard_lab.models.torch_model import TorchModelMixin
 from robo_orchard_lab.pipeline.hooks.grad_clip import (
+    GradientClippingHook,
     GradientClippingHookConfig,
+    _clip_optimizer_gradients,
 )
 from robo_orchard_lab.pipeline.hooks.mixin import (
+    MicroStepProgressState,
     PipelineHookArgs,
     PipelineHooks,
     PipelineHooksConfig,
 )
-from robo_orchard_lab.pipeline.hooks.optimizer import (
-    OptimizerHookConfig,
-    _validate_manual_lr_scheduler_step,
-)
 from robo_orchard_lab.pipeline.hooks.validation import ValidationHookConfig
+from robo_orchard_lab.pipeline.training._deepspeed import (
+    DeepSpeedStepSnapshot,
+    commit_deepspeed_optimizer_progress,
+    configure_deepspeed_gradient_clipping,
+    is_deepspeed_accelerator,
+    prepare_deepspeed_optimizer_scheduler,
+    read_deepspeed_step_snapshot,
+)
+from robo_orchard_lab.pipeline.training._progress import (
+    TrainerProgressState,
+)
 from robo_orchard_lab.processing.step_processor import BatchStepProcessorMixin
 from robo_orchard_lab.utils.accelerate import (
     _warn_if_prepare_falls_back_to_slow_path,
     configure_data_loader_for_accelerate,
 )
 from robo_orchard_lab.utils.huggingface import (
-    AcceleratorState,
     accelerator_load_state,
 )
 
@@ -58,6 +71,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "HookBasedTrainer",
+    "LRSchedulerFactory",
     "ResumeCheckpointConfig",
     "GradientClippingHookConfig",
     "ValidationHookConfig",
@@ -65,67 +79,11 @@ __all__ = [
 ]
 
 
-@dataclass
-class TrainerProgressState(AcceleratorState):
-    """A data class for storing the state of the training progress.
-
-    This class is designed to be used with the Trainer class to keep track
-    of the current epoch, step, and other relevant information during the
-    training process.
-    """
-
-    epoch_id: int = 0
-    """The current epoch. Starts from 0."""
-    step_id: int = 0
-    """The current step. Starts from 0."""
-    global_step_id: int = 0
-    """The total number of steps taken across all epochs. Starts from 0."""
-
-    def update_step(self) -> None:
-        """Increments the step and global_step by 1."""
-        self.step_id += 1
-        self.global_step_id += 1
-
-    def update_epoch(self) -> None:
-        """Increments the epoch by 1 and resets the step to 0."""
-        self.epoch_id += 1
-        self.step_id = 0
-
-    def is_training_end(
-        self, max_step: int | None, max_epoch: int | None
-    ) -> bool:
-        """Checks if the training loop should end based on the current state.
-
-        This method will return True if the current step or epoch exceeds the
-        specified maximum values. If both max_step and max_epoch are None,
-        return False.
-
-        Args:
-                max_step (int|None): The maximum number of steps allowed.
-                max_epoch (int|None): The maximum number of epochs allowed.
-
-        Returns:
-                bool: True if the training loop should end, False otherwise.
-        """
-        if max_step is not None and self.global_step_id >= max_step:
-            return True
-        if max_epoch is not None and self.epoch_id >= max_epoch:
-            return True
-        return False
-
-    def sync_pipeline_hook_arg(self, hook_args: PipelineHookArgs) -> None:
-        """Synchronizes the training state with the provided hook arguments.
-
-        The hook arguments are updated with the current epoch, step, and
-        global_step.
-
-        Args:
-                hook_args (PipelineHookArgs): The hook arguments to synchronize
-                        with.
-        """
-        hook_args.epoch_id = self.epoch_id
-        hook_args.step_id = self.step_id
-        hook_args.global_step_id = self.global_step_id
+PipelineHookOrConfigType = PipelineHooksConfig | PipelineHooks
+LRSchedulerFactory = Callable[
+    [torch.optim.Optimizer],
+    torch.optim.lr_scheduler.LRScheduler,
+]
 
 
 class ResumeCheckpointConfig(Config):
@@ -162,7 +120,141 @@ class ResumeCheckpointConfig(Config):
         )
 
 
-PipelineHookOrConfigType = PipelineHooksConfig | PipelineHooks
+def _normalize_hook_inputs(
+    hooks: (
+        PipelineHookOrConfigType | Iterable[PipelineHookOrConfigType] | None
+    ),
+) -> list[PipelineHookOrConfigType]:
+    """Return raw hook inputs without instantiating hook configs."""
+
+    if hooks is None:
+        return []
+    if isinstance(hooks, (PipelineHooksConfig, PipelineHooks)):
+        return [hooks]
+    if not isinstance(hooks, IterableABC):
+        raise TypeError(
+            "Expected PipelineHooks, PipelineHooksConfig, an iterable of "
+            "hooks/configs, or None."
+        )
+    return list(hooks)
+
+
+def _split_gradient_clipping_config(
+    *,
+    hooks: (
+        PipelineHookOrConfigType | Iterable[PipelineHookOrConfigType] | None
+    ),
+    grad_clip: GradientClippingHookConfig | None,
+    is_deepspeed: bool,
+) -> tuple[list[PipelineHookOrConfigType], GradientClippingHookConfig | None]:
+    """Extract trainer-owned gradient clipping config from raw hooks.
+
+    ``GradientClippingHookConfig`` can arrive either through the trainer's
+    ``grad_clip`` argument or directly in the raw ``hooks`` input. It must be
+    consumed before ``PipelineHooks.from_hooks(...)`` instantiates configs so
+    DeepSpeed can receive equivalent clipping config before
+    ``accelerator.prepare(...)``.
+    """
+
+    remaining_hooks: list[PipelineHookOrConfigType] = []
+    effective_grad_clip = grad_clip
+    saw_direct_grad_clip_hook = False
+    for hook_or_config in _normalize_hook_inputs(hooks):
+        if isinstance(hook_or_config, GradientClippingHookConfig):
+            if saw_direct_grad_clip_hook:
+                raise ValueError(
+                    "Do not combine trainer-owned `grad_clip` or "
+                    "GradientClippingHookConfig with an already constructed "
+                    "GradientClippingHook."
+                )
+            if effective_grad_clip is not None:
+                raise ValueError(
+                    "Only one gradient clipping configuration can be "
+                    "provided. Use either `grad_clip` or one "
+                    "GradientClippingHookConfig in `hooks`, not both."
+                )
+            effective_grad_clip = hook_or_config
+            continue
+
+        if isinstance(hook_or_config, GradientClippingHook):
+            if saw_direct_grad_clip_hook:
+                raise ValueError(
+                    "Only one gradient clipping hook can be provided. "
+                    "Use `grad_clip` or one already constructed "
+                    "GradientClippingHook, not multiple clipping hooks."
+                )
+            saw_direct_grad_clip_hook = True
+            if is_deepspeed:
+                raise ValueError(
+                    "DeepSpeed gradient clipping must be configured from "
+                    "GradientClippingHookConfig before "
+                    "accelerator.prepare(...). "
+                    "Do not pass an already constructed GradientClippingHook "
+                    "when DeepSpeed is active."
+                )
+            if effective_grad_clip is not None:
+                raise ValueError(
+                    "Do not combine trainer-owned `grad_clip` or "
+                    "GradientClippingHookConfig with an already constructed "
+                    "GradientClippingHook."
+                )
+
+        remaining_hooks.append(hook_or_config)
+    return remaining_hooks, effective_grad_clip
+
+
+def _resolve_optimizer_scheduler_before_prepare(
+    *,
+    accelerator: Accelerator,
+    optimizer: torch.optim.Optimizer | DummyOptim,
+    lr_scheduler: (
+        torch.optim.lr_scheduler.LRScheduler
+        | DummyScheduler
+        | LRSchedulerFactory
+    ),
+) -> tuple[
+    torch.optim.Optimizer | DummyOptim,
+    torch.optim.lr_scheduler.LRScheduler | DummyScheduler,
+]:
+    """Normalize optimizer and scheduler inputs before one prepare call.
+
+    Ordinary backends require real PyTorch runtime objects, so factories are
+    materialized immediately and DeepSpeed placeholders are rejected.
+    DeepSpeed-specific ownership and conversion are delegated to
+    ``training._deepspeed``.
+    """
+
+    if is_deepspeed_accelerator(accelerator):
+        return prepare_deepspeed_optimizer_scheduler(
+            accelerator=accelerator,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+        )
+    if isinstance(optimizer, DummyOptim):
+        raise ValueError(
+            "DummyOptim can be used only with a DeepSpeed accelerator."
+        )
+    if isinstance(lr_scheduler, DummyScheduler):
+        raise ValueError(
+            "DummyScheduler can be used only with a DeepSpeed accelerator."
+        )
+    if isinstance(lr_scheduler, torch.optim.lr_scheduler.LRScheduler):
+        return optimizer, lr_scheduler
+    if callable(lr_scheduler):
+        resolved_scheduler = lr_scheduler(optimizer)
+        if not isinstance(
+            resolved_scheduler,
+            torch.optim.lr_scheduler.LRScheduler,
+        ):
+            raise TypeError(
+                "LRSchedulerFactory must return a "
+                "torch.optim.lr_scheduler.LRScheduler."
+            )
+        return optimizer, resolved_scheduler
+    raise TypeError(
+        "lr_scheduler must be an LRScheduler, DummyScheduler, or "
+        "LRSchedulerFactory."
+    )
 
 
 class HookBasedTrainer:
@@ -180,31 +272,44 @@ class HookBasedTrainer:
 
         with on_loop:
             with on_epoch:
-            for batch in dataloader:
-                with on_step:
-                with on_batch:
-                    batch_processor(...)
-                    ...
+                for batch in dataloader:
+                    with accelerator.accumulate(model):
+                        with on_step:
+                            with on_batch:
+                                batch_processor(...)
+                                ...
+                            update micro-step progress
 
-                update step id
+                        if optimizer boundary:
+                            with on_optimizer_step:
+                                run optimizer finalization
+                                update optimizer-step progress
+                        else:
+                            run non-boundary optimizer finalization
             update epoch id
 
 
     Note:
-        The trainer will register the following default hooks in order at the
-        beginning if applicable:
-
-        - ``GradientClippingHook``: This hook clips gradients to prevent
-          exploding gradients. It is registered when ``grad_clip`` is
-          provided.
-
-        - ``OptimizerHook``: This hook performs the optimization step and
-          updates the learning rate scheduler. This hook is always
-          registered.
+        The trainer registers hook sets in this order at initialization:
 
         - ``ValidationHook``: This hook performs validation during training.
           It calls the evaluation callback at the configured frequency and is
           registered when ``validation`` is provided.
+
+        - User-provided hooks.
+
+        After each ``on_step`` scope exits, the trainer performs optimizer
+        finalization. Boundary finalization is wrapped in
+        ``on_optimizer_step`` so after-hooks can observe whether the update was
+        committed through ``PipelineHookArgs.is_optimizer_step_committed``.
+        This means user ``on_step`` after-hooks observe the pre-optimizer
+        state, including parameters, gradients, and scheduler state. Hooks
+        that need post-update state should register on ``on_optimizer_step``.
+        When ``grad_clip`` is provided, ordinary torch/DDP clipping is a
+        trainer-owned optimizer-finalization side effect that runs after user
+        ``on_optimizer_step`` before-hooks and before ``optimizer.step``.
+        DeepSpeed clipping is configured before ``accelerator.prepare(...)``
+        through the DeepSpeed config instead of running local clipping hooks.
 
     Args:
         accelerator (Accelerator): The ``Accelerator`` instance managing
@@ -214,20 +319,30 @@ class HookBasedTrainer:
             to the model during training.
         batch_processor (BatchStepProcessorMixin): The step processor
             responsible for processing batches and backpropagating the loss.
-        optimizer (torch.optim.Optimizer): The optimizer used during training.
-        lr_scheduler (torch.optim.lr_scheduler.LRScheduler): The learning rate
-            scheduler used during training.
+        optimizer (torch.optim.Optimizer | DummyOptim): The optimizer input.
+            ``DummyOptim`` is accepted only when the DeepSpeed config owns
+            optimizer construction. Automatic DeepSpeed conversion accepts
+            only exact ``torch.optim.AdamW``; ordinary backends keep their
+            code-owned optimizer.
+        lr_scheduler (LRScheduler | DummyScheduler | LRSchedulerFactory): The
+            scheduler input. Factories receive the optimizer that owns runtime
+            parameter groups: immediately on ordinary backends, or from
+            DeepSpeed after it constructs the actual optimizer.
         hooks (PipelineHooks | Iterable[PipelineHooks] | None, optional): The
             hooks used during training. These hooks can customize various
             stages of the training process. Default is None.
-        max_step (int | None, optional): The maximum number of steps for
-            training. Either ``max_step`` or ``max_epoch`` must be specified.
-            Default is None.
+        max_step (int | None, optional): The maximum number of committed
+            optimizer steps for training. Either ``max_step`` or
+            ``max_epoch`` must be specified. Default is None.
         max_epoch (int | None, optional): The maximum number of epochs for
             training. Either ``max_step`` or ``max_epoch`` must be specified.
             Default is None.
-        grad_clip (GradientClippingHookConfig | None, optional): The gradient
-            clipping configuration. Default is None.
+        grad_clip (GradientClippingHookConfig | None, optional): The
+            trainer-owned gradient clipping configuration. Use this argument
+            instead of passing ``GradientClippingHook`` as a user hook,
+            especially under DeepSpeed where clipping must be lowered into
+            the DeepSpeed config before ``accelerator.prepare(...)``. Default
+            is None.
         validation (ValidationHookConfig | None, optional): The validation
             configuration. If not specified, no validation is performed.
             Default is None.
@@ -250,6 +365,8 @@ class HookBasedTrainer:
     lr_scheduler: AcceleratedScheduler
     """The learning rate scheduler after being prepared by the
     ``Accelerator``."""
+    _grad_clip: GradientClippingHookConfig | None
+    """Trainer-owned gradient clipping config for ordinary torch/DDP."""
 
     def __init__(
         self,
@@ -257,8 +374,12 @@ class HookBasedTrainer:
         model: torch.nn.Module,
         dataloader: DataLoader | Iterable,
         batch_processor: BatchStepProcessorMixin,
-        optimizer: torch.optim.Optimizer,
-        lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
+        optimizer: torch.optim.Optimizer | DummyOptim,
+        lr_scheduler: (
+            torch.optim.lr_scheduler.LRScheduler
+            | DummyScheduler
+            | LRSchedulerFactory
+        ),
         hooks: (
             PipelineHookOrConfigType
             | Iterable[PipelineHookOrConfigType]
@@ -285,13 +406,32 @@ class HookBasedTrainer:
         if hooks is None:
             hooks = []
         self.accelerator = accelerator
-        user_hooks = PipelineHooks.from_hooks(hooks)
+        is_deepspeed = is_deepspeed_accelerator(accelerator)
+        raw_user_hooks, grad_clip = _split_gradient_clipping_config(
+            hooks=hooks,
+            grad_clip=grad_clip,
+            is_deepspeed=is_deepspeed,
+        )
+        if is_deepspeed and grad_clip is not None:
+            configure_deepspeed_gradient_clipping(
+                accelerator=accelerator,
+                grad_clip=grad_clip,
+            )
+            grad_clip = None
+        self._grad_clip = grad_clip
+        user_hooks = PipelineHooks.from_hooks(raw_user_hooks)
         self.max_step = max_step
         self.max_epoch = max_epoch
 
         if isinstance(model, TorchModelMixin):
             model.accelerate_model_id = len(accelerator._models)
             model.accelerator_register_all_hooks(accelerator)
+
+        optimizer, lr_scheduler = _resolve_optimizer_scheduler_before_prepare(
+            accelerator=accelerator,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+        )
 
         # Normalize iterable-dataset settings before a single
         # accelerator.prepare(...) call across all training objects.
@@ -313,8 +453,6 @@ class HookBasedTrainer:
         self.model: torch.nn.Module = self.model
         self.optimizer: AcceleratedOptimizer = self.optimizer
         self.lr_scheduler: AcceleratedScheduler = self.lr_scheduler
-        # OptimizerHook owns scheduler stepping for this trainer.
-        _validate_manual_lr_scheduler_step(self.lr_scheduler)
 
         self.trainer_progress_state = TrainerProgressState()
         accelerator.register_for_checkpointing(self.trainer_progress_state)
@@ -322,11 +460,6 @@ class HookBasedTrainer:
         self.batch_processor = batch_processor
 
         self.hooks = PipelineHooks()
-        # register default hooks: grad_clip, optimizer, validation
-        if grad_clip is not None:
-            self.hooks += grad_clip()
-
-        self.hooks += OptimizerHookConfig()()
         if validation is not None:
             self.hooks += validation()
 
@@ -342,18 +475,26 @@ class HookBasedTrainer:
             self._start_epoch = self.trainer_progress_state.epoch_id
             self._start_step = self.trainer_progress_state.step_id
 
-    def _get_hook_args(self, **kwargs) -> PipelineHookArgs:
-        """Get Hook args.
+    def _get_hook_args(
+        self,
+        *,
+        current_micro_step: MicroStepProgressState | None = None,
+    ) -> PipelineHookArgs:
+        """Build hook args from trainer-owned runtime and progress state.
 
-        Creates and returns a HookArgs object with current training state
-        and additional arguments.
+        Creates and returns a ``PipelineHookArgs`` object with stable
+        trainer-owned runtime objects and the current committed progress
+        snapshot. When ``current_micro_step`` is provided, the args also
+        include the pending micro-step runtime state for one ``on_step`` event.
 
         Args:
-            **kwargs: Additional arguments to include in the HookArgs object.
+            current_micro_step (MicroStepProgressState | None): Preview state
+                for the current dataloader micro step, if this event belongs
+                to the step loop.
 
         Returns:
             PipelineHookArgs: An object containing the current training state
-            and additional arguments.
+            and runtime objects.
         """
         hookargs = PipelineHookArgs(
             accelerator=self.accelerator,
@@ -369,22 +510,134 @@ class HookBasedTrainer:
             start_epoch=self._start_epoch,
             start_step=self._start_step,
         )
-        for k, v in kwargs.items():
-            setattr(hookargs, k, v)
+        self.trainer_progress_state.sync_pipeline_hook_arg(hookargs)
+        if current_micro_step is not None:
+            hookargs.micro_step = current_micro_step
+            hookargs.is_optimizer_step_boundary = (
+                self.accelerator.sync_gradients
+            )
         return hookargs
+
+    def _run_gradient_clipping(
+        self,
+        hook_args: PipelineHookArgs,
+        *,
+        is_optimizer_step_boundary: bool,
+    ) -> None:
+        """Clip gradients for the trainer-owned ordinary torch/DDP path."""
+
+        if self._grad_clip is None:
+            return
+        if hook_args.exception is not None:
+            return
+        if not is_optimizer_step_boundary:
+            return
+
+        _clip_optimizer_gradients(
+            accelerator=self.accelerator,
+            optimizer=self.optimizer,
+            clip_mode=self._grad_clip.clip_mode,
+            clip_value=self._grad_clip.clip_value,
+            max_norm=self._grad_clip.max_norm,
+            norm_type=self._grad_clip.norm_type,
+        )
+
+    def _run_optimizer_step(
+        self,
+        hook_args: PipelineHookArgs,
+        *,
+        is_optimizer_step_boundary: bool,
+        micro_steps: int,
+        deepspeed_step_before: DeepSpeedStepSnapshot | None = None,
+    ) -> bool:
+        """Finalize one micro step's optimizer progress.
+
+        Ordinary torch/DDP backends call optimizer, scheduler, and zero-grad
+        wrappers here. DeepSpeed backends only observe engine counters because
+        ``accelerator.backward`` already owns the actual engine step.
+        Optimizer-boundary and window-size decisions come from trainer-owned
+        arguments, not from mutable ``PipelineHookArgs`` fields.
+
+        Returns:
+            bool: ``True`` when the current optimizer boundary committed a
+            model update.
+
+        Raises:
+            RuntimeError: If the hook args do not carry micro-step progress,
+            or if DeepSpeed finalization is missing its pre-step snapshot.
+        """
+        if hook_args.exception is not None:
+            return False
+        if hook_args.micro_step is None:
+            raise RuntimeError(
+                "HookBasedTrainer optimizer step requires "
+                "PipelineHookArgs.micro_step."
+            )
+        if is_deepspeed_accelerator(self.accelerator):
+            if deepspeed_step_before is None:
+                raise RuntimeError(
+                    "DeepSpeed optimizer-step observation requires a "
+                    "pre-step snapshot from HookBasedTrainer._run_batch_step."
+                )
+            return commit_deepspeed_optimizer_progress(
+                accelerator=self.accelerator,
+                progress_state=self.trainer_progress_state,
+                hook_args=hook_args,
+                is_optimizer_step_boundary=is_optimizer_step_boundary,
+                micro_steps=micro_steps,
+                step_before=deepspeed_step_before,
+            )
+
+        self._run_gradient_clipping(
+            hook_args,
+            is_optimizer_step_boundary=is_optimizer_step_boundary,
+        )
+        self.optimizer.step()
+        committed = (
+            is_optimizer_step_boundary
+            and not self.accelerator.optimizer_step_was_skipped
+        )
+        scheduler_handles_optimizer_step_gating = (
+            isinstance(self.lr_scheduler, AcceleratedScheduler)
+            and self.lr_scheduler.step_with_optimizer
+        )
+        if scheduler_handles_optimizer_step_gating or committed:
+            self.lr_scheduler.step()
+        self.optimizer.zero_grad()
+
+        if committed:
+            self.trainer_progress_state.commit_optimizer_step(
+                micro_steps=micro_steps
+            )
+            self.trainer_progress_state.sync_pipeline_hook_arg(hook_args)
+        elif is_optimizer_step_boundary:
+            self.trainer_progress_state.reset_optimizer_step_window()
+            self.trainer_progress_state.sync_pipeline_hook_arg(hook_args)
+        return committed
 
     def _run_batch_step(self, batch: Any) -> None:
         """Run one batch through step and batch hooks.
 
-        The batch processor owns forward/backward work. The surrounding step
-        hooks own optimizer and scheduler side effects, including the default
-        optimizer hook installed by this trainer.
+        The batch processor owns forward/backward work. The trainer commits
+        micro-step progress before step after-hooks run, then handles
+        optimizer side effects or DeepSpeed step observation after leaving
+        the on_step scope.
         """
+        current_micro_step = (
+            self.trainer_progress_state.preview_next_micro_step()
+        )
+        is_optimizer_step_boundary = self.accelerator.sync_gradients
+        micro_steps = current_micro_step.index_in_optimizer_step
+        deepspeed_step_before = read_deepspeed_step_snapshot(self.accelerator)
         with self.hooks.begin(
-            "on_step", self._get_hook_args()
+            "on_step",
+            self._get_hook_args(
+                current_micro_step=current_micro_step,
+            ),
         ) as on_step_hook_args:
             with self.hooks.begin(
-                "on_batch", self._get_hook_args(batch=batch)
+                "on_batch",
+                on_step_hook_args.copy_with_updates(batch=batch),
             ) as on_batch_hook_args:
                 self.batch_processor(
                     pipeline_hooks=self.hooks,
@@ -397,6 +650,41 @@ class HookBasedTrainer:
                 on_step_hook_args.reduced_backward_loss = (
                     on_batch_hook_args.reduced_backward_loss
                 )
+            self.trainer_progress_state.commit_micro_step(current_micro_step)
+            self.trainer_progress_state.sync_pipeline_hook_arg(
+                on_step_hook_args
+            )
+        self.trainer_progress_state.sync_pipeline_hook_arg(on_step_hook_args)
+        on_step_hook_args.is_optimizer_step_boundary = (
+            is_optimizer_step_boundary
+        )
+        on_step_hook_args.is_optimizer_step_committed = False
+        if is_optimizer_step_boundary:
+            with self.hooks.begin(
+                "on_optimizer_step",
+                on_step_hook_args,
+            ) as optimizer_hook_args:
+                committed = self._run_optimizer_step(
+                    optimizer_hook_args,
+                    is_optimizer_step_boundary=is_optimizer_step_boundary,
+                    micro_steps=micro_steps,
+                    deepspeed_step_before=deepspeed_step_before,
+                )
+                optimizer_hook_args.is_optimizer_step_committed = committed
+                self.trainer_progress_state.sync_pipeline_hook_arg(
+                    optimizer_hook_args
+                )
+        else:
+            committed = self._run_optimizer_step(
+                on_step_hook_args,
+                is_optimizer_step_boundary=is_optimizer_step_boundary,
+                micro_steps=micro_steps,
+                deepspeed_step_before=deepspeed_step_before,
+            )
+            on_step_hook_args.is_optimizer_step_committed = committed
+            self.trainer_progress_state.sync_pipeline_hook_arg(
+                on_step_hook_args
+            )
 
     def _run_epoch_steps(
         self,
@@ -429,7 +717,6 @@ class HookBasedTrainer:
 
                 with self.accelerator.accumulate(self.model):
                     self._run_batch_step(batch=batch)
-                self.trainer_progress_state.update_step()
                 self.trainer_progress_state.sync_pipeline_hook_arg(
                     on_epoch_hook_args
                 )

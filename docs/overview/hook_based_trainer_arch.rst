@@ -34,9 +34,11 @@ The core pipeline operates as a series of clearly defined, nested loops, each as
   ``on_epoch_begin`` allows for epoch-specific initializations (e.g., resetting metrics),
   while ``on_epoch_end`` is typically used for validation, learning rate adjustments,
   and epoch-level checkpointing/logging.
-* **Step Loop (on_step_* hooks)**: Represents one optimizer step. If gradient accumulation is used,
-  this loop will encompass the processing of multiple micro-batches before model weights are updated.
-  ``on_step_begin`` precedes micro-batch processing for the current optimizer step, and ``on_step_end`` follows the (potential) optimizer update.
+* **Step Loop (on_step_* hooks)**: Represents one dataloader step, also referred to as a micro step when gradient accumulation is used.
+  ``on_step_begin`` precedes processing for the current micro-batch, and ``on_step_end`` follows that micro-batch's forward/backward work.
+* **Optimizer Step Scope (on_optimizer_step hooks)**: Wraps optimizer-step finalization on gradient-synchronization boundaries.
+  ``on_optimizer_step`` is entered only when the trainer is ready to finalize an optimizer step.
+  Its after-hooks can inspect ``PipelineHookArgs.is_optimizer_step_committed`` to distinguish committed updates from skipped boundaries, such as overflow skips.
 * **Micro Batch Loop (on_batch_* hooks)**: This is the innermost data processing loop,
   handling one micro-batch at a time as provided by the DataLoader. The **Batch Processor** component executes its core logic within this loop.
 
@@ -71,9 +73,10 @@ in conjunction with **Hugging Face ``Accelerator``**, manages higher-level opera
 
 * Moving data and models to the correct device.
 * Wrapping the model, optimizer, and dataloader for distributed training.
-* Handling gradient accumulation (the step loop iterates over micro-batches, and ``Accelerator`` determines when to sync gradients and step the optimizer).
-* Performing ``optimizer.step()`` and ``optimizer.zero_grad()``, typically aligned with the ``on_step_end`` hook context.
-* Calling ``lr_scheduler.step()``, often within ``on_step_end`` or ``on_epoch_end`` depending on the scheduler type.
+* Handling gradient accumulation (``on_step`` tracks each micro-batch, and ``Accelerator`` determines when to sync gradients and step the optimizer).
+* Performing ``optimizer.step()`` and ``optimizer.zero_grad()`` inside the ``on_optimizer_step`` hook context on optimizer-step boundaries.
+* Calling ``lr_scheduler.step()``, often within ``on_optimizer_step`` or ``on_epoch_end`` depending on the scheduler type.
+  With DeepSpeed, the engine may perform the optimizer step during backward; the trainer observes the committed progress and reports it through ``on_optimizer_step`` instead of owning the low-level step call.
 
 Role of ``PipelineHookArgs``
 --------------------------------------------------------

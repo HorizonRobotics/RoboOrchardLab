@@ -16,5 +16,11 @@
 
 """Training pipeline orchestration APIs."""
 
-from .hook_based_trainer import HookBasedTrainer
+from .hook_based_trainer import HookBasedTrainer, LRSchedulerFactory
 from .trainer import SimpleTrainer
+
+__all__ = [
+    "HookBasedTrainer",
+    "LRSchedulerFactory",
+    "SimpleTrainer",
+]

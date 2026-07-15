@@ -20,7 +20,7 @@
 ==========================================================
 
 Hooks are the primary way to add custom behavior to the training or evaluation loop without modifying its source code.
-They are called at specific points during training or evaluation (e.g., end of epoch, after a step).
+They are called at specific points during training or evaluation (e.g., end of epoch, after a micro step, or after a committed optimizer step).
 """
 
 # %%
@@ -270,6 +270,7 @@ hooks = []
 #
 # :py:class:`~robo_orchard_lab.pipeline.hooks.metric.MetricTracker` is an abstarct class, you should inherit it
 # and implement the :py:meth:`~robo_orchard_lab.pipeline.hooks.metric.MetricTracker.update_metric` method, which is called by the trainer to update these metrics with batch outputs and targets.
+# Metrics are updated from micro-batch outputs, while ``step_log_freq`` is evaluated on committed optimizer steps.
 #
 
 from torchmetrics import Accuracy as AccuracyMetric
@@ -322,7 +323,7 @@ hooks.append(metric_tracker)
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 #
 # :py:class:`~robo_orchard_lab.pipeline.hooks.stats.StatsMonitor` monitors and logs statistics like learning rate, training speed (samples/sec), estimated time remaining, etc.
-# Its ``step_log_freq`` controls how often this information is printed or logged.
+# Its ``step_log_freq`` controls how often this information is printed or logged in committed optimizer-step units.
 #
 
 from robo_orchard_lab.pipeline.hooks import StatsMonitorConfig
@@ -336,7 +337,7 @@ hooks.append(stats)
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 #
 # :py:class:`~robo_orchard_lab.pipeline.hooks.checkpoint.SaveCheckpointConfig` is responsible for triggering model checkpoint saves.
-# It calls :py:class:`~acclerator.Accelerator.save_state()`` internally. ``save_step_freq`` defines how many training steps between checkpoints.
+# It calls :py:class:`~acclerator.Accelerator.save_state()`` internally. ``save_step_freq`` defines how many committed optimizer steps between checkpoints.
 # Resuming is handled by Accelerator
 #
 
@@ -378,8 +379,10 @@ trainer()
 
 
 # %%
-# All the checkpoints is saved to ``cfg.workspace``
+# All the checkpoints are saved to ``cfg.workspace``
 
-import subprocess
+from pathlib import Path
 
-print(subprocess.check_output(["tree", cfg.workspace_root]).decode())
+workspace_root = Path(cfg.workspace_root)
+for path in sorted(workspace_root.rglob("*")):
+    print(path.relative_to(workspace_root))

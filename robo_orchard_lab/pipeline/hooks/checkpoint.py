@@ -53,13 +53,13 @@ class SaveHookConfigT(PipelineHooksConfig[SaveHookType]):
     save_epoch_freq: Optional[int] = 1
     """Frequency of saving checkpoints based on epochs."""
     save_step_freq: Optional[int] = None
-    """Frequency of saving checkpoints based on steps."""
+    """Frequency of saving checkpoints based on committed optimizer steps."""
     save_when_loop_end: bool = True
     """Whether to save the model at the end of the training loop."""
     save_model: bool = True
     """Whether to save the model as well."""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.save_epoch_freq is None and self.save_step_freq is None:
             raise ValueError(
                 "Either `save_epoch_freq` or `save_step_freq` must be "
@@ -80,22 +80,20 @@ class SaveHookConfigT(PipelineHooksConfig[SaveHookType]):
 
 
 class SaveCheckpoint(PipelineHooks):
-    """Checkpoint hook.
+    """Save Accelerate training state at configured training boundaries.
 
-    A checkpointing hook for saving model state at specified epoch or
-    step intervals.
-
+    Step-based saves run only after committed optimizer steps. Epoch and loop
+    saves use their own scopes and do not depend on step-frequency triggers.
 
     Args:
         cfg (SaveCheckpointConfig): Configuration object containing
             parameters for checkpointing.
-
     """
 
     def __init__(
         self,
         cfg: SaveCheckpointConfig,
-    ):
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         self.save_root = cfg.save_root
@@ -104,7 +102,7 @@ class SaveCheckpoint(PipelineHooks):
         self._is_checked = False
 
         self.register_hook(
-            channel="on_step",
+            channel="on_optimizer_step",
             hook=HookContext.from_callable(after=self._on_step_end),
         )
         self.register_hook(
@@ -165,25 +163,27 @@ class SaveCheckpoint(PipelineHooks):
         return save_location
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Callback when step ends.
+        """Callback when a committed optimizer-step scope ends.
 
-        Saves a checkpoint at the end of a step if `save_step_freq` conditions
-        are met.
+        Saves a checkpoint at the end of a committed optimizer step if
+        `save_step_freq` conditions are met.
 
 
         Args:
-            args (HookArgs): Arguments containing the `global_step_id` and
-                `accelerator` to facilitate saving state.
+            args (PipelineHookArgs): Arguments containing the
+                ``global_step_id`` and ``accelerator`` used for saving state.
 
         Logs:
             A message indicating the checkpoint location.
         """
         if args.exception is not None:
             return
+        if not args.is_optimizer_step_committed:
+            return
 
         if (
             self.save_step_freq is not None
-            and (args.global_step_id + 1) % self.save_step_freq == 0
+            and args.global_step_id % self.save_step_freq == 0
         ):
             self._check(args.accelerator)
             save_location = self._save_state(args.accelerator)
@@ -201,8 +201,8 @@ class SaveCheckpoint(PipelineHooks):
         conditions are met.
 
         Args:
-            args (HookArgs): Arguments containing the `epoch_id` and
-                `accelerator` to facilitate saving state.
+            args (PipelineHookArgs): Arguments containing the ``epoch_id`` and
+                ``accelerator`` used for saving state.
 
         Logs:
             A message indicating the checkpoint location.
@@ -247,16 +247,23 @@ class SaveCheckpointConfig(SaveHookConfigT[SaveCheckpoint]):
 
 
 class SaveModel(PipelineHooks):
+    """Save model weights at configured epoch or committed-step boundaries.
+
+    This hook writes model artifacts via ``Accelerator.save_model``. It tracks
+    the last saved global step to avoid duplicate saves when a step, epoch, and
+    loop-end event refer to the same committed optimizer step.
+    """
+
     cfg: SaveModelConfig
 
     def __init__(
         self,
         cfg: SaveModelConfig,
-    ):
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         self.register_hook(
-            channel="on_step",
+            channel="on_optimizer_step",
             hook=HookContext.from_callable(after=self._on_step_end),
         )
         self.register_hook(
@@ -310,12 +317,15 @@ class SaveModel(PipelineHooks):
         return save_root
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
+        """Save the model after matching committed optimizer steps."""
         if args.exception is not None:
+            return
+        if not args.is_optimizer_step_committed:
             return
 
         if (
             self.cfg.save_step_freq is not None
-            and (args.global_step_id + 1) % self.cfg.save_step_freq == 0
+            and args.global_step_id % self.cfg.save_step_freq == 0
             and self._saved_last_step != args.global_step_id
         ):
             args.accelerator.wait_for_everyone()
@@ -331,6 +341,7 @@ class SaveModel(PipelineHooks):
                 )
 
     def _on_epoch_end(self, args: PipelineHookArgs) -> None:
+        """Save the model after matching epoch scopes."""
         if args.exception is not None:
             return
 
@@ -389,10 +400,12 @@ class SaveModel(PipelineHooks):
 
 
 class SaveModelConfig(SaveHookConfigT[SaveModel]):
+    """Configuration for model-only artifact saves."""
+
     class_type: ClassType[SaveModel] = SaveModel
 
     def get_save_root(self, accelerator: Accelerator) -> str:
-        """Get the root directory for saving checkpoints.
+        """Return the root directory for model artifacts.
 
         If `automatic_checkpoint_naming` is enabled in the Accelerator's
         project configuration, the save root is set to a default directory

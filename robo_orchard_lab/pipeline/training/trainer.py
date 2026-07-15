@@ -24,9 +24,6 @@ import torch
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 
-from robo_orchard_lab.pipeline.hooks.mixin import (
-    PipelineHooks,
-)
 from robo_orchard_lab.pipeline.training.hook_based_trainer import (
     GradientClippingHookConfig as GradClipConfig,
     HookBasedTrainer,
@@ -47,46 +44,43 @@ logger = logging.getLogger(__name__)
     version="0.2.0",
 )
 class SimpleTrainer(HookBasedTrainer):
-    """A base trainer class that extends SimpleTrainer for training models.
+    """Deprecated compatibility wrapper around ``HookBasedTrainer``.
 
     This trainer integrates with the `Accelerate` library for distributed
     training, supports custom batch processors, and provides hooks for
     monitoring and extending the training process.
 
     Args:
-            model (torch.nn.Module): The model to be trained.
-            accelerator (Accelerator): The `Accelerator` instance managing
-                    distributed training.
-            batch_processor (BatchStepProcessorMixin): A processor that
-                    defines how to handle each batch during training.
-            dataloader (Optional[DataLoader]): The data loader for feeding
-                batches to the model.
-            optimizer (Optional[torch.optim.Optimizer]): The optimizer used
-                    for training.
-            lr_scheduler (Optional[torch.optim.lr_scheduler.LRScheduler]):
-                    The learning rate scheduler.
-            lr_scheduler_step_at (str): Whether the learning rate scheduler
-                    steps at "epoch" or "step".
-            max_step (Optional[int]): The maximum number of steps to train.
-            max_epoch (Optional[int]): The maximum number of epochs to train.
-            val_dataloader (Optional[DataLoader]): The data loader for
-                validation.
-            metric (Optional[Any]): The metric used for evaluation, with
-                update, compute and reset functions.
-            step_eval_freq (Optional[int]): The frequency of evaluation in
-                    terms of steps.
-            epoch_eval_freq (Optional[int]): The frequency of evaluation in
-                    terms of epochs.
-            resume_from (Optional[str]): The path or URL to resume training
-                from.
-            resume_share_dir (Optional[str]): The directory to save resume
-                files.
-            grad_clip_mode (Optional[str]): The mode for gradient clipping
-                    ("value" or "norm").
-            grad_clip_value (Optional[float]): The value for gradient clipping.
-            grad_max_norm (Optional[float]): The maximum norm for gradient
-                    clipping.
-            grad_norm_type (int): The type of norm used for gradient clipping.
+        model (torch.nn.Module): The model to be trained.
+        accelerator (Accelerator): The `Accelerator` instance managing
+            distributed training.
+        batch_processor (BatchStepProcessorMixin): A processor that defines
+            how to handle each batch during training.
+        dataloader (DataLoader | Iterable): The data loader for feeding
+            batches to the model.
+        optimizer (torch.optim.Optimizer): The optimizer used for training.
+        lr_scheduler (torch.optim.lr_scheduler.LRScheduler): The learning rate
+            scheduler.
+        lr_scheduler_step_at (str): Deprecated; must be ``"step"``.
+        max_step (Optional[int]): The maximum committed optimizer steps to
+            train.
+        max_epoch (Optional[int]): The maximum number of epochs to train.
+        val_dataloader (Optional[DataLoader | Iterable]): The data loader for
+            validation.
+        metric (Optional[Any]): The metric used for evaluation, with update,
+            compute and reset functions.
+        step_eval_freq (Optional[int]): The frequency of evaluation in
+            committed optimizer-step units.
+        epoch_eval_freq (Optional[int]): The frequency of evaluation in terms
+            of epochs.
+        resume_from (Optional[str]): The path or URL to resume training from.
+        resume_share_dir (Optional[str]): The directory to save resume files.
+        grad_clip_mode (Optional[str]): The mode for gradient clipping
+            (``"value"`` or ``"norm"``).
+        grad_clip_value (Optional[float]): The value for gradient clipping.
+        grad_max_norm (Optional[float]): The maximum norm for gradient
+            clipping.
+        grad_norm_type (int): The type of norm used for gradient clipping.
     """
 
     def __init__(
@@ -166,7 +160,7 @@ class SimpleTrainer(HookBasedTrainer):
             lr_scheduler=lr_scheduler,
             max_step=max_step,
             max_epoch=max_epoch,
-            hooks=PipelineHooks.from_hooks(hooks),
+            hooks=hooks,
             resume_from=resume_cfg,
             grad_clip=grad_clip_cfg,
             validation=val_cfg,

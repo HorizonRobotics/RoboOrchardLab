@@ -14,12 +14,9 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
-
-from accelerate.scheduler import AcceleratedScheduler
+import warnings
 
 from robo_orchard_lab.pipeline.hooks.mixin import (
-    HookContext,
-    PipelineHookArgs,
     PipelineHooks,
     PipelineHooksConfig,
 )
@@ -28,69 +25,23 @@ __all__ = ["OptimizerHook", "OptimizerHookConfig"]
 
 
 class OptimizerHook(PipelineHooks):
-    """A hook for optimizing the model during training.
+    """Deprecated no-op compatibility hook.
 
-    This hook is responsible for performing the optimization step
-    and updating the learning rate scheduler. It performs the
-    updating after each step of the training process.
+    ``HookBasedTrainer`` owns optimizer and scheduler stepping internally.
+    This hook remains only to keep old import/config paths loadable.
 
     """
 
     def __init__(self, cfg: OptimizerHookConfig | None):
         super().__init__()
-        self.register_hook(
-            "on_step",
-            HookContext.from_callable(
-                after=self._optimizer_step,
-                before=None,
-            ),
+        warnings.warn(
+            "OptimizerHook is deprecated and is now a no-op. "
+            "HookBasedTrainer owns optimizer and scheduler stepping "
+            "internally.",
+            DeprecationWarning,
+            stacklevel=2,
         )
-
-    def _optimizer_step(
-        self,
-        hook_args: PipelineHookArgs,
-    ) -> None:
-        """Performs an optimization step.
-
-        Args:
-            hook_args (PipelineHookArgs): The workspace for the optimizer
-                hook. It should contain the following attributes:
-                  - accelerator: The Accelerator instance.
-                  - optimizer: The optimizer instance.
-                  - lr_scheduler: The learning rate scheduler instance.
-
-        """
-        if hook_args.exception is not None:
-            return
-
-        if hook_args.optimizer is None:
-            raise ValueError("Optimizer is not set in the hook arguments.")
-        if hook_args.lr_scheduler is None:
-            raise ValueError(
-                "Learning rate scheduler is not set in the hook arguments."
-            )
-        _validate_manual_lr_scheduler_step(hook_args.lr_scheduler)
-        # Perform the optimization step
-        hook_args.optimizer.step()
-        if hook_args.accelerator.sync_gradients:
-            hook_args.lr_scheduler.step()
-        hook_args.optimizer.zero_grad()
 
 
 class OptimizerHookConfig(PipelineHooksConfig[OptimizerHook]):
     class_type: type[OptimizerHook] = OptimizerHook
-
-
-def _validate_manual_lr_scheduler_step(
-    lr_scheduler: AcceleratedScheduler,
-) -> None:
-    if (
-        isinstance(lr_scheduler, AcceleratedScheduler)
-        and lr_scheduler.step_with_optimizer
-    ):
-        raise ValueError(
-            "HookBasedTrainer manually steps the learning rate scheduler in "
-            "OptimizerHook, but the prepared scheduler is coupled to "
-            "optimizer stepping by Accelerate. Create Accelerator with "
-            "step_scheduler_with_optimizer=False when using HookBasedTrainer."
-        )

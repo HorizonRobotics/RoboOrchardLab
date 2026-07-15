@@ -256,7 +256,8 @@ class MyBatchProcessor(SimpleStepProcessor):
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 # Hooks are a powerful feature for injecting custom behaviors into the
 # training or evaluation loop at predefined stages (e.g., end of an epoch,
-# after a step), all without modifying the core engine code.
+# after a micro step, or after a committed optimizer step), all without
+# modifying the core engine code.
 #
 # This tutorial provides a brief introduction, demonstrating how to use the
 # built-in :py:class:`~robo_orchard_lab.pipeline.hooks.stats.StatsMonitor` for basic logging.

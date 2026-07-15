@@ -43,3 +43,27 @@ def test_pipeline_hooks_records_body_exception_before_after_hook():
 
     assert args.exception is exc_info.value
     assert after_seen["exception"] is exc_info.value
+
+
+def test_pipeline_hooks_supports_optimizer_step_context_channel():
+    """The optimizer-step channel is a scoped context hook."""
+
+    hooks = PipelineHooks()
+    events: list[tuple[str, bool]] = []
+
+    def before_hook(args: PipelineHookArgs) -> None:
+        events.append(("before", args.is_optimizer_step_committed))
+
+    def after_hook(args: PipelineHookArgs) -> None:
+        events.append(("after", args.is_optimizer_step_committed))
+
+    hooks.register_hook(
+        "on_optimizer_step",
+        HookContext.from_callable(before=before_hook, after=after_hook),
+    )
+    args = PipelineHookArgs(accelerator=MagicMock())
+
+    with hooks.begin("on_optimizer_step", args):
+        args.is_optimizer_step_committed = True
+
+    assert events == [("before", False), ("after", True)]

@@ -124,8 +124,10 @@ def test_on_step_end(
     configure_per_process_logging,
 ):
     """Test the on_step_end method with logging."""
-    mock_hook_args.step_id = 1  # Trigger logging for step_log_freq = 2
-    mock_hook_args.global_step_id = 1
+    mock_hook_args.step_id = 1
+    mock_hook_args.global_step_id = 2
+    mock_hook_args.is_optimizer_step_committed = True
+    mock_metric_tracker._log = MagicMock()
 
     with mock_metric_tracker.begin(
         "on_batch", mock_hook_args
@@ -134,15 +136,14 @@ def test_on_step_end(
 
     # Trigger step-end logic with logging
     with mock_metric_tracker.begin(
-        "on_step", mock_hook_args
+        "on_optimizer_step", mock_hook_args
     ):  # Update before step_end
         pass
 
-    # Verify log output in the temporary file
-    # log_file = configure_per_process_logging
-    # with open(log_file, "r") as f:
-    #     logs = f.read()
-    # assert "Epoch[0] Step[1] GlobalStep[1]: accuracy[tensor(1.)]" in logs
+    mock_metric_tracker._log.assert_called_once()
+    assert mock_metric_tracker._log.call_args.kwargs["prefix"] == (
+        "Epoch[0] Step[1] GlobalStep[2]: "
+    )
 
 
 def test_metric_tracker_skips_batch_update_on_context_exception(
@@ -169,7 +170,7 @@ def test_on_epoch_end(
 
     # Trigger step-end logic with logging
     with mock_metric_tracker.begin(
-        "on_step", mock_hook_args
+        "on_optimizer_step", mock_hook_args
     ):  # Update before step_end
         pass
 
@@ -200,6 +201,32 @@ def test_reset_logic(
         pass
 
     assert metric.compute() == 0.0
+
+
+def test_metric_tracker_resets_step_window_on_skipped_boundary(
+    mock_metric_entry,
+    mock_hook_args: PipelineHookArgs,
+):
+    """Skipped optimizer boundaries should not leak step metrics."""
+
+    tracker = MetricTrackerConfig(
+        class_type=CustomMetricTracker,
+        metric_entrys=[mock_metric_entry],
+        reset_by="step",
+        reset_freq=1,
+        step_log_freq=1,
+        epoch_log_freq=1,
+    )()
+
+    with tracker.begin("on_batch", mock_hook_args):
+        pass
+    assert tracker.metrics[0].compute() == 1.0
+
+    mock_hook_args.is_optimizer_step_committed = False
+    with tracker.begin("on_optimizer_step", mock_hook_args):
+        pass
+
+    assert tracker.metrics[0].compute() == 0.0
 
 
 if __name__ == "__main__":

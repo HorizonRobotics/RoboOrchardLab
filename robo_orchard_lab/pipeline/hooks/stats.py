@@ -18,6 +18,7 @@ import datetime
 import logging
 import time
 from collections import deque
+from math import ceil
 from typing import Iterable, Optional
 
 from accelerate import Accelerator
@@ -42,53 +43,12 @@ __all__ = ["StatsMonitor", "StatsMonitorConfig"]
 logger = logging.getLogger(__name__)
 
 
-def _get_dataset_batch_size(dataset: object) -> int | None:
-    if isinstance(dataset, IterableDatasetMixin):
-        if dataset.batch_loader_kwargs is None:
-            return None
-        return dataset.batch_loader_kwargs.batch_size
-
-    if isinstance(dataset, IterableDatasetShard):
-        inner_dataset = dataset.dataset
-        if isinstance(inner_dataset, IterableDatasetShard):
-            raise ValueError(
-                "Detected a dataloader that was prepared more than once. "
-                "Call accelerator.prepare(...) only once for each "
-                "dataloader."
-            )
-        return _get_dataset_batch_size(inner_dataset)
-
-    return None
-
-
-def _get_dataset_side_batch_size(dataloader: Iterable | None) -> int | None:
-    """Infer the per-process batch size from dataset-side batching metadata.
-
-    Some iterable datasets batch samples internally via
-    ``batch_loader_kwargs``. In that mode the outer dataloader intentionally
-    forwards one already-formed batch at a time, so its exposed
-    ``batch_size`` becomes ``1`` and can no longer be treated as the true
-    sample batch size.
-    """
-    if dataloader is None:
-        return None
-
-    if isinstance(dataloader, DataLoaderShard):
-        return _get_dataset_batch_size(dataloader.dataset)
-
-    if isinstance(dataloader, DataLoaderDispatcher):
-        return _get_dataset_batch_size(dataloader.dataset)
-
-    if isinstance(dataloader, TorchDataLoader):
-        return _get_dataset_batch_size(dataloader.dataset)
-
-    return None
-
-
 class StatsMonitor(PipelineHooks):
-    """A hook to monitor and log training statistics.
+    """Log trainer progress, speed, remaining time, and learning rates.
 
-    Including training speed, estimated time remaining, learning rate.
+    Step-level statistics are emitted after committed optimizer steps. When a
+    committed optimizer step covers multiple micro steps, sample throughput is
+    scaled by the committed optimizer window size.
     """
 
     def __init__(self, cfg: StatsMonitorConfig):
@@ -98,9 +58,10 @@ class StatsMonitor(PipelineHooks):
             batch_size (Optional[int]): The batch size per process. If None,
                 it attempts to be inferred from the dataloader.
             steps_per_epoch (Optional[int]): The number of steps per epoch.
-                If None, it attemps to be inferred from the dataloader.
-            step_log_freq (int): Frequency to log stats at the step level.
-                Logs are output every `step_log_freq` steps.
+                If None, it attempts to be inferred from the dataloader.
+            step_log_freq (int): Frequency to log stats at the committed
+                optimizer-step level. Logs are output every `step_log_freq`
+                committed optimizer steps.
             epoch_log_freq (int): Frequency to log stats at the epoch level.
                 Logs are output every `epoch_log_freq` epochs.
         """
@@ -116,21 +77,23 @@ class StatsMonitor(PipelineHooks):
 
         self._start_time = None
 
-        # accumulated step tiems
+        # accumulated step times
         self._step_times = deque(maxlen=cfg.window_size)
+        self._step_sample_counts = deque(maxlen=cfg.window_size)
         self._last_step_end_time = 0.0
 
         # statistics for epoch callback
         self._epoch_start_time = None
         self._last_epoch_id = 0
         self._epoch_start_step_id = 0
+        self._epoch_start_micro_step_id = 0
 
         self.register_hook(
             channel="on_loop",
             hook=HookContext.from_callable(before=self._on_loop_begin),
         )
         self.register_hook(
-            channel="on_step",
+            channel="on_optimizer_step",
             hook=HookContext.from_callable(
                 before=None, after=self._on_step_end
             ),
@@ -175,8 +138,9 @@ class StatsMonitor(PipelineHooks):
                 across all devices.
             - **Steps per Epoch**:
                 - If `self.steps_per_epoch` is not provided, it attempts to
-                infer it from `len(dataloader)` if the dataloader is a
-                finite iterable.
+                infer committed optimizer steps from `len(dataloader)` and
+                gradient accumulation settings if the dataloader is a finite
+                iterable.
                 - If the dataloader does not have a length (e.g., it is an
                 infinite iterator), `steps_per_epoch` remains `None`, and
                 epoch-based estimations might not be possible.
@@ -223,7 +187,10 @@ class StatsMonitor(PipelineHooks):
 
         if self.steps_per_epoch is None:
             try:
-                self.steps_per_epoch = len(dataloader)  # type: ignore
+                self.steps_per_epoch = _estimate_committed_steps_per_epoch(
+                    dataloader_step_count=len(dataloader),  # type: ignore
+                    accelerator=accelerator,
+                )
             except TypeError:
                 if accelerator.is_main_process:
                     logger.warning(
@@ -248,18 +215,17 @@ class StatsMonitor(PipelineHooks):
         max_epoch: Optional[int],
         steps_per_epoch: Optional[int],
     ) -> Optional[float]:
-        """Estimates the remaining time based on average step time.
+        """Estimate remaining time from committed optimizer-step duration.
 
         Args:
             avg_step_time (float): The average time per step, calculated from
                 a smoothing window.
-            current_step (int): The current global step in the
-                training loop.
+            current_step (int): The current committed global optimizer step.
             current_epoch (int): The current epoch in the training loop.
             start_step (int): The starting global step in the training loop.
             start_epoch (int): The starting epoch in the training loop.
-            max_step (Optional[int]): The maximum number of global
-                steps in the training loop.
+            max_step (Optional[int]): The maximum number of committed global
+                optimizer steps in the training loop.
             max_epoch (Optional[int]): The maximum number of epochs
                 in the training loop.
             steps_per_epoch (Optional[int]): The number of steps per
@@ -281,17 +247,14 @@ class StatsMonitor(PipelineHooks):
         if max_epoch is not None and steps_per_epoch is None:
             return None
 
-        total_steps = (
-            float("inf") if max_step is None else max_step - start_step
-        )
+        del start_step, start_epoch
+
+        total_steps = float("inf") if max_step is None else max_step
 
         if max_epoch is not None:
-            total_steps = min(
-                steps_per_epoch * (max_epoch - start_epoch) - start_step,  # type: ignore
-                total_steps,
-            )
+            total_steps = min(steps_per_epoch * max_epoch, total_steps)  # type: ignore
 
-        remain_steps = total_steps - current_step - 1
+        remain_steps = total_steps - current_step
         if remain_steps <= 0:
             return 0.0
 
@@ -311,16 +274,19 @@ class StatsMonitor(PipelineHooks):
         self._last_step_end_time = time.time()
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Callback when step ends.
+        """Log stats after a committed optimizer step.
 
-        Logs the training speed and estimated remaining time at the end of
-        each step.
+        Non-committed optimizer boundaries are ignored. Throughput is measured
+        in samples per second across all devices and accounts for the number
+        of micro steps consumed by the committed optimizer step.
 
         Args:
-            args (PipelineHookArgs): Hook arguments including current step
-                and epoch information.
+            args (PipelineHookArgs): Hook arguments including committed
+                optimizer-step and epoch information.
         """
         if args.exception is not None:
+            return
+        if not args.is_optimizer_step_committed:
             return
 
         assert (
@@ -335,14 +301,23 @@ class StatsMonitor(PipelineHooks):
         step_duration = current_step_end_time - self._last_step_end_time
         self._last_step_end_time = current_step_end_time
         self._step_times.append(step_duration)
+        optimizer_step_size = 1
+        if args.micro_step is not None:
+            optimizer_step_size = max(
+                args.micro_step.last_optimizer_step_size,
+                1,
+            )
+        self._step_sample_counts.append(
+            self.total_batch_size * optimizer_step_size
+        )
 
         if (
             self.step_log_freq > 0
-            and (args.global_step_id + 1) % self.step_log_freq == 0
+            and args.global_step_id % self.step_log_freq == 0
         ):
             # logging training speed and estimated remaining time
             avg_step_time = sum(self._step_times) / len(self._step_times)
-            speed = self.total_batch_size / avg_step_time
+            speed = sum(self._step_sample_counts) / sum(self._step_times)
 
             remaining_time = self._estimate_remaining_time(
                 avg_step_time=avg_step_time,
@@ -384,10 +359,15 @@ class StatsMonitor(PipelineHooks):
             logger.info(msg)
 
     def _on_epoch_begin(self, args: PipelineHookArgs) -> None:
+        """Capture epoch-start timing and progress baselines."""
         if self._epoch_start_time is None:
             self._epoch_start_time = time.time()
             self._last_epoch_id = args.epoch_id
             self._epoch_start_step_id = args.global_step_id
+            if args.micro_step is not None:
+                self._epoch_start_micro_step_id = (
+                    args.micro_step.global_step_id
+                )
 
     def _on_epoch_end(self, args: PipelineHookArgs) -> None:
         """Logs the average epoch time and resets the epoch start time.
@@ -411,9 +391,9 @@ class StatsMonitor(PipelineHooks):
         if not args.accelerator.is_main_process:
             return
 
-        # estimate steps_per_epoch from last epoch
-        if self.steps_per_epoch is None:
-            self.steps_per_epoch = args.start_step + args.step_id + 1
+        elapsed_steps = args.global_step_id - self._epoch_start_step_id
+        if self.steps_per_epoch is None and elapsed_steps > 0:
+            self.steps_per_epoch = elapsed_steps
 
         if (
             self.epoch_log_freq > 0
@@ -422,11 +402,21 @@ class StatsMonitor(PipelineHooks):
             epoch_duration = time.time() - self._epoch_start_time
             elapsed_epochs = args.epoch_id - self._last_epoch_id + 1
             avg_epoch_time = epoch_duration / elapsed_epochs
-            elapsed_steps = args.global_step_id - self._epoch_start_step_id
+            if args.micro_step is not None:
+                elapsed_micro_steps = (
+                    args.micro_step.global_step_id
+                    - self._epoch_start_micro_step_id
+                )
+            else:
+                elapsed_micro_steps = elapsed_steps
 
             if elapsed_steps > 0:
                 avg_step_time = epoch_duration / elapsed_steps
-                speed = self.total_batch_size / avg_step_time
+                speed = (
+                    self.total_batch_size
+                    * elapsed_micro_steps
+                    / epoch_duration
+                )
                 speed_str = f"{speed:.2f}"
                 avg_step_time_str = f"{avg_step_time:.2f} sec."
             else:
@@ -440,7 +430,7 @@ class StatsMonitor(PipelineHooks):
                 )
                 remaining_time = self._estimate_remaining_time(
                     avg_step_time=smooth_avg_step_time,
-                    current_step=args.global_step_id - 1,
+                    current_step=args.global_step_id,
                     current_epoch=args.epoch_id,
                     start_step=args.start_step,
                     start_epoch=args.start_epoch,
@@ -462,6 +452,10 @@ class StatsMonitor(PipelineHooks):
             self._epoch_start_time = time.time()
             self._last_epoch_id = args.epoch_id
             self._epoch_start_step_id = args.global_step_id
+            if args.micro_step is not None:
+                self._epoch_start_micro_step_id = (
+                    args.micro_step.global_step_id
+                )
 
             msg = f"Epoch[{args.epoch_id}] completed. "
             msg += f"Epoch Time: {epoch_duration:.2f} sec.\t"
@@ -491,8 +485,10 @@ class StatsMonitorConfig(PipelineHooksConfig[StatsMonitor]):
     from the dataloader."""
 
     step_log_freq: int = 512
-    """Frequency to log stats at the step level. Logs are output every
-    `step_log_freq` steps."""
+    """Frequency to log stats at the committed optimizer-step level.
+
+    Logs are output every `step_log_freq` committed optimizer steps.
+    """
 
     epoch_log_freq: int = 1
     """Frequency to log stats at the epoch level. Logs are output every
@@ -501,3 +497,71 @@ class StatsMonitorConfig(PipelineHooksConfig[StatsMonitor]):
     window_size: int = 128
     """The size of the sliding window used to smooth the step time
     calculation, making the remaining time estimate more stable."""
+
+
+def _get_dataset_batch_size(dataset: object) -> int | None:
+    if isinstance(dataset, IterableDatasetMixin):
+        if dataset.batch_loader_kwargs is None:
+            return None
+        return dataset.batch_loader_kwargs.batch_size
+
+    if isinstance(dataset, IterableDatasetShard):
+        inner_dataset = dataset.dataset
+        if isinstance(inner_dataset, IterableDatasetShard):
+            raise ValueError(
+                "Detected a dataloader that was prepared more than once. "
+                "Call accelerator.prepare(...) only once for each "
+                "dataloader."
+            )
+        return _get_dataset_batch_size(inner_dataset)
+
+    return None
+
+
+def _get_dataset_side_batch_size(dataloader: Iterable | None) -> int | None:
+    """Infer the per-process batch size from dataset-side batching metadata.
+
+    Some iterable datasets batch samples internally via
+    ``batch_loader_kwargs``. In that mode the outer dataloader intentionally
+    forwards one already-formed batch at a time, so its exposed
+    ``batch_size`` becomes ``1`` and can no longer be treated as the true
+    sample batch size.
+    """
+    if dataloader is None:
+        return None
+
+    if isinstance(dataloader, DataLoaderShard):
+        return _get_dataset_batch_size(dataloader.dataset)
+
+    if isinstance(dataloader, DataLoaderDispatcher):
+        return _get_dataset_batch_size(dataloader.dataset)
+
+    if isinstance(dataloader, TorchDataLoader):
+        return _get_dataset_batch_size(dataloader.dataset)
+
+    return None
+
+
+def _get_gradient_accumulation_steps(accelerator: Accelerator) -> int:
+    """Return the active gradient accumulation window size."""
+
+    gradient_accumulation_steps = getattr(
+        accelerator,
+        "gradient_accumulation_steps",
+        1,
+    )
+    if not isinstance(gradient_accumulation_steps, int):
+        return 1
+    return max(gradient_accumulation_steps, 1)
+
+
+def _estimate_committed_steps_per_epoch(
+    *,
+    dataloader_step_count: int,
+    accelerator: Accelerator,
+) -> int:
+    """Estimate committed optimizer steps from a finite dataloader length."""
+
+    return ceil(
+        dataloader_step_count / _get_gradient_accumulation_steps(accelerator)
+    )
