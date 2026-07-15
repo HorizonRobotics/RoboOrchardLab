@@ -18,8 +18,23 @@ import numpy as np
 import torch
 from pytorch3d.transforms import matrix_to_quaternion
 
+from robo_orchard_lab.dataset.egodex.hand_frame import derive_hand_frames
+
 
 class SimpleStateSampling:
+    """Slice history / prediction windows around ``step_index``.
+
+    Consumes ``data["joint_transforms"]`` (T, J, 4, 4) and produces:
+        * ``hist_joint_transforms`` — ``hist_steps`` frames ending at
+          ``step_index`` inclusive, front-padded with frame 0 if the episode
+          starts too close to ``step_index``.
+        * ``pred_joint_transforms`` — ``pred_steps`` frames strictly after
+          ``step_index``, back-padded with the final frame if the episode ends
+          first.
+        * ``pred_mask`` — ``(pred_steps,)`` float array; ``1`` at real frames
+          and ``0`` at padded slots so downstream losses can ignore padding.
+    """
+
     def __init__(
         self,
         hist_steps,
@@ -34,19 +49,27 @@ class SimpleStateSampling:
         hist_steps = self.hist_steps
         pred_steps = self.pred_steps
 
+        # ---- Future window: strictly after step_index --------------------
         pred_state = state[step_index + 1 : step_index + 1 + pred_steps]
         pred_mask = np.zeros(pred_steps)
         pred_mask[: pred_state.shape[0]] = 1
 
+        # Repeat the final frame if the episode ended before we reached
+        # pred_steps; mask above already zeroed those slots so the loss
+        # ignores the repeated content.
         if pred_state.shape[0] != pred_steps:
             padding = np.tile(
                 state[-1:], (pred_steps - pred_state.shape[0], 1, 1, 1)
             )
             pred_state = np.concatenate([pred_state, padding], axis=0)
 
+        # ---- History window: up to and including step_index -------------
         hist_state = state[
             max(0, step_index + 1 - hist_steps) : step_index + 1
         ]
+        # Front-pad with the very first frame when the episode starts too
+        # close to step_index. No mask here — training treats history as fully
+        # observed context.
         if hist_state.shape[0] != hist_steps:
             padding = np.tile(
                 state[:1], (hist_steps - hist_state.shape[0], 1, 1, 1)
@@ -62,26 +85,14 @@ class SimpleStateSampling:
 
 
 class HandTF2Gripper:
-    LEFT_FINGER_TIPS = [
-        "leftIndexFingerTip",
-        "leftLittleFingerTip",
-        "leftMiddleFingerTip",
-        "leftRingFingerTip",
-    ]
-    LEFT_THUMB_TIP = "leftThumbTip"
-    RIGHT_FINGER_TIPS = [
-        "rightIndexFingerTip",
-        "rightLittleFingerTip",
-        "rightMiddleFingerTip",
-        "rightRingFingerTip",
-    ]
-    RIGHT_THUMB_TIP = "rightThumbTip"
-    LEFT_CONVENTION = np.array(
-        [[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-    )
-    RIGHT_CONVENTION = np.array(
-        [[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-    )
+    """Convert per-joint hand transforms into two-hand 8D gripper state.
+
+    Runs :func:`derive_hand_frames` on any of ``joint_transforms``,
+    ``hist_joint_transforms``, and ``pred_joint_transforms`` present in the
+    sample, and writes the result to the matching ``*_robot_state`` key. Each
+    hand contributes an 8D vector: ``[openness, xyz, quaternion_wxyz]``, with
+    left before right along the added second-to-last axis.
+    """
 
     def __call__(self, data):
         joint_names = data["joint_names"]
@@ -99,59 +110,61 @@ class HandTF2Gripper:
             )
         return data
 
-    def tf2gripper(self, tf, joint_names):
+    def tf2gripper(
+        self, tf: np.ndarray | torch.Tensor, joint_names: list[str]
+    ) -> torch.Tensor:
+        """Convert tracked hand transforms into two 8D gripper states.
+
+        Args:
+            tf (np.ndarray | torch.Tensor): Joint transforms shaped
+                ``[..., J, 4, 4]``. NumPy inputs are copied to a CPU tensor
+                while preserving their dtype; tensor inputs preserve both
+                dtype and device.
+            joint_names (list[str]): Names corresponding to the joint axis.
+
+        Returns:
+            torch.Tensor: States shaped ``[..., 2, 8]`` ordered as left then
+                right, with ``[openness, xyz, quaternion]`` per hand.
+        """
         if not isinstance(tf, torch.Tensor):
             tf = torch.tensor(tf)
-        left_tip_id = [joint_names.index(x) for x in self.LEFT_FINGER_TIPS]
-        left_thumb_id = joint_names.index(self.LEFT_THUMB_TIP)
-        right_tip_id = [joint_names.index(x) for x in self.RIGHT_FINGER_TIPS]
-        right_thumb_id = joint_names.index(self.RIGHT_THUMB_TIP)
-
-        left_tip_tf = tf[..., left_tip_id, :, :]
-        left_thumb_tf = tf[..., left_thumb_id, :, :]
-        left_openness = (
-            torch.linalg.norm(
-                left_tip_tf[..., :, :3, 3] - left_thumb_tf[..., None, :3, 3],
-                dim=-1,
+        hand_frames, _ = derive_hand_frames(tf, joint_names)
+        states = []
+        for side in ("left", "right"):
+            frame = hand_frames[side]
+            states.append(
+                torch.cat(
+                    [
+                        frame.openness,
+                        frame.origin,
+                        matrix_to_quaternion(frame.rotation),
+                    ],
+                    dim=-1,
+                )
             )
-            .min(-1, keepdims=True)
-            .values
-        )
-        left_tf = (left_tip_tf.mean(axis=-3) + left_thumb_tf) / 2
-        left_tf = left_tf @ self.LEFT_CONVENTION
-        left_xyz = left_tf[..., :3, 3]
-
-        left_quat = matrix_to_quaternion(left_tf[..., :3, :3])
-        left_state = torch.cat([left_openness, left_xyz, left_quat], dim=-1)
-
-        right_tip_tf = tf[..., right_tip_id, :, :]
-        right_thumb_tf = tf[..., right_thumb_id, :, :]
-        right_openness = (
-            torch.linalg.norm(
-                right_tip_tf[..., :, :3, 3] - right_thumb_tf[..., None, :3, 3],
-                dim=-1,
-            )
-            .min(-1, keepdims=True)
-            .values
-        )
-        right_tf = (right_tip_tf.mean(axis=-3) + right_thumb_tf) / 2
-        right_tf = right_tf @ self.RIGHT_CONVENTION
-        right_xyz = right_tf[..., :3, 3]
-        right_quat = matrix_to_quaternion(right_tf[..., :3, :3])
-        right_state = torch.cat(
-            [right_openness, right_xyz, right_quat], dim=-1
-        )
-
-        state = torch.stack([left_state, right_state], dim=-2)
-        return state
+        return torch.stack(states, dim=-2)
 
 
 class UpSampleRobotState:
+    """Resample robot-state windows to a fixed ``pred_steps`` (and history).
+
+    The prediction window is up-sampled together with its mask by prepending
+    the last history frame as an anchor, running 1D linear interpolation, and
+    dropping the anchor afterwards. Doing so gives the interpolation a real
+    start point so the first predicted step is not extrapolated from thin air.
+
+    ``hist_steps`` is optional; when set and different from the current
+    history length, the history is separately resampled to that length.
+    """
+
     def __init__(self, pred_steps, hist_steps=None):
         self.pred_steps = pred_steps
         self.hist_steps = hist_steps
 
     def __call__(self, data):
+        # Anchor the interpolation at the last observed history frame so the
+        # first predicted step is a genuine interpolation, not an extrapolation
+        # from an empty prefix.
         robot_state = torch.cat(
             [data["hist_robot_state"][-1:], data["pred_robot_state"]]
         )  # steps x num_joint x 8
@@ -159,14 +172,19 @@ class UpSampleRobotState:
         pred_mask = torch.cat([data["pred_mask"][:1], data["pred_mask"]])[
             :, None
         ]
+        # Fold the per-hand state and the mask into a single channel dim so a
+        # single interpolate() call handles both consistently.
         robot_state = torch.cat(
             [robot_state.flatten(-2), pred_mask.to(robot_state)], dim=-1
         )
         robot_state = robot_state.T[None]  # 1 x [num_joint*8] x steps
 
+        # Linear interpolation on states, including rotation quaternions.
         robot_state = torch.nn.functional.interpolate(
             robot_state, self.pred_steps + 1, mode="linear", align_corners=True
         )
+        # Drop the anchor frame (index 0) and the trailing mask channel. The
+        # remaining tensor is reshaped back to (pred_steps, num_hand, 8).
         data["pred_robot_state"] = (
             robot_state[0].T[1:, :-1].unflatten(-1, (-1, state_dim))
         )
@@ -175,6 +193,7 @@ class UpSampleRobotState:
             self.hist_steps is not None
             and data["hist_robot_state"].shape[0] != self.hist_steps
         ):
+            # History has no mask and no anchor — resample directly.
             data["hist_robot_state"] = torch.nn.functional.interpolate(
                 data["hist_robot_state"].flatten(-2).T[None],
                 self.hist_steps,
