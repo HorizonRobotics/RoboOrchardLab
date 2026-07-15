@@ -29,6 +29,10 @@ This skill intentionally preserves the original `agents/code-reviewer.md` conten
 
 By default, review the recent feature implementation or the files changed for the task. The user may specify a narrower or broader scope.
 
+This sub-skill defines the dimensions for one review pass, not a required
+reviewer count. By default, one delegated reviewer covers every applicable
+dimension and the main agent validates its candidates.
+
 ## Core Review Responsibilities
 
 ### Project Guidance Compliance
@@ -78,6 +82,15 @@ Start by clearly stating what you reviewed. For each high-confidence issue, prov
 - concrete fix suggestion
 
 Group issues by severity such as Critical and Important. If no high-confidence issues exist, say so briefly.
+
+## Delegated Review Status
+
+If review work is delegated to another agent or reviewer process, distinguish
+between a completed review with no findings and a review that timed out,
+failed, or was cancelled. Inspect the delegated review status before reporting
+results. If the delegated review did not complete, either wait when useful,
+continue with a local review, or report that the delegated review produced no
+usable result; do not summarize a non-returned review as "no findings."
 
 ## Quality Bar
 

@@ -24,10 +24,31 @@ decisions, review feedback, debugging outcomes, implementation corrections,
 validation choices, and git workflow lessons instead of only inspecting the
 latest design note or code diff.
 
+When distillation is triggered as a workflow gate before commit, human review
+handoff, or scratch-design retirement, still evaluate the whole current
+conversation rather than only the final diff, latest document, or last review
+round.
+
+Before editing durable guidance or memory, report candidate lessons with an
+agent recommendation such as apply now, defer, no-distill, or already covered.
+Include the proposed destination and reason, then wait for the user's decision
+unless the user has already explicitly approved that exact update.
+
+If the requested update would encode an unvalidated opinion, bury a task-local
+detail in shared guidance, conflict with existing guidance, leak non-public
+information into public-facing text, or preserve a transcript instead of a
+reusable rule, pause and explain the objection. Proceed only if the user
+provides new facts or reasoning that resolves the objection.
+
 When reporting candidates from a broad session, classify them by intended
 asset type, such as instruction/workflow rule, reference/guideline,
 template/scaffold, memory note, implementation-validated follow-up, or
 task-local detail that should stay out of shared guidance.
+
+When a retrospective lesson list already exists, keep later distillation
+recommendations traceable to that list. For non-trivial lists, use a coverage
+matrix so every lesson is mapped to guidance, memory, a deferred decision, or
+an explicit no-distill reason.
 
 When the user asks to distill or preserve lessons, explicitly evaluate both
 tracked local guidance and repo/session memory. Do not treat memory as a

@@ -67,8 +67,21 @@ or planning shapes in `templates/`.
 
 ## Current Skills
 
-- `skills/codereview/SKILL.md`: local code-review family.
-- `skills/feature-dev/SKILL.md`: local feature development workflow.
+- `skills/codereview/SKILL.md`: local heavy-review family with a default
+  one-reviewer-per-round budget and changeset, PR/MR, and architecture
+  sub-skills.
+- `skills/feature-dev/SKILL.md`: lightweight local feature-development
+  workflow with risk-appropriate exploration, design, and review delegation.
+
+## Current Skill-Local References
+
+- `skills/codereview/references/triggering-and-signal.md`,
+  `skills/codereview/references/review-depth-and-delegation.md`, and
+  `skills/codereview/references/report-composition.md`: heavy-review routing,
+  one-reviewer-per-round defaults, fresh-reviewer context isolation,
+  review-loop transitions, signal discipline, and multi-skill reporting.
+- `skills/feature-dev/references/phase-workflow.md`: detailed seven-phase
+  feature-development workflow used by the lightweight parent skill.
 
 ## Current Templates
 

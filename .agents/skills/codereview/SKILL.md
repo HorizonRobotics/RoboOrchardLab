@@ -4,7 +4,8 @@ description: Structured code review family for explicit heavy review requests an
 ---
 Use this skill family when the user explicitly asks for a heavy review flow, or when the task is already a review/evaluation request and the auto-trigger rules in `references/triggering-and-signal.md` select a heavy review path.
 
-Read `references/triggering-and-signal.md` first. When preparing a final
+Read `references/triggering-and-signal.md` and
+`references/review-depth-and-delegation.md` first. When preparing a final
 report, also use `references/report-composition.md`.
 
 Then route to the smallest sub-skill that matches the target:
@@ -26,9 +27,10 @@ reviewed scope materially changes layering, ownership boundaries, dependency
 direction, compatibility/public surfaces, or other architecture-review
 dimensions, keep `prmr-codereview` or `changeset-codereview` as the active
 skill. For PR/MR reviews, the delegated `changeset-codereview` workflow owns
-any paired `architecture-review/` launch. In both cases, the active skill
-owns the main report and must summarize the paired architecture results in
-`Related review inputs`.
+applying any paired `architecture-review/` dimensions. A paired skill is a
+logical report input and normally shares the same review subagent. In both
+cases, the active skill owns the main report and must summarize the paired
+architecture results in `Related review inputs`.
 
 Do not use this family for:
 
@@ -40,15 +42,11 @@ Do not use this family for:
 Use the smallest review surface that satisfies the request. The heavier the
 workflow, the more explicit the user request should be.
 
-These heavy review workflows are delegation-required. If the active tool
-policy or current user authorization does not permit subagents for the chosen
-sub-skill, stop and ask for explicit delegation permission instead of
-silently collapsing the workflow into a single-agent review.
-Treat the global subagent budget as shared with any other active user work.
-Keep only the current review wave open: once triage, discovery, summary,
-reviewer, validator, or paired-review outputs have been incorporated, close
-those completed agents before launching the next review phase.
-When a codereview sub-skill specifies a number of subagents or distinct
-reviewer roles, treat that count and role split as the minimum required
-workflow shape. Do not silently launch fewer subagents, merge distinct review
-roles into one agent, or skip the validation pass.
+Treat reviewer roles as logical review dimensions rather than mandatory agent
+slots. Follow `references/review-depth-and-delegation.md`: explicit heavy
+review defaults to at most one active review subagent per review round, while
+the main agent owns scope, guidance discovery, validation, convergence, and
+reporting. A review loop may use multiple reviewers sequentially, but each new
+issue-discovery round must start with a fresh reviewer. Use parallel reviewers
+within one round only when the user explicitly requests them or a stated
+high-risk scope justifies independent review.

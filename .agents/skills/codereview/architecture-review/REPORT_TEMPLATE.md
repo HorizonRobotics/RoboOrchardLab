@@ -22,7 +22,7 @@ Keep it concise. Report only validated, high-signal findings.
 - Scope: <paths or diff boundaries actually reviewed>
 - Architecture focus: <dimensions actually reviewed>
 - Outcome: <N issue(s) found | no issues found>
-- Deduplication: overlapping findings merged across all reviewers
+- Deduplication: overlapping findings merged across review inputs and dimensions
 
 ## Structural summary
 
@@ -38,7 +38,7 @@ No issues found. Checked the reviewed architecture dimensions.
 
 If issues were found:
 
-- de-duplicate overlapping issues from all reviewers
+- de-duplicate overlapping issues across review inputs and dimensions
 - assign one final severity per issue
 - number issues sequentially across all severity sections
 
@@ -47,7 +47,7 @@ If issues were found:
 ### 1. <Issue title>
 
 **Location**: <file path / boundary / affected area>
-**Reviewer(s)**: <boundary reviewer / contract reviewer / abstraction reviewer>
+**Review dimension(s)**: <boundary / contract / compatibility / abstraction / minimality>
 **Category**: <layering | contract | dependency | compatibility | export | evolvability | validation | readability>
 **Confidence**: <high | very high>
 
@@ -61,7 +61,7 @@ If issues were found:
 ### <N>. <Issue title>
 
 **Location**: <file path / boundary / affected area>
-**Reviewer(s)**: <boundary reviewer / contract reviewer / abstraction reviewer>
+**Review dimension(s)**: <boundary / contract / compatibility / abstraction / minimality>
 **Category**: <layering | contract | dependency | compatibility | export | evolvability | validation | readability>
 **Confidence**: <high | very high>
 

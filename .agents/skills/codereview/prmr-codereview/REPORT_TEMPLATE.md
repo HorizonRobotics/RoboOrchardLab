@@ -34,7 +34,7 @@ Keep it concise. Report only validated, high-signal findings.
 - Review target: <PR/MR number + title>
 - Scope: <PR/MR diff + scoped guidance | other>
 - Outcome: <N issue(s) found | no issues found>
-- Deduplication: overlapping findings merged across all reviewers
+- Deduplication: overlapping findings merged across review inputs and dimensions
 
 ## Related review inputs
 
@@ -48,7 +48,7 @@ No issues found. Checked for bugs and scoped guidance compliance.
 
 If issues were found:
 
-- de-duplicate overlapping issues from all reviewers
+- de-duplicate overlapping issues across review inputs and dimensions
 - assign one final severity per issue
 - number issues sequentially across all severity sections
 
@@ -57,7 +57,7 @@ If issues were found:
 ### 1. <Issue title>
 
 **Location**: <file path:line or affected area>
-**Reviewer(s)**: <guidance reviewer / bug reviewer / security reviewer / correctness reviewer>
+**Review dimension(s)**: <guidance / bug / correctness / security / architecture>
 **Category**: <bug | correctness | security | guidance compliance>
 **Confidence**: <high | very high>
 
@@ -71,7 +71,7 @@ If issues were found:
 ### <N>. <Issue title>
 
 **Location**: <file path:line or affected area>
-**Reviewer(s)**: <guidance reviewer / bug reviewer / security reviewer / correctness reviewer>
+**Review dimension(s)**: <guidance / bug / correctness / security / architecture>
 **Category**: <bug | correctness | security | guidance compliance>
 **Confidence**: <high | very high>
 
@@ -98,13 +98,14 @@ If issues were found:
 | 🔴 High Risk | <n> | <brief> |
 | 🟡 Medium Risk | <n> | <brief> |
 
-**Reviewer Breakdown**:
+**Review Dimension Breakdown**:
 
-| Reviewer | Issues Found |
-|----------|-------------|
-| Guidance reviewer(s) | <n> |
-| Bug / correctness reviewer(s) | <n> |
-| Security-focused reviewer(s) | <n> |
+| Review Dimension | Issues Found |
+|------------------|-------------|
+| Guidance | <n> |
+| Bug / correctness | <n> |
+| Security | <n> |
+| Architecture, when applicable | <n> |
 
 **Overall Assessment**: <One short paragraph on quality, key risks, and merge-readiness.>
 

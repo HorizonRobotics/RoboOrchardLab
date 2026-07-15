@@ -46,6 +46,16 @@ description: Load these instructions when tasks depend on the active Python envi
 
 - Do not assume network access, hardware, display servers, or background services are available.
 - Treat optional services such as `ray` as unavailable until confirmed.
+- For simulator-backed tests that require a display or renderer, especially
+  SAPIEN/RoboTwin tests, preserve the caller's display/runtime environment
+  when leaving the sandbox. Do not drop variables such as `DISPLAY`,
+  `WAYLAND_DISPLAY`, `XAUTHORITY`, `VK_ICD_FILENAMES`,
+  `SAPIEN_VULKAN_LIBRARY_PATH`, or related Vulkan/EGL settings unless the
+  task explicitly requires a sanitized environment. If the escalated Codex
+  process lacks those variables, treat renderer failures such as
+  `failed to find a rendering device` as an execution-context mismatch first,
+  then rerun from a shell/environment that matches the user's successful
+  command before diagnosing product behavior.
 - If a task materially depends on GPU execution and the sandbox cannot access CUDA or NVIDIA devices, request escalated execution for the smallest command that requires GPU access.
 - Treat signals such as `torch.cuda.is_available()` returning `False`, `nvidia-smi` not seeing devices, or CUDA/NVML initialization failures as environment-access issues first, not immediate proof of a code bug.
 - Do not escalate for code reading, CPU-only validation, or steps that do not require GPU.

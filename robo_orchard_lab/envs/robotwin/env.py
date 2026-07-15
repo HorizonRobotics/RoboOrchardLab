@@ -1319,6 +1319,8 @@ class RoboTwinEnv(
         """Close the environment."""
         self._episode_finalized = True
         self._post_reset_state_available = False
+        self._last_obs = None
+        self._last_obs_step_index = None
         self._stop_video_recording()
         self._joints_to_eef_transform = None
         self._cached_obs_robots = None

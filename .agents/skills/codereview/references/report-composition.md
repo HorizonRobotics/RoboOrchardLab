@@ -16,6 +16,9 @@ especially when more than one review skill contributed input.
 - If no paired review skill was used, write `none`.
 - If one or more paired review skills were used, summarize them briefly in
   `Related review inputs`.
+- Treat paired skills as logical report inputs, not as requirements for
+  separate subagents. Follow `review-depth-and-delegation.md` when the same
+  reviewer covers multiple review dimensions.
 - Keep each summary short and factual:
   - paired skill name
   - reviewed scope or dimensions

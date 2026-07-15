@@ -45,6 +45,15 @@ description: Load these instructions when planning complex repository work, vali
   at key checkpoints, such as phase completion with public API, persisted
   format, or boundary changes, or when the user explicitly asks for review.
   Do not commit that phase until the user explicitly says it can be committed.
+- For manual review between phases, code, design notes, plans, and review
+  findings may move at different speeds during active iteration, but before
+  handing work back they must all describe the same current implementation,
+  status, validation evidence, and remaining risk.
+- Before committing, handing work back for human review, or retiring a scratch
+  design after non-trivial work, run a distillation triage over the whole
+  current conversation. Report candidate lessons with recommendations first,
+  wait for the user's decision before editing durable guidance or memory, and
+  record `none` when there is nothing worth preserving.
 - If a Superpowers workflow is also in use, treat Superpowers as the
   collaboration and process guide, and this repository's design guideline as
   the repo-local content standard. User-specified scratch paths override

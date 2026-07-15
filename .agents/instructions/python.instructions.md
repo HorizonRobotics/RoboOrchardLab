@@ -55,6 +55,9 @@ description: Load these instructions when modifying Python source files, tests, 
   - keep module order aligned with local convention: license header, module
     docstring, future/imports, `__all__`, constants/config, public classes
     and public functions, then private helpers
+  - ensure each new or materially changed Python module has a curated
+    `__all__`; include only supported public or internal contract symbols,
+    not every helper
   - verify every new or changed public class/function has a caller-facing
     docstring that explains the task and contract; use Google-style `Args:`,
     `Returns:`, and `Raises:` when inputs, outputs, or failures are not

@@ -78,6 +78,14 @@ description: Load these instructions when creating, updating, or validating test
 
 - Match the local project convention for test organization; prefer class-based tests when nearby files use `Test...` classes.
 - Keep assertions focused on the behavior under test instead of asserting incidental implementation details.
+- For backend migrations, refactors, or compatibility-path changes, test the
+  intended contract rather than the old implementation path. Assert old
+  subprocess calls, adapters, or wrappers only when that path is itself the
+  supported contract.
+- For import-time registries, optional backend discovery, plugin loading, or
+  dependency-gated routing, include at least one import-time test. Prefer a
+  subprocess when identity-sensitive globals or already-imported modules make
+  in-process reset unreliable.
 - When a test is meant to help inspect real returned data, print or otherwise expose the key returned values in the test run so failures and manual verification are easier to interpret.
 
 ## Validation

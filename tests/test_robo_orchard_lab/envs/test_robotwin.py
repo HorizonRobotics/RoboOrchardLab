@@ -1398,6 +1398,34 @@ class TestRoboTwinEnv:
 
         get_obs.assert_not_called()
 
+    def test_close_invalidates_observation_cache_and_step_clock(self) -> None:
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._episode_finalized = False
+        env._post_reset_state_available = True
+        env._last_obs = {"stale": True}
+        env._last_obs_step_index = 7
+        env._video_writer = None
+        env._joints_to_eef_transform = object()
+        env._cached_obs_robots = {"stale": object()}
+        get_obs = MagicMock(return_value={})
+        close_env = MagicMock()
+        env._task = SimpleNamespace(
+            get_obs=get_obs,
+            close_env=close_env,
+            render_freq=0,
+        )
+
+        env.close(clear_cache=False)
+
+        assert env._last_obs is None
+        assert env._last_obs_step_index is None
+        close_env.assert_called_once_with(clear_cache=False)
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env._get_obs()
+        with pytest.raises(RuntimeError, match="no latest observation"):
+            env.get_mcap_obs()
+        get_obs.assert_not_called()
+
     def test_reset_failure_keeps_finalized_state(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1409,6 +1437,8 @@ class TestRoboTwinEnv:
         )
         env = _make_reset_stub_env(monkeypatch, robot=robot)
         env._episode_finalized = False
+        env._last_obs = {"stale": True}
+        env._last_obs_step_index = 7
         env._check_and_update_seed = lambda: (_ for _ in ()).throw(
             RuntimeError("reset failed")
         )
@@ -1417,6 +1447,8 @@ class TestRoboTwinEnv:
             env.reset(return_obs=False)
 
         assert env._episode_finalized is True
+        assert env._last_obs is None
+        assert env._last_obs_step_index is None
 
     def test_reset_updates_episode_id_and_builds_video_path(self, monkeypatch):
         robot = SimpleNamespace(
