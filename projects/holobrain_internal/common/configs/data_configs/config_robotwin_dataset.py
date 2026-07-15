@@ -14,7 +14,11 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from dataset_factory import processor_register, train_dataset_register
+from dataset_factory import (
+    processor_register,
+    train_dataset_register,
+    validation_dataset_register,
+)
 
 DATA_TYPE = "robotwin"
 
@@ -602,6 +606,7 @@ def build_transforms(
 
 
 @train_dataset_register(DATA_TYPE)
+@validation_dataset_register(DATA_TYPE)
 def build_datasets(
     config,
     dataset_name,

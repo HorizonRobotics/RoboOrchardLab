@@ -91,7 +91,6 @@ class ABC130kLmdbDataset(HorizonManipulationLmdbDataset):
             **kwargs,
         )
 
-
     def get_intrinsic(self, lmdb_index, data):
         """Prefer ``intrinsic_corrected`` (K reconciled with image size).
 

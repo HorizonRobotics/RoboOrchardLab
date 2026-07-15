@@ -24,8 +24,7 @@ DATA_BASE = os.environ.get("HOLOBRAIN_DATA_BASE", "./data")
 
 
 def _glob_sorted(
-    *patterns: str,
-    exclude_patterns: None | list[str] | str = None
+    *patterns: str, exclude_patterns: None | list[str] | str = None
 ) -> list[str]:
     data_paths = []
     for pattern in patterns:
@@ -593,6 +592,15 @@ TRAINING_DATASETS = [
         ),
         mobile=False,
     ),
+    # ================ robodojo ==================
+    dict(
+        dataset_type="robodojo",
+        dataset_name="robodojo",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/robodojo/lmdb/*",
+        ),
+        setting_type="arx_x5a",
+    ),
 ]
 
 # TODO
@@ -643,6 +651,7 @@ filter_list = [
     "robocasa_pretrain",
     "robocasa_pretrain_mg",
     "robocasa_target",
+    "robodojo",
     # "isaac_pick_place",
     # "agibot_digit",
     # "agilex_ro",
@@ -691,6 +700,7 @@ dataset_sample_weights = dict(
     robocasa_pretrain=3,
     robocasa_pretrain_mg=2,
     robocasa_target=3,
+    robodojo=2,
 )
 
 use_dataset_sample_weights = False

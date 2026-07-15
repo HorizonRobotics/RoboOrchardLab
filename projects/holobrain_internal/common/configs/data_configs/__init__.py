@@ -30,6 +30,7 @@ from .config_isaac_dataset import *
 from .config_libero_dataset import *
 from .config_rh20t_dataset import *
 from .config_robocasa_dataset import *
+from .config_robodojo_dataset import *
 from .config_robotwin_dataset import *
 from .config_table30_ro_dataset import *
 from .config_table30v2_dataset import *
