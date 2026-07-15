@@ -179,6 +179,7 @@ def _make_step_stub_env(
     env.cfg = SimpleNamespace(action_type=action_type)
     env._episode_finalized = False
     env._post_reset_state_available = False
+    env._last_obs_step_index = 0
     take_action = MagicMock()
     env._task = SimpleNamespace(
         robot=SimpleNamespace(
@@ -192,7 +193,13 @@ def _make_step_stub_env(
         get_obs=lambda: {},
     )
     env._write_video_frame = lambda raw_obs: None
-    env._format_obs = lambda raw_obs: raw_obs
+    env._format_obs = lambda raw_obs, *, step_index: {
+        **raw_obs,
+        "step_index": step_index,
+        "step_timestamp": (
+            env.step_index_to_log_time_ns(step_index) / 1_000_000_000.0
+        ),
+    }
     env._get_info = lambda: {}
     return env, take_action
 
@@ -281,7 +288,13 @@ def _make_state_stub_env(
     monkeypatch.setattr(
         env,
         "_format_obs",
-        lambda raw_obs: {"formatted": raw_obs},
+        lambda raw_obs, *, step_index: {
+            "formatted": raw_obs,
+            "step_index": step_index,
+            "step_timestamp": (
+                env.step_index_to_log_time_ns(step_index) / 1_000_000_000.0
+            ),
+        },
         raising=False,
     )
 
@@ -820,9 +833,12 @@ class TestRoboTwinEnv:
                     "right_gripper": 0.75,
                 },
                 "observation": {},
-            }
+            },
+            step_index=3,
         )
 
+        assert obs["step_index"] == 3
+        assert obs["step_timestamp"] == 0.3
         tf_graph = obs["tf"]
         left_endpose_frame_id, right_endpose_frame_id = (
             env._get_endpose_frame_ids()
@@ -937,6 +953,47 @@ class TestRoboTwinEnv:
             env.step([0.0] * 16)
 
         take_action.assert_not_called()
+
+    def test_step_advances_observation_step_metadata(self) -> None:
+        env, take_action = _make_step_stub_env(action_type="qpos")
+
+        first = env.step([0.0] * 14)
+        second = env.step([0.0] * 14)
+
+        assert first.observations is not None
+        assert first.observations["step_index"] == 1
+        assert first.observations["step_timestamp"] == 0.1
+        assert second.observations is not None
+        assert second.observations["step_index"] == 2
+        assert second.observations["step_timestamp"] == 0.2
+        assert env._last_obs_step_index == 2
+        assert take_action.call_count == 2
+
+    def test_step_requires_reset_step_clock_before_action(self) -> None:
+        env, take_action = _make_step_stub_env(action_type="qpos")
+        env._last_obs_step_index = None
+
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env.step([0.0] * 14)
+
+        take_action.assert_not_called()
+
+    def test_step_format_failure_keeps_last_observation_step_index(
+        self,
+    ) -> None:
+        env, take_action = _make_step_stub_env(action_type="qpos")
+
+        def _raise_format_error(raw_obs, *, step_index):
+            del raw_obs, step_index
+            raise RuntimeError("format failed")
+
+        env._format_obs = _raise_format_error
+
+        with pytest.raises(RuntimeError, match="format failed"):
+            env.step([0.0] * 14)
+
+        take_action.assert_called_once()
+        assert env._last_obs_step_index == 0
 
     def test_step_rejects_ee_action_width_mismatch(self):
         env, take_action = _make_step_stub_env(action_type="ee")
@@ -1312,6 +1369,34 @@ class TestRoboTwinEnv:
 
         assert obs is None
         assert env._episode_finalized is False
+        assert env._last_obs_step_index == 0
+
+    def test_get_obs_reuses_current_step_index_without_advancing(self) -> None:
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._last_obs_step_index = 3
+        get_obs = MagicMock(return_value={"raw": True})
+        env._task = SimpleNamespace(get_obs=get_obs)
+        env._format_obs = lambda raw_obs, *, step_index: {
+            **raw_obs,
+            "step_index": step_index,
+        }
+
+        obs = env._get_obs()
+
+        assert obs == {"raw": True, "step_index": 3}
+        assert env._last_obs_step_index == 3
+        get_obs.assert_called_once()
+
+    def test_get_obs_requires_reset_step_clock(self) -> None:
+        env = RoboTwinEnv.__new__(RoboTwinEnv)
+        env._last_obs_step_index = None
+        get_obs = MagicMock(return_value={})
+        env._task = SimpleNamespace(get_obs=get_obs)
+
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env._get_obs()
+
+        get_obs.assert_not_called()
 
     def test_reset_failure_keeps_finalized_state(
         self,
@@ -1576,6 +1661,50 @@ class TestRoboTwinEnv:
         assert env._task is old_task
         assert env._post_reset_state_available is True
 
+    @pytest.mark.parametrize(
+        ("last_obs", "last_obs_step_index"),
+        [
+            (None, None),
+            ({"stale": True}, 7),
+        ],
+    )
+    def test_load_state_resets_observation_cache_and_step_clock(
+        self,
+        monkeypatch,
+        tmp_path,
+        last_obs,
+        last_obs_step_index,
+    ):
+        env, _, _ = _make_state_stub_env(monkeypatch, tmp_path)
+        state = env.get_state()
+        env._last_obs = last_obs
+        env._last_obs_step_index = last_obs_step_index
+
+        env.load_state(state)
+
+        assert env._last_obs is None
+        assert env._last_obs_step_index == 0
+        current_obs = env._get_obs()
+        assert current_obs["step_index"] == 0
+        assert current_obs["step_timestamp"] == 0.0
+
+        take_action = MagicMock()
+        env._task.robot.get_left_arm_jointState = lambda: [0.0] * 7
+        env._task.robot.get_right_arm_jointState = lambda: [0.0] * 7
+        env._task.take_action = take_action
+        env._task.step_lim = None
+        env._task.take_action_cnt = 0
+        env._task.eval_success = False
+        env._write_video_frame = lambda raw_obs: None
+        env._get_info = lambda: {}
+
+        step_result = env.step([0.0] * 14)
+
+        assert step_result.observations is not None
+        assert step_result.observations["step_index"] == 1
+        assert step_result.observations["step_timestamp"] == 0.1
+        take_action.assert_called_once()
+
     def test_reset_from_state_restores_post_reset_state_and_returns_obs(
         self,
         monkeypatch,
@@ -1605,7 +1734,11 @@ class TestRoboTwinEnv:
         assert env.current_seed == 3
         assert env._post_reset_state_available is True
         assert env._episode_finalized is False
-        assert obs == {"formatted": {"restored": "robotwin_dummy_task"}}
+        assert obs == {
+            "formatted": {"restored": "robotwin_dummy_task"},
+            "step_index": 0,
+            "step_timestamp": 0.0,
+        }
         assert info["seed"] == 3
         assert info["offset_seed"] == 2
         assert info["source"] == "restored"
@@ -1671,8 +1804,8 @@ class TestRoboTwinEnv:
         )
         state = env.get_state()
 
-        def _raise_format_error(raw_obs):
-            del raw_obs
+        def _raise_format_error(raw_obs, *, step_index):
+            del raw_obs, step_index
             raise RuntimeError("format failed")
 
         monkeypatch.setattr(
@@ -1775,13 +1908,30 @@ class TestRoboTwinEnv:
         assert joints_to_eef._left_robot_base_tf.xyz.dtype == torch.float32
         assert joints_to_eef._right_robot_base_tf.quat.dtype == torch.float32
 
-        joints_to_eef.transform(
+        ret = joints_to_eef.transform(
             left_arm_joints=torch.zeros(2, 6, dtype=torch.float64),
             right_arm_joints=torch.zeros(2, 6, dtype=torch.float64),
+            robot_base_tf=BatchFrameTransform(
+                xyz=torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64),
+                quat=torch.tensor(
+                    [[1.0, 0.0, 0.0, 0.0]],
+                    dtype=torch.float64,
+                ),
+                parent_frame_id="world",
+                child_frame_id="robot_base",
+            ),
         )
 
         assert left_chain.recorded_joint_dtypes == [torch.float32]
         assert right_chain.recorded_joint_dtypes == [torch.float32]
+        torch.testing.assert_close(
+            ret.left_eef.xyz,
+            torch.tensor(
+                [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]],
+                dtype=torch.float32,
+            ),
+        )
+        assert ret.left_eef.xyz.dtype == torch.float32
 
     def test_reset_reuses_cfg_episode_id_for_video_dir(self, monkeypatch):
         env = _make_reset_stub_env(

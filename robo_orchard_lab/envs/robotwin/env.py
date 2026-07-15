@@ -419,7 +419,7 @@ class RoboTwinEnv(
         """Restore a post-reset State and return ``reset(...)`` output."""
 
         payload = self._restore_post_reset_state(state, activate=False)
-        obs = self._format_obs(self._task.get_obs())
+        obs = self._format_obs(self._task.get_obs(), step_index=0)
         info = self._get_info()
         self._last_obs = obs
         self._last_obs_step_index = 0
@@ -492,6 +492,8 @@ class RoboTwinEnv(
         self._task = task
         self._joints_to_eef_transform = None
         self._cached_obs_robots = None
+        self._last_obs = None
+        self._last_obs_step_index = 0
         if activate:
             self._post_reset_state_available = (
                 payload.post_reset_state_available
@@ -618,6 +620,13 @@ class RoboTwinEnv(
                 "RoboTwinEnv has no active episode. "
                 "Call reset() or reset_from_state() before step()."
             )
+        last_obs_step_index = self._last_obs_step_index
+        if last_obs_step_index is None:
+            raise RuntimeError(
+                "RoboTwinEnv.step() requires a successful reset() or "
+                "reset_from_state() before advancing the episode."
+            )
+        next_obs_step_index = last_obs_step_index + 1
 
         action_array = np.asarray(action)
         if action_array.ndim != 1:
@@ -676,12 +685,9 @@ class RoboTwinEnv(
 
         raw_obs = self._task.get_obs()
         self._write_video_frame(raw_obs)
-        obs = self._format_obs(raw_obs)
+        obs = self._format_obs(raw_obs, step_index=next_obs_step_index)
         self._last_obs = obs
-        last_obs_step_index = getattr(self, "_last_obs_step_index", None)
-        self._last_obs_step_index = (
-            0 if last_obs_step_index is None else last_obs_step_index + 1
-        )
+        self._last_obs_step_index = next_obs_step_index
 
         return RoboTwinEnvStepReturn(
             observations=obs,
@@ -865,13 +871,15 @@ class RoboTwinEnv(
                         episode_video_path,
                     )
         try:
-            obs = self._format_obs(raw_obs) if return_obs else None
+            obs = (
+                self._format_obs(raw_obs, step_index=0) if return_obs else None
+            )
             info = self._get_info()
         except Exception:
             self._stop_video_recording()
             raise
         self._last_obs = obs
-        self._last_obs_step_index = 0 if obs is not None else None
+        self._last_obs_step_index = 0
         self._post_reset_state_available = True
         self._episode_finalized = False
 
@@ -1336,8 +1344,14 @@ class RoboTwinEnv(
         flaw in RoboTwin, and we leave it as is to be consistent with RoboTwin!
 
         """
+        step_index = self._last_obs_step_index
+        if step_index is None:
+            raise RuntimeError(
+                "RoboTwinEnv._get_obs() requires a successful reset() or "
+                "reset_from_state() first."
+            )
         ret = self._task.get_obs()
-        return self._format_obs(ret)
+        return self._format_obs(ret, step_index=step_index)
 
     @staticmethod
     def _pose_vector_to_tf(
@@ -1454,7 +1468,12 @@ class RoboTwinEnv(
 
         return tf_edges
 
-    def _format_obs(self, ret: dict[str, Any]) -> dict[str, Any]:
+    def _format_obs(
+        self,
+        ret: dict[str, Any],
+        *,
+        step_index: int,
+    ) -> dict[str, Any]:
         """Format raw RoboTwin observations into orchard-compatible ones.
 
         The returned ``ret["tf"]`` graph always includes ``world ->
@@ -1465,9 +1484,15 @@ class RoboTwinEnv(
         reported by the RoboTwin robot object. The returned observation also
         includes ``ret["robots"]`` with observation-facing robot metadata
         derived from the supported combined dual-arm URDF descriptor.
+        ``ret["step_index"]`` is the episode-local observation step, and
+        ``ret["step_timestamp"]`` is its env-owned logical time in seconds.
         """
         eef_tf_edges = self._get_eef_tf_edges(ret)
         ret["instructions"] = self.instructions
+        ret["step_index"] = step_index
+        ret["step_timestamp"] = (
+            self.step_index_to_log_time_ns(step_index) / 1_000_000_000.0
+        )
         if self.cfg.format_datatypes:
             ret["joints"] = get_joints(
                 ret, joint_names=self._get_joint_state_names()

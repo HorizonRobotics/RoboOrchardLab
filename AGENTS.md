@@ -67,7 +67,7 @@ Local agent asset index lives in `.agents/README.md`.
   `FoxgloveMcapWriter`, `FoxgloveEncoder`, `StampedMessage` topic maps,
   converter contracts, or Pydantic JSON topics:
   `.agents/references/mcap-guideline.md`
-- RODataset repack, `repack_dataset`, `RODatasetRepackTransform`,
+- RODataset repack, `repack_dataset`, `EpisodePackagingTransform`,
   `re_packing/`, frame selection, transform failure semantics, or
   previous-episode remapping:
   `.agents/references/rodataset-repack-guideline.md`

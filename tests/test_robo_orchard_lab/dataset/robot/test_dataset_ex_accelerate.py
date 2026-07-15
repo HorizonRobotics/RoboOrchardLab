@@ -182,7 +182,7 @@ class TestDictIterableDatasetAccelerateLaunch:
             results[0]["total_indices_length"]
             != results[1]["total_indices_length"]
         )
-        assert results[0]["trace"] != results[1]["trace"]
+        assert results[0]["value_trace"] != results[1]["value_trace"]
 
     @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
     def test_wrapped_prepare_aligns_rank_schedule(

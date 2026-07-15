@@ -13,12 +13,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import importlib.util
 import os
 import random
 import string
 import tempfile
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Iterable
 
 import datasets as hg_datasets
 import pytest
@@ -50,11 +51,14 @@ from robo_orchard_lab.dataset.robot.merge import (
     merge_datasets,
 )
 from robo_orchard_lab.dataset.robot.packaging import (
+    ComposedEpisodePackagingTransform,
     DataFrame,
     DatasetPackaging,
     EpisodeData,
     EpisodeMeta,
     EpisodePackaging,
+    EpisodePackagingTransform,
+    IdentityEpisodePackagingTransform,
     InstructionData,
     RobotData,
     RobotDescriptionFormat,
@@ -64,6 +68,41 @@ from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
 from robo_orchard_lab.dataset.robot.row_sampler import (
     DeltaTimestampSamplerConfig,
 )
+
+
+def test_packaging_exports_episode_transform_contracts() -> None:
+    import robo_orchard_lab.dataset.robot as robot_dataset
+    import robo_orchard_lab.dataset.robot.packaging as packaging_module
+
+    exported_names: dict[str, object] = {}
+    exec(
+        "from robo_orchard_lab.dataset.robot.packaging import *",
+        exported_names,
+    )
+
+    assert "EpisodePackagingTransform" in packaging_module.__all__
+    assert "IdentityEpisodePackagingTransform" not in packaging_module.__all__
+    assert "ComposedEpisodePackagingTransform" not in packaging_module.__all__
+    assert exported_names["EpisodePackagingTransform"] is (
+        EpisodePackagingTransform
+    )
+    assert "IdentityEpisodePackagingTransform" not in exported_names
+    assert "ComposedEpisodePackagingTransform" not in exported_names
+    assert not hasattr(robot_dataset, "EpisodePackagingTransform")
+    assert not hasattr(robot_dataset, "IdentityEpisodePackagingTransform")
+    assert not hasattr(robot_dataset, "ComposedEpisodePackagingTransform")
+    assert not hasattr(packaging_module, "_EpisodePackagingView")
+
+
+def test_packaging_is_package_with_internal_modules() -> None:
+    import robo_orchard_lab.dataset.robot.packaging as packaging_module
+
+    assert hasattr(packaging_module, "__path__")
+    for module_name in ("_episode", "_writer", "_metadata"):
+        spec = importlib.util.find_spec(
+            f"robo_orchard_lab.dataset.robot.packaging.{module_name}"
+        )
+        assert spec is not None
 
 
 class _FakeFrameDataset:
@@ -182,6 +221,115 @@ class ExplicitEpisodeDataPackaging(DummyEpisodePackaging):
             episode=self._episode_data,
             robot=self.gen_robot(),
             task=self.gen_task(),
+        )
+
+
+class SimpleStringEpisodePackaging(EpisodePackaging):
+    def __init__(
+        self,
+        data: list[str],
+        episode_data: EpisodeData | None = None,
+    ):
+        self._data = data
+        self._episode_data = episode_data or EpisodeData()
+
+    @property
+    def features(self) -> hg_datasets.Features:
+        return hg_datasets.Features({"data": hg_datasets.Value("string")})
+
+    def generate_episode_meta(self) -> EpisodeMeta:
+        return EpisodeMeta(episode=self._episode_data)
+
+    def generate_frames(self) -> Generator[DataFrame, None, None]:
+        for value in self._data:
+            yield DataFrame(features={"data": value})
+
+
+class StaticEpisodePackaging(EpisodePackaging):
+    def __init__(
+        self,
+        episode_meta: EpisodeMeta | None,
+        frames: Iterable[DataFrame],
+    ):
+        self._episode_meta = episode_meta
+        self._frames = frames
+
+    def generate_episode_meta(self) -> EpisodeMeta | None:
+        return self._episode_meta
+
+    def generate_frames(self) -> Generator[DataFrame, None, None]:
+        yield from self._frames
+
+
+class AddDataLengthTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
+        self, features: hg_datasets.Features
+    ) -> hg_datasets.Features:
+        if "data" not in features:
+            raise ValueError(f"{self!r} requires missing columns: ['data'].")
+        return hg_datasets.Features(
+            {
+                "data": features["data"],
+                "data_len": hg_datasets.Value("int64"),
+            }
+        )
+
+    def transform_frame(self, frame: DataFrame) -> DataFrame:
+        data = frame.features["data"]
+        return DataFrame(
+            features={"data": data.upper(), "data_len": len(data)},
+            instruction=frame.instruction,
+            timestamp_ns_min=frame.timestamp_ns_min,
+            timestamp_ns_max=frame.timestamp_ns_max,
+        )
+
+
+class SkipMarkedEpisodeTransform(IdentityEpisodePackagingTransform):
+    def transform_episode(
+        self, episode: EpisodePackaging
+    ) -> EpisodePackaging | None:
+        episode_meta = episode.generate_episode_meta()
+        if episode_meta is None:
+            return None
+        if episode_meta.episode.info and episode_meta.episode.info.get("skip"):
+            return None
+        return StaticEpisodePackaging(
+            episode_meta,
+            self.transform_frames(episode.generate_frames()),
+        )
+
+
+class MissingRequiredColumnTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
+        self, features: hg_datasets.Features
+    ) -> hg_datasets.Features:
+        if "missing_column" not in features:
+            raise ValueError(
+                f"{self!r} requires missing columns: ['missing_column']."
+            )
+        return features
+
+
+class PreservedFeatureTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
+        self, features: hg_datasets.Features
+    ) -> hg_datasets.Features:
+        updated_features = features.copy()
+        updated_features["index"] = hg_datasets.Value("int64")
+        return updated_features
+
+
+class EpisodeIndexChangingTransform(IdentityEpisodePackagingTransform):
+    def transform_episode(
+        self, episode: EpisodePackaging
+    ) -> EpisodePackaging | None:
+        episode_meta = episode.generate_episode_meta()
+        if episode_meta is None:
+            return None
+        episode_meta.episode.index = 1
+        return StaticEpisodePackaging(
+            episode_meta,
+            episode.generate_frames(),
         )
 
 
@@ -460,6 +608,202 @@ class TestDatasetPackaging:
         assert normalize_local_dataset_path(
             "C:/tmp/ro_dataset"
         ) == os.path.abspath("C:/tmp/ro_dataset")
+
+    def test_episode_packaging_transform_updates_features_and_frames(
+        self,
+        tmp_local_folder: str,
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_transform_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episode = SimpleStringEpisodePackaging(["aa", "bbb"])
+        transforms: list[EpisodePackagingTransform] = [
+            AddDataLengthTransform()
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episode.features,
+            database_driver="sqlite",
+            transforms=transforms,
+        )
+
+        dataset_packaging.packaging(
+            episodes=[episode],
+            dataset_path=dataset_dir,
+            fail_fast=True,
+        )
+
+        dataset = RODataset(dataset_dir)
+        assert len(dataset) == 2
+        assert "data_len" in dataset.frame_dataset.features
+        assert "joints" not in dataset.frame_dataset.features
+        assert dataset[0]["data"] == "AA"
+        assert dataset[0]["data_len"] == 2
+        assert dataset[1]["data"] == "BBB"
+        assert dataset[1]["data_len"] == 3
+
+    def test_episode_packaging_transform_can_skip_episode(
+        self,
+        tmp_local_folder: str,
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_transform_skip_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episodes = [
+            SimpleStringEpisodePackaging(
+                ["skip"],
+                episode_data=EpisodeData(info={"skip": True}),
+            ),
+            SimpleStringEpisodePackaging(["keep"]),
+        ]
+        dataset_packaging = DatasetPackaging(
+            features=episodes[0].features,
+            database_driver="sqlite",
+            transforms=[SkipMarkedEpisodeTransform()],
+        )
+
+        dataset_packaging.packaging(
+            episodes=episodes,
+            dataset_path=dataset_dir,
+            fail_fast=True,
+        )
+
+        dataset = RODataset(dataset_dir)
+        assert len(dataset) == 1
+        assert dataset.episode_num == 1
+        assert dataset[0]["data"] == "keep"
+        assert dataset[0]["episode_index"] == 0
+
+    def test_episode_packaging_transform_rejects_missing_input_columns(
+        self,
+    ):
+        episode = SimpleStringEpisodePackaging(["data"])
+
+        with pytest.raises(ValueError, match="missing_column"):
+            DatasetPackaging(
+                features=episode.features,
+                database_driver="sqlite",
+                transforms=[MissingRequiredColumnTransform()],
+            )
+
+    def test_episode_packaging_transform_rejects_preserved_output_columns(
+        self,
+    ):
+        episode = SimpleStringEpisodePackaging(["data"])
+
+        with pytest.raises(ValueError, match="reserved"):
+            DatasetPackaging(
+                features=episode.features,
+                database_driver="sqlite",
+                transforms=[PreservedFeatureTransform()],
+            )
+
+    def test_episode_packaging_transform_rejects_target_link_mutation(
+        self,
+        tmp_local_folder: str,
+    ):
+        dataset_dir = os.path.join(
+            tmp_local_folder,
+            "test_episode_packaging_transform_index_"
+            + "".join(random.choices(string.ascii_lowercase, k=8)),
+        )
+        episode = SimpleStringEpisodePackaging(["data"])
+        dataset_packaging = DatasetPackaging(
+            features=episode.features,
+            database_driver="sqlite",
+            transforms=[EpisodeIndexChangingTransform()],
+        )
+
+        with pytest.raises(ValueError, match="target episode linkage"):
+            dataset_packaging.packaging(
+                episodes=[episode],
+                dataset_path=dataset_dir,
+                fail_fast=True,
+            )
+
+    def test_composed_episode_packaging_transform_lifecycle(self):
+        episode = SimpleStringEpisodePackaging(["data"])
+        transform = ComposedEpisodePackagingTransform(
+            [AddDataLengthTransform()]
+        )
+
+        with pytest.raises(RuntimeError, match="prepare_features"):
+            _ = transform.target_features
+        with pytest.raises(RuntimeError, match="prepare_features"):
+            transform.transform_episode(episode)
+
+        target_features = transform.prepare_features(episode.features)
+        assert set(target_features) == {"data", "data_len"}
+        assert set(transform.target_features) == {"data", "data_len"}
+
+        with pytest.raises(RuntimeError, match="already prepared"):
+            transform.prepare_features(episode.features)
+
+    def test_composed_episode_packaging_transform_copies_features(self):
+        class _MutatingPrepareTransform(IdentityEpisodePackagingTransform):
+            def __init__(self) -> None:
+                self.returned_features: hg_datasets.Features | None = None
+
+            def prepare_features(
+                self, features: hg_datasets.Features
+            ) -> hg_datasets.Features:
+                features["mutated_input"] = hg_datasets.Value("int64")
+                returned_features = hg_datasets.Features(
+                    {"data": features["data"]}
+                )
+                self.returned_features = returned_features
+                return returned_features
+
+        episode = SimpleStringEpisodePackaging(["data"])
+        source_features = episode.features.copy()
+        child_transform = _MutatingPrepareTransform()
+        composed_transform = ComposedEpisodePackagingTransform(
+            [child_transform]
+        )
+
+        target_features = composed_transform.prepare_features(source_features)
+
+        assert "mutated_input" not in source_features
+        assert child_transform.returned_features is not None
+        child_transform.returned_features["late_mutation"] = hg_datasets.Value(
+            "int64"
+        )
+        target_features["external_mutation"] = hg_datasets.Value("int64")
+        assert set(child_transform.returned_features) == {
+            "data",
+            "late_mutation",
+        }
+        assert set(target_features) == {"data", "external_mutation"}
+        assert set(composed_transform.target_features) == {"data"}
+
+    def test_composed_episode_packaging_transform_reads_metadata_once(self):
+        class _CountingEpisodePackaging(SimpleStringEpisodePackaging):
+            def __init__(self, data: list[str]) -> None:
+                super().__init__(data)
+                self.metadata_reads = 0
+
+            def generate_episode_meta(self) -> EpisodeMeta | None:
+                self.metadata_reads += 1
+                return super().generate_episode_meta()
+
+        episode = _CountingEpisodePackaging(["data"])
+        transform = ComposedEpisodePackagingTransform(
+            [
+                IdentityEpisodePackagingTransform(),
+                IdentityEpisodePackagingTransform(),
+            ]
+        )
+        transform.prepare_features(episode.features)
+
+        transformed_episode = transform.transform_episode(episode)
+
+        assert transformed_episode is not None
+        assert episode.metadata_reads == 1
+        assert transformed_episode.generate_episode_meta() is not None
+        assert episode.metadata_reads == 1
 
     def test_episode_packaging_fail_fast(
         self,
@@ -881,10 +1225,12 @@ class TestDataset:
 
     def test_no_lockfiles(self, example_dataset_path: str):
         database_p_dir = os.path.dirname(example_dataset_path)
+        dataset_name = os.path.basename(example_dataset_path)
         import glob
 
         lockfiles = glob.glob(
-            os.path.join(database_p_dir, "*.lock"), recursive=True
+            os.path.join(database_p_dir, f"{dataset_name}*.lock"),
+            recursive=True,
         )
         assert len(lockfiles) == 0
 

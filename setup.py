@@ -364,8 +364,6 @@ if __name__ == "__main__":
         extras_require=extras_require,
         entry_points={
             "robo_orchard_datasets.dataset2mcap_presets": [
-                "robotwin=robo_orchard_lab.dataset.robotwin.to_mcap:"
-                "dataset_to_mcap_config",
                 "libero=robo_orchard_lab.dataset.libero.to_mcap:"
                 "dataset_to_mcap_config",
             ],

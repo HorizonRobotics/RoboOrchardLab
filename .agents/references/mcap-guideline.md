@@ -25,6 +25,26 @@ Use this reference when changing experimental MCAP export code, including
   different topics as a visualization correctness bug because later TF edges
   can overwrite earlier ones.
 
+## TF And FK Export Boundaries
+
+- When exporting FK transforms from joint-state datatypes, derive link frame
+  ids from the written joint-state object instead of hardcoding robot-specific
+  terminal link names or gripper frame names.
+- Keep observed joint-state FK and commanded action FK in distinct frame-id
+  domains when both are present in one TF graph, so visualization cannot
+  overwrite one source with the other.
+- For debug or viewer MCAP exports, prefer a root-to-link star graph when the
+  goal is to inspect per-link poses. Do not reproduce the full URDF
+  parent-child tree unless the exported contract explicitly requires full
+  robot TF topology.
+- Use the robot or kinematic-chain root frame as the fixed parent when camera,
+  joint, and action transforms share that root coordinate system. Avoid
+  hardcoded `"world"` parents when the source model owns a concrete root frame
+  id.
+- Do not export gripper FK only because gripper state values exist. Gripper
+  transforms belong in the graph only when the source joint-state contract
+  explicitly includes gripper links in the exported arm FK surface.
+
 ## Converter Ownership
 
 - Converter instances may be created from source topic, sample data, and

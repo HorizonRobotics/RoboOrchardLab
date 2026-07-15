@@ -23,6 +23,7 @@ dimensions:
 
 - layer ownership and responsibility boundaries
 - abstraction quality and whether an abstraction actually reduces complexity
+- conceptual simplicity, concept count, duplicate wrappers, and call-chain shape
 - stable contract design and access patterns
 - dependency direction and source-of-truth ownership
 - compatibility surfaces and caller-facing public APIs
@@ -64,6 +65,13 @@ boundaries, and the main execution path understandable.
   mechanics.
 - Do not keep abstractions that only rename a loop, move branching behind
   callbacks, or centralize parameter passing without reducing cognitive load.
+- Review conceptual load explicitly. Count the named concepts, helper layers,
+  wrappers, adapters, views, and dispatch flags a reader must understand to
+  follow the main path. Merge or delete near-duplicates when they do not own
+  distinct semantics.
+- Treat a long or indirect call chain as an architecture smell when it hides
+  ownership or forces readers to chase thin forwarding layers before reaching
+  the object that owns the behavior.
 - Before large refactors, separate stable semantics, compatibility
   boundaries, and internal implementation details. Write and test the stable
   semantics; explicitly choose which compatibility surfaces remain; avoid
@@ -202,6 +210,9 @@ by an upstream framework.
   boundary plumbing?
 - Does each abstraction remove real complexity instead of turning policy into
   callbacks, indirection, or parameter plumbing?
+- How many named concepts, wrappers, adapters, views, and dispatch flags must
+  a reader understand to follow the main path, and which of them can be
+  merged or deleted?
 - Can any new abstraction be deleted, merged into an existing seam, or
   downgraded to compatibility-only?
 - What is the one-method / no-new-class alternative, and which proposed

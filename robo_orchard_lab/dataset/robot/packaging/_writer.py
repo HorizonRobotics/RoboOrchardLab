@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-"""Packaging a RoboOrchard Dataset."""
+"""Dataset writer implementation for RoboOrchard packaging."""
 
 from __future__ import annotations
 import json
@@ -22,44 +22,41 @@ import os
 import pickle
 import shutil
 import warnings
-from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Generator, Iterable
+from typing import Iterable, Sequence
 
 import datasets as hg_datasets
 import fsspec
 from datasets.exceptions import DatasetGenerationError
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
-from typing_extensions import deprecated
 
-from robo_orchard_lab.dataset.robot import (
-    create_engine,
-    create_tables,
-    get_local_db_url,
-)
 from robo_orchard_lab.dataset.robot.columns import (
     PreservedColumnsKeys,
     PreservedIndexColumns,
     PreservedIndexColumnsKeys,
 )
-from robo_orchard_lab.dataset.robot.db_orm import (
-    Episode,
-    Instruction,
-    Robot,
-    RobotDescriptionFormat,
-    Task,
+from robo_orchard_lab.dataset.robot.dataset_db_engine import (
+    create_engine,
+    create_tables,
+    get_local_db_url,
+)
+from robo_orchard_lab.dataset.robot.db_orm import Instruction
+from robo_orchard_lab.dataset.robot.packaging._episode import (
+    ComposedEpisodePackagingTransform,
+    DataFrame,
+    EpisodePackaging,
+    EpisodePackagingTransform,
+)
+from robo_orchard_lab.dataset.robot.packaging._metadata import (
+    EpisodeMetaORM,
+    InstructionData,
 )
 
 __all__ = [
+    "DatasetIndexState",
     "DatasetPackaging",
-    "EpisodePackaging",
-    "EpisodeData",
-    "RobotData",
-    "TaskData",
-    "InstructionData",
-    "EpisodeMeta",
-    "DataFrame",
+    "dataset_format_version",
     "normalize_local_dataset_path",
 ]
 
@@ -88,114 +85,25 @@ def normalize_local_dataset_path(
     return os.path.abspath(os.path.expanduser(dataset_path_str))
 
 
-_normalize_local_dataset_path = normalize_local_dataset_path
-
-
-@dataclass
-class EpisodeMeta:
-    """Metadata for an episode packaging in a RoboOrchard dataset.
-
-    This is the data structure used during the packaging process to
-    represent the episode information to be stored in the database.
-    """
-
-    episode: EpisodeData
-    robot: RobotData | None = None
-    task: TaskData | None = None
-
-    def get_transient_orm(
-        self, index_state: DatasetIndexState, session: Session
-    ) -> EpisodeMetaORM:
-        """Get the transient ORM instance of the episode metadata."""
-        expected_index = index_state.last_episode_idx + 1
-        episode_index = self.episode.index
-        if episode_index is None:
-            if self.episode.prev_episode_index is not None:
-                raise ValueError(
-                    "EpisodeData.prev_episode_index requires "
-                    "EpisodeData.index to be set."
-                )
-            episode_index = expected_index
-        elif episode_index != expected_index:
-            raise ValueError(
-                "EpisodeData.index must match the next target episode "
-                f"index {expected_index}, got {episode_index}."
-            )
-
-        if self.episode.prev_episode_index is not None:
-            prev_episode_index = self.episode.prev_episode_index
-            if prev_episode_index < 0 or prev_episode_index >= episode_index:
-                raise ValueError(
-                    "EpisodeData.prev_episode_index must reference a "
-                    "previous target episode; got "
-                    f"{prev_episode_index} for episode {episode_index}."
-                )
-
-        episode_data = self.episode.__dict__.copy()
-        episode_data.pop("index")
-        episode = Episode(
-            index=episode_index,
-            **episode_data,
-        )
-        robot = (
-            self.robot.make_transient_orm(index_state, session=session)
-            if self.robot
-            else None
-        )
-        task = (
-            self.task.make_transient_orm(index_state, session=session)
-            if self.task
-            else None
-        )
-
-        episode.task_index = task.index if task else None
-        episode.robot_index = robot.index if robot else None
-        return EpisodeMetaORM(episode=episode, robot=robot, task=task)
-
-
-@dataclass
-class DataFrame:
-    """Data for a single frame in a RoboOrchard dataset."""
-
-    features: dict[str, Any]
-    instruction: InstructionData | None = None
-    timestamp_ns_min: int | None = None
-    """The minimum timestamp of the frame in nanoseconds."""
-    timestamp_ns_max: int | None = None
-    """The maximum timestamp of the frame in nanoseconds."""
-
-
-class EpisodePackaging(metaclass=ABCMeta):
-    @abstractmethod
-    def generate_episode_meta(self) -> EpisodeMeta | None:
-        """Generate metadata for the episode if it should be included.
-
-        Should return None if the episode is to be skipped.
-
-        Returns:
-            EpisodeMeta | None: Metadata containing the episode, robot,
-                and task. If None is returned, the episode will be skipped
-                during packaging.
-        """
-        raise NotImplementedError(
-            "This method should be implemented by subclasses to "
-            "generate episode metadata."
-        )
-
-    @abstractmethod
-    def generate_frames(self) -> Generator[DataFrame, None, None]:
-        """Generate frame data for the episode."""
-        raise NotImplementedError(
-            "This method should be implemented by subclasses to "
-            "generate frame data for the episode."
-        )
-
-
 class DatasetPackaging:
-    """Class for packaging a RoboOrchard dataset.
+    """Package episode sources into a local RoboOrchard dataset.
+
+    ``DatasetPackaging`` owns the Arrow writer, metadata database creation,
+    target frame/episode indices, and output cleanup for direct packaging.
+    Callers provide payload-only frame features and an iterable of
+    ``EpisodePackaging`` sources. Optional ``transforms`` are constructor
+    inputs because they can change the payload feature schema before the
+    writer is built.
+
+    The optional transform sequence is resource-free from this class's point
+    of view: transforms may rewrite metadata and frames or skip whole
+    episodes, but database, Arrow, sidecar, staging, and rollback lifecycle
+    remain owned by the packaging caller.
 
     Args:
-        features (hg_datasets.Features): The features of the dataset.
+        features (hg_datasets.Features): Payload frame features provided by
+            source episodes before RoboOrchard preserved frame-table columns
+            are injected.
         database_driver (str): The database driver to use for the meta
             database. Default is "duckdb".
         check_timestamp (bool, optional): Whether to check the
@@ -203,6 +111,12 @@ class DatasetPackaging:
             queries and operations. If True, it will raise an error
             if the timestamp is not set or if timestamp_min is greater
             than timestamp_max. Default is False.
+        transforms (Sequence[EpisodePackagingTransform] | None, optional):
+            Resource-free transforms applied to each episode payload before
+            frame writing. Transforms run in the provided order, may update
+            the payload feature schema, and may skip entire episodes. They do
+            not own database, Arrow writer, sidecar, staging-directory, or
+            cleanup lifecycle. Default is None.
 
     """
 
@@ -211,8 +125,19 @@ class DatasetPackaging:
         features: hg_datasets.Features,
         database_driver: str = "duckdb",
         check_timestamp: bool = False,
+        *,
+        transforms: Sequence[EpisodePackagingTransform] | None = None,
     ):
-        self._features = self._check_and_update_features(features)
+        self._transform_pipeline = ComposedEpisodePackagingTransform(
+            transforms
+        )
+        self._payload_features = self._transform_pipeline.prepare_features(
+            features
+        )
+        self._payload_feature_keys = set(self._payload_features)
+        self._features = self._check_and_update_features(
+            self._payload_features
+        )
         self._database_driver = database_driver
         self._index_state: DatasetIndexState = DatasetIndexState()
         self._instruction_cache: InstructionCache = InstructionCache()
@@ -220,11 +145,13 @@ class DatasetPackaging:
 
     @property
     def features(self) -> hg_datasets.Features:
+        """Return writer features including RoboOrchard preserved columns."""
         return self._features
 
     def _check_and_update_features(
         self, features: hg_datasets.Features
     ) -> hg_datasets.Features:
+        """Validate payload features and add frame-table index columns."""
         index_keys = PreservedIndexColumnsKeys
         for key in index_keys:
             if key in features:
@@ -241,12 +168,11 @@ class DatasetPackaging:
 
     def _extend_frame_with_index(
         self,
-        # features: dict[str, Any],
         frame: DataFrame,
         episode_meta: EpisodeMetaORM,
         instruction: Instruction | None,
     ):
-        """Extend the frame with index fields."""
+        """Validate one payload frame and append target-local index columns."""
         features = frame.features
         for key in PreservedColumnsKeys:
             if key in features:
@@ -254,6 +180,14 @@ class DatasetPackaging:
                     f"key '{key}' is reserved for internal use "
                     "and cannot be used in the frame features."
                 )
+        feature_keys = set(features)
+        if feature_keys != self._payload_feature_keys:
+            missing_keys = sorted(self._payload_feature_keys - feature_keys)
+            extra_keys = sorted(feature_keys - self._payload_feature_keys)
+            raise ValueError(
+                "Frame features must match the packaging payload schema. "
+                f"Missing keys: {missing_keys}. Extra keys: {extra_keys}."
+            )
 
         index_columns = PreservedIndexColumns(
             index=self._index_state.last_frame_idx + 1,
@@ -339,6 +273,22 @@ class DatasetPackaging:
                 return
 
         for episode in episodes:
+            try:
+                episode = self._transform_pipeline.transform_episode(episode)
+                if episode is None:
+                    continue
+            except Exception as e:
+                if fail_fast:
+                    raise
+                warnings.warn(
+                    f"Failed to transform episode {episode}. "
+                    f"Skipping this episode. Error: "
+                )
+                import traceback
+
+                traceback.print_exception(e)
+                continue
+
             try:
                 episode_meta = episode.generate_episode_meta()
                 if episode_meta is None:
@@ -633,226 +583,6 @@ class DatasetPackaging:
             # Clean up the temporary database file if it exists
             if os.path.exists(db_path):
                 os.remove(db_path)
-
-
-@dataclass
-class EpisodeData:
-    """Data for an episode information which is used for packaging."""
-
-    frame_num: int | None = None
-    """The total number of frames in the episode.
-
-    No need to set this field during packaging, it will be updated
-    automatically during packaging.
-    """
-    prev_episode_index: int | None = None
-    """The index of the previous episode in the dataset."""
-    dataset_begin_index: int | None = None
-    """The index of the first dataset item in this episode.
-
-    No need to set this field during packaging, it will be updated
-    automatically during packaging.
-    """
-
-    truncated: bool | None = None
-    """Whether the episode was truncated."""
-
-    success: bool | None = None
-    """Whether the episode was successful."""
-
-    info: dict[str, Any] | None = None
-    """Additional information about the episode."""
-
-    index: int | None = None
-    """The target episode index.
-
-    If None, packaging assigns the next contiguous target episode index. If
-    set, it must match the next target episode index. This must be set when
-    prev_episode_index is set so the previous episode reference is explicitly
-    in target-index space.
-    """
-
-
-@dataclass
-class RobotData:
-    """Data for a robot information which is used for packaging."""
-
-    name: str
-    """The name of the robot."""
-
-    content: str | None
-    content_format: RobotDescriptionFormat | None
-
-    @classmethod
-    def from_orm(cls, orm_robot: Robot) -> RobotData:
-        """Create a RobotData instance from an ORM Robot instance."""
-        return cls(
-            name=orm_robot.name,
-            content=orm_robot.content,
-            content_format=orm_robot.content_format,
-        )
-
-    def make_transient_orm(
-        self, index_state: DatasetIndexState, session: Session | None
-    ) -> Robot:
-        """Create a transient ORM instance of the robot.
-
-        If session is provided, it will check if the robot already exists
-        in the database using its name and URDF content. If it exists, it
-        will return the existing robot instance, otherwise it will create a
-        new transient instance with the next index.
-
-        If session is None, it will create a new transient instance with the
-        next index without checking the database.
-
-        """
-
-        def make_new():
-            ret = Robot(index=index_state.last_robot_idx + 1, **self.__dict__)
-            ret.update_md5()
-            return ret
-
-        if session is not None:
-            ret = Robot.query_by_content_with_md5(session, **self.__dict__)
-            if ret is not None:
-                # Make sure the robot is not transient
-                make_transient(ret)
-                return ret
-            else:
-                return make_new()
-        else:
-            return make_new()
-
-    @property
-    @deprecated("Use 'content' and 'content_format' instead.")  # type: ignore
-    def urdf_content(self) -> str | None:
-        """The URDF content of the robot."""
-        if self.content_format == RobotDescriptionFormat.URDF:
-            return self.content
-        else:
-            return None
-
-    @urdf_content.setter
-    @deprecated("Use 'content' and 'content_format' instead.")  # type: ignore
-    def urdf_content(self, value: str | None):
-        """Set the URDF content of the robot."""
-        self.content = value
-        self.content_format = RobotDescriptionFormat.URDF
-
-
-@dataclass
-class TaskData:
-    """Data for a task information which is used for packaging."""
-
-    name: str
-    """The name of the task."""
-    description: str | None = None
-    """The description of the task."""
-    info: dict[str, Any] | None = None
-    """Additional task information.
-
-    ``info`` is part of the task identity. Empty dictionaries are normalized
-    to ``None`` so empty info and missing info do not create distinct tasks.
-    Non-empty values must be strict JSON objects: keys must be strings, values
-    must be JSON-compatible, and floats must be finite. Invalid values are
-    rejected before ORM storage or task identity hashing.
-    """
-
-    def make_transient_orm(
-        self, index_state: DatasetIndexState, session: Session | None
-    ) -> Task:
-        """Create a transient ORM instance of the task.
-
-        If session is provided, it will check if the task already exists
-        in the database using its semantic identity. If it exists, it will
-        return the existing task instance, otherwise it will create a new
-        transient instance with the next index.
-
-        If session is None, it will create a new transient instance with the
-        next index without checking the database.
-
-        """
-        info = Task.normalize_info(self.info)
-
-        def make_new():
-            ret = Task(
-                index=index_state.last_task_idx + 1,
-                name=self.name,
-                description=self.description,
-                info=info,
-            )
-            ret.update_md5()
-            return ret
-
-        if session is not None:
-            ret = Task.query_by_content_with_md5(
-                session,
-                name=self.name,
-                description=self.description,
-                info=info,
-            )
-            if ret is not None:
-                make_transient(ret)
-                return ret
-            else:
-                return make_new()
-        else:
-            return make_new()
-
-
-@dataclass
-class EpisodeMetaORM:
-    """Metadata for an episode in a RoboOrchard dataset."""
-
-    episode: Episode
-    robot: Robot | None = None
-    task: Task | None = None
-
-
-@dataclass
-class InstructionData:
-    """Data for an instruction information which is used for packaging."""
-
-    name: str | None
-    """The name of the instruction."""
-    json_content: dict[str, Any] | None
-    """The content of the instruction, typically a dictionary with keys like
-    'instruction', 'robot', and 'task'.
-    """
-
-    def make_transient_orm(
-        self, index_state: DatasetIndexState, session: Session | None = None
-    ) -> Instruction:
-        """Create a transient ORM instance of the instruction.
-
-        If session is provided, it will check if the instruction already exists
-        in the database using its name and JSON content. If it exists, it
-        will return the existing instruction instance, otherwise it will
-        create a new transient instance with the next index.
-
-        If session is None, it will create a new transient instance with the
-        next index without checking the database.
-
-        """
-
-        def make_new():
-            ret = Instruction(
-                index=index_state.last_instruction_idx + 1, **self.__dict__
-            )
-            ret.update_md5()
-            return ret
-
-        if session is not None:
-            ret = Instruction.query_by_content_with_md5(
-                session, **self.__dict__
-            )
-            if ret is not None:
-                make_transient(ret)
-                return ret
-            else:
-                return make_new()
-        else:
-            return make_new()
 
 
 class InstructionCache:

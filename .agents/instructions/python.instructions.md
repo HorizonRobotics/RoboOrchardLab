@@ -34,6 +34,16 @@ description: Load these instructions when modifying Python source files, tests, 
 - When reorganizing a Python module and no stronger local convention exists,
   prefer a public-first layout: module constants/config, core public types,
   public entrypoints, public adapters or mixins, then private helpers.
+- When adding a Python module, first decide whether the module itself is an
+  intended public interface surface or an internal implementation module. If
+  the whole module is internal, prefer an underscore-prefixed filename such as
+  `_runner.py` over mechanically prefixing every class and function with `_`.
+  Inside an internal module, still distinguish implementation types shared by
+  nearby internal modules from module-local helpers; use symbol-level `_` only
+  when it adds useful locality or privacy signal.
+- A private module filename is not a shortcut around public-surface
+  discipline. Package roots, `__all__`, docs, and repository-owned imports
+  still determine which paths are supported public APIs.
 - Keep canonical types and code paths before legacy or compatibility ones. If
   a legacy type belongs to the same public type family, keep it near that
   family but after the canonical type it complements.

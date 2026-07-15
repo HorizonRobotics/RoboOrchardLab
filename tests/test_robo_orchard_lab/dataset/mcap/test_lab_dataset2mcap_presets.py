@@ -20,44 +20,6 @@ from pathlib import Path
 _LAB_ROOT = Path(__file__).resolve().parents[4]
 
 
-def test_robotwin_default_dataset2mcap_config_maps_expected_topics() -> None:
-    from robo_orchard_lab.dataset.robotwin.to_mcap import (
-        dataset_to_mcap_config,
-        default_dataset_to_mcap_config,
-    )
-
-    config = default_dataset_to_mcap_config()
-    entry_point_config = dataset_to_mcap_config(dataset=object())
-
-    assert sorted(config) == [
-        "front_camera",
-        "front_camera_depth",
-        "head_camera",
-        "head_camera_depth",
-        "joints",
-        "left_camera",
-        "left_camera_depth",
-        "right_camera",
-        "right_camera_depth",
-    ]
-    assert sorted(entry_point_config) == sorted(config)
-    assert config["joints"].target_topic == (
-        "/observation/robot_state/joints"
-    )
-    assert config["front_camera"].image_topic == (
-        "/observation/cameras/front_camera/image"
-    )
-    assert config["front_camera"].calib_topic == (
-        "/observation/cameras/front_camera/calib"
-    )
-    assert config["front_camera"].tf_topic == (
-        "/observation/cameras/front_camera/tf"
-    )
-    assert config["front_camera_depth"].image_topic == (
-        "/observation/cameras/front_camera/depth"
-    )
-
-
 def test_libero_dataset2mcap_config_entry_point_accepts_dataset() -> None:
     from robo_orchard_lab.dataset.libero.to_mcap import (
         dataset_to_mcap_config,
@@ -89,8 +51,6 @@ def test_setup_declares_dataset2mcap_preset_entry_points() -> None:
 
     assert entry_points is not None
     assert entry_points["robo_orchard_datasets.dataset2mcap_presets"] == [
-        "robotwin=robo_orchard_lab.dataset.robotwin.to_mcap:"
-        "dataset_to_mcap_config",
         "libero=robo_orchard_lab.dataset.libero.to_mcap:"
         "dataset_to_mcap_config",
     ]

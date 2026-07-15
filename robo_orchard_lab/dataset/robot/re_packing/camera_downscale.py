@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, replace
-from typing import Collection, Sequence
+from typing import Sequence
 
 import datasets as hg_datasets
 
@@ -31,13 +31,9 @@ from robo_orchard_lab.dataset.robot.columns import PreservedColumnsKeys
 from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.packaging import (
     DataFrame,
+    IdentityEpisodePackagingTransform,
 )
 from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
-from robo_orchard_lab.dataset.robot.re_packing.contracts import (
-    IdentityRODatasetRepackTransform,
-    RODatasetFrameContext,
-    RODatasetRepackContext,
-)
 
 __all__ = ["downscale_ro_dataset", "CameraDownscaleTransform"]
 
@@ -56,6 +52,12 @@ def downscale_ro_dataset(
     force_overwrite: bool = False,
 ) -> None:
     """Write a RODataset copy with encoded camera columns downscaled.
+
+    The function opens ``source_dataset_path`` as a ``RODataset`` and runs the
+    standard repack pipeline with ``CameraDownscaleTransform``. Only
+    ``BatchCameraDataEncodedFeature`` columns are eligible. If ``columns`` is
+    omitted, all encoded camera columns in the selected source dataset are
+    processed.
 
     Args:
         source_dataset_path (str): Existing RODataset path to read.
@@ -78,6 +80,13 @@ def downscale_ro_dataset(
             Default is 4096.
         force_overwrite (bool, optional): Whether to overwrite the target
             dataset path. Default is False.
+
+    Raises:
+        RepackFrameTransformError: If a selected camera frame cannot be
+            decoded, resized, re-encoded, or otherwise transformed while the
+            repack runner drains the frame stream. The original transform
+            exception is available through ``__cause__`` and
+            ``original_error``.
     """
 
     source_dataset = RODataset(source_dataset_path)
@@ -102,8 +111,23 @@ def downscale_ro_dataset(
     )
 
 
-class CameraDownscaleTransform(IdentityRODatasetRepackTransform):
-    """Downscale encoded camera columns during RODataset repack."""
+class CameraDownscaleTransform(IdentityEpisodePackagingTransform):
+    """Frame-level transform that downscales encoded camera columns.
+
+    The transform resolves its input columns during ``prepare_features`` and
+    then rewrites only the selected encoded camera payloads. Non-depth image
+    columns are resized with the regular image path; depth columns are resized
+    with the depth path. A ``downscale`` value of ``1.0`` leaves frame
+    payloads unchanged after column validation.
+
+    Args:
+        config (CameraDownscaleConfig): Resize and re-encoding options.
+        camera_columns (Sequence[str] | None): Encoded camera columns to
+            downscale. If None, all encoded camera columns are selected.
+        depth_columns (Sequence[str] | None): Selected columns that should use
+            depth decoding and nearest-neighbor resizing. If None, columns with
+            depth-like names are treated as depth.
+    """
 
     def __init__(
         self,
@@ -121,64 +145,41 @@ class CameraDownscaleTransform(IdentityRODatasetRepackTransform):
         )
         self._resolved_columns: _ResolvedCameraDownscaleColumns | None = None
 
-    def required_columns(
-        self,
-        context: RODatasetRepackContext,
-    ) -> Collection[str]:
-        return self._resolve_columns(context.target_features).selected_columns
-
-    def prepare(self, context: RODatasetRepackContext) -> None:
-        self._resolved_columns = self._resolve_columns(context.target_features)
-
-    def update_features(
+    def prepare_features(
         self,
         features: hg_datasets.Features,
     ) -> hg_datasets.Features:
+        self._resolved_columns = _resolve_camera_downscale_columns(
+            features,
+            columns=self.camera_columns,
+            depth_columns=self.depth_columns,
+        )
         return features
 
     def transform_frame(
         self,
         frame: DataFrame,
-        context: RODatasetFrameContext,
     ) -> DataFrame:
         if self.config.downscale == 1.0:
             return frame
 
-        resolved_columns = self._require_resolved_columns()
+        resolved_columns = self._resolved_columns
+        if resolved_columns is None:
+            raise RuntimeError(
+                "CameraDownscaleTransform.prepare_features() must run "
+                "before episode or frame transforms."
+            )
+
         depth_column_set = set(resolved_columns.depth_columns)
         features = frame.features.copy()
-        source_frame_index = context.source_frame_row.get(
-            "frame_index", context.frame_index
-        )
         for column in resolved_columns.selected_columns:
             features[column] = downscale_camera_data(
                 features[column],
                 config=self.config,
                 is_depth=column in depth_column_set,
-                context=(
-                    f"episode={context.episode_index} column={column} "
-                    f"frame={source_frame_index}"
-                ),
+                context=f"column={column}",
             )
         return replace(frame, features=features)
-
-    def _resolve_columns(
-        self,
-        features: hg_datasets.Features,
-    ) -> _ResolvedCameraDownscaleColumns:
-        return _resolve_camera_downscale_columns(
-            features,
-            columns=self.camera_columns,
-            depth_columns=self.depth_columns,
-        )
-
-    def _require_resolved_columns(self) -> _ResolvedCameraDownscaleColumns:
-        if self._resolved_columns is None:
-            raise RuntimeError(
-                "CameraDownscaleTransform.prepare() must run before "
-                "episode or frame transforms."
-            )
-        return self._resolved_columns
 
 
 @dataclass(frozen=True, slots=True)

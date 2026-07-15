@@ -18,14 +18,10 @@ import json
 import os
 import random
 import string
-from typing import Mapping
 
 import pytest
 
 from robo_orchard_lab.dataset.datatypes import BatchCameraDataEncoded
-from robo_orchard_lab.dataset.experimental.mcap.batch_encoder import (
-    McapBatchEncoderConfig,
-)
 from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
 from robo_orchard_lab.dataset.experimental.mcap.reader import (
     MakeIterMsgArgs,
@@ -37,9 +33,6 @@ from robo_orchard_lab.dataset.experimental.mcap.writer import (
 )
 from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.db_orm import Episode
-from robo_orchard_lab.dataset.robotwin.to_mcap import (
-    default_dataset_to_mcap_config,
-)
 
 
 @pytest.fixture(scope="module")
@@ -52,17 +45,11 @@ def robotwin_dataset(ROBO_ORCHARD_TEST_WORKSPACE: str):
     yield dataset
 
 
-@pytest.fixture(scope="module")
-def robotwin_dataset2mcap_cfg():
-    return default_dataset_to_mcap_config()
-
-
 class TestDataset2Mcap:
     def test_save_episode(
         self,
         robotwin_dataset: RODataset,
         tmp_local_folder: str,
-        robotwin_dataset2mcap_cfg: Mapping[str, McapBatchEncoderConfig],
     ):
         # Test saving an episode to MCAP format
 
@@ -75,7 +62,7 @@ class TestDataset2Mcap:
         to_mcap.save_episode(
             target_path=target_path,
             episode_index=0,
-            encoder_cfg=robotwin_dataset2mcap_cfg,
+            encoder_cfg={},
         )
         assert os.path.exists(target_path), "MCAP file was not created."
 

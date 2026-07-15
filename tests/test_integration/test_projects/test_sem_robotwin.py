@@ -44,6 +44,9 @@ def test_sem_robotwin(PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str):
         ),
         step_log_freq=1,
         max_step=3,
+        # Multiprocessing cleanup is covered separately from this training
+        # smoke.
+        num_workers=0,
         lr=0.0,
         task_names=["shoe_place"],
     )

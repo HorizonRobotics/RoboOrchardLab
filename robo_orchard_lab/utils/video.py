@@ -22,6 +22,7 @@ import warnings
 import weakref
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -107,6 +108,19 @@ class VideoWriter:
         codec (str, optional): ffmpeg video codec name. Default is
             ``"libx264"``.
         crf (int, optional): ffmpeg CRF quality setting. Default is 23.
+        preset (str | int | None, optional): Encoder preset controlling the
+            tradeoff between encoding speed and compression. Common string
+            values include ``"fast"``, ``"medium"``, and ``"slow"``. If
+            None, the encoder default is used. Default is None.
+        extra_options (dict[str, Any] | None, optional): Additional encoder
+            options passed to ffmpeg after the dedicated codec, CRF, and
+            preset arguments. Keys omit the leading ``-``; for example,
+            ``{"qp": 5, "tune": "film"}``. Values cannot be None; bool
+            values become ``1`` or ``0``, while other values are converted
+            with ``str()``. The dictionary is copied during construction, so
+            later changes to the caller's dictionary do not affect the
+            writer. Unsupported or conflicting options are reported by
+            ffmpeg. Default is None.
         output_pixel_format (str, optional): Encoded output pixel format.
             Default is ``"yuv420p"``.
         overwrite (bool, optional): Whether an existing target file may be
@@ -121,6 +135,8 @@ class VideoWriter:
         fps: int = 10,
         codec: str = "libx264",
         crf: int = 23,
+        preset: str | int | None = None,
+        extra_options: dict[str, Any] | None = None,
         output_pixel_format: str = "yuv420p",
         overwrite: bool = True,
     ) -> None:
@@ -130,11 +146,35 @@ class VideoWriter:
             raise ValueError("codec must be a non-empty string.")
         if not output_pixel_format:
             raise ValueError("output_pixel_format must be a non-empty string.")
+        if preset is not None:
+            if isinstance(preset, bool) or not isinstance(preset, (str, int)):
+                raise TypeError("preset must be a string, integer, or None.")
+            if isinstance(preset, str) and not preset:
+                raise ValueError("preset must be a non-empty string.")
+        if extra_options is not None and not isinstance(extra_options, dict):
+            raise TypeError("extra_options must be a dictionary or None.")
+
+        normalized_extra_options: dict[str, Any] = {}
+        for option_name, option_value in (extra_options or {}).items():
+            if not isinstance(option_name, str):
+                raise TypeError("extra_options keys must be strings.")
+            if not option_name or option_name.startswith("-"):
+                raise ValueError(
+                    "extra_options keys must be non-empty ffmpeg option "
+                    "names without a leading '-'."
+                )
+            if option_value is None:
+                raise ValueError(
+                    f"extra_options[{option_name!r}] must not be None."
+                )
+            normalized_extra_options[option_name] = option_value
 
         self.pixel_format = VideoPixelFormat(pixel_format)
         self.fps = fps
         self.codec = codec
         self.crf = crf
+        self.preset = preset
+        self.extra_options = normalized_extra_options
         self.output_pixel_format = output_pixel_format
         self.overwrite = overwrite
 
@@ -426,12 +466,6 @@ class VideoWriter:
             )
 
     def _start_process(self, *, width: int, height: int) -> None:
-        ffmpeg_binary = shutil.which("ffmpeg")
-        if ffmpeg_binary is None:
-            raise VideoBackendUnavailableError(
-                "ffmpeg is not available in PATH."
-            )
-
         path = self.output_path
         if path is None:
             raise VideoEncodeError(
@@ -443,8 +477,24 @@ class VideoWriter:
                 f"{path} because it already exists and overwrite=False."
             )
 
+        ffmpeg_binary = shutil.which("ffmpeg")
+        if ffmpeg_binary is None:
+            raise VideoBackendUnavailableError(
+                "ffmpeg is not available in PATH."
+            )
+
         path.parent.mkdir(parents=True, exist_ok=True)
         staging_output_path = self._build_staging_output_path(path)
+        encoder_option_args: list[str] = []
+        if self.preset is not None:
+            encoder_option_args.extend(["-preset", str(self.preset)])
+        for option_name, option_value in self.extra_options.items():
+            option_text = (
+                str(int(option_value))
+                if isinstance(option_value, bool)
+                else str(option_value)
+            )
+            encoder_option_args.extend([f"-{option_name}", option_text])
         try:
             proc = subprocess.Popen(
                 [
@@ -468,6 +518,7 @@ class VideoWriter:
                     self.codec,
                     "-crf",
                     str(self.crf),
+                    *encoder_option_args,
                     str(staging_output_path),
                 ],
                 stdin=subprocess.PIPE,

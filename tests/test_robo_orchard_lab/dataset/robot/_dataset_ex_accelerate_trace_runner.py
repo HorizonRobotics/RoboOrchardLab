@@ -110,6 +110,14 @@ def _first_value(batch):
     return batch
 
 
+def _jsonable_batch_values(batch):
+    if isinstance(batch, torch.Tensor):
+        return batch.tolist()
+    if isinstance(batch, list | tuple):
+        return [_jsonable_batch_values(value) for value in batch]
+    return batch
+
+
 def _get_base_dataset(loader):
     dataset = getattr(loader, "dataset", None)
     if dataset is not None:
@@ -182,8 +190,10 @@ def main() -> int:
         )
 
     trace = []
+    value_trace = []
     for batch in prepared:
         trace.append("A" if _first_value(batch) < 100 else "B")
+        value_trace.append(_jsonable_batch_values(batch))
         if len(trace) >= 20:
             break
 
@@ -192,6 +202,7 @@ def main() -> int:
     payload = {
         "rank": accelerator.process_index,
         "trace": trace,
+        "value_trace": value_trace,
         "shard_strategy": base_dataset.shard_kwargs.shard_strategy,
         "total_indices_length": getattr(
             base_dataset,

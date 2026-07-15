@@ -45,6 +45,9 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodeMeta,
     EpisodePackaging,
 )
+from robo_orchard_lab.dataset.robot.re_packing._errors import (
+    RepackFrameTransformError,
+)
 from robo_orchard_lab.dataset.robot.re_packing.camera_downscale import (
     downscale_ro_dataset,
 )
@@ -167,6 +170,12 @@ def _make_camera_downscale_source_dataset(
         force_overwrite=True,
     )
     return str(dataset_path)
+
+
+def _assert_repack_frame_transform_error(
+    exc: BaseException,
+) -> None:
+    assert isinstance(exc, RepackFrameTransformError)
 
 
 class TestCameraDownscaleConfig:
@@ -465,7 +474,7 @@ class TestDownscaleRODataset:
             corrupt_frame_index=1,
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(Exception) as exc_info:
             downscale_ro_dataset(
                 source_path,
                 str(tmp_path / "target_ro_dataset"),
@@ -474,10 +483,18 @@ class TestDownscaleRODataset:
                 force_overwrite=True,
             )
 
-        message = str(exc_info.value)
-        assert "episode=0" in message
+        exc = exc_info.value
+        _assert_repack_frame_transform_error(exc)
+        assert isinstance(exc.__cause__, ValueError)
+        assert exc.original_error is exc.__cause__
+        assert exc.source_episode_index == 0
+        assert exc.frame_offset == 1
+        assert exc.source_frame_index == 1
+        message = str(exc)
         assert "column=front_camera_image" in message
-        assert "frame=1" in message
+        assert "source_episode_index=0" in message
+        assert "frame_offset=1" in message
+        assert "source_frame_index=1" in message
 
     def test_downscale_ro_dataset_rejects_bad_explicit_columns(self, tmp_path):
         source_path = _make_camera_downscale_source_dataset(

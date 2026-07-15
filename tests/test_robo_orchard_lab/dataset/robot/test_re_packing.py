@@ -15,6 +15,8 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+import importlib.util
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,18 +31,14 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodeData,
     EpisodeMeta,
     EpisodePackaging,
+    IdentityEpisodePackagingTransform,
     InstructionData,
     RobotData,
     TaskData,
 )
-from robo_orchard_lab.dataset.robot.re_packing import (
-    DefaultRePackingEpisodeHelper,
-    IdentityRODatasetRepackTransform,
-    RODatasetEpisodeContext,
-    RODatasetEpisodeSelection,
-    RODatasetFrameContext,
-    RODatasetRepackContext,
-    repack_dataset,
+from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
+from robo_orchard_lab.dataset.robot.re_packing._errors import (
+    RepackFrameTransformError,
 )
 
 
@@ -103,6 +101,22 @@ class _SimpleRepackEpisode(EpisodePackaging):
                 timestamp_ns_min=value,
                 timestamp_ns_max=value,
             )
+
+
+class _TestEpisodePackaging(EpisodePackaging):
+    def __init__(
+        self,
+        episode_meta: EpisodeMeta | None,
+        frames: Iterable[DataFrame],
+    ) -> None:
+        self._episode_meta = episode_meta
+        self._frames = frames
+
+    def generate_episode_meta(self) -> EpisodeMeta | None:
+        return self._episode_meta
+
+    def generate_frames(self):
+        yield from self._frames
 
 
 def _make_source_dataset(tmp_path: Path) -> RODataset:
@@ -184,10 +198,6 @@ def _episode_prev_indices(dataset: RODataset) -> list[int | None]:
     return prev_indices
 
 
-class _CustomRePackingEpisodeHelper(DefaultRePackingEpisodeHelper):
-    pass
-
-
 def test_transform_identity_repack_preserves_complete_episode_metadata(
     tmp_path: Path,
 ) -> None:
@@ -216,11 +226,11 @@ def test_transform_identity_repack_preserves_complete_episode_metadata(
     assert episode.success is True
 
 
-def test_default_helper_path_keeps_compatibility_behavior(
+def test_default_repack_uses_canonical_runner_and_preserves_metadata(
     tmp_path: Path,
 ) -> None:
     source_dataset = _make_source_dataset(tmp_path)
-    target_path = tmp_path / "target_helper_path"
+    target_path = tmp_path / "target_default_canonical"
 
     repack_dataset(
         source_dataset,
@@ -235,7 +245,9 @@ def test_default_helper_path_keeps_compatibility_behavior(
     assert frame0["value"] == 0
     episode = target_dataset.get_meta(Episode, int(frame0["episode_index"]))
     assert episode is not None
-    assert episode.info is None
+    assert episode.info == {"episode": 0}
+    assert episode.truncated is False
+    assert episode.success is True
 
 
 def test_transform_repack_preserves_adjacent_complete_episode_links(
@@ -248,6 +260,23 @@ def test_transform_repack_preserves_adjacent_complete_episode_links(
         source_dataset,
         str(target_path),
         transforms=[],
+        writer_batch_size=1,
+        force_overwrite=True,
+    )
+
+    target_dataset = RODataset(str(target_path))
+    assert _episode_prev_indices(target_dataset) == [None, 0]
+
+
+def test_default_repack_with_all_frames_preserves_episode_links(
+    tmp_path: Path,
+) -> None:
+    source_dataset = _make_linked_source_dataset(tmp_path)
+    target_path = tmp_path / "target_default_all_frames_links"
+
+    repack_dataset(
+        source_dataset,
+        str(target_path),
         writer_batch_size=1,
         force_overwrite=True,
     )
@@ -299,6 +328,12 @@ def test_transform_repack_resumes_links_after_skipped_middle_episode(
     )
 
     target_dataset = RODataset(str(target_path))
+    episode_indices = []
+    for episode_index in range(target_dataset.episode_num):
+        episode = target_dataset.get_meta(Episode, episode_index)
+        assert episode is not None
+        episode_indices.append(episode.index)
+    assert episode_indices == [0, 1, 2]
     assert _episode_prev_indices(target_dataset) == [None, None, 1]
 
 
@@ -320,14 +355,6 @@ def test_transform_repack_uses_source_to_target_episode_index_map(
     assert _episode_prev_indices(target_dataset) == [None, 0, 0]
 
 
-def test_repacking_dataset_helper_remains_importable() -> None:
-    from robo_orchard_lab.dataset.robot.re_packing import (
-        RePackingDatasetHelper,
-    )
-
-    assert RePackingDatasetHelper is not None
-
-
 def test_transform_contract_types_stay_off_robot_root_namespace() -> None:
     import robo_orchard_lab.dataset.robot as robot_dataset
 
@@ -335,20 +362,136 @@ def test_transform_contract_types_stay_off_robot_root_namespace() -> None:
     assert not hasattr(robot_dataset, "RODatasetRepackTransform")
 
 
-def test_transform_mode_rejects_custom_packing_impl_and_fail_fast_false(
+def test_repacking_does_not_export_old_transform_contracts() -> None:
+    import robo_orchard_lab.dataset.robot as robot_dataset
+    import robo_orchard_lab.dataset.robot.re_packing as repacking
+
+    assert not hasattr(repacking, "RODatasetRepackTransform")
+    assert not hasattr(repacking, "IdentityRODatasetRepackTransform")
+    assert not hasattr(repacking, "RODatasetRepackEpisode")
+    assert not hasattr(repacking, "RODatasetRepackFrame")
+    assert not hasattr(repacking, "EpisodePackagingTransform")
+    assert not hasattr(repacking, "DefaultRePackingEpisodeHelper")
+    assert not hasattr(repacking, "RePackingDatasetHelper")
+    assert not hasattr(repacking, "RODatasetEpisodeRepackTransform")
+    assert not hasattr(repacking, "IdentityRODatasetEpisodeRepackTransform")
+    assert not hasattr(repacking, "RepackFrameTransformError")
+    assert not hasattr(robot_dataset, "DefaultRePackingEpisodeHelper")
+    assert not hasattr(robot_dataset, "RODatasetEpisodeRepackTransform")
+
+
+def test_repack_runner_uses_unified_internal_names() -> None:
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _episode as packaging_episode_module,
+    )
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _runner as repack_runner_module,
+        _source as repack_source_module,
+    )
+
+    assert (
+        importlib.util.find_spec(
+            "robo_orchard_lab.dataset.robot._packaging_transform"
+        )
+        is None
+    )
+    assert not hasattr(packaging_episode_module, "_MappedEpisodePackaging")
+    assert not hasattr(packaging_episode_module, "_CachedEpisodePackaging")
+    assert not hasattr(
+        packaging_episode_module,
+        "_EpisodePackagingTransformPipeline",
+    )
+    assert not hasattr(packaging_episode_module, "_EpisodePackagingView")
+    assert hasattr(packaging_episode_module, "EpisodePackagingView")
+    assert packaging_episode_module.__all__ == [
+        "ComposedEpisodePackagingTransform",
+        "DataFrame",
+        "EpisodeMeta",
+        "EpisodePackaging",
+        "EpisodePackagingTransform",
+        "EpisodePackagingView",
+        "IdentityEpisodePackagingTransform",
+    ]
+    assert (
+        importlib.util.find_spec(
+            "robo_orchard_lab.dataset.robot.re_packing.runner"
+        )
+        is None
+    )
+    assert (
+        importlib.util.find_spec(
+            "robo_orchard_lab.dataset.robot.re_packing.source"
+        )
+        is None
+    )
+    assert not hasattr(repack_runner_module, "_SourceRepackEpisode")
+    assert not hasattr(repack_runner_module, "TransformRepackRunner")
+    assert not hasattr(repack_runner_module, "transform_repack_dataset")
+    assert not hasattr(repack_runner_module, "_RepackEpisodeRunner")
+    assert not hasattr(repack_runner_module, "_StagedDatasetOutput")
+    assert hasattr(repack_runner_module, "RepackEpisodeRunner")
+    assert hasattr(repack_runner_module, "_StagedDatasetWriteSession")
+    assert hasattr(repack_runner_module, "repack_dataset")
+    assert not hasattr(repack_runner_module, "_run_repack_dataset")
+    assert hasattr(repack_source_module, "SourceReader")
+    assert hasattr(repack_source_module, "SourceEpisodeChunk")
+
+
+def test_identity_transform_has_no_dispatch_mode_flag() -> None:
+    assert not hasattr(
+        IdentityEpisodePackagingTransform(),
+        "is_frame_level_transform",
+    )
+
+
+def test_repack_dataset_rejects_uri_target_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _runner as repack_runner_module,
+    )
+
+    class _MinimalSourceDataset:
+        features = hg_datasets.Features({"value": hg_datasets.Value("int64")})
+
+    class _UnexpectedDatasetPackaging:
+        def __init__(self, features: hg_datasets.Features) -> None:
+            del features
+
+        def packaging(self, *args, **kwargs) -> None:
+            del args, kwargs
+            raise AssertionError("URI target path reached dataset writing.")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        repack_runner_module,
+        "DatasetPackaging",
+        _UnexpectedDatasetPackaging,
+    )
+
+    with pytest.raises(ValueError, match="URI paths are not supported"):
+        repack_dataset(
+            _MinimalSourceDataset(),  # type: ignore[arg-type]
+            "s3://bucket/target_ro_dataset",
+            transforms=[],
+            force_overwrite=True,
+        )
+
+
+def test_repack_dataset_rejects_removed_legacy_keywords(
     tmp_path: Path,
 ) -> None:
     source_dataset = _make_source_dataset(tmp_path)
 
-    with pytest.raises(ValueError, match="packing_impl"):
+    with pytest.raises(TypeError, match="packing_impl"):
         repack_dataset(
             source_dataset,
             str(tmp_path / "target_custom_helper"),
-            transforms=[],
-            packing_impl=_CustomRePackingEpisodeHelper,
+            packing_impl=object,
         )
 
-    with pytest.raises(ValueError, match="fail-fast"):
+    with pytest.raises(TypeError, match="fail_fast"):
         repack_dataset(
             source_dataset,
             str(tmp_path / "target_fail_fast_false"),
@@ -439,26 +582,31 @@ def test_transform_mode_replaces_existing_target_after_success(
     assert target_dataset[0]["text"] == "episode-0-frame-0"
 
 
-class _RequireValueTransform(IdentityRODatasetRepackTransform):
-    def required_columns(
+class _RequireValueTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
         self,
-        context: RODatasetRepackContext,
-    ) -> list[str]:
-        return ["value"]
+        features: hg_datasets.Features,
+    ) -> hg_datasets.Features:
+        if "value" not in features:
+            raise ValueError(f"{self!r} requires missing columns: ['value'].")
+        return features
 
 
-class _RequireReservedColumnTransform(IdentityRODatasetRepackTransform):
-    def required_columns(
+class _RequireReservedColumnTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
         self,
-        context: RODatasetRepackContext,
-    ) -> list[str]:
-        return ["index"]
+        features: hg_datasets.Features,
+    ) -> hg_datasets.Features:
+        del features
+        raise ValueError(f"{self!r} requires reserved columns: ['index'].")
 
 
-def test_required_columns_respect_columns_projection(tmp_path: Path) -> None:
+def test_prepare_features_respects_columns_projection(
+    tmp_path: Path,
+) -> None:
     source_dataset = _make_source_dataset(tmp_path)
 
-    with pytest.raises(ValueError, match="missing column 'value'"):
+    with pytest.raises(ValueError, match="requires missing columns"):
         repack_dataset(
             source_dataset,
             str(tmp_path / "target_missing_required_column"),
@@ -466,7 +614,7 @@ def test_required_columns_respect_columns_projection(tmp_path: Path) -> None:
             transforms=[_RequireValueTransform()],
         )
 
-    with pytest.raises(ValueError, match="reserved column 'index'"):
+    with pytest.raises(ValueError, match="requires reserved columns"):
         repack_dataset(
             source_dataset,
             str(tmp_path / "target_reserved_required_column"),
@@ -474,27 +622,8 @@ def test_required_columns_respect_columns_projection(tmp_path: Path) -> None:
         )
 
 
-def test_helper_exposes_episode_selection(tmp_path: Path) -> None:
-    source_dataset = _make_source_dataset(tmp_path)
-
-    partial_helper = DefaultRePackingEpisodeHelper(source_dataset, [0])
-    assert partial_helper.episode_selection.selected_frame_indices == (0,)
-    assert partial_helper.episode_selection.source_episode_frame_indices == (
-        0,
-        1,
-    )
-    assert partial_helper.episode_selection.selected_frame_count == 1
-    assert partial_helper.episode_selection.source_episode_frame_count == 2
-    assert partial_helper.episode_selection.is_complete_source_episode is False
-    assert partial_helper.episode_selection.is_contiguous_source_slice is True
-
-    complete_helper = DefaultRePackingEpisodeHelper(source_dataset, [1, 0])
-    assert complete_helper.episode_selection.selected_frame_indices == (0, 1)
-    assert complete_helper.episode_selection.is_complete_source_episode is True
-
-
-class _AddValueCopyTransform(IdentityRODatasetRepackTransform):
-    def update_features(
+class _AddValueCopyTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
         self,
         features: hg_datasets.Features,
     ) -> hg_datasets.Features:
@@ -505,27 +634,28 @@ class _AddValueCopyTransform(IdentityRODatasetRepackTransform):
     def transform_frame(
         self,
         frame: DataFrame,
-        context: RODatasetFrameContext,
     ) -> DataFrame:
-        frame.features["value_copy"] = frame.features["value"]
-        return frame
+        features = frame.features.copy()
+        features["value_copy"] = features["value"]
+        return replace(frame, features=features)
 
 
-class _ObserveValueCopyTransform(IdentityRODatasetRepackTransform):
+class _ObserveValueCopyTransform(IdentityEpisodePackagingTransform):
     def __init__(self) -> None:
         self.prepare_saw_value_copy = False
 
-    def required_columns(
-        self,
-        context: RODatasetRepackContext,
-    ) -> list[str]:
-        return ["value_copy"]
+    def prepare_features(
+        self, features: hg_datasets.Features
+    ) -> hg_datasets.Features:
+        self.prepare_saw_value_copy = "value_copy" in features
+        if "value_copy" not in features:
+            raise ValueError(
+                f"{self!r} requires missing columns: ['value_copy']."
+            )
+        return features
 
-    def prepare(self, context: RODatasetRepackContext) -> None:
-        self.prepare_saw_value_copy = "value_copy" in context.target_features
 
-
-def test_transform_feature_order_and_required_columns(
+def test_transform_feature_order_and_prepare_features_contract(
     tmp_path: Path,
 ) -> None:
     source_dataset = _make_source_dataset(tmp_path)
@@ -545,12 +675,72 @@ def test_transform_feature_order_and_required_columns(
     assert target_dataset[0]["value_copy"] == target_dataset[0]["value"]
 
 
-class _MutateMetadataTransform(IdentityRODatasetRepackTransform):
+class _AppendTextFrameTransform(IdentityEpisodePackagingTransform):
+    def __init__(self, suffix: str) -> None:
+        self.suffix = suffix
+
+    def transform_frame(
+        self,
+        frame: DataFrame,
+    ) -> DataFrame:
+        features = frame.features.copy()
+        features["text"] = features["text"] + self.suffix
+        return replace(frame, features=features)
+
+
+def test_mixed_frame_and_episode_transforms_keep_user_order(
+    tmp_path: Path,
+) -> None:
+    class _AppendTextEpisodeTransform(IdentityEpisodePackagingTransform):
+        def __init__(self, suffix: str) -> None:
+            self.suffix = suffix
+
+        def transform_episode(
+            self,
+            episode: EpisodePackaging,
+        ) -> EpisodePackaging | None:
+            episode_meta = episode.generate_episode_meta()
+            if episode_meta is None:
+                return None
+
+            def frames():
+                for frame in episode.generate_frames():
+                    features = frame.features.copy()
+                    features["text"] = features["text"] + self.suffix
+                    yield replace(frame, features=features)
+
+            return _TestEpisodePackaging(episode_meta, frames())
+
+    source_dataset = _make_source_dataset(tmp_path)
+    target_path = tmp_path / "target_mixed_transform_order"
+    frame_transform = _AppendTextFrameTransform("-frame")
+    episode_transform = _AppendTextEpisodeTransform("-episode")
+
+    repack_dataset(
+        source_dataset,
+        str(target_path),
+        transforms=[
+            frame_transform,
+            episode_transform,
+            _AppendTextFrameTransform("-last"),
+        ],
+        writer_batch_size=1,
+        force_overwrite=True,
+    )
+
+    target_dataset = RODataset(str(target_path))
+    assert target_dataset[0]["text"] == (
+        "episode-0-frame-0-frame-episode-last"
+    )
+
+
+class _MutateMetadataTransform(IdentityEpisodePackagingTransform):
     def transform_episode_meta(
         self,
-        episode_meta: EpisodeMeta,
-        context: RODatasetEpisodeContext,
+        episode_meta: EpisodeMeta | None,
     ) -> EpisodeMeta | None:
+        if episode_meta is None:
+            return None
         if episode_meta.episode.info is not None:
             episode_meta.episode.info["episode"] = "mutated"
         if (
@@ -563,7 +753,6 @@ class _MutateMetadataTransform(IdentityRODatasetRepackTransform):
     def transform_frame(
         self,
         frame: DataFrame,
-        context: RODatasetFrameContext,
     ) -> DataFrame:
         if (
             frame.instruction is not None
@@ -597,16 +786,43 @@ def test_transform_metadata_copy_does_not_mutate_source(
     assert source_instruction.json_content == {"frame": 0}
 
 
-class _InvalidFeatureReturnTransform(IdentityRODatasetRepackTransform):
-    def update_features(
+class _MutateTargetLinkTransform(IdentityEpisodePackagingTransform):
+    def transform_episode_meta(
+        self,
+        episode_meta: EpisodeMeta | None,
+    ) -> EpisodeMeta | None:
+        if episode_meta is None:
+            return None
+        episode_meta.episode.index = 999
+        return episode_meta
+
+
+def test_transform_cannot_mutate_target_episode_linkage(
+    tmp_path: Path,
+) -> None:
+    source_dataset = _make_source_dataset(tmp_path)
+
+    with pytest.raises(ValueError, match="target episode linkage"):
+        repack_dataset(
+            source_dataset,
+            str(tmp_path / "target_mutated_episode_linkage"),
+            transforms=[_MutateTargetLinkTransform()],
+            writer_batch_size=1,
+            force_overwrite=True,
+        )
+
+
+class _InvalidFeatureReturnTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
         self,
         features: hg_datasets.Features,
     ) -> hg_datasets.Features:
+        del features
         return {"value": hg_datasets.Value("int64")}  # type: ignore[return-value]
 
 
-class _ReservedFeatureTransform(IdentityRODatasetRepackTransform):
-    def update_features(
+class _ReservedFeatureTransform(IdentityEpisodePackagingTransform):
+    def prepare_features(
         self,
         features: hg_datasets.Features,
     ) -> hg_datasets.Features:
@@ -625,7 +841,7 @@ def test_transform_feature_contract_is_validated(tmp_path: Path) -> None:
             transforms=[_InvalidFeatureReturnTransform()],
         )
 
-    with pytest.raises(ValueError, match="reserved columns"):
+    with pytest.raises(ValueError, match="reserved frame-table columns"):
         repack_dataset(
             source_dataset,
             str(tmp_path / "target_reserved_features"),
@@ -633,19 +849,25 @@ def test_transform_feature_contract_is_validated(tmp_path: Path) -> None:
         )
 
 
-class _ReturnNoneFrameTransform(IdentityRODatasetRepackTransform):
+class _ReturnNoneFrameTransform(IdentityEpisodePackagingTransform):
     def transform_frame(
         self,
         frame: DataFrame,
-        context: RODatasetFrameContext,
     ) -> DataFrame:
+        del frame
         return None  # type: ignore[return-value]
+
+
+def _assert_repack_frame_transform_error(
+    exc: BaseException,
+) -> None:
+    assert isinstance(exc, RepackFrameTransformError)
 
 
 def test_transform_frame_returning_none_is_rejected(tmp_path: Path) -> None:
     source_dataset = _make_source_dataset(tmp_path)
 
-    with pytest.raises(TypeError, match="returned None"):
+    with pytest.raises(Exception) as exc_info:
         repack_dataset(
             source_dataset,
             str(tmp_path / "target_none_frame"),
@@ -654,12 +876,67 @@ def test_transform_frame_returning_none_is_rejected(tmp_path: Path) -> None:
             force_overwrite=True,
         )
 
+    exc = exc_info.value
+    _assert_repack_frame_transform_error(exc)
+    assert isinstance(exc.__cause__, TypeError)
+    assert exc.original_error is exc.__cause__
+    assert "must return DataFrame, got None" in str(exc)
+    assert "source_episode_index=0" in str(exc)
+    assert "frame_offset=0" in str(exc)
+    assert "source_frame_index=0" in str(exc)
 
-class _DropFrameFeatureTransform(IdentityRODatasetRepackTransform):
+
+class _FailSecondSelectedFrameTransform(IdentityEpisodePackagingTransform):
+    def __init__(self) -> None:
+        self._frame_count = 0
+        self.original_error: ValueError | None = None
+
     def transform_frame(
         self,
         frame: DataFrame,
-        context: RODatasetFrameContext,
+    ) -> DataFrame:
+        self._frame_count += 1
+        if self._frame_count == 2:
+            self.original_error = ValueError("bad frame")
+            raise self.original_error
+        return frame
+
+
+def test_transform_frame_failure_has_source_frame_context(
+    tmp_path: Path,
+) -> None:
+    source_dataset = _make_source_dataset(tmp_path)
+    transform = _FailSecondSelectedFrameTransform()
+
+    with pytest.raises(Exception) as exc_info:
+        repack_dataset(
+            source_dataset,
+            str(tmp_path / "target_bad_transform_frame"),
+            frame_indices=[2, 3],
+            transforms=[transform],
+            writer_batch_size=1,
+            force_overwrite=True,
+        )
+
+    exc = exc_info.value
+    _assert_repack_frame_transform_error(exc)
+    assert transform.original_error is not None
+    assert exc.__cause__ is transform.original_error
+    assert exc.original_error is transform.original_error
+    assert exc.source_episode_index == 1
+    assert exc.frame_offset == 1
+    assert exc.source_frame_index == 3
+    message = str(exc)
+    assert "ValueError: bad frame" in message
+    assert "source_episode_index=1" in message
+    assert "frame_offset=1" in message
+    assert "source_frame_index=3" in message
+
+
+class _DropFrameFeatureTransform(IdentityEpisodePackagingTransform):
+    def transform_frame(
+        self,
+        frame: DataFrame,
     ) -> DataFrame:
         features = frame.features.copy()
         features.pop("text")
@@ -681,41 +958,52 @@ def test_transform_frame_features_must_match_target(
         )
 
 
-class _SelectionRecorderTransform(IdentityRODatasetRepackTransform):
-    def __init__(self) -> None:
-        self.selections: list[RODatasetEpisodeSelection] = []
-
-    def transform_episode_meta(
+class _DropOneEpisodeFrameTransform(IdentityEpisodePackagingTransform):
+    def transform_episode(
         self,
-        episode_meta: EpisodeMeta,
-        context: RODatasetEpisodeContext,
-    ) -> EpisodeMeta | None:
-        self.selections.append(context.selection)
-        return episode_meta
+        episode: EpisodePackaging,
+    ) -> EpisodePackaging | None:
+        episode_meta = episode.generate_episode_meta()
+        if episode_meta is None:
+            return None
+
+        def frames():
+            iterator = iter(episode.generate_frames())
+            next(iterator)
+            yield from iterator
+
+        return _TestEpisodePackaging(episode_meta, frames())
 
 
-def test_partial_selection_clears_episode_metadata_and_exposes_selection(
+def test_episode_transform_cannot_change_row_count(
     tmp_path: Path,
 ) -> None:
     source_dataset = _make_source_dataset(tmp_path)
-    recorder = _SelectionRecorderTransform()
+
+    with pytest.raises(ValueError, match="row count"):
+        repack_dataset(
+            source_dataset,
+            str(tmp_path / "target_drop_frame"),
+            transforms=[_DropOneEpisodeFrameTransform()],
+            writer_batch_size=1,
+            force_overwrite=True,
+        )
+
+
+def test_partial_selection_clears_episode_metadata(
+    tmp_path: Path,
+) -> None:
+    source_dataset = _make_source_dataset(tmp_path)
     target_path = tmp_path / "target_partial_selection"
 
     repack_dataset(
         source_dataset,
         str(target_path),
         frame_indices=[0],
-        transforms=[recorder],
+        transforms=[],
         writer_batch_size=1,
         force_overwrite=True,
     )
-
-    assert len(recorder.selections) == 1
-    selection = recorder.selections[0]
-    assert selection.selected_frame_indices == (0,)
-    assert selection.source_episode_frame_indices == (0, 1)
-    assert selection.is_complete_source_episode is False
-    assert selection.is_contiguous_source_slice is True
 
     target_dataset = RODataset(str(target_path))
     frame0 = target_dataset[0]
@@ -726,18 +1014,52 @@ def test_partial_selection_clears_episode_metadata_and_exposes_selection(
     assert episode.success is None
 
 
-class _SkipEpisodeTransform(IdentityRODatasetRepackTransform):
+class _SkipEpisodeTransform(IdentityEpisodePackagingTransform):
     def __init__(self, skip_episode_indices: set[int]) -> None:
         self.skip_episode_indices = skip_episode_indices
 
     def transform_episode_meta(
         self,
-        episode_meta: EpisodeMeta,
-        context: RODatasetEpisodeContext,
+        episode_meta: EpisodeMeta | None,
     ) -> EpisodeMeta | None:
-        if context.episode_index in self.skip_episode_indices:
+        if episode_meta is None:
+            return None
+        episode_id = (
+            episode_meta.episode.info.get("episode")
+            if episode_meta.episode.info is not None
+            else None
+        )
+        if episode_id in self.skip_episode_indices:
             return None
         return episode_meta
+
+
+class _SkipEpisodeAndCountFramesTransform(IdentityEpisodePackagingTransform):
+    def __init__(self, skip_episode_indices: set[int]) -> None:
+        self.skip_episode_indices = skip_episode_indices
+        self.frame_transform_count = 0
+
+    def transform_episode_meta(
+        self,
+        episode_meta: EpisodeMeta | None,
+    ) -> EpisodeMeta | None:
+        if episode_meta is None:
+            return None
+        episode_id = (
+            episode_meta.episode.info.get("episode")
+            if episode_meta.episode.info is not None
+            else None
+        )
+        if episode_id in self.skip_episode_indices:
+            return None
+        return episode_meta
+
+    def transform_frame(
+        self,
+        frame: DataFrame,
+    ) -> DataFrame:
+        self.frame_transform_count += 1
+        return frame
 
 
 def test_transform_episode_meta_can_skip_episode(tmp_path: Path) -> None:
@@ -761,6 +1083,45 @@ def test_transform_episode_meta_can_skip_episode(tmp_path: Path) -> None:
     assert episode.info == {"episode": 1}
 
 
+def test_skipped_episode_does_not_read_source_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _runner as runner_module,
+    )
+
+    source_dataset = _make_source_dataset(tmp_path)
+    transform = _SkipEpisodeAndCountFramesTransform({0, 1})
+    read_count = 0
+    original_iter_packaging_frames = (
+        runner_module.SourceReader.iter_packaging_frames
+    )
+
+    def count_iter_packaging_frames(self, frame_indices):
+        nonlocal read_count
+        read_count += 1
+        yield from original_iter_packaging_frames(self, frame_indices)
+
+    monkeypatch.setattr(
+        runner_module.SourceReader,
+        "iter_packaging_frames",
+        count_iter_packaging_frames,
+    )
+
+    with pytest.raises(ValueError, match="produced no episodes"):
+        repack_dataset(
+            source_dataset,
+            str(tmp_path / "target_skip_without_reading_frames"),
+            transforms=[transform],
+            writer_batch_size=1,
+            force_overwrite=True,
+        )
+
+    assert transform.frame_transform_count == 0
+    assert read_count == 0
+
+
 def test_transform_mode_rejects_all_episodes_skipped(
     tmp_path: Path,
 ) -> None:
@@ -776,14 +1137,13 @@ def test_transform_mode_rejects_all_episodes_skipped(
         )
 
 
-class _StoreFrameTransform(IdentityRODatasetRepackTransform):
+class _StoreFrameTransform(IdentityEpisodePackagingTransform):
     def __init__(self) -> None:
         self.frames: list[DataFrame] = []
 
     def transform_frame(
         self,
         frame: DataFrame,
-        context: RODatasetFrameContext,
     ) -> DataFrame:
         self.frames.append(frame)
         return frame

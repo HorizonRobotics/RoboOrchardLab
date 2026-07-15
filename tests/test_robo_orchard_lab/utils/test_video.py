@@ -157,7 +157,12 @@ def test_video_writer_writes_rgb24_video_with_real_ffmpeg(tmp_path):
     frame = np.full((16, 16, 3), [255, 0, 0], dtype=np.uint8)
     output_path = tmp_path / "episode_rgb.mp4"
 
-    writer = VideoWriter(output_path, pixel_format=VideoPixelFormat.RGB24)
+    writer = VideoWriter(
+        output_path,
+        pixel_format=VideoPixelFormat.RGB24,
+        preset="ultrafast",
+        extra_options={"tune": "zerolatency"},
+    )
     assert writer.output_path == output_path
     assert writer.is_open
     assert not writer.is_closed
@@ -178,6 +183,83 @@ def test_video_writer_writes_rgb24_video_with_real_ffmpeg(tmp_path):
     assert decoded[..., 0].mean() > 200
     assert decoded[..., 1].mean() < 40
     assert decoded[..., 2].mean() < 40
+
+
+@pytest.mark.parametrize("preset", ["slow", 7])
+def test_video_writer_passes_preset_and_extra_options_to_ffmpeg(
+    tmp_path,
+    monkeypatch,
+    preset,
+):
+    output_path = tmp_path / "encoder_options.mp4"
+    proc = _FakeProc(stdin=_FakeStdin())
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return proc
+
+    monkeypatch.setattr(shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    extra_options = {"qp": 5, "tune": "film", "aud": True}
+    writer = VideoWriter(
+        output_path,
+        preset=preset,
+        extra_options=extra_options,
+    )
+    extra_options["qp"] = 99
+
+    writer.write_frame(np.zeros((4, 6, 3), dtype=np.uint8))
+
+    assert len(popen_calls) == 1
+    command, kwargs = popen_calls[0]
+    assert command[command.index("-preset") : -1] == [
+        "-preset",
+        str(preset),
+        "-qp",
+        "5",
+        "-tune",
+        "film",
+        "-aud",
+        "1",
+    ]
+    assert kwargs == {
+        "stdin": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    writer._abort_open_session()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_type", "match"),
+    [
+        ({"preset": ""}, ValueError, "non-empty string"),
+        ({"preset": True}, TypeError, "string, integer, or None"),
+        ({"preset": 1.5}, TypeError, "string, integer, or None"),
+        (
+            {"extra_options": {"-qp": 5}},
+            ValueError,
+            "without a leading '-'",
+        ),
+        (
+            {"extra_options": {"qp": None}},
+            ValueError,
+            "must not be None",
+        ),
+        (
+            {"extra_options": {1: 5}},
+            TypeError,
+            "keys must be strings",
+        ),
+    ],
+)
+def test_video_writer_rejects_invalid_encoder_options(
+    kwargs,
+    error_type,
+    match,
+):
+    with pytest.raises(error_type, match=match):
+        VideoWriter(**kwargs)
 
 
 def test_video_writer_writes_bgr24_video_with_real_ffmpeg(tmp_path):
