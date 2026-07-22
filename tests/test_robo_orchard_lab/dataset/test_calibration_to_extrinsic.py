@@ -16,7 +16,6 @@
 
 from pathlib import Path
 
-import pytest
 import torch
 
 from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
@@ -66,21 +65,28 @@ def test_calibration_to_extrinsic_uses_total_camera_ref_links(tmp_path: Path):
     assert data["T_world2cam"].shape == (2, 4, 4)
 
 
-def test_calibration_to_extrinsic_rejects_missing_camera_refs(tmp_path: Path):
+def test_calibration_to_extrinsic_treats_unmapped_camera_as_static(
+    tmp_path: Path,
+):
     urdf = tmp_path / "camera_ref_probe.urdf"
     _write_one_joint_urdf(urdf)
+    static_calibration = torch.eye(4)
+    static_calibration[0, 3] = 2.0
     transform = CalibrationToExtrinsic(
         urdf=str(urdf),
         calibration={
             "wrist": torch.eye(4),
-            "missing": torch.eye(4),
+            "static": static_calibration,
         },
         cam_ref_links={"wrist": "link1"},
-        cam_names=["wrist", "missing"],
+        cam_names=["wrist", "static"],
         arm_joint_id=[list(range(1))],
         arm_link_keys=[["link1"]],
         finger_keys=[[]],
     )
 
-    with pytest.raises(KeyError, match="missing"):
-        transform({"hist_joint_state": torch.zeros(1, 1)})
+    data = transform({"hist_joint_state": torch.zeros(1, 1)})
+
+    torch.testing.assert_close(
+        data["T_world2cam"][1], torch.linalg.inv(static_calibration)
+    )

@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import copy
+import logging
 from typing import Type
 
 import cv2
@@ -28,6 +29,8 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
     MultiRowSampler,
     MultiRowSamplerConfig,
 )
+
+logger = logging.getLogger(__file__)
 
 __all__ = [
     "AddItems",
@@ -1105,6 +1108,7 @@ class CalibrationToExtrinsic(MultiArmKinematics):
         self,
         urdf,
         calibration=None,
+        cam_ee_joint_indices: dict = None,
         cam_ref_links: dict | None = None,
         cam_names=None,
         **kwargs,
@@ -1114,8 +1118,25 @@ class CalibrationToExtrinsic(MultiArmKinematics):
             self.calibration = self.calibration_handler(calibration)
         else:
             self.calibration = None
+
+        if cam_ee_joint_indices is not None:
+            logger.warning(
+                "`cam_ee_joint_indices` is deprecated;"
+                "use `cam_ref_links` instead."
+            )
+            assert cam_ref_links is None
+            cam_ref_links = dict()
+            all_links = []
+            for i, single_arm_link_keys in enumerate(self.arm_link_keys):
+                all_links.extend(single_arm_link_keys)
+                if len(self.finger_keys[i]) > 0:
+                    all_links.append(self.finger_keys[i][0])
+            for arm, index in cam_ee_joint_indices.items():
+                cam_ref_links[arm] = all_links[index]
+
         if cam_ref_links is None:
             cam_ref_links = dict(left="left_link6", right="right_link6")
+
         self.cam_ref_links = cam_ref_links
         self.cam_names = cam_names
 
@@ -1141,18 +1162,11 @@ class CalibrationToExtrinsic(MultiArmKinematics):
         cam_names = data.get("cam_names", self.cam_names)
         if cam_names is None:
             cam_names = list(calibrations.keys())
-        missing_cams = [
-            cam for cam in cam_names if cam not in self.cam_ref_links
-        ]
-        if missing_cams:
-            raise KeyError(
-                "cam_ref_links missing camera(s): " + ", ".join(missing_cams)
-            )
         ref_links = tuple(
             dict.fromkeys(
                 link
                 for cam in cam_names
-                for link in (self.cam_ref_links[cam],)
+                for link in (self.cam_ref_links.get(cam),)
                 if link is not None
             )
         )
@@ -1176,7 +1190,7 @@ class CalibrationToExtrinsic(MultiArmKinematics):
         t_base2cam_list = []
         for cam in cam_names:
             calibration = torch.clone(calibrations[cam])
-            ref_link = self.cam_ref_links[cam]
+            ref_link = self.cam_ref_links.get(cam)
             if ref_link is None:
                 t_base2cam = calibration
             else:
