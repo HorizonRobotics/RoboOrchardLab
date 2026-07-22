@@ -25,6 +25,12 @@ accelerate launch --multi-gpu --num-processes 4 --gpu-ids 0,1,2,3 train.py --con
 RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg.json
 ```
 
+# Export processor and model from python config
+```bash
+cd projects/holobrain_internal/common
+python3 export.py --config configs/config_holobrain_common.py $@
+```
+
 
 # Do evaluation in Robotwin2.0 Envs
 ## Local run
@@ -56,11 +62,12 @@ RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_interna
 ```
 
 
-## Export processor and model from python config
+# Do evaluation in RoboDojo Env
+## Cluster run
 ```bash
-cd projects/holobrain_internal/common
-python3 export.py --config configs/config_holobrain_common.py $@
+RoboOrchardJob-AIDISubmit submit_from_config --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_robodojo_eval.json
 ```
+
 
 # Do evaluation in Orchard Isaac Envs
 ## Local run
