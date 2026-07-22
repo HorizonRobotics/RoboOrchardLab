@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bench_name=${1}
+task_name=${2}
+ckpt_name=${3}
+env_cfg_type=${4}
+action_type=${5}
+seed=${6}
+env_gpu_id=${7}
+eval_env_conda_env=${8}
+additional_info=${9}
+policy_server_port=${10}
+policy_server_ip=${11:-"localhost"}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+XPL_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+BENCH_ROOT="$(cd "${XPL_ROOT}/.." && pwd)"
+UTILS_DIR="${XPL_ROOT}/utils"
+yaml_file="${SCRIPT_DIR}/deploy.yml"
+
+bash "${UTILS_DIR}/setup_env_client.sh" \
+    "${UTILS_DIR}" "${yaml_file}" "${eval_env_conda_env}" \
+    "${policy_server_port}" "${bench_name}" "${task_name}" \
+    "${env_cfg_type}" "$(basename "${SCRIPT_DIR}")" \
+    "${additional_info}" "${BENCH_ROOT}" "${seed}" "${env_gpu_id}" \
+    "${policy_server_ip}"

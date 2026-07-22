@@ -1,0 +1,22 @@
+policy_name: holobrain_robodojo_policy
+protocol: ws
+host: localhost
+port: null
+bench_name: RoboDojo
+task_name: null
+ckpt_name: null
+env_cfg_type: arx_x5
+seed: 0
+action_type: joint
+gpu_id: null
+eval_batch: false
+
+model_dir: null
+model_processor: robodojo_processor
+model_prefix: model
+load_impl: native
+vlm_ckpt_dir: null
+urdf_dir: null
+valid_action_step: 32
+use_depth: false
+extrinsic_type: cam2world_usd
