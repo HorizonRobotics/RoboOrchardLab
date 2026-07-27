@@ -42,6 +42,69 @@ CHECKPOINT_NAME = "holobrain"
 ACTION_TYPE = "joint"
 EVAL_ENV_NAME = "RoboDojo"
 
+BENCHMARK_DIMENSIONS = {
+    "Generalization": (
+        "stack_bowls",
+        "push_T",
+        "pack_objects_into_box",
+        "fold_clothes",
+        "hang_mugs",
+        "sweep_blocks",
+        "pour_liquid_into_cup",
+        "make_toast",
+        "arrange_largest_number",
+        "sort_nesting_dolls_by_size",
+        "store_laptop_and_headphones",
+        "stack_blocks",
+    ),
+    "Precision": (
+        "fasten_screws",
+        "plug_in_charger",
+        "insert_tubes",
+        "pour_balls_into_vase",
+        "play_Xylophone",
+        "deposit_coin",
+        "insert_key",
+        "build_tower",
+    ),
+    "Long-Horizon": (
+        "put_bottles_into_dustbin",
+        "fill_pen_holder",
+        "classify_objects",
+        "play_tic_tac_toe",
+        "fill_egg_holder",
+        "organize_table",
+        "make_kong",
+        "play_stacking_toy",
+    ),
+    "Memory": (
+        "cover_blocks",
+        "match_and_pick_from_conveyor",
+        "swap_blocks",
+        "swap_T",
+        "press_by_number",
+        "imitate_sorting_sequence",
+    ),
+    "Open": (
+        "align_blocks",
+        "general_pickup",
+        "stack_blocks_by_language",
+        "solve_equation",
+        "classify_objects_by_language",
+        "pick_from_conveyor_by_image",
+        "store_tools_in_toolbox",
+        "pour_by_language",
+    ),
+}
+BENCHMARK_TASKS = tuple(
+    task
+    for dimension_tasks in BENCHMARK_DIMENSIONS.values()
+    for task in dimension_tasks
+)
+GENERALIZATION_TASKS = frozenset(BENCHMARK_DIMENSIONS["Generalization"])
+STANDALONE_EPISODES = 50
+PAIRED_HALF_EPISODES = 25
+
 
 @dataclass(frozen=True)
 class TaskRunResult:
@@ -433,8 +496,157 @@ def _write_combined_summary(
         summary,
         encoding="utf-8",
     )
-    logger.info(json.dumps(payload))
+    logger.info("===== conbined summary ===========")
+    logger.info(json.dumps(payload, indent=4))
     return missing_tasks
+
+
+def _load_benchmark_entries(
+    result_path: Path | None,
+) -> list[tuple[bool, float]] | None:
+    if result_path is None or not result_path.is_file():
+        return None
+
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    details = result.get("details")
+    if not isinstance(details, dict):
+        return None
+
+    entries = []
+    for layout_id, entry in details.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            numeric_layout_id = int(layout_id)
+            score = float(entry.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        entries.append(
+            (numeric_layout_id, bool(entry.get("success", False)), score)
+        )
+    entries.sort(key=lambda entry: entry[0])
+    return [(success, score) for _, success, score in entries]
+
+
+def _benchmark_entry_metrics(
+    entries: list[tuple[bool, float]],
+) -> tuple[float, float]:
+    success_rate = sum(success for success, _ in entries) / len(entries)
+    score = sum(score for _, score in entries) / len(entries)
+    return success_rate * 100.0, score * 100.0
+
+
+def _benchmark_mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _collect_benchmark_entries(
+    result_paths: dict[str, Path],
+    task_name: str,
+) -> tuple[list[tuple[bool, float]] | None, dict[str, int]]:
+    if task_name in GENERALIZATION_TASKS:
+        requirements = (
+            (task_name, PAIRED_HALF_EPISODES),
+            (f"{task_name}_random", PAIRED_HALF_EPISODES),
+        )
+    else:
+        requirements = ((task_name, STANDALONE_EPISODES),)
+
+    selected_entries = []
+    episode_counts = {}
+    complete = True
+    for result_name, required_episodes in requirements:
+        entries = _load_benchmark_entries(result_paths.get(result_name)) or []
+        episode_counts[result_name] = len(entries)
+        selected_entries.extend(entries[:required_episodes])
+        complete &= len(entries) >= required_episodes
+    return (selected_entries if complete else None), episode_counts
+
+
+def _write_benchmark_summary(
+    result_paths: dict[str, Path],
+    output_dir: Path,
+    seed: int,
+) -> None:
+    """Write one seed using the official RoboDojo benchmark protocol."""
+    task_metrics = {}
+    missing_tasks = []
+    incomplete_tasks = {}
+
+    for task_name in BENCHMARK_TASKS:
+        entries, episode_counts = _collect_benchmark_entries(
+            result_paths, task_name
+        )
+        if entries is None:
+            if any(episode_counts.values()):
+                incomplete_tasks[task_name] = episode_counts
+            else:
+                missing_tasks.append(task_name)
+            continue
+
+        success_rate, score = _benchmark_entry_metrics(entries)
+        task_metrics[task_name] = {
+            "success_rate": success_rate,
+            "score": score,
+        }
+
+    dimension_metrics = {}
+    for dimension, dimension_tasks in BENCHMARK_DIMENSIONS.items():
+        completed = [
+            task_metrics[task]
+            for task in dimension_tasks
+            if task in task_metrics
+        ]
+        dimension_metrics[dimension] = {
+            "success_rate": _benchmark_mean(
+                [metric["success_rate"] for metric in completed]
+            ),
+            "score": _benchmark_mean(
+                [metric["score"] for metric in completed]
+            ),
+            "num_tasks": len(dimension_tasks),
+            "completed_tasks": len(completed),
+        }
+
+    completed_dimensions = [
+        metrics
+        for metrics in dimension_metrics.values()
+        if metrics["completed_tasks"]
+    ]
+    payload = {
+        "complete": len(task_metrics) == len(BENCHMARK_TASKS),
+        "seed": seed,
+        "metric_unit": "percent",
+        "num_tasks": len(BENCHMARK_TASKS),
+        "completed_tasks": len(task_metrics),
+        "num_run_configs": len(BENCHMARK_TASKS)
+        + len(GENERALIZATION_TASKS),
+        "expected_episodes": len(BENCHMARK_TASKS) * STANDALONE_EPISODES,
+        "average_success_rate": _benchmark_mean(
+            [
+                metrics["success_rate"]
+                for metrics in completed_dimensions
+            ]
+        ),
+        "average_score": _benchmark_mean(
+            [metrics["score"] for metrics in completed_dimensions]
+        ),
+        "dimension_metrics": dimension_metrics,
+        "task_metrics": task_metrics,
+        "missing_tasks": missing_tasks,
+        "incomplete_tasks": incomplete_tasks,
+    }
+    (output_dir / f"benchmark_summary_seed_{seed}.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("===== benchmark summary ===========")
+    logger.info(json.dumps(payload, indent=4))
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -452,6 +664,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         str(args.robodojo_root / "XPolicyLab"),
         env.get("PYTHONPATH", ""),
     ]
+    logger.info(f"model: {args.model_dir}")
+    logger.info(f"model_processor: {args.model_processor}")
+    logger.info(f"urdf: {args.urdf_dir}")
     env.update(
         PATH=os.pathsep.join(
             filter(None, [str(args.conda_root / "bin"), env.get("PATH", "")])
@@ -566,6 +781,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.eval_result_dir,
         args.seed,
         args.eval_num,
+    )
+    _write_benchmark_summary(
+        result_paths,
+        args.eval_result_dir,
+        args.seed,
     )
     if errors:
         raise errors[0]

@@ -334,7 +334,7 @@ def test_aidi_robodojo_submit_config():
     )
     assert "--model_processor robodojo_arx_x5a_processor" in submit_command
     assert "--env_config arx_x5" in submit_command
-    assert "--eval_num 10" in submit_command
+    assert "--eval_num 50" in submit_command
     assert "--processes_per_gpu 2" in submit_command
     assert "--tasks" not in submit_command
     assert "scripts/robodojo.sh" not in submit_command
@@ -568,6 +568,12 @@ def test_robodojo_eval_distributes_tasks_across_gpus(tmp_path, monkeypatch):
     }
     assert "missing_tasks" not in summary
     assert not (result_dir / "summary_seed_0.md").exists()
+    benchmark_summary = json.loads(
+        (result_dir / "benchmark_summary_seed_0.json").read_text()
+    )
+    assert benchmark_summary["complete"] is False
+    assert benchmark_summary["completed_tasks"] == 0
+    assert benchmark_summary["num_tasks"] == 42
     task_result_messages = {
         message
         for message in logged_messages
@@ -643,6 +649,128 @@ def test_robodojo_eval_resolves_default_and_selected_tasks(
     summary = json.loads(logged_messages[-1])
     assert summary["missing_tasks"] == ["stack_bowls"]
     assert (tmp_path / "summary_seed_0.json").is_file()
+
+
+def test_robodojo_eval_writes_official_benchmark_summary(tmp_path):
+    repo_root = Path(__file__).resolve().parents[3]
+    common_dir = repo_root / "projects/holobrain_internal/common"
+    spec = importlib.util.spec_from_file_location(
+        "robodojo_eval_benchmark",
+        common_dir / "robodojo_eval.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result_paths = {}
+
+    def write_result(task_name, successes, score, *, extra_entry=False):
+        entries = [
+            {"success": index < successes, "score": score}
+            for index in range(50)
+        ]
+        if extra_entry:
+            entries.append({"success": True, "score": 1.0})
+        result_path = tmp_path / f"{task_name}.json"
+        result_path.write_text(
+            json.dumps(
+                {
+                    "details": {
+                        str(index): entry
+                        for index, entry in reversed(list(enumerate(entries)))
+                    }
+                }
+            )
+        )
+        result_paths[task_name] = result_path
+
+    for task_name in module.BENCHMARK_DIMENSIONS["Generalization"]:
+        write_result(task_name, 25, 0.7, extra_entry=True)
+        write_result(f"{task_name}_random", 0, 0.3, extra_entry=True)
+    for task_name in module.BENCHMARK_DIMENSIONS["Precision"]:
+        write_result(task_name, 50, 0.8)
+    for task_name in module.BENCHMARK_DIMENSIONS["Long-Horizon"]:
+        write_result(task_name, 0, 0.6)
+    for task_name in module.BENCHMARK_DIMENSIONS["Memory"]:
+        write_result(task_name, 25, 0.4)
+    for task_name in module.BENCHMARK_DIMENSIONS["Open"]:
+        write_result(task_name, 10, 0.2)
+
+    module._write_benchmark_summary(result_paths, tmp_path, seed=0)
+
+    summary = json.loads(
+        (tmp_path / "benchmark_summary_seed_0.json").read_text()
+    )
+    assert summary["complete"] is True
+    assert summary["metric_unit"] == "percent"
+    assert summary["num_tasks"] == 42
+    assert summary["completed_tasks"] == 42
+    assert summary["num_run_configs"] == 54
+    assert summary["expected_episodes"] == 2100
+    assert summary["average_success_rate"] == pytest.approx(44.0)
+    assert summary["average_score"] == pytest.approx(50.0)
+    assert summary["dimension_metrics"]["Generalization"] == {
+        "success_rate": pytest.approx(50.0),
+        "score": pytest.approx(50.0),
+        "num_tasks": 12,
+        "completed_tasks": 12,
+    }
+    assert summary["task_metrics"]["stack_bowls"] == {
+        "success_rate": pytest.approx(50.0),
+        "score": pytest.approx(50.0),
+    }
+    assert summary["missing_tasks"] == []
+    assert summary["incomplete_tasks"] == {}
+
+
+def test_robodojo_benchmark_summary_reports_incomplete_tasks(tmp_path):
+    repo_root = Path(__file__).resolve().parents[3]
+    common_dir = repo_root / "projects/holobrain_internal/common"
+    spec = importlib.util.spec_from_file_location(
+        "robodojo_eval_incomplete_benchmark",
+        common_dir / "robodojo_eval.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def result_file(task_name, num_episodes):
+        result_path = tmp_path / f"{task_name}.json"
+        result_path.write_text(
+            json.dumps(
+                {
+                    "details": {
+                        str(index): {"success": True, "score": 1.0}
+                        for index in range(num_episodes)
+                    }
+                }
+            )
+        )
+        return result_path
+
+    result_paths = {
+        "fasten_screws": result_file("fasten_screws", 49),
+        "stack_bowls": result_file("stack_bowls", 25),
+        "stack_bowls_random": result_file("stack_bowls_random", 24),
+    }
+
+    module._write_benchmark_summary(result_paths, tmp_path, seed=2)
+
+    summary = json.loads(
+        (tmp_path / "benchmark_summary_seed_2.json").read_text()
+    )
+    assert summary["complete"] is False
+    assert summary["completed_tasks"] == 0
+    assert summary["average_success_rate"] is None
+    assert summary["average_score"] is None
+    assert summary["incomplete_tasks"] == {
+        "stack_bowls": {
+            "stack_bowls": 25,
+            "stack_bowls_random": 24,
+        },
+        "fasten_screws": {
+            "fasten_screws": 49,
+        },
+    }
+    assert "stack_bowls" not in summary["missing_tasks"]
+    assert "fasten_screws" not in summary["missing_tasks"]
 
 
 def test_policy_server_launcher_accepts_virtualenv_path(tmp_path):

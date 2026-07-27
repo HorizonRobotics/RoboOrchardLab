@@ -11,10 +11,10 @@
         "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
         "/usr/bin/python3 robodojo_eval.py \\",
         "  --policy_source \"${WORKING_PATH}/holobrain_robodojo_policy\" \\",
-        "  --model_dir \"http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-07-16/15-40/bcloud-bj-zone1-16ebb8d6738a/holobrain_v10_a725c510_80e9_11f1_9e82_2bc338c39dff/output/checkpoints/checkpoint_60/\" \\",
+        "  --model_dir 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-07-23/13-27/bcloud-bj-zone1-4b6cd3189678/holobrain_v10_robodojo_10wstep_71e2ebc6_85e9_11f1_9e82_2bc338c39dff_copy/output/checkpoints/checkpoint_20/' \\",
         "  --model_processor robodojo_arx_x5a_processor \\",
         "  --env_config arx_x5 \\",
-        "  --eval_num 10 \\",
+        "  --eval_num 50 \\",
         "  --processes_per_gpu 2"
     ],
     "to_upload": [
