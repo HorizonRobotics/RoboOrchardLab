@@ -116,6 +116,11 @@ DEPLOY_DATASETS = [
         dataset_type="robocasa",
         dataset_name="robocasa",
     ),
+    dict(
+        dataset_type="robodojo",
+        dataset_name="robodojo",
+        setting_type="arx_x5a",
+    ),
 ]
 
 deploy_datasets = copy.deepcopy(DEPLOY_DATASETS)

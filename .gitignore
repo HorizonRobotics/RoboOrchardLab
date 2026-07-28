@@ -181,3 +181,19 @@ compile_commands.json
 *.mex*
 .claude/settings.local.json
 .env
+
+## AIDI submit / logs (RoboOrchardJob-AIDISubmit auto-generated per submit)
+/submit-holobrain*/
+/logs_bcloud-*/
+/aidi_job_submit.json
+
+## Local workspaces (ckpt / export deploy bundles / smoke outputs, tens of GB)
+projects/holobrain_internal/common/workspace/
+projects/holobrain_internal/common/workspace_smoke/
+projects/holobrain_internal/common/workspace_smoke_container/
+
+## IDE
+.vscode/
+
+## Local convenience symlink (points to ~/git_repo/robotwin)
+/robotwin
