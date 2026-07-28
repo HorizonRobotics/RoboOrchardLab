@@ -4,15 +4,72 @@
   },
   "permissions": {
     "allow": [
-      "Bash(git *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
-      "Bash(echo *)",
       "Read",
       "Edit",
       "Glob",
       "Grep",
-      "Write"
+      "Write",
+
+      "Bash(git *)",
+
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(ln *)",
+      "Bash(chmod *)",
+      "Bash(chown *)",
+
+      "Bash(tar *)",
+      "Bash(zip *)",
+      "Bash(unzip *)",
+      "Bash(gzip *)",
+      "Bash(gunzip *)",
+
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(bash *)",
+      "Bash(sh *)",
+      "Bash(source *)",
+      "Bash(export *)",
+
+      "Bash(pip *)",
+      "Bash(conda *)",
+      "Bash(pytest *)",
+      "Bash(make *)",
+      "Bash(cmake *)",
+
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(openssl *)",
+
+      "Bash(nvidia-smi*)",
+      "Bash(aidictl *)",
+      "Bash(aidisdk *)",
+
+      "Bash(/home/users/kun01.wu-labs/miniconda3/envs/holobrain_internal/bin/pip *)",
+      "Bash(/home/users/kun01.wu-labs/miniconda3/envs/holobrain_internal/bin/python *)",
+      "Bash(/home/users/kun01.wu-labs/miniconda3/envs/holobrain_internal/bin/aidisdk *)"
+    ],
+    "deny": [
+      "Bash(rm *)",
+      "Bash(sudo rm *)",
+      "Bash(rmdir *)",
+
+      "Bash(git push -f*)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git clean -x*)",
+      "Bash(git clean -d*)",
+
+      "Bash(find * -delete*)",
+      "Bash(find * -exec rm*)",
+
+      "Bash(dd if=*)",
+      "Bash(dd of=*)",
+      "Bash(mkfs*)",
+      "Bash(shred *)"
     ]
   }
 }
