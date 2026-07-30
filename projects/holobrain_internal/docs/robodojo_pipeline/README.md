@@ -141,7 +141,13 @@ aidictl job logs tail bcloud-bj-zone1-6c6f0a3cbcb9 log/bcloud-bj-zone1-6c6f0a3cb
    - 两 env 通过 WebSocket 通信 (`XPolicyLab/client_server/ws/`)，避免 Isaac Sim 4.5 强绑 py3.10 与 transformers 新版冲突。
 3. **Bucket 布局**（见 memory [[kun-wu-bucket-workspace]]）：
    - `/horizon-bucket/robot_lab/users/kun01.wu/datasets/RoboDojo/Assets/` — RoboDojo Assets（含 `Eval_Layout/RoboDojo/arx_x5_holobrain -> ../arx_x5` symlink）
-   - `/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/` — 训练 output + eval 结果
+   - `/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/` — **本项目产物根**
+     （2026-07-30 归集，与 `univtac/` `xiaomi_robodojo/` 同级）：
+     `ckpts/holobrain_robodojo_posttrain_v9{,_100k}/` 训练产出的 deploy package、
+     `ckpts/checkpoint_11_eval/` robotwin 期组装目录、
+     `eval_results/robodojo-holobrain-{eval-final,sanity,seed0}/` 评测产物
+   - `/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/` — AIDI 按 `job_name` 自动同步
+     `/job_data` 的落点，**仍是新训练 job 的第一落点**，跑完需自行归集到上面的项目根
    - `/horizon-bucket/robot_lab/users/xuewu.lin/ckpt` — Qwen VLM base weight 的父目录（HoloBrainProcessor.load 相对路径解析用）
    - `/horizon-bucket/robot_lab2/datasets/all_data/robodojo/lmdb/*` — RoboDojo LMDB 训练数据
 

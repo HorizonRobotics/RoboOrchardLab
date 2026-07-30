@@ -206,7 +206,7 @@ bash scripts/robodojo.sh benchmark
 ### 阶段 6-7 — Dev 侧看结果
 
 ```bash
-BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0
+BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0
 find $BUCKET/eval_result -name "_result.json" | head
 cat $BUCKET/eval_result/RoboDojo/_summary.md
 ls $BUCKET/smoke_results/

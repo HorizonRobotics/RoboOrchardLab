@@ -55,7 +55,7 @@ checkpoint_20000/                      ← 目录名不重要，惯例用 step �
 
 ```bash
 BUCKET_SRC=/job_data/checkpoints/checkpoint_9    # 在集群 pod 里
-BUCKET_DST=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000
+BUCKET_DST=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000
 cp -v "$BUCKET_SRC/model.safetensors" "$BUCKET_DST/"
 cp -v "$BUCKET_SRC/model.config.json" "$BUCKET_DST/"
 md5sum "$BUCKET_DST/model.safetensors"     # 20k 版实测 md5=a71cb164...
@@ -161,7 +161,7 @@ cp $BUCKET_URDF/robotwin/arx_x5a/robotwin2_dual_arm_arx_x5a.urdf $BUCKET_DST/urd
 **为什么需要**：HoloBrainProcessor.load 会 `os.chdir(model_dir)` 然后加载 `./ckpt/Qwen2.5-VL-3B-Instruct/` 作为 VLM base。所以 model_dir 里必须有一个 `ckpt` 目录（或 symlink）指向 Qwen VLM 权重。
 
 ```bash
-BUCKET_DST=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000
+BUCKET_DST=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000
 ln -sfn /horizon-bucket/robot_lab/users/xuewu.lin/ckpt $BUCKET_DST/ckpt
 # 确认 target
 ls -la $BUCKET_DST/ckpt/Qwen2.5-VL-3B-Instruct/    # 必须能列出 config.json / model.safetensors 等
@@ -192,7 +192,7 @@ STEP=20000; SRC_JOB=bcloud-bj-zone1-1f00b8e23ac8
 SRC=/horizon-bucket/robot_lab/users/kun01.wu-labs/plat_gpu/2026-07-27/*/${SRC_JOB}/*/output/checkpoints/checkpoint_9
 
 # 2) 建 deploy 目录
-DST=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_${STEP}
+DST=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_${STEP}
 mkdir -p $DST/urdf
 
 # 3) 拷 model

@@ -57,7 +57,7 @@
 |---|---|
 | 官方口径汇总（本文数字的来源） | `docs/robodojo_pipeline/results/{20k,100k}/benchmark_summary_seed_0.json` |
 | 逐 run-config 明细（SR/score/episode/来源 job） | `docs/robodojo_pipeline/results/{20k,100k}/runconfig_details_seed_0.json` |
-| 全量备份（含 54 个原始 `_result.json`） | `/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-eval-final/{20k,100k}/` |
+| 全量备份（含 54 个原始 `_result.json`） | `/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-eval-final/{20k,100k}/` |
 | 集群原始产物（含失败录像 mp4） | 各 job PFS，`aidictl job logs list/cat <job_id> output/robodojo_eval_results/...` |
 
 汇总由 `projects/holobrain_internal/scripts/aggregate_robodojo_results.py` 合并两个 job 的

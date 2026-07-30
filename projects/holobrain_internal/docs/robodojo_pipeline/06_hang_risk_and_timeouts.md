@@ -211,6 +211,6 @@ sed -i 's|"${eval_cmd\[@\]}" \\|timeout -k 30 "${ROBODOJO_TASK_WALL_S:-3600}" "$
 - xiaomi 事故报告：`/home/users/kun01.wu-labs/git_repo/RoboDojo/aidi_submit/STATUS.md` §「v7 死锁分析」+ §「v8 时间预算」
 - xiaomi handoff：`/home/users/kun01.wu-labs/git_repo/RoboDojo/aidi_submit/HANDOFF.md` §「🔥 07-28」
 - xiaomi 死循环 log 完整原件：`/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-xiaomi-seed0/smoke_results/2026-07-27_18-47-34_smoke/logs/fill_pen_holder.log`（258 次 zenity）
-- HoloBrain cover_blocks 正常完成的 log（此前误判为 hang 的证据反例）：`/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0/smoke_results/2026-07-27_21-49-05_smoke/logs/cover_blocks.log`
+- HoloBrain cover_blocks 正常完成的 log（此前误判为 hang 的证据反例）：`/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0/smoke_results/2026-07-27_21-49-05_smoke/logs/cover_blocks.log`
 - 通路详解：本目录 `03_eval.md`
 - 已知坑：本目录 `05_troubleshooting.md`（本文补 §16 空白）

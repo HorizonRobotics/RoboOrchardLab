@@ -197,13 +197,13 @@ aidictl job logs url $JOB_ID
 > 不要用 `aidictl job logs download` 拉大文件——会静默截断且照样 exit 0。
 
 旧流程的评测 job 会把结果 rsync 到
-`/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0/`
+`/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0/`
 （**注意该目录只有 13/54 run-config，那个 job 被提前停掉了**）。
 
 ### 4.1 单 task result
 
 ```bash
-BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0
+BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0
 TASK=align_blocks
 
 # 找 _result.json
@@ -221,11 +221,11 @@ print(f'SR={d[\"success_rate\"]:.3f}  score={d[\"score\"]:.3f}  eval_time={d[\"e
 ### 4.2 所有 task 汇总
 
 ```bash
-BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0
+BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0
 
 python3 <<'PY'
 import json, os, glob
-BUCKET = "/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0"
+BUCKET = "/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0"
 
 # smoke_results/<run_id>.json (整批 task 的 status 汇总)
 d = json.load(open(f"{BUCKET}/smoke_results/2026-07-27_21-49-05_smoke.json"))
@@ -249,7 +249,7 @@ PY
 ### 4.3 看视频（下载到本地）
 
 ```bash
-BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0
+BUCKET=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0
 TASK=align_blocks
 mkdir -p ~/tmp_videos/$TASK
 rsync -av $BUCKET/eval_result/RoboDojo/$TASK/HoloBrain/*/0_ckpt_name*/2026-07-27*/episode_0000000_cam_*.mp4 \

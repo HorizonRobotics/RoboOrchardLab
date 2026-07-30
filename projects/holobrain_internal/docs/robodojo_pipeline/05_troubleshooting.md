@@ -92,7 +92,7 @@ pip install numpy==1.26.4
 4. **Bucket-side `checkpoint_20000/ckpt` symlink**：
    ```bash
    ln -sfn /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \
-           /horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000/ckpt
+           /horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000/ckpt
    ```
    HoloBrainProcessor.load 走 `in_cwd(model_dir)`，`./ckpt/Qwen2.5-VL-3B-Instruct` 必须相对可解析
 5. **`ckpt` symlink in `${WORKING_PATH}`** — eval-client 的 cwd 是 WORKING_PATH（不是 model_dir），也要能找到 `./ckpt/...`

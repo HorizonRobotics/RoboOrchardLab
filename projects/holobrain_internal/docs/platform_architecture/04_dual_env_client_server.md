@@ -78,7 +78,7 @@ export PYTHONPATH=${WORKING_PATH}:${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH
 ln -sfn /horizon-bucket/robot_lab/users/kun01.wu/datasets/RoboDojo/Assets Assets
 ln -sfn /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 urdf
 ln -sfn /horizon-bucket/robot_lab/users/xuewu.lin/ckpt ckpt
-ln -sfn /horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000 \
+ln -sfn /horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000 \
         XPolicyLab/policy/HoloBrain/checkpoints/checkpoint_20000
 
 # 阶段 E: 只做一次的 env 修补（改 python 脚本 / sed 打 patch）

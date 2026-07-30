@@ -75,7 +75,7 @@ export PYTHONPATH=${WORKING_PATH}:${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH
 ln -sfn /horizon-bucket/robot_lab/users/kun01.wu/datasets/RoboDojo/Assets  Assets
 ln -sfn /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711   urdf
 ln -sfn /horizon-bucket/robot_lab/users/xuewu.lin/ckpt                     ckpt
-ln -sfn /horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000 \
+ln -sfn /horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000 \
         XPolicyLab/policy/HoloBrain/checkpoints/checkpoint_20000
 
 # L17-18: 改写 env_cfg 里的绝对路径为 pod 侧的实际路径
@@ -91,7 +91,7 @@ sed -i 's|isaacsim.asset.importer.urdf" = {version = "2.4.31", exact = true}|isa
 
 ```bash
 # L21-24: bucket-side OUT_DIR & symlink
-OUT_DIR=/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0
+OUT_DIR=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-seed0
 mkdir -p $OUT_DIR/{eval_result,smoke_results}
 export ROBODOJO_EVAL_ROOT=$OUT_DIR/eval_result       # scripts/internal/summarize_result.py:37 读
 ln -sfn $OUT_DIR/eval_result    eval_result

@@ -75,9 +75,11 @@
               │  Bucket (DMP / OSS, fuse 挂载到 pod 和 dev)         │
               │  /horizon-bucket/robot_lab/                        │
               │    users/kun01.wu/  (仅自己可写)                    │
-              │      ckpts/  datasets/  aidi_output/               │
-              │      aidi_output/holobrain_robodojo_posttrain_v9/  │
-              │        checkpoint_20000/ … deploy package          │
+              │      robo_orchard_lab/   ← 本项目产物（2026-07-30 归集）│
+              │        ckpts/holobrain_robodojo_posttrain_v9/      │
+              │          checkpoint_20000/ … deploy package        │
+              │        eval_results/                               │
+              │      datasets/  ckpts/  aidi_output/  ← 跨项目共用   │
               │  /horizon-bucket/robot_lab2/                       │
               │    datasets/all_data/  (只读大数据)                │
               └────────────────────────────────────────────────────┘

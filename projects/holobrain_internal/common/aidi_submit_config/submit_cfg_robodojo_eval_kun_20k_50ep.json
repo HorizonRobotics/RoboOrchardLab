@@ -11,7 +11,7 @@
         "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
         "/usr/bin/python3 robodojo_eval.py \\",
         "  --policy_source \"${WORKING_PATH}/holobrain_robodojo_policy\" \\",
-        "  --model_dir '/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000/' \\",
+        "  --model_dir '/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000/' \\",
         "  --model_processor robodojo_processor \\",
         "  --env_config arx_x5 \\",
         "  --eval_num 50 \\",
