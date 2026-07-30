@@ -82,6 +82,23 @@ per-run-config `_result.json` 后，调用 `robodojo_eval._write_benchmark_summa
 † `deposit_coin` 只有 49 个可用 layout，协议要求 50，因此被判为 incomplete 而未计入。
 这不是本次配置问题，**41/42 是该 benchmark 的结构性上限**，详见 §7。
 
+> ### ⚠️ 哪些差异可以解读，哪些不可以
+>
+> 单 seed、每任务 50 episode，**单任务 SR 的最小分辨率是 1/50 = 2%**。因此：
+>
+> - **不要解读**维度级的小差异。例如 Generalization「1.33% → 1.67%」相差 0.33%，
+>   远小于单次成功/失败带来的抖动，**不能据此说 Generalization 变好了**。
+>   同理 Memory「0.00% → 0.67%」实际只是 6 个任务里某一个多成功了 2 个 episode。
+> - **可以解读**的是幅度明显超过分辨率的单任务变化，例如
+>   `put_bottles_into_dustbin` 2/50 → 15/50（SR 4% → 30%）、
+>   `organize_table` score 5.5 → 13.5。
+> - **可以解读**的是方向的一致性：5 个维度、SR 与 score 两个指标**全部同向**，
+>   这个整体模式比任何单个数字都更可信。
+> - **可以解读**的是 Random 半边的归零（12 个任务 × 25 ep = 300 个 episode 零成功），
+>   样本量足够大。
+>
+> 要让维度级小差异变得可解读，需要多 seed（seed1/seed2）或提高每任务 episode 数。
+
 ### 补充口径：把 `deposit_coin` 按其 49 个 episode 纳入（42/42）
 
 上表是 `robodojo_eval.py` 的官方输出。由于 `deposit_coin` 永远拿不到第 50 个 episode，
