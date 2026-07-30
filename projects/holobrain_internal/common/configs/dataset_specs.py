@@ -211,7 +211,7 @@ TRAINING_DATASETS = [
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_shanghai",
+        dataset_name="horizon_shanghai_lowcam",
         setting_type="horizon_piper_435_low_shanghai",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_shanghai/*-empty_cup_place-*",
@@ -229,11 +229,23 @@ TRAINING_DATASETS = [
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_shanghai_fold_clothes",
+        dataset_name="horizon_shanghai_highcam",
         setting_type="horizon_piper_435_high",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_shanghai/*-fold_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-flatten_clothes-*",
+            f"{DATA_BASE}/horizon_shanghai/*-piper-fold_t_shirt-*",
+        ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_shanghai_piper_x",
+        setting_type="horizon_piper_x_405_455",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/horizon_shanghai/*-piper_x-fold_t_shirt-*",
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -640,7 +652,9 @@ filter_list = [
     "challenge_self_collect",
     "horizon_beijing",
     "horizon_beijing_piper_x",
-    "horizon_shanghai",
+    "horizon_shanghai_lowcam",
+    "horizon_shanghai_highcam",
+    "horizon_shanghai_piper_x",
     "horizon_grasp_anything",
     "horizon_wuwen_piper_x",
     "agilex",
