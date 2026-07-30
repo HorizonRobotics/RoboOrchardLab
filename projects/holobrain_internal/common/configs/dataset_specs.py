@@ -222,6 +222,7 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-stack_bowls_three-*",
             f"{DATA_BASE}/horizon_shanghai/*-two_fold_towel-*",
             f"{DATA_BASE}/horizon_shanghai/*-place_object_to_location-*",
+            f"{DATA_BASE}/horizon_shanghai/*-microwave_food-*",
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -235,6 +236,7 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-fold_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-flatten_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-piper-fold_t_shirt-*",
+            f"{DATA_BASE}/horizon_shanghai/*-take_food_from_lunchbox-*",
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
