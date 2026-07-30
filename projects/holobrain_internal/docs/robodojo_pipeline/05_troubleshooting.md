@@ -1,5 +1,10 @@
 # 05 — Troubleshooting & 已知坑
 
+> **范围说明**：本文的排障记录来自外部 RoboDojo repo 流程与 xiaomi baseline 的实操。
+> 现行评测改用 in-repo `robodojo_eval.py`（见 [03_eval.md](03_eval.md) 顶部说明），
+> xiaomi 已移出范围。Isaac Sim / 镜像 / rsync 这类底层坑仍然适用。
+
+
 Session 10f5c967 期间 v1→v6 image + 20k train + sanity + seed0 eval 逐步跑通时踩过的坑，按类型汇总。
 
 **Memory 参照**：[[robodojo-holobrain-eval-image-v6]] · [[holobrain-aidi-submit-conventions]] · [[kun-wu-bucket-workspace]]

@@ -1,8 +1,32 @@
-# 03 — 评测侧完整通路
+# 03 — 评测侧完整通路（外部 RoboDojo repo 流程）
 
-从 AIDI submit 到 `_result.json` / `episode_*.mp4` 落 bucket 的完整链路。**核心 repo 是 `~/git_repo/RoboDojo/`**（不是 robo_orchard_lab！评测代码全在 RoboDojo 那边）。
+> ## ⚠️ 适用性：本文描述的**编排层已被取代**
+>
+> 现在跑评测**不用**本文 §1–§2 描述的外部 RoboDojo repo 流程，改用同事 xuewu.lin 的
+> **in-repo 评测器** `projects/holobrain_internal/common/robodojo_eval.py`
+> （配 `holobrain_robodojo_policy/` + 官方镜像 `robotlab-mani:...robodojo-v0.5`）。
+> 提交配置在 `common/aidi_submit_config/submit_cfg_robodojo_eval_kun_*.json`，
+> 命令见 [04_commands_cheatsheet.md](04_commands_cheatsheet.md) §1.2。
+>
+> **本文哪些还有效**：
+> - §3 Policy server 端、§4 Env client 端、§5 Obs/Action wire 格式、§6 Episode loop、
+>   §7 结果输出 schema、§8 中止/中断 —— **两套流程共用**，这些仍然准确，是理解
+>   RoboDojo 内部机制最详细的一份记录。
+> - §1 AIDI 提交端、§2 评测入口链（`scripts/robodojo.sh` / `smoke_all_tasks.sh`）
+>   —— **仅适用于旧流程**，作为历史记录保留。
+>
+> **为什么换**：并发/GPU 利用率、进程隔离、官方镜像、以及内置官方 protocol 汇总
+> （`_write_benchmark_summary`）全面更优。旧流程的 seed0 job 只跑到 13/54 run-config
+> 就被主动停掉（2 卡跑 8 卡分配，浪费 6 卡）。
+>
+> **最新结果**：见 [07_results.md](07_results.md)。
 
-**默认 job**：`bcloud-bj-zone1-7895445e92bc`（seed0 full eval，54 task × 25 ep）
+从 AIDI submit 到 `_result.json` / `episode_*.mp4` 落 bucket 的完整链路。
+本文语境下的核心 repo 是 `~/git_repo/RoboDojo/`（现行流程则把评测代码放在
+robo_orchard_lab 的 `projects/holobrain_internal/common/` 下）。
+
+**本文的默认 job**：`bcloud-bj-zone1-7895445e92bc`（旧流程 seed0 eval，**已 Stopped，
+仅完成 13/54 run-config**，结果在 `/horizon-bucket/.../robodojo-holobrain-seed0/`）
 
 ---
 

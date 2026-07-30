@@ -11,10 +11,11 @@
 source /home/users/kun01.wu-labs/miniconda3/etc/profile.d/conda.sh
 conda activate holobrain_internal   # dev machine 上的提交环境（RoboOrchardJob-AIDISubmit 等在此）
 
-# 项目根
+# 项目根（现行流程：训练与评测都在这里）
 cd /home/users/kun01.wu-labs/git_repo/robo_orchard_lab
-# 或 RoboDojo 侧：
-cd /home/users/kun01.wu-labs/git_repo/RoboDojo
+
+# 外部 RoboDojo repo —— 仅旧评测流程需要，现行流程用不到
+# cd /home/users/kun01.wu-labs/git_repo/RoboDojo
 ```
 
 ---
@@ -39,18 +40,35 @@ RoboOrchardJob-AIDISubmit submit_from_config \
     --config projects/holobrain_internal/common/aidi_submit_config/submit_cfg_robodojo_train_100k.json
 ```
 
-### 1.2 评测（RoboDojo 侧）
+### 1.2 评测（现行：in-repo `robodojo_eval.py`）
 
 ```bash
-cd /home/users/kun01.wu-labs/git_repo/RoboDojo
+cd /home/users/kun01.wu-labs/git_repo/robo_orchard_lab
+C=projects/holobrain_internal/common/aidi_submit_config
 
-# sanity smoke (2 tasks × 1 ep)
-RoboOrchardJob-AIDISubmit submit_from_config \
-    --config aidi_submit/cfgs/submit_cfg_holobrain_robodojo_sanity.json
+# sanity（4 task × 5 ep，2 GPU）—— 验证 pipeline 通不通
+RoboOrchardJob-AIDISubmit submit_from_config --config $C/submit_cfg_robodojo_eval_kun_20k_sanity.json
 
-# seed0 full (54 tasks × 25 ep)
-RoboOrchardJob-AIDISubmit submit_from_config \
-    --config aidi_submit/cfgs/submit_cfg_holobrain_robodojo_seed0.json
+# 第一批：54 run-config × 25 ep（8 GPU × 2 proc = 16 worker，约 6.5h）
+RoboOrchardJob-AIDISubmit submit_from_config --config $C/submit_cfg_robodojo_eval_kun_20k.json
+RoboOrchardJob-AIDISubmit submit_from_config --config $C/submit_cfg_robodojo_eval_kun_100k.json
+
+# 第二批：30 个非 Generalization 任务 × 50 ep（协议要求，约 9h）
+RoboOrchardJob-AIDISubmit submit_from_config --config $C/submit_cfg_robodojo_eval_kun_20k_50ep.json
+RoboOrchardJob-AIDISubmit submit_from_config --config $C/submit_cfg_robodojo_eval_kun_100k_50ep.json
+```
+
+**为什么要提两批**：官方协议每个任务要 50 个 episode。12 个 Generalization 任务是
+「标准 25 + 随机 25」，`--eval_num 25` 那批就已满足；其余 30 个任务要从单个 run-config
+取 50 个，必须另跑一批 `--eval_num 50`。两批结果由
+`scripts/aggregate_robodojo_results.py` 合并，详见 [07_results.md](07_results.md) §2。
+
+**旧流程（已弃用，仅作历史参考）**：
+
+```bash
+# cd /home/users/kun01.wu-labs/git_repo/RoboDojo
+# RoboOrchardJob-AIDISubmit submit_from_config \
+#     --config aidi_submit/cfgs/submit_cfg_holobrain_robodojo_seed0.json
 ```
 
 **注意**：`submit_from_config` 会打印 `Command executed:` 但**吃掉 job_id**（[[../../CLAUDE.md]] / skill `aidi-cloud-submit` §2.4 陷阱）。要立即查 job_id 见 §2。
@@ -147,9 +165,40 @@ aidictl job logs url $JOB_ID
 
 ---
 
-## 4. 从 bucket 读评测结果
+## 4. 读评测结果
 
-评测 job 会把结果 rsync 到 `/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0/`。
+> **现行流程的结果不在 bucket，在 job 自己的 PFS**（`output/robodojo_eval_results/`），
+> 要用 `aidictl job logs list/cat` 取。下面 §4.1–§4.3 里的 bucket 路径属于旧流程。
+>
+> **已汇总好的最终结果**（推荐直接用，不必自己解析）：
+> - `docs/robodojo_pipeline/results/{20k,100k}/benchmark_summary_seed_0.json` —— 官方口径
+> - `docs/robodojo_pipeline/results/{20k,100k}/runconfig_details_seed_0.json` —— 逐 run-config
+> - 结论见 [07_results.md](07_results.md)
+>
+> **一次拿到所有任务的 SR**（比逐个解析 `_result.json` 快得多）：
+> ```bash
+> aidictl job logs cat <job_id> "log/<job_id>-task-0-main.log" | grep 'finished: success_rate'
+> ```
+> 注意路径是 `log/` 而不是 `log/run_0/`。
+>
+> **单个 run-config 的原始结果**，路径比想象的多一层 run_id：
+> ```
+> output/robodojo_eval_results/RoboDojo/<run_config>/holobrain_robodojo_policy/arx_x5/
+>   0_ckpt_name=holobrain,action_type=joint/<run_id>/_result.json
+> ```
+>
+> **重新汇总**（合并两批 job，产出官方口径 summary）：
+> ```bash
+> cd projects/holobrain_internal/scripts
+> python aggregate_robodojo_results.py --gen-job <25ep_job> --nongen-job <50ep_job> \
+>     --label 20k --out-dir /tmp/agg_20k
+> ```
+>
+> 不要用 `aidictl job logs download` 拉大文件——会静默截断且照样 exit 0。
+
+旧流程的评测 job 会把结果 rsync 到
+`/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/robodojo-holobrain-seed0/`
+（**注意该目录只有 13/54 run-config，那个 job 被提前停掉了**）。
 
 ### 4.1 单 task result
 

@@ -1,5 +1,10 @@
 # 06 — WebSocket 保活 + zenity 死循环风险（重要）
 
+> **范围说明**：本文的 hang / timeout 分析主要基于 xiaomi baseline 的实测。
+> xiaomi 本身已移出范围，但其中关于 Isaac Sim 卡死、wall-time、超时阈值的结论
+> 对现行 in-repo 流程同样适用（现行流程的实测亦印证：单任务可跑到 90 min 才结束）。
+
+
 > **状态修订 (UTC 07-28 05:23)**：**Latent risk，非 active incident**。此前判断「HoloBrain 参考 job `bcloud-bj-zone1-7895445e92bc` 已死锁」的结论**不成立**——独立复核实测：
 > - 该 job 已完成 **8/54 tasks**（不是 6/54）
 > - 文档原来说 hang 在 `cover_blocks` (task 7)——实测 `cover_blocks` **已正常 PASS**（`[MAIN] eval finished` + `wall_clock=6497s (108min)`）

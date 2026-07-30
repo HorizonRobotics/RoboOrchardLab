@@ -4,6 +4,13 @@
 
 **语境**：本教程是 kun01.wu 在 2026-07-27 到 07-28 期间实操跑通 v6 docker image + 20k/100k 训练 + seed0 sanity/full eval 的实录整理，可作为「重跑 / debug / 改动 embodiment / 换 benchmark」的手册。
 
+> **想直接看结果** → [07_results.md](07_results.md)；**想知道当前状态与已知坑** → [STATUS.md](STATUS.md)。
+>
+> **评测编排层换过一次**：现在用 in-repo `common/robodojo_eval.py`（同事 xuewu.lin 的实现），
+> 不再用外部 `~/git_repo/RoboDojo/` 那套。[03_eval.md](03_eval.md) 的 §1–§2 是旧流程的历史
+> 记录，§3–§8（policy server / env client / wire 格式 / episode loop / result schema）
+> 两套流程共用，仍然准确。
+
 ---
 
 ## 架构总览
@@ -72,8 +79,10 @@
 |---|---|
 | [01_training.md](01_training.md) | 训练侧：AIDI submit_cfg 字段、`train.py` main、Config 加载 (`config_holobrain_common.py` v9)、Dataset (`RoboDojoLmdbDataset` + transforms)、Model forward (`HoloBrain_Qwen2_5_VL`)、Loss (`HoloBrainActionLoss`)、Checkpoint save (`SaveCheckpoint` hook) |
 | [02_deploy_package.md](02_deploy_package.md) | 从 accelerate state 组装 deploy package：`model.safetensors` / `model.config.json` / `<sim>_processor.json` / `<sim>_inference.config.json` / `urdf/` 的来源与用途 |
-| [03_eval.md](03_eval.md) | 评测侧：`smoke_all_tasks.sh` → `run_policy_eval.sh` → server (`setup_policy_server.py` + `HoloBrain.model.Model`) + client (`src/eval_client/main.py` + `EvalEnv`)、WebSocket 通信 obs/action dict shape、Isaac Sim episode loop、success/fail 判定、`_result.json` 写入 |
+| [03_eval.md](03_eval.md) | **（§1–§2 编排层已弃用，见该文首部说明；§3–§8 仍有效）** 评测侧：`smoke_all_tasks.sh` → `run_policy_eval.sh` → server (`setup_policy_server.py` + `HoloBrain.model.Model`) + client (`src/eval_client/main.py` + `EvalEnv`)、WebSocket 通信 obs/action dict shape、Isaac Sim episode loop、success/fail 判定、`_result.json` 写入 |
 | [04_commands_cheatsheet.md](04_commands_cheatsheet.md) | 所有可复用的命令：提交 job、查询状态、拉日志、抓 checkpoint、解析 result.json、看视频。含 `RoboOrchardJob-AIDISubmit` / `aidictl` / `job/get` REST API 的模板 |
+| [07_results.md](07_results.md) | **最终结果**：20k vs 100k 的 5 维度与逐任务 SR/score、Generalization 标准-vs-随机拆分、哪些差异可解读、数据完整性与结构性上限。配套 JSON 在 `results/{20k,100k}/` |
+| [STATUS.md](STATUS.md) | 当前状态、已定决策、11 条已知坑、后续方向 |
 | [05_troubleshooting.md](05_troubleshooting.md) | 已知坑：v6 image 60+ dep 修复记录、IsaacLab pin sed patch、rsync `-aL` 的 symlink dangling 问题、numpy < 2.0 硬 pin 冲突、submit_cfg 常见错误清单、3-strike fatigue 心法 |
 
 ---
