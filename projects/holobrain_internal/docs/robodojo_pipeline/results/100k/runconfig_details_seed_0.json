@@ -1,0 +1,434 @@
+{
+  "align_blocks": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "arrange_largest_number": {
+    "episodes": 25,
+    "reported_score": 2.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 2.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "arrange_largest_number_random": {
+    "episodes": 25,
+    "reported_score": 0.2,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.2,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "build_tower": {
+    "episodes": 50,
+    "reported_score": 3.2000000000000006,
+    "reported_success_rate": 0.0,
+    "score_percent": 3.2000000000000006,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "classify_objects": {
+    "episodes": 50,
+    "reported_score": 4.299999999999999,
+    "reported_success_rate": 0.0,
+    "score_percent": 4.299999999999999,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "classify_objects_by_language": {
+    "episodes": 50,
+    "reported_score": 0.2,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.2,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "cover_blocks": {
+    "episodes": 50,
+    "reported_score": 0.4,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.4,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "deposit_coin": {
+    "episodes": 49,
+    "reported_score": 0.8163265306122449,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.8163265306122449,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "fasten_screws": {
+    "episodes": 50,
+    "reported_score": 0.4,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.4,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "fill_egg_holder": {
+    "episodes": 50,
+    "reported_score": 0.6000000000000001,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.6000000000000001,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "fill_pen_holder": {
+    "episodes": 50,
+    "reported_score": 2.8000000000000003,
+    "reported_success_rate": 0.0,
+    "score_percent": 2.8000000000000003,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "fold_clothes": {
+    "episodes": 25,
+    "reported_score": 4.0,
+    "reported_success_rate": 0.04,
+    "score_percent": 4.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 4.0
+  },
+  "fold_clothes_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "general_pickup": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "hang_mugs": {
+    "episodes": 25,
+    "reported_score": 3.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 3.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "hang_mugs_random": {
+    "episodes": 25,
+    "reported_score": 1.2,
+    "reported_success_rate": 0.0,
+    "score_percent": 1.2,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "imitate_sorting_sequence": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "insert_key": {
+    "episodes": 50,
+    "reported_score": 12.600000000000009,
+    "reported_success_rate": 0.0,
+    "score_percent": 12.600000000000009,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "insert_tubes": {
+    "episodes": 50,
+    "reported_score": 7.200000000000002,
+    "reported_success_rate": 0.0,
+    "score_percent": 7.200000000000002,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "make_kong": {
+    "episodes": 50,
+    "reported_score": 4.0,
+    "reported_success_rate": 0.04,
+    "score_percent": 4.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 4.0
+  },
+  "make_toast": {
+    "episodes": 25,
+    "reported_score": 2.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 2.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "make_toast_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "match_and_pick_from_conveyor": {
+    "episodes": 50,
+    "reported_score": 4.0,
+    "reported_success_rate": 0.04,
+    "score_percent": 4.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 4.0
+  },
+  "organize_table": {
+    "episodes": 50,
+    "reported_score": 13.5,
+    "reported_success_rate": 0.0,
+    "score_percent": 13.5,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "pack_objects_into_box": {
+    "episodes": 25,
+    "reported_score": 4.2,
+    "reported_success_rate": 0.0,
+    "score_percent": 4.2,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "pack_objects_into_box_random": {
+    "episodes": 25,
+    "reported_score": 2.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 2.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "pick_from_conveyor_by_image": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "play_Xylophone": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "play_stacking_toy": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "play_tic_tac_toe": {
+    "episodes": 50,
+    "reported_score": 2.1999999999999997,
+    "reported_success_rate": 0.0,
+    "score_percent": 2.1999999999999997,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "plug_in_charger": {
+    "episodes": 50,
+    "reported_score": 2.0,
+    "reported_success_rate": 0.02,
+    "score_percent": 2.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 2.0
+  },
+  "pour_balls_into_vase": {
+    "episodes": 50,
+    "reported_score": 4.0,
+    "reported_success_rate": 0.04,
+    "score_percent": 4.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 4.0
+  },
+  "pour_by_language": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "pour_liquid_into_cup": {
+    "episodes": 25,
+    "reported_score": 8.0,
+    "reported_success_rate": 0.08,
+    "score_percent": 8.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 8.0
+  },
+  "pour_liquid_into_cup_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "press_by_number": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "push_T": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "push_T_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "put_bottles_into_dustbin": {
+    "episodes": 50,
+    "reported_score": 45.099999999999994,
+    "reported_success_rate": 0.3,
+    "score_percent": 45.099999999999994,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 30.0
+  },
+  "solve_equation": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "sort_nesting_dolls_by_size": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "sort_nesting_dolls_by_size_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "stack_blocks": {
+    "episodes": 25,
+    "reported_score": 9.999999999999998,
+    "reported_success_rate": 0.04,
+    "score_percent": 9.999999999999998,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 4.0
+  },
+  "stack_blocks_by_language": {
+    "episodes": 50,
+    "reported_score": 0.4,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.4,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "stack_blocks_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "stack_bowls": {
+    "episodes": 25,
+    "reported_score": 33.000000000000014,
+    "reported_success_rate": 0.24,
+    "score_percent": 33.000000000000014,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 24.0
+  },
+  "stack_bowls_random": {
+    "episodes": 25,
+    "reported_score": 1.7999999999999998,
+    "reported_success_rate": 0.0,
+    "score_percent": 1.7999999999999998,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "store_laptop_and_headphones": {
+    "episodes": 25,
+    "reported_score": 10.400000000000002,
+    "reported_success_rate": 0.0,
+    "score_percent": 10.400000000000002,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "store_laptop_and_headphones_random": {
+    "episodes": 25,
+    "reported_score": 1.6,
+    "reported_success_rate": 0.0,
+    "score_percent": 1.6,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "store_tools_in_toolbox": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "swap_T": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "swap_blocks": {
+    "episodes": 50,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-7f36acc97923",
+    "success_rate_percent": 0.0
+  },
+  "sweep_blocks": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  },
+  "sweep_blocks_random": {
+    "episodes": 25,
+    "reported_score": 0.0,
+    "reported_success_rate": 0.0,
+    "score_percent": 0.0,
+    "source_job": "bcloud-bj-zone1-883434858d0c",
+    "success_rate_percent": 0.0
+  }
+}

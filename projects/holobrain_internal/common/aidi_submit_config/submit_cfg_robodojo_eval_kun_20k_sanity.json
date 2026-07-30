@@ -1,0 +1,31 @@
+{
+    "job_name": "kun01wu_robodojo_eval_20k_sanity",
+    "workspace_folder": "submit-holobrain-robodojo-eval-robodojo_eval_20k_sanity",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-tf5102-robodojo-v0.5",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "gpu_per_worker": 2,
+    "wall_time": 480,
+    "cmd": [
+        "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+        "/usr/bin/python3 robodojo_eval.py \\",
+        "  --policy_source \"${WORKING_PATH}/holobrain_robodojo_policy\" \\",
+        "  --model_dir '/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9/checkpoint_20000/' \\",
+        "  --model_processor robodojo_processor \\",
+        "  --env_config arx_x5 \\",
+        "  --eval_num 5 \\",
+        "  --processes_per_gpu 1 \\",
+        "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
+        "  --tasks stack_bowls,push_T,fasten_screws,align_blocks"
+    ],
+    "to_upload": [
+        "robo_orchard_lab",
+        "projects/holobrain_internal/common/holobrain_robodojo_policy",
+        "projects/holobrain_internal/common/robodojo_eval.py"
+    ],
+    "job_password": "1227",
+    "queue_name": "project-5090-robot-lab-bcloud-bj",
+    "project_id": "horizon-labs"
+}

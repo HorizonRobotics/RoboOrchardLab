@@ -1,0 +1,215 @@
+{
+  "complete": false,
+  "seed": 0,
+  "metric_unit": "percent",
+  "num_tasks": 42,
+  "completed_tasks": 41,
+  "num_run_configs": 54,
+  "expected_episodes": 2100,
+  "average_success_rate": 1.4880952380952381,
+  "average_score": 3.5091666666666677,
+  "dimension_metrics": {
+    "Generalization": {
+      "success_rate": 1.6666666666666667,
+      "score": 3.4750000000000014,
+      "num_tasks": 12,
+      "completed_tasks": 12
+    },
+    "Precision": {
+      "success_rate": 0.8571428571428571,
+      "score": 4.200000000000001,
+      "num_tasks": 8,
+      "completed_tasks": 7
+    },
+    "Long-Horizon": {
+      "success_rate": 4.25,
+      "score": 9.0625,
+      "num_tasks": 8,
+      "completed_tasks": 8
+    },
+    "Memory": {
+      "success_rate": 0.6666666666666666,
+      "score": 0.7333333333333334,
+      "num_tasks": 6,
+      "completed_tasks": 6
+    },
+    "Open": {
+      "success_rate": 0.0,
+      "score": 0.07500000000000001,
+      "num_tasks": 8,
+      "completed_tasks": 8
+    }
+  },
+  "task_metrics": {
+    "stack_bowls": {
+      "success_rate": 12.0,
+      "score": 17.40000000000001
+    },
+    "push_T": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "pack_objects_into_box": {
+      "success_rate": 0.0,
+      "score": 3.100000000000001
+    },
+    "fold_clothes": {
+      "success_rate": 2.0,
+      "score": 2.0
+    },
+    "hang_mugs": {
+      "success_rate": 0.0,
+      "score": 2.1
+    },
+    "sweep_blocks": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "pour_liquid_into_cup": {
+      "success_rate": 4.0,
+      "score": 4.0
+    },
+    "make_toast": {
+      "success_rate": 0.0,
+      "score": 1.0
+    },
+    "arrange_largest_number": {
+      "success_rate": 0.0,
+      "score": 1.1
+    },
+    "sort_nesting_dolls_by_size": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "store_laptop_and_headphones": {
+      "success_rate": 0.0,
+      "score": 6.000000000000002
+    },
+    "stack_blocks": {
+      "success_rate": 2.0,
+      "score": 4.999999999999999
+    },
+    "fasten_screws": {
+      "success_rate": 0.0,
+      "score": 0.4
+    },
+    "plug_in_charger": {
+      "success_rate": 2.0,
+      "score": 2.0
+    },
+    "insert_tubes": {
+      "success_rate": 0.0,
+      "score": 7.200000000000002
+    },
+    "pour_balls_into_vase": {
+      "success_rate": 4.0,
+      "score": 4.0
+    },
+    "play_Xylophone": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "insert_key": {
+      "success_rate": 0.0,
+      "score": 12.600000000000009
+    },
+    "build_tower": {
+      "success_rate": 0.0,
+      "score": 3.2000000000000006
+    },
+    "put_bottles_into_dustbin": {
+      "success_rate": 30.0,
+      "score": 45.099999999999994
+    },
+    "fill_pen_holder": {
+      "success_rate": 0.0,
+      "score": 2.8000000000000003
+    },
+    "classify_objects": {
+      "success_rate": 0.0,
+      "score": 4.299999999999999
+    },
+    "play_tic_tac_toe": {
+      "success_rate": 0.0,
+      "score": 2.1999999999999997
+    },
+    "fill_egg_holder": {
+      "success_rate": 0.0,
+      "score": 0.6000000000000001
+    },
+    "organize_table": {
+      "success_rate": 0.0,
+      "score": 13.5
+    },
+    "make_kong": {
+      "success_rate": 4.0,
+      "score": 4.0
+    },
+    "play_stacking_toy": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "cover_blocks": {
+      "success_rate": 0.0,
+      "score": 0.4
+    },
+    "match_and_pick_from_conveyor": {
+      "success_rate": 4.0,
+      "score": 4.0
+    },
+    "swap_blocks": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "swap_T": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "press_by_number": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "imitate_sorting_sequence": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "align_blocks": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "general_pickup": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "stack_blocks_by_language": {
+      "success_rate": 0.0,
+      "score": 0.4
+    },
+    "solve_equation": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "classify_objects_by_language": {
+      "success_rate": 0.0,
+      "score": 0.2
+    },
+    "pick_from_conveyor_by_image": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "store_tools_in_toolbox": {
+      "success_rate": 0.0,
+      "score": 0.0
+    },
+    "pour_by_language": {
+      "success_rate": 0.0,
+      "score": 0.0
+    }
+  },
+  "missing_tasks": [],
+  "incomplete_tasks": {
+    "deposit_coin": {
+      "deposit_coin": 49
+    }
+  }
+}

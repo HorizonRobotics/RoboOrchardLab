@@ -1,0 +1,31 @@
+{
+    "job_name": "kun01wu_robodojo_eval_100k_50ep",
+    "workspace_folder": "submit-holobrain-robodojo-eval-robodojo_eval_100k_50ep",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-tf5102-robodojo-v0.5",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "gpu_per_worker": 8,
+    "wall_time": 2880,
+    "cmd": [
+        "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+        "/usr/bin/python3 robodojo_eval.py \\",
+        "  --policy_source \"${WORKING_PATH}/holobrain_robodojo_policy\" \\",
+        "  --model_dir '/horizon-bucket/robot_lab/users/kun01.wu/aidi_output/holobrain_robodojo_posttrain_v9_100k/checkpoint_100000/' \\",
+        "  --model_processor robodojo_processor \\",
+        "  --env_config arx_x5 \\",
+        "  --eval_num 50 \\",
+        "  --tasks 'fasten_screws,plug_in_charger,insert_tubes,pour_balls_into_vase,play_Xylophone,deposit_coin,insert_key,build_tower,put_bottles_into_dustbin,fill_pen_holder,classify_objects,play_tic_tac_toe,fill_egg_holder,organize_table,make_kong,play_stacking_toy,cover_blocks,match_and_pick_from_conveyor,swap_blocks,swap_T,press_by_number,imitate_sorting_sequence,align_blocks,general_pickup,stack_blocks_by_language,solve_equation,classify_objects_by_language,pick_from_conveyor_by_image,store_tools_in_toolbox,pour_by_language,store_laptop_and_headphones_random' \\",
+        "  --processes_per_gpu 2 \\",
+        "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711"
+    ],
+    "to_upload": [
+        "robo_orchard_lab",
+        "projects/holobrain_internal/common/holobrain_robodojo_policy",
+        "projects/holobrain_internal/common/robodojo_eval.py"
+    ],
+    "job_password": "1227",
+    "queue_name": "project-5090-robot-lab-bcloud-bj",
+    "project_id": "horizon-labs"
+}
