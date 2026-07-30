@@ -1,6 +1,6 @@
 {
     "job_name": "kun01wu_robodojo_eval_100k_coin51",
-    "workspace_folder": "submit-holobrain-robodojo-eval-robodojo_eval_100k_coin51",
+    "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-holobrain-robodojo-eval-robodojo_eval_100k_coin51",
     "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-tf5102-robodojo-v0.5",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",

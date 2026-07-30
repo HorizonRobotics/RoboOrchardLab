@@ -1,6 +1,6 @@
 {
     "job_name": "holobrain_robodojo_posttrain_v9_sanity",
-    "workspace_folder": "submit-holobrain-robodojo-sanity",
+    "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-holobrain-robodojo-sanity",
     "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-trasnformers5102",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",

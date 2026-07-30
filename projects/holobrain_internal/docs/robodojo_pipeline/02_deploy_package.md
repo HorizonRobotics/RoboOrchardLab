@@ -66,8 +66,10 @@ md5sum "$BUCKET_DST/model.safetensors"     # 20k 版实测 md5=a71cb164...
 ```bash
 # aidictl job logs download 会 rsync log/output dir 下来
 aidictl job logs download bcloud-bj-zone1-1f00b8e23ac8 output/ --dest ~/tmp_ckpt/
-# 或直接从 bucket 读（AIDI output 会自动 rsync 到 bucket）
-ls /horizon-bucket/robot_lab/users/kun01.wu-labs/aidi_output/*/checkpoints/checkpoint_9/
+# 注意：**没有**「AIDI 自动 rsync 到 bucket」这回事（本文早前版本写错了）。
+# users/kun01.wu-labs/ 这个路径根本不存在；bucket 里的产物都得自己归档：
+#   projects/holobrain_internal/scripts/archive_to_bucket.sh ckpts <run_name> <本地目录>
+# 落点约定见 00_storage_layout.md
 ```
 
 ---

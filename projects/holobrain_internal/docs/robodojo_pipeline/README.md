@@ -77,6 +77,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [00_storage_layout.md](00_storage_layout.md) | **落点约定（权威）**：代码/训练状态/定版产物分别放哪、什么是自动的什么要手动归档、命名规则、两个已知坑 |
 | [01_training.md](01_training.md) | 训练侧：AIDI submit_cfg 字段、`train.py` main、Config 加载 (`config_holobrain_common.py` v9)、Dataset (`RoboDojoLmdbDataset` + transforms)、Model forward (`HoloBrain_Qwen2_5_VL`)、Loss (`HoloBrainActionLoss`)、Checkpoint save (`SaveCheckpoint` hook) |
 | [02_deploy_package.md](02_deploy_package.md) | 从 accelerate state 组装 deploy package：`model.safetensors` / `model.config.json` / `<sim>_processor.json` / `<sim>_inference.config.json` / `urdf/` 的来源与用途 |
 | [03_eval.md](03_eval.md) | **（§1–§2 编排层已弃用，见该文首部说明；§3–§8 仍有效）** 评测侧：`smoke_all_tasks.sh` → `run_policy_eval.sh` → server (`setup_policy_server.py` + `HoloBrain.model.Model`) + client (`src/eval_client/main.py` + `EvalEnv`)、WebSocket 通信 obs/action dict shape、Isaac Sim episode loop、success/fail 判定、`_result.json` 写入 |

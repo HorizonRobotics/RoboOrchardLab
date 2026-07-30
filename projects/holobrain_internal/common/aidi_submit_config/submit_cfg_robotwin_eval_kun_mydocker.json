@@ -1,6 +1,6 @@
 {
     "job_name": "eval_robotwin_holobrain_ckpt11_kun_mydocker_v3",
-    "workspace_folder": "submit-holobrain-robotwin-eval-kun-mydocker-v3",
+    "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-holobrain-robotwin-eval-kun-mydocker-v3",
     "docker_image": "docker.hobot.cc/imagesys/kun01.wu/holobrain-eval:ubuntu22.04-gcc11.4-py3.10-cuda12.8-torch280-robotwin-20260724-v3",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
