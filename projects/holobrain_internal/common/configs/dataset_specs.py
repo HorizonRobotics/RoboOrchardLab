@@ -192,6 +192,7 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_beijing/*-organize_utensils-*",
             f"{DATA_BASE}/horizon_beijing/*-place_to_slot_hard-*",
             f"{DATA_BASE}/horizon_beijing/*-close_laptop_lid-*",
+            f"{DATA_BASE}/horizon_beijing/*-piper-sweep_trash-*",
             exclude_patterns=[f"{DATA_BASE}/horizon_beijing/*-piper_x-*"],
         ),
         instruction_paths=[
