@@ -82,22 +82,35 @@ directly in each dataset spec
 
 
 # v9
+# config.update(
+#     num_vlm_layers=4,
+#     embed_dims=384,
+#     decoder_layers=10,
+#     multi_modal_attn=True,
+#     checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-06-13/18-52/bcloud-bj-zone1-23a35623c35d/holobrain_v9_newinit_f146897e_6715_11f1_9bdf_1d433b603abb/output/checkpoints/checkpoint_50/model.safetensors",
+# )
+
+# v10
 config.update(
     num_vlm_layers=4,
     embed_dims=384,
     decoder_layers=10,
-    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-06-13/18-52/bcloud-bj-zone1-23a35623c35d/holobrain_v9_newinit_f146897e_6715_11f1_9bdf_1d433b603abb/output/checkpoints/checkpoint_50/model.safetensors",
     multi_modal_attn=True,
-    # below only for pretrain
-    # warmup_step=5000,
-    # with_reference_imgs=True,
+    checkpoint="http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-07-16/15-40/bcloud-bj-zone1-16ebb8d6738a/holobrain_v10_a725c510_80e9_11f1_9e82_2bc338c39dff/output/checkpoints/checkpoint_60/model.safetensors",
+    vlm_pretrain="./ckpt/Qwen3.5-2B",
+    dst_wh=(352, 256),
+    patch_size=32,
+    image_first=False,
 )
 
 
+# below only for pretrain
 # config.update(
+#     warmup_step=5000,
+#     with_reference_imgs=True,
 #     pretrain=True,
-#     max_step=200000,
-#     num_workers=8,
+#     max_step=300000,
+#     num_workers=4,
 # )
 
 

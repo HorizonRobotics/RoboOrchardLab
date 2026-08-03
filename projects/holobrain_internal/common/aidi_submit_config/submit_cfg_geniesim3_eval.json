@@ -1,14 +1,14 @@
 {
     "job_name": "eval_geniesim3_holobrain",
     "workspace_folder": "submit/holobrain",
-    "docker_image": "hub.hobot.cc/auto/robot_lab/jiawei03.li/geniesim_holobrain:0.5.7",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:geniesim3-holobrain-tf5102",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 4,
     "gpu_per_worker": 2,
     "wall_time": 14400,
     "cmd": [
-        "export HOLOBRAIN_MODEL_DIR=http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-05-26/12-34/bcloud-bj-zone1-e3b7b3b7de28/holobrain_geniesim_depth_noise_39350ef8_58bc_11f1_9bdf_1d433b603abb/output/checkpoints/checkpoint_22",
+        "export HOLOBRAIN_MODEL_DIR='http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-05-26/12-34/bcloud-bj-zone1-e3b7b3b7de28/holobrain_geniesim_depth_noise_39350ef8_58bc_11f1_9bdf_1d433b603abb/output/checkpoints/checkpoint_22'",
         "export EVAL_TASK_NAMES=icra_open_door,icra_place_block_into_box,icra_pour_workpiece,icra_take_wrong_item_shelf,icra_sorting_packages_continuous,icra_sorting_packages,icra_bimanual_hold_pot,icra_stock_and_straighten_shelf",
         "export SIM_ASSETS=/horizon-bucket/robot_lab2/users/jiawei03.li-labs/data/GenieSimAssets",
         "export WORKSPACE_DIR=/job_data",

@@ -155,10 +155,14 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
     def get_depths(self, lmdb_index, data):
         depths = []
         for cam_name in data["cam_names"]:
-            depth_buffer = self.depth_lmdbs[lmdb_index][
-                f"{data['uuid']}/{cam_name}/{data['step_index']}"
-            ]
-            depth = decode_depth(depth_buffer, self.depth_scale)
+            try:
+                depth_buffer = self.depth_lmdbs[lmdb_index][
+                    f"{data['uuid']}/{cam_name}/{data['step_index']}"
+                ]
+                depth = decode_depth(depth_buffer, self.depth_scale)
+            except Exception as exc:
+                depth = np.zeros([720, 1280], dtype=np.float64)
+                print(f"depth error, uuid: {data['uuid']}, error: {exc}")
             depths.append(depth)
         return {"depths": depths}
 
@@ -284,6 +288,7 @@ class HorizonManipulationLmdbDataset(BaseLmdbManipulationDataset):
             data.update(self.get_images(lmdb_index, data))
         if self.load_depth:
             data.update(self.get_depths(lmdb_index, data))
+
         if self.load_extrinsic:
             data.update(self.get_extrinsic(lmdb_index, data))
         if self.load_calibration:

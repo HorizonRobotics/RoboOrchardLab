@@ -118,7 +118,7 @@ DEPLOY_DATASETS = [
     ),
     dict(
         dataset_type="robodojo",
-        dataset_name="robodojo",
+        dataset_name="robodojo_arx_x5a",
         setting_type="arx_x5a",
     ),
 ]

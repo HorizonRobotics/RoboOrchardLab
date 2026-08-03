@@ -192,7 +192,9 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_beijing/*-organize_utensils-*",
             f"{DATA_BASE}/horizon_beijing/*-place_to_slot_hard-*",
             f"{DATA_BASE}/horizon_beijing/*-close_laptop_lid-*",
-            exclude_patterns=[f"{DATA_BASE}/horizon_beijing/*-piper_x-*"],
+            f"{DATA_BASE}/horizon_beijing/*-piper-sweep_trash-*",
+            f"{DATA_BASE}/horizon_beijing/*-put_objects_to_drawstring_bag-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_beijing/*piper_x*"],
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -203,7 +205,7 @@ TRAINING_DATASETS = [
         dataset_name="horizon_beijing_piper_x",
         setting_type="horizon_piper_x_435",
         data_paths=lambda: _glob_sorted(
-            f"{DATA_BASE}/horizon_beijing/*-piper_x-*-*"
+            f"{DATA_BASE}/horizon_beijing/*piper_x*-*"
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -211,7 +213,7 @@ TRAINING_DATASETS = [
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_shanghai",
+        dataset_name="horizon_shanghai_lowcam",
         setting_type="horizon_piper_435_low_shanghai",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_shanghai/*-empty_cup_place-*",
@@ -222,6 +224,8 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-stack_bowls_three-*",
             f"{DATA_BASE}/horizon_shanghai/*-two_fold_towel-*",
             f"{DATA_BASE}/horizon_shanghai/*-place_object_to_location-*",
+            f"{DATA_BASE}/horizon_shanghai/*-microwave_food-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_shanghai/*piper_x*"],
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -229,11 +233,43 @@ TRAINING_DATASETS = [
     ),
     dict(
         dataset_type="agilex",
-        dataset_name="horizon_shanghai_fold_clothes",
+        dataset_name="horizon_shanghai_highcam",
         setting_type="horizon_piper_435_high",
         data_paths=lambda: _glob_sorted(
             f"{DATA_BASE}/horizon_shanghai/*-fold_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-flatten_clothes-*",
+            f"{DATA_BASE}/horizon_shanghai/*-piper-fold_t_shirt-*",
+            f"{DATA_BASE}/horizon_shanghai/*-take_food_from_lunchbox-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_shanghai/*piper_x*"],
+        ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_shanghai_piper_x",
+        setting_type="horizon_piper_x_405_455",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/horizon_shanghai/*-piper_x-fold_t_shirt-*",
+        ),
+        instruction_paths=[
+            f"{DATA_BASE}/instructions_v2/agilex",
+        ],
+    ),
+    dict(
+        dataset_type="agilex",
+        dataset_name="horizon_wuwen_piper_x",
+        setting_type="horizon_piper_x_435",
+        data_paths=lambda: _glob_sorted(
+            f"{DATA_BASE}/horizon_wuwen/*-assemble_mechanical_parts-*",
+            f"{DATA_BASE}/horizon_wuwen/*-fold_t_shirt-*",
+            f"{DATA_BASE}/horizon_wuwen/*-pack_items_into_bags-*",
+            f"{DATA_BASE}/horizon_wuwen/*-place_chinese_chess_pieces_in_tray-*",
+            f"{DATA_BASE}/horizon_wuwen/*-place_objects_to_basket-*",
+            f"{DATA_BASE}/horizon_wuwen/*-place_objects_to_location-*",
+            f"{DATA_BASE}/horizon_wuwen/*-plug_charger-*",
+            f"{DATA_BASE}/horizon_wuwen/*-spell_words_with_letter_blocks-*",
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -622,8 +658,11 @@ filter_list = [
     "challenge_self_collect",
     "horizon_beijing",
     "horizon_beijing_piper_x",
-    "horizon_shanghai",
+    "horizon_shanghai_lowcam",
+    "horizon_shanghai_highcam",
+    "horizon_shanghai_piper_x",
     "horizon_grasp_anything",
+    "horizon_wuwen_piper_x",
     "agilex",
     "agibot",
     # "agibot_geniesim3_challenge",
@@ -673,6 +712,7 @@ dataset_sample_weights = dict(
     horizon_grasp_anything=2,
     horizon_beijing_piper_x=0.001,
     horizon_shanghai=8,
+    horizon_wuwen_piper_x=6,
     agilex=12,
     agibot=10,
     agibot_geniesim3_challenge=2,

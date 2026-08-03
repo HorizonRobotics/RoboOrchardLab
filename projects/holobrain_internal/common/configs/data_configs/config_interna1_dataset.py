@@ -52,6 +52,7 @@ def get_dataset_lmdb_config():
                     ["L_arm_link16_gripper_end"],
                     ["R_arm_link26_gripper_end"],
                 ],
+                arm_connection_joint_indices=[6, 6],
             ),
         ),
         interna1_agile_split_aloha=dict(
@@ -85,6 +86,7 @@ def get_dataset_lmdb_config():
                     ["left/link6_gripper_end"],
                     ["right/link6_gripper_end"],
                 ],
+                arm_connection_joint_indices=[6, 6],
             ),
         ),
         interna1_genieg1=dict(
@@ -120,6 +122,7 @@ def get_dataset_lmdb_config():
                     ["arm_l_end_link_gripper_end"],
                     ["arm_r_end_link_gripper_end"],
                 ],
+                arm_connection_joint_indices=[7, 7],
             ),
         ),
     )

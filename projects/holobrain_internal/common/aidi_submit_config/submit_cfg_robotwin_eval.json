@@ -1,7 +1,7 @@
 {
     "job_name": "eval_robotwin_holobrain",
     "workspace_folder": "submit-holobrain-robotwin-eval",
-    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-transformers5102",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,
@@ -14,7 +14,7 @@
         "python3 robotwin_eval.py \\",
         "  --task_config demo_clean \\",
         "  --task_names place_empty_cup,adjust_bottle,stack_blocks_three,beat_block_hammer,handover_mic,blocks_ranking_rgb,blocks_ranking_size,lift_pot,open_laptop,open_microwave,place_cans_plasticbox,rotate_qrcode,move_pillbottle_pad,stack_bowls_three,dump_bin_bigbin,place_dual_shoes \\",
-        "  --model_config '/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/HoloBrain_v0.0_Qwen' \\",
+        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-07-16/15-40/bcloud-bj-zone1-16ebb8d6738a/holobrain_v10_a725c510_80e9_11f1_9e82_2bc338c39dff/output/checkpoints/checkpoint_60/' \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
         "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
         "  --model_processor robotwin2_0_processor \\",

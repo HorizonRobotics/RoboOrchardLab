@@ -67,7 +67,11 @@ BEHAVIOR1K_CONFIG = dict(
             ["left_arm_link7_gripper_end"],
             ["right_arm_link7_gripper_end"],
         ],
-        arm_connection_joint_indices=[3, 0, 0],
+        arm_connection_joint_indices=[
+            [None, 3, 3],
+            [0, None, 7],
+            [0, 7, None],
+        ],
     ),
     scale_shift=[
         # torso
@@ -147,7 +151,7 @@ def build_transforms(config, mode, kinematics_config, scale_shift):
         joint_mask=joint_mask,
     )
 
-    resize = dict(type=Resize, dst_wh=config.get("dst_wh", (336, 336)))
+    resize = dict(type=Resize, dst_wh=config.get("dst_wh", (308, 252)))
     to_tensor = dict(type=ToTensor)
     ego_to_cam = dict(type=MoveEgoToCam)
     projection_mat = dict(type=GetProjectionMat, target_coordinate="ego")

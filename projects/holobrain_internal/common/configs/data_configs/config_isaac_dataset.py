@@ -167,6 +167,7 @@ ROBOT_PROFILES = dict(
                 ],
             ],
             finger_keys=[["left_link7"], ["right_link7"]],
+            arm_connection_joint_indices=[6, 6],
         ),
         calib_to_ext_kwargs=dict(
             cam_ref_links=dict(

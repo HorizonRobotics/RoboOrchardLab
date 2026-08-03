@@ -624,14 +624,10 @@ def _write_benchmark_summary(
         "metric_unit": "percent",
         "num_tasks": len(BENCHMARK_TASKS),
         "completed_tasks": len(task_metrics),
-        "num_run_configs": len(BENCHMARK_TASKS)
-        + len(GENERALIZATION_TASKS),
+        "num_run_configs": len(BENCHMARK_TASKS) + len(GENERALIZATION_TASKS),
         "expected_episodes": len(BENCHMARK_TASKS) * STANDALONE_EPISODES,
         "average_success_rate": _benchmark_mean(
-            [
-                metrics["success_rate"]
-                for metrics in completed_dimensions
-            ]
+            [metrics["success_rate"] for metrics in completed_dimensions]
         ),
         "average_score": _benchmark_mean(
             [metrics["score"] for metrics in completed_dimensions]

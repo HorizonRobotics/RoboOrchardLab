@@ -55,6 +55,11 @@ kinematics_config = dict(
             ["link-pitch_body", "link-up-down_body"],
         ],
         finger_keys=[["Link7_l_gripper_end"], ["Link7_r_gripper_end"], []],
+        arm_connection_joint_indices=[
+            [None, 7, 0],
+            [7, None, 0],
+            [0, 0, None],
+        ],
     )
 )
 
