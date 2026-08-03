@@ -45,6 +45,7 @@ kinematics_config = dict(
         ],
     ],
     finger_keys=[["left_link7"], ["right_link7"]],
+    arm_connection_joint_indices=[6, 6],
 )
 
 

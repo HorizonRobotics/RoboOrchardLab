@@ -74,10 +74,10 @@ g2_kinematics_config = dict(
         [],
     ],
     arm_connection_joint_indices=[
+        [None, 7, None, 0],
+        [7, None, None, 0],
         [None, None, None, 0],
-        [None, None, None, 0],
-        [None, None, None, 0],
-        [0, 0, 0, None],
+        [4, 4, 4, None],
     ],
 )
 

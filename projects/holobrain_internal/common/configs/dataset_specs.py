@@ -193,7 +193,8 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_beijing/*-place_to_slot_hard-*",
             f"{DATA_BASE}/horizon_beijing/*-close_laptop_lid-*",
             f"{DATA_BASE}/horizon_beijing/*-piper-sweep_trash-*",
-            exclude_patterns=[f"{DATA_BASE}/horizon_beijing/*-piper_x-*"],
+            f"{DATA_BASE}/horizon_beijing/*-put_objects_to_drawstring_bag-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_beijing/*piper_x*"],
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -204,7 +205,7 @@ TRAINING_DATASETS = [
         dataset_name="horizon_beijing_piper_x",
         setting_type="horizon_piper_x_435",
         data_paths=lambda: _glob_sorted(
-            f"{DATA_BASE}/horizon_beijing/*-piper_x-*-*"
+            f"{DATA_BASE}/horizon_beijing/*piper_x*-*"
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -224,6 +225,7 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-two_fold_towel-*",
             f"{DATA_BASE}/horizon_shanghai/*-place_object_to_location-*",
             f"{DATA_BASE}/horizon_shanghai/*-microwave_food-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_shanghai/*piper_x*"],
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",
@@ -238,6 +240,7 @@ TRAINING_DATASETS = [
             f"{DATA_BASE}/horizon_shanghai/*-flatten_clothes-*",
             f"{DATA_BASE}/horizon_shanghai/*-piper-fold_t_shirt-*",
             f"{DATA_BASE}/horizon_shanghai/*-take_food_from_lunchbox-*",
+            exclude_patterns=[f"{DATA_BASE}/horizon_shanghai/*piper_x*"],
         ),
         instruction_paths=[
             f"{DATA_BASE}/instructions_v2/agilex",

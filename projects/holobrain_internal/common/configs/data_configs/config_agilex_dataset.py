@@ -333,6 +333,7 @@ def _piper_kinematics(urdf: str, use_ee_links: bool = True) -> dict:
             ["left_link6_gripper_end"],
             ["right_link6_gripper_end"],
         ],
+        arm_connection_joint_indices=[6, 6],
     )
 
 

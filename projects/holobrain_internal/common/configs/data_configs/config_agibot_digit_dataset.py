@@ -161,10 +161,10 @@ g1_kinematics_config = dict(
         [],
     ],
     arm_connection_joint_indices=[
+        [None, 7, None, 0],
+        [7, None, None, 0],
         [None, None, None, 0],
-        [None, None, None, 0],
-        [None, None, None, 0],
-        [0, 0, 0, None],
+        [1, 1, 1, None],
     ],
 )
 

@@ -114,6 +114,7 @@ dataset_config = dict(
                 ["left_link6_gripper_end"],
                 ["right_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         scale_shift=[
             [1.469177, -0.128763],  # left_joint0
@@ -164,6 +165,7 @@ dataset_config = dict(
                 ["left_link6_gripper_end"],
                 ["right_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         scale_shift=[
             [1.489090, -0.648508],  # left_joint0
@@ -262,7 +264,7 @@ def build_transforms(
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
             joint_mask=joint_mask,
-            scale_shift=scale_shift,
+            joint_scale_shift=scale_shift,
         )
     else:
         add_data_relative_items = dict(
@@ -270,7 +272,7 @@ def build_transforms(
             T_base2ego=t_base2ego,
             T_base2world=t_base2world,
             joint_mask=joint_mask,
-            scale_shift=scale_shift,
+            joint_scale_shift=scale_shift,
         )
     if default_calibration is not None:
         add_data_relative_items["calibration"] = default_calibration

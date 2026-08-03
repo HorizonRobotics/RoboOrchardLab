@@ -1,7 +1,7 @@
 {
     "job_name": "eval_holobrain_libero_plus",
     "workspace_folder": "submit-eval-holobrain-libero-plus",
-    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-libero_plus",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-libero_plus-transformers5102",
     "input_bucket": "robot_lab,robot_lab2",
     "output_bucket": "robot_lab,robot_lab2",
     "num_workers": 1,
@@ -19,7 +19,7 @@
         "python3 libero_eval.py \\",
         "  --benchmark libero_plus \\",
         "  --libero_plus_root ${LIBERO_PLUS_ROOT} \\",
-        "  --model_config '/horizon-bucket/robot_lab/users/xuewu.lin/ckpt/holobrain_v9_qwen25' \\",
+        "  --model_config 'http://pfs-svcspawner.bcloud-bj-zone1.hobot.cc/user/homespace/xuewu.lin-labs/plat_gpu/2026-07-16/15-40/bcloud-bj-zone1-16ebb8d6738a/holobrain_v10_a725c510_80e9_11f1_9e82_2bc338c39dff/output/checkpoints/checkpoint_60/' \\",
         "  --model_prefix model \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
         "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",

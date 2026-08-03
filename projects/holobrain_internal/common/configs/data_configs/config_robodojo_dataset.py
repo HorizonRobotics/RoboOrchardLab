@@ -50,6 +50,7 @@ dataset_config = dict(
                 ["left_link6_gripper_end"],
                 ["right_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         T_base2world=[
             [0, -1, 0, 0],

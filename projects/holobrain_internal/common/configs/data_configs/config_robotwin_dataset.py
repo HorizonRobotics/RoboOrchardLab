@@ -53,6 +53,7 @@ dataset_config = dict(
                 ["fl_link6_gripper_end"],
                 ["fr_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -113,6 +114,7 @@ dataset_config = dict(
                 ["fl_link6_gripper_end"],
                 ["fr_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -170,6 +172,7 @@ dataset_config = dict(
                 ["left_wrist_3_link_gripper_end"],
                 ["right_wrist_3_link_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         T_base2world=[
             [1, 0, 0, 0],
@@ -222,6 +225,7 @@ dataset_config = dict(
                 ["left_link6_gripper_end"],
                 ["right_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -276,6 +280,7 @@ dataset_config = dict(
                 ["panda_left_link7_gripper_end"],
                 ["panda_right_link7_gripper_end"],
             ],
+            arm_connection_joint_indices=[7, 7],
         ),
         T_base2world=[
             [0, -1, 0, 0],
@@ -330,6 +335,7 @@ dataset_config = dict(
                 ["left_link6_gripper_end"],
                 ["right_link6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         T_base2world=[
             [0, -1, 0, 0],

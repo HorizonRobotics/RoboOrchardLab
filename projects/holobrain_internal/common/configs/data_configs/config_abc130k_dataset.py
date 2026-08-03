@@ -56,6 +56,7 @@ dataset_config = dict(
                 ["left_link_6_gripper_end"],
                 ["right_link_6_gripper_end"],
             ],
+            arm_connection_joint_indices=[6, 6],
         ),
         scale_shift=[
             [0.352101557, -0.456893168],  # left_joint1

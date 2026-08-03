@@ -24,8 +24,8 @@ import numpy as np
 import torch
 from holobrain_utils import download_file
 
-from robo_orchard_lab.dataset.agibot_geniesim.transforms import (
-    GenieSim3CalibrationToExtrinsic,
+from robo_orchard_lab.dataset.horizon_manipulation.transforms import (
+    CalibrationToExtrinsic,
 )
 from robo_orchard_lab.models.holobrain.processor import (
     HoloBrainProcessor,
@@ -478,7 +478,7 @@ class HoloBrainGenieSim3Policy:
         if camera_calibration is None or self.processor is None:
             return
         for transform in getattr(self.processor, "transforms", []):
-            if isinstance(transform, GenieSim3CalibrationToExtrinsic):
+            if isinstance(transform, CalibrationToExtrinsic):
                 transform.calibration = transform.calibration_handler(
                     camera_calibration
                 )

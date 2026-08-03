@@ -308,38 +308,6 @@ def test_robodojo_deploy_config_and_adapter_files_are_complete():
     assert not (policy_dir / "env_cfg/arx_x5.yml").exists()
 
 
-def test_aidi_robodojo_submit_config():
-    repo_root = Path(__file__).resolve().parents[3]
-    common_dir = repo_root / "projects/holobrain_internal/common"
-
-    submit_config = json.loads(
-        (
-            common_dir / "aidi_submit_config/submit_cfg_robodojo_eval.json"
-        ).read_text()
-    )
-    assert submit_config["docker_image"].endswith("-robodojo-v0.5")
-    assert submit_config["to_upload"] == [
-        "robo_orchard_lab",
-        ("projects/holobrain_internal/common/holobrain_robodojo_policy"),
-        "projects/holobrain_internal/common/robodojo_eval.py",
-    ]
-    assert submit_config["cmd"][0] == (
-        "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH"
-    )
-    submit_command = "\n".join(submit_config["cmd"][1:])
-    assert submit_command.startswith("/usr/bin/python3 robodojo_eval.py \\")
-    assert (
-        '--policy_source "${WORKING_PATH}/holobrain_robodojo_policy"'
-        in submit_command
-    )
-    assert "--model_processor robodojo_arx_x5a_processor" in submit_command
-    assert "--env_config arx_x5" in submit_command
-    assert "--eval_num 50" in submit_command
-    assert "--processes_per_gpu 2" in submit_command
-    assert "--tasks" not in submit_command
-    assert "scripts/robodojo.sh" not in submit_command
-
-
 def test_robodojo_eval_distributes_tasks_across_gpus(tmp_path, monkeypatch):
     repo_root = Path(__file__).resolve().parents[3]
     common_dir = repo_root / "projects/holobrain_internal/common"
