@@ -4,6 +4,29 @@
 
 **Memory 参照**：[[holobrain-checkpoint-layouts]]。
 
+## ⚠️ 2026-08-03：processor 文件名已改，现有 eval 配置只对现有包有效
+
+合并 `feature/sem_internal` 时采纳了上游对 `configs/deploy_specs.py` 的改名：robodojo 的
+`dataset_name` 从 `robodojo` 改成 `robodojo_arx_x5a`。`train.py:98` 用这个字段拼导出的文件名
+（`f"{dataset_name}_processor.json"`），所以导出物的名字跟着变了：
+
+| | 旧（本目录记录的那两次训练） | 新（此后任何一次训练） |
+|---|---|---|
+| processor | `robodojo_processor.json` | `robodojo_arx_x5a_processor.json` |
+| inference config | `robodojo_inference.config.json` | `robodojo_arx_x5a_inference.config.json` |
+| eval 配置里该传 | `--model_processor robodojo_processor` | `--model_processor robodojo_arx_x5a_processor` |
+
+**现状是自洽的，不要急着改**：已产出的两个部署包
+（`ckpts/holobrain_robodojo_posttrain_v9/checkpoint_20000/` 与
+`..._v9_100k/checkpoint_100000/`）里确实是 `robodojo_processor.json`，而 9 个
+`submit_cfg_robodojo_eval_kun_*.json` 传的也正是 `robodojo_processor`，两边对得上，
+[07_results.md](07_results.md) 的 20k/100k 结果照原样可复现。
+
+**下次重新训练之后必须同步改**：新包里不会再有 `robodojo_processor.json`，那 9 个配置会找不到
+文件。改动点只有一处——每个配置 `cmd` 里的 `--model_processor` 值。
+
+---
+
 ---
 
 ## 1. 两种 checkpoint 布局

@@ -4,6 +4,14 @@
 
 **语境**：本教程是 kun01.wu 在 2026-07-27 到 07-28 期间实操跑通 v6 docker image + 20k/100k 训练 + seed0 sanity/full eval 的实录整理，可作为「重跑 / debug / 改动 embodiment / 换 benchmark」的手册。
 
+> **⚠️ 2026-08-03 合并 `feature/sem_internal` 之后，有两处变更会影响本文的准确性**：
+> ① 仓库默认配置已从 v9 切到 v10（VLM 换成 Qwen3.5-2B、`patch_size` 28→32），本文所有
+> `config_holobrain_common.py:<行号>` 引用都已漂移，对照表见
+> [`../04_config_system.md`](../04_config_system.md) 顶部；
+> ② robodojo 的 processor 导出名改成了 `robodojo_arx_x5a_processor`，见
+> [02_deploy_package.md](02_deploy_package.md) 顶部。
+> **本文记录的仍是 v9 那次的实况，没有改写。**
+
 > **想直接看结果** → [07_results.md](07_results.md)；**想知道当前状态与已知坑** → [STATUS.md](STATUS.md)。
 >
 > **评测编排层换过一次**：现在用 in-repo `common/robodojo_eval.py`（同事 xuewu.lin 的实现），

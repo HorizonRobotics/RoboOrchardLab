@@ -4,6 +4,14 @@
 
 **默认 job**：`bcloud-bj-zone1-6c6f0a3cbcb9`（100k step 训练，v9 warm-start，2 pod × 8 GPU × batch 16）
 
+> **⚠️ 2026-08-03 合并 `feature/sem_internal` 之后，有两处变更会影响本文的准确性**：
+> ① 仓库默认配置已从 v9 切到 v10（VLM 换成 Qwen3.5-2B、`patch_size` 28→32），本文所有
+> `config_holobrain_common.py:<行号>` 引用都已漂移，对照表见
+> [`../04_config_system.md`](../04_config_system.md) 顶部；
+> ② robodojo 的 processor 导出名改成了 `robodojo_arx_x5a_processor`，见
+> [02_deploy_package.md](02_deploy_package.md) 顶部。
+> **本文记录的仍是 v9 那次的实况，没有改写。**
+
 ---
 
 ## 1. AIDI 提交端

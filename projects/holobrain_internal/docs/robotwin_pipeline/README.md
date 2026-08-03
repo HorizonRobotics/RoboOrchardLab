@@ -12,7 +12,7 @@ RoboTwin 这条在前（07-21~07-24），RoboDojo 那条在后（07-25 起）。
 
 ---
 
-## ⚠️ 三条读之前必须知道的
+## ⚠️ 四条读之前必须知道的
 
 1. **所有 RoboTwin 数字都来自 step 60000 的中间 ckpt（`checkpoint_11`），不是终版。**
    训练实际跑满了 step 100000（`checkpoint_19`/`20`），**终版权重从未在 RoboTwin 上评测过**。
@@ -24,6 +24,12 @@ RoboTwin 这条在前（07-21~07-24），RoboDojo 那条在后（07-25 起）。
    由 `train.py:61-68` 每次启动 copytree 生成。详见 [01_training.md](01_training.md)。
 
 3. **这轮后训练的 loss 曲线已经不存在了。** 原因与排查过程见 [01_training.md](01_training.md) §4。
+
+4. **仓库默认配置已经从 v9 切到 v10**（2026-08-03 合并 `feature/sem_internal` 带来的）。
+   本目录记录的是 v9：Qwen2.5-VL-3B-Instruct 底座、`patch_size=28`。仓库现在默认是
+   Qwen3.5-2B + `patch_size=32`、`dst_wh=(352,256)`，走的是另一个模型类
+   `HoloBrain_Qwen3_5_VL`。本目录所有 `config_holobrain_common.py:<行号>` 引用都已漂移，
+   对照表见 [`../04_config_system.md`](../04_config_system.md) 顶部。
 
 ---
 

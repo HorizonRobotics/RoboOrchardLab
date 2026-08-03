@@ -4,6 +4,41 @@
 >
 > **本章目标**：搞清 HoloBrain 的 "**配置文件即 Python 模块**" 机制，学会读 `config_holobrain_common.py`，能加/删/换数据集。
 
+## ⚠️ 2026-08-03：本章描述的是 v9，仓库现在默认跑 v10
+
+2026-08-03 合并 `feature/sem_internal` 之后，`config_holobrain_common.py` 里的 v9 段被注释掉，
+v10 段成为生效配置。**本章，以及 [`robodojo_pipeline/`](./robodojo_pipeline/) 和
+[`robotwin_pipeline/`](./robotwin_pipeline/) 两条线的全部记录，描述的都是 v9**，
+与仓库现状已经不一致。
+
+| 项 | v9（本文所述、两条 pipeline 实际跑的） | v10（仓库现在的默认） |
+|---|---|---|
+| VLM 底座 | Qwen2.5-VL-3B-Instruct（走默认值） | `vlm_pretrain="./ckpt/Qwen3.5-2B"` |
+| 模型类 | `HoloBrain_Qwen2_5_VL` | `HoloBrain_Qwen3_5_VL`（按 `vlm_pretrain` 里是否含 `qwen3.5` 分派） |
+| `patch_size` | 28 | 32 |
+| 输入分辨率 `dst_wh` | 未显式设置 | `(352, 256)` |
+| `image_first` | 默认 | `False` |
+| warm-start 权重 | `holobrain_v9_newinit/checkpoint_50` | `holobrain_v10/checkpoint_60` |
+
+**后果**：本章与两条 pipeline 文档里所有 `config_holobrain_common.py:<行号>` 形式的引用，
+**行号和内容都已漂移**（合并后逐条比对，实测 34 处）。要复现 v9 的结果，权威快照是训练启动时
+`train.py:61-68` copytree 出来的 `/jfs-public/users/kun01.wu/robo_orchard_lab/workspace/configs/`，
+不是仓库当前状态；也可以把 v10 段注释掉、把 v9 段取消注释。
+
+**跑 v10 需要的环境**（`setup.py:261` 已钉 `transformers<=5.10.2`）：
+
+- URDF 用 `/horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711`。
+  本仓库的三处提交配置（`submit_cfg_robodojo_train*`、`submit_cfg_robodojo_eval_kun_*`、
+  `submit_cfg_robotwin_eval_kun*`）**早就指向这一版，无需改动**。
+- 本机 `holobrain_internal` 环境实测已满足：python 3.11.15 / torch 2.8.0+cu128 /
+  transformers 5.10.2 / flash_attn 2.8.3 / accelerate 1.14.0。
+- ⚠️ 同事提供的那个 flash-attn whl
+  （`/horizon-bucket/robot_lab/users/xuewu.lin/flash_attn/py310_torch2.7.1_cu118/flash_attn-2.8.3-cp310-cp310-linux_x86_64.whl`）
+  是给 **py3.10 + torch 2.7.1 + cu118** 的，与本机环境（py3.11 + torch 2.8.0 + cu128）
+  **ABI 不匹配，不要装**——本机已有可用的 flash_attn 2.8.3。
+
+---
+
 ---
 
 ## 4.1 配置文件的形状

@@ -1,5 +1,10 @@
 # 01 — RoboTwin 后训练
 
+> **⚠️ 2026-08-03 合并 `feature/sem_internal` 之后**，仓库默认配置已从 v9 切到 v10
+> （VLM 换成 Qwen3.5-2B、`patch_size` 28→32），本文所有 `config_holobrain_common.py:<行号>`
+> 引用都已漂移。对照表见 [`../04_config_system.md`](../04_config_system.md) 顶部。
+> **本文记录的仍是 v9 那次的实况，没有改写。**
+
 ## 1. 怎么跑的
 
 **本机单卡，不是集群 job。** 这是与 [`../robodojo_pipeline/01_training.md`](../robodojo_pipeline/01_training.md)
