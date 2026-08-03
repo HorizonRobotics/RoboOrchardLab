@@ -1,0 +1,21 @@
+{
+    "adjust_bottle": 86.0,
+    "beat_block_hammer": 50.0,
+    "blocks_ranking_rgb": 30.0,
+    "blocks_ranking_size": 6.0,
+    "dump_bin_bigbin": 72.0,
+    "handover_mic": 100.0,
+    "lift_pot": 8.0,
+    "mean": 42.625,
+    "move_pillbottle_pad": 4.0,
+    "num_tasks": 16,
+    "open_laptop": 70.0,
+    "open_microwave": 58.0,
+    "place_cans_plasticbox": 34.0,
+    "place_dual_shoes": 34.0,
+    "place_empty_cup": 44.0,
+    "rotate_qrcode": 30.0,
+    "stack_blocks_three": 6.0,
+    "stack_bowls_three": 50.0,
+    "test_num_per_task": 50
+}

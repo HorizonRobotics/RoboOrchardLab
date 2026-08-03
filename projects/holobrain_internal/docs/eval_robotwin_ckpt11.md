@@ -1,5 +1,15 @@
 # RoboTwin 2.0 评估：checkpoint_11 (step ≈ 60000)
 
+> **本文档是本机路线的操作说明，而本机路线最终没跑通**（卡在 curobo，见 §7）。
+> 实际出结果的是 AIDI 集群路线。**结论与结果请看
+> [`robotwin_pipeline/`](robotwin_pipeline/)**：
+> [README](robotwin_pipeline/README.md) · [01_training](robotwin_pipeline/01_training.md) ·
+> [03_eval](robotwin_pipeline/03_eval.md) · [07_results](robotwin_pipeline/07_results.md)
+>
+> 本文档的 §2（benchmark 判定）、§4（seed 规则）、§6（regex）、§8（路径速查）仍然准确；
+> §5.2 描述的产物结构**只适用于本机**，集群下是扁平的 `/job_data/<task>/<task_config>/`
+> （`script/eval_policy.py:126-128`）。
+
 本文档配套脚本：[`common/scripts/eval_robotwin_ckpt11.sh`](../common/scripts/eval_robotwin_ckpt11.sh)
 
 ## 1. 快速上手
@@ -96,7 +106,25 @@ RoboTwin v1.0 用的是单臂 6-arm 配置；本次跑的 aloha-agilex 双臂 + 
 1. 用 expert (`TASK_ENV.play_once()`) 尝试 seed，若不合法（`UnStableError` 或异常），`now_seed += 1` 直接跳过；
 2. 合法 → 用 policy 跑一次；无论成功失败 `succ_seed += 1, now_seed += 1`。
 
-因此**真实执行的 100 个 seed 不是连号 100000..100099**，而是过滤过的 100 个可行 seed。**在同一 (task, task_config, seed=0, test_num) 组合下，不同 checkpoint 面对的是完全相同的 100 个 seed，可以直接横向对比**。
+因此**真实执行的 100 个 seed 不是连号 100000..100099**，而是过滤过的 100 个可行 seed。
+
+> ⚠️ **勘误（2026-07-31）**：本节原来写的是"在同一 (task, task_config, seed=0, test_num)
+> 组合下，不同 checkpoint 面对的是完全相同的 seed，可以直接横向对比"。
+> **该结论与实测不符。**
+>
+> 2026-07-23 与 07-24 用**同一份 checkpoint_11、同一套参数**跑了两次完整评测，
+> 两次的末位 seed 并不相同（`place_dual_shoes` 100070 vs 100081、
+> `rotate_qrcode` 100064 vs 100067），说明 **expert 过滤这一步本身就不是确定性的**，
+> 两次面对的 episode 集合并不完全一样。
+>
+> 后果：两次跑逐任务差 0–12 个百分点，均值 42.625% vs 43.875%。
+> 按 50 次伯努利试验、`p≈0.4` 估算，两次测量之差的标准误约 9.8 pp，
+> 95% 区间约 ±19 pp —— **±5–10 pp 的差异属噪声，不能当作真实差异**。
+>
+> **要做 checkpoint 之间的横向对比，50 trial 不够**，需要加大 `--test_num`
+> 或用多个 seed 各跑一轮再合并。
+>
+> 完整对照表与解读见 [`robotwin_pipeline/07_results.md`](robotwin_pipeline/07_results.md) §4。
 
 ## 5. 输出文件去向
 
