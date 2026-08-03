@@ -10,8 +10,8 @@
 |---|---|
 | **L0** 纯新增 | **做不到**。记忆库必须拿到 `_forward` 里 `_vlm_outputs_handler` 的输出，那是局部变量；宿主没有 hook / 注册点能在该处插入（cite: `robo_orchard_lab/models/holobrain/structure.py:443-458`） |
 | **L1** 子类继承 / 一个 if + 一次调用 | **采用**。宿主已有同款可选子模块写法 `spatial_enhancer: MODULE_TYPE \| None = None`（cite: `structure.py:561`），照抄即可 |
-| L2 多处开关分支 | 不需要 |
-| L3 改基类签名 / 默认值 / ckpt 加载 / 分布式 | **不触发** → **不触发 Gate B** |
+| L2 多处开关分支 | 不需要 （方案，非实测）|
+| L3 改基类签名 / 默认值 / ckpt 加载 / 分布式 | **不触发** → **不触发 Gate B** （方案，非实测）|
 
 **Gate B 结论：无 L3 改动，无需停下等确认。**
 
@@ -19,16 +19,16 @@
 
 | 文件 | 新增/修改 | 侵入度 | 行数 | 回滚方式 |
 |---|---|---|---|---|
-| `robo_orchard_lab/models/memoryvla/memory_bank.py` | 新增 | L0 | 445 | 删目录 |
-| `robo_orchard_lab/models/memoryvla/wrapper.py` | 新增 | L0 | 274 | 删目录 |
-| `robo_orchard_lab/models/memoryvla/sampler.py` | 新增 | L0 | 179 | 删目录 |
-| `robo_orchard_lab/models/memoryvla/__init__.py` | 新增 | L0 | 47 | 删目录 |
-| `projects/holobrain_internal/common/configs/dataset_specs_memoryvla_robodojo_memory.py` | 新增 | L0 | ~40 | 删文件 |
-| `docs_analysis/memoryvla/*.md` + `docs_analysis/MIGRATIONS.md` | 新增 | L0 | — | 删目录 |
-| **`robo_orchard_lab/models/holobrain/structure.py`** | 修改 | **L1** | +6 | 见下 |
-| **`robo_orchard_lab/models/holobrain/structure_qwen3_5.py`** | 修改 | **L1** | +1 | 见下 |
-| **`projects/holobrain_internal/common/configs/data_configs/config_robodojo_dataset.py`** | 修改 | **L1** | +6 | 见下 |
-| **`projects/holobrain_internal/common/configs/config_holobrain_common.py`** | 修改 | **L1** | +~25 | 见下 |
+| `robo_orchard_lab/models/memoryvla/memory_bank.py` | 新增 | L0 | 445 | 删目录 （方案，非实测）|
+| `robo_orchard_lab/models/memoryvla/wrapper.py` | 新增 | L0 | 274 | 删目录 （方案，非实测）|
+| `robo_orchard_lab/models/memoryvla/sampler.py` | 新增 | L0 | 179 | 删目录 （方案，非实测）|
+| `robo_orchard_lab/models/memoryvla/__init__.py` | 新增 | L0 | 47 | 删目录 （方案，非实测）|
+| `projects/holobrain_internal/common/configs/dataset_specs_memoryvla_robodojo_memory.py` | 新增 | L0 | ~40 | 删文件 （方案，非实测）|
+| `docs_analysis/memoryvla/*.md` + `docs_analysis/MIGRATIONS.md` | 新增 | L0 | — | 删目录 （方案，非实测）|
+| **`robo_orchard_lab/models/holobrain/structure.py`** | 修改 | **L1** | +6 | 见下 （方案，非实测）|
+| **`robo_orchard_lab/models/holobrain/structure_qwen3_5.py`** | 修改 | **L1** | +1 | 见下 （方案，非实测）|
+| **`projects/holobrain_internal/common/configs/data_configs/config_robodojo_dataset.py`** | 修改 | **L1** | +6 | 见下 （方案，非实测）|
+| **`projects/holobrain_internal/common/configs/config_holobrain_common.py`** | 修改 | **L1** | +~25 | 见下 （方案，非实测）|
 
 **触及的宿主已有文件共 4 个**（Phase 6 同步进 `MIGRATIONS.md`）。
 比 `02-host-seams.md` 初判多一个 `config_holobrain_common.py`（新增 `cfg.memoryvla.*` 命名空间），
@@ -64,7 +64,7 @@
 
 | 名 | 类型 | 默认值 | 关闭语义 | 来源 |
 |---|---|---|---|---|
-| `memoryvla.enable` | bool | **False** | `False` → `memoryvla=None`，**模块根本不构建** | 本次新增 |
+| `memoryvla.enable` | bool | **False** | `False` → `memoryvla=None`，**模块根本不构建** | 本次新增 （方案，非实测）|
 | `memoryvla.use_perceptual` | bool | True | 不建感知 bank | A 的 `per_mem_bank`（cite: `MemoryVLA@0eef5c3 vla/memory_vla.py:416`） |
 | `memoryvla.use_cognitive` | bool | True | 不建认知 bank | A 的 `cog_mem_bank`（cite: `vla/memory_vla.py:404`） |
 | `memoryvla.dataloader_type` | str | **`stream`** | — | A 默认 `group`（cite: `vla/memory_vla.py:369`），但 `group` 的记忆跨度只有一个 batch（实测，见 `01b`），论文语义对应 `stream` |
@@ -75,7 +75,7 @@
 | `memoryvla.fusion_type` | str | `gate` | `add` 时无 `GateFusion` 参数 | A 默认 `gate`（cite: `vla/memory_vla.py:375`） |
 | `memoryvla.consolidate_type` | str | `tome` | — | A 默认 `tome`（cite: `vla/memory_vla.py:376`） |
 | `memoryvla.update_fused` | bool | False | — | A 默认 False（cite: `vla/memory_vla.py:377`） |
-| `memoryvla.episode_stream_sampler` | bool | False | 用宿主原 sampler | 本次新增；`stream` 模式下应设 True |
+| `memoryvla.episode_stream_sampler` | bool | False | 用宿主原 sampler | 本次新增；`stream` 模式下应设 True （方案，非实测）|
 
 `token_size` 不做成字段：直接取 `config["embed_dims"]`，避免两处配置漂移。
 
@@ -93,10 +93,10 @@
 
 | 风险 | 验证 |
 |---|---|
-| 新模块初始化吃掉全局 RNG → 关闭态数值漂移 | **A 档**：`enable=False` 时不构建模块，与 baseline 逐 step 比 |
-| 感知特征语义不同（VLM 后 vs LLM 前） | 无法用数值证明，只能记录；写进最终汇报风险项 |
-| 认知记忆只改 1 个 token，影响被稀释 | **B 档**打印记忆分量与 grad norm 确认确实有梯度流 |
-| `stream` 模式要求 episode 连续批 | 新 sampler + **E 档**冒烟必须跨过 episode 边界 |
-| 一批内全部样本无历史 → DDP unused parameter | **B 档**实测；本机单卡跑不了 DDP，记为未验证风险 |
-| `step_index` dtype 不一致（int / np.int64） | wrapper 同时接受 Tensor 与 list，已在实现里处理 |
-| batch 降到 1 时 `group` 失效 | 降档必须同时切 `stream`，写进 STATUS |
+| 新模块初始化吃掉全局 RNG → 关闭态数值漂移 | **A 档**：`enable=False` 时不构建模块，与 baseline 逐 step 比 （方案，非实测）|
+| 感知特征语义不同（VLM 后 vs LLM 前） | 无法用数值证明，只能记录；写进最终汇报风险项 （方案，非实测）|
+| 认知记忆只改 1 个 token，影响被稀释 | **B 档**打印记忆分量与 grad norm 确认确实有梯度流 （方案，非实测）|
+| `stream` 模式要求 episode 连续批 | 新 sampler + **E 档**冒烟必须跨过 episode 边界 （方案，非实测）|
+| 一批内全部样本无历史 → DDP unused parameter | **B 档**实测；本机单卡跑不了 DDP，记为未验证风险 （方案，非实测）|
+| `step_index` dtype 不一致（int / np.int64） | wrapper 同时接受 Tensor 与 list，已在实现里处理 （方案，非实测）|
+| batch 降到 1 时 `group` 失效 | 降档必须同时切 `stream`，写进 STATUS （方案，非实测）|
