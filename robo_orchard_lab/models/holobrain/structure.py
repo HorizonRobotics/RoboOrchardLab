@@ -123,6 +123,7 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
         super().__init__(cfg)
         self.decoder = build(self.cfg.decoder)
         self.spatial_enhancer = build(self.cfg.spatial_enhancer)
+        self.memoryvla = build(self.cfg.memoryvla)
         self.data_preprocessor = build(self.cfg.data_preprocessor)
         self.backbone_3d = build(self.cfg.backbone_3d)
         self.neck_3d = build(self.cfg.neck_3d)
@@ -442,6 +443,11 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
             vlm_outputs, vlm_inputs, inputs, main_img_mask
         )
 
+        if self.memoryvla is not None:
+            feature_maps, text_dict = self.memoryvla(
+                feature_maps, text_dict, inputs
+            )
+
         feature_3d = self.extract_feature_3d(inputs)
 
         if self.spatial_enhancer is not None:
@@ -560,6 +566,7 @@ class HoloBrain_Qwen2_5_VLConfig(TorchModuleCfg[HoloBrain_Qwen2_5_VL]):  # noqa:
     vlm_pretrain: str
     decoder: MODULE_TYPE  # type: ignore
     spatial_enhancer: MODULE_TYPE | None = None
+    memoryvla: MODULE_TYPE | None = None
     data_preprocessor: MODULE_TYPE | None = None
     backbone_3d: MODULE_TYPE | None = None
     neck_3d: MODULE_TYPE | None = None

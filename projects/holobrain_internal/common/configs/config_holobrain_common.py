@@ -40,6 +40,24 @@ config = dict(
     # vlm_pretrain="./ckpt/Qwen3.5-2B", dst_wh=(352, 256), patch_size=32,
     num_vlm_layers=1,
     freeze_vlm=False,
+    # --- MemoryVLA port (docs_analysis/memoryvla/). Off by default. ---
+    memoryvla=dict(
+        enable=False,
+        use_perceptual=True,
+        use_cognitive=True,
+        # "stream" is the episode-level memory the paper describes; A's own
+        # default "group" wipes the bank every training call, so memory never
+        # spans a batch. Needs episode_stream_sampler.
+        dataloader_type="stream",
+        group_size=16,
+        mem_length=16,
+        retrieval_layers=2,
+        use_timestep_pe=True,
+        fusion_type="gate",
+        consolidate_type="tome",
+        update_fused=False,
+        episode_stream_sampler=True,
+    ),
     checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
 )
 
@@ -112,6 +130,39 @@ config.update(
 #     max_step=300000,
 #     num_workers=4,
 # )
+
+
+def _build_memoryvla_cfg(config):
+    """MemoryVLA memory config, or None when the port is switched off.
+
+    Returning None rather than a disabled module is deliberate. Constructing
+    the module at all draws from the global RNG, which shifts every later
+    random draw and would break step-for-step equivalence with a pre-port
+    run; and its GateFusion is not initialised to identity, so a "disabled"
+    module would still change the numbers.
+    """
+    mv = config.get("memoryvla") or {}
+    if not mv.get("enable", False):
+        return None
+
+    from robo_orchard_lab.models.memoryvla import MemoryVLAMemory
+
+    return dict(
+        type=MemoryVLAMemory,
+        # taken from embed_dims rather than configured twice, so the two
+        # cannot drift apart
+        token_size=config["embed_dims"],
+        use_perceptual=mv.get("use_perceptual", True),
+        use_cognitive=mv.get("use_cognitive", True),
+        dataloader_type=mv.get("dataloader_type", "stream"),
+        group_size=mv.get("group_size", 16),
+        mem_length=mv.get("mem_length", 16),
+        retrieval_layers=mv.get("retrieval_layers", 2),
+        use_timestep_pe=mv.get("use_timestep_pe", True),
+        fusion_type=mv.get("fusion_type", "gate"),
+        consolidate_type=mv.get("consolidate_type", "tome"),
+        update_fused=mv.get("update_fused", False),
+    )
 
 
 def build_model(config):
@@ -235,6 +286,7 @@ def build_model(config):
             num_vlm_layers=config.get("num_vlm_layers"),
             freeze_vlm=config.get("freeze_vlm", True),
             use_state_dict_with_vlm=not config.get("freeze_vlm", True),
+            memoryvla=_build_memoryvla_cfg(config),
             data_preprocessor=dict(
                 type=BaseDataPreprocessor,
                 # input image should in BGR convention, it will be converted to RGB here  # noqa: E501

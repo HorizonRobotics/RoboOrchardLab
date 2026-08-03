@@ -285,6 +285,13 @@ def build_transforms(
             item_selection,
             unsqueeze_batch,
         ]
+    if (config.get("memoryvla") or {}).get("enable", False):
+        # The memory bank keys on (episode, frame). `uuid` is already
+        # whitelisted; `step_index` is produced by the dataset but dropped
+        # here, so add it back -- and only with the port switched on, so a
+        # baseline run sees exactly the batch it saw before.
+        item_selection["keys"] = list(item_selection["keys"]) + ["step_index"]
+
     return transforms
 
 

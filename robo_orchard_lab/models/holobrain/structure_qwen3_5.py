@@ -68,6 +68,7 @@ class HoloBrain_Qwen3_5_VL(HoloBrain_Qwen2_5_VL):  # noqa: N801
         super(HoloBrain_Qwen2_5_VL, self).__init__(cfg)
         self.decoder = build(self.cfg.decoder)
         self.spatial_enhancer = build(self.cfg.spatial_enhancer)
+        self.memoryvla = build(self.cfg.memoryvla)
         self.data_preprocessor = build(self.cfg.data_preprocessor)
         self.backbone_3d = build(self.cfg.backbone_3d)
         self.neck_3d = build(self.cfg.neck_3d)
