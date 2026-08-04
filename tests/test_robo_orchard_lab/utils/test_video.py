@@ -21,11 +21,13 @@ import subprocess
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from robo_orchard_lab.utils.video import (
     VideoBackendUnavailableError,
     VideoEncodeError,
     VideoFrameError,
+    VideoInputFormat,
     VideoPixelFormat,
     VideoWriter,
     VideoWriterError,
@@ -84,6 +86,23 @@ def _decode_first_frame_rgb(
     return np.frombuffer(result.stdout, dtype=np.uint8).reshape(
         height, width, 3
     )
+
+
+def _encode_png(frame: np.ndarray) -> bytes:
+    stream = io.BytesIO()
+    Image.fromarray(frame).save(stream, format="PNG")
+    return stream.getvalue()
+
+
+def _encode_jpeg(frame: np.ndarray) -> bytes:
+    stream = io.BytesIO()
+    Image.fromarray(frame).save(
+        stream,
+        format="JPEG",
+        quality=100,
+        subsampling=0,
+    )
+    return stream.getvalue()
 
 
 class _FakeStdin:
@@ -182,6 +201,55 @@ def test_video_writer_writes_rgb24_video_with_real_ffmpeg(tmp_path):
 
     decoded = _decode_first_frame_rgb(output_path, width=16, height=16)
 
+    assert decoded[..., 0].mean() > 200
+    assert decoded[..., 1].mean() < 40
+    assert decoded[..., 2].mean() < 40
+
+
+def test_video_writer_writes_png_bytes_with_real_ffmpeg(tmp_path):
+    _get_ffmpeg_binary(require_libx264=True)
+    frame = np.full((16, 16, 3), [255, 0, 0], dtype=np.uint8)
+    output_path = tmp_path / "episode_png.mp4"
+
+    with VideoWriter(
+        output_path,
+        input_format=VideoInputFormat.PNG,
+        preset="ultrafast",
+    ) as writer:
+        writer.write_frame(_encode_png(frame))
+        writer.write_frame(_encode_png(frame))
+
+    assert output_path.is_file()
+    assert writer.frame_count == 2
+    decoded = _decode_first_frame_rgb(output_path, width=16, height=16)
+    assert decoded[..., 0].mean() > 200
+    assert decoded[..., 1].mean() < 40
+    assert decoded[..., 2].mean() < 40
+
+
+@pytest.mark.parametrize(
+    "input_format",
+    [VideoInputFormat.JPG, VideoInputFormat.JPEG],
+)
+def test_video_writer_writes_jpeg_bytes_with_real_ffmpeg(
+    tmp_path,
+    input_format,
+):
+    _get_ffmpeg_binary(require_libx264=True)
+    frame = np.full((16, 16, 3), [255, 0, 0], dtype=np.uint8)
+    output_path = tmp_path / f"episode_{input_format.value}.mp4"
+
+    with VideoWriter(
+        output_path,
+        input_format=input_format,
+        preset="ultrafast",
+    ) as writer:
+        writer.write_frame(_encode_jpeg(frame))
+        writer.write_frame(_encode_jpeg(frame))
+
+    assert output_path.is_file()
+    assert writer.frame_count == 2
+    decoded = _decode_first_frame_rgb(output_path, width=16, height=16)
     assert decoded[..., 0].mean() > 200
     assert decoded[..., 1].mean() < 40
     assert decoded[..., 2].mean() < 40
@@ -549,9 +617,91 @@ def test_video_writer_rejects_gray16le_size_change(tmp_path, monkeypatch):
     writer.abort()
 
 
+def test_video_writer_streams_png_bytes_through_image2pipe(
+    tmp_path,
+    monkeypatch,
+):
+    output_path = tmp_path / "encoded_png.mp4"
+    stdin = _FakeStdin()
+    proc = _FakeProc(stdin=stdin)
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return proc
+
+    monkeypatch.setattr(shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    png = _encode_png(np.zeros((4, 6, 3), dtype=np.uint8))
+    writer = VideoWriter(output_path, input_format=VideoInputFormat.PNG)
+
+    writer.write_frame(png)
+
+    assert bytes(stdin.data) == png
+    command, _ = popen_calls[0]
+    input_end = command.index("-an")
+    assert command[command.index("-f") : input_end] == [
+        "-f",
+        "image2pipe",
+        "-framerate",
+        "10",
+        "-c:v",
+        "png",
+        "-i",
+        "pipe:0",
+    ]
+    writer.abort()
+
+
+@pytest.mark.parametrize(
+    "input_format",
+    [VideoInputFormat.JPG, VideoInputFormat.JPEG],
+)
+def test_video_writer_streams_jpeg_bytes_through_image2pipe(
+    tmp_path,
+    monkeypatch,
+    input_format,
+):
+    output_path = tmp_path / f"encoded_{input_format.value}.mp4"
+    stdin = _FakeStdin()
+    proc = _FakeProc(stdin=stdin)
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return proc
+
+    monkeypatch.setattr(shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    jpeg = _encode_jpeg(np.zeros((4, 6, 3), dtype=np.uint8))
+    writer = VideoWriter(output_path, input_format=input_format)
+
+    writer.write_frame(jpeg)
+
+    assert bytes(stdin.data) == jpeg
+    command, _ = popen_calls[0]
+    input_end = command.index("-an")
+    assert command[command.index("-f") : input_end] == [
+        "-f",
+        "image2pipe",
+        "-framerate",
+        "10",
+        "-c:v",
+        "mjpeg",
+        "-i",
+        "pipe:0",
+    ]
+    writer.abort()
+
+
 @pytest.mark.parametrize(
     ("kwargs", "error_type", "match"),
     [
+        (
+            {"input_format": "gif"},
+            ValueError,
+            "'gif' is not a valid VideoInputFormat",
+        ),
         ({"preset": ""}, ValueError, "non-empty string"),
         ({"preset": True}, TypeError, "string, integer, or None"),
         ({"preset": 1.5}, TypeError, "string, integer, or None"),
@@ -1052,6 +1202,85 @@ def test_video_writer_rejects_empty_raw_frame_dimensions(
 
     with pytest.raises(VideoFrameError, match="positive width and height"):
         writer.write_frame(frame)
+
+
+@pytest.mark.parametrize(
+    "input_format",
+    [
+        VideoInputFormat.PNG,
+        VideoInputFormat.JPG,
+        VideoInputFormat.JPEG,
+    ],
+)
+def test_video_writer_delegates_invalid_encoded_input_to_ffmpeg(
+    tmp_path,
+    input_format,
+):
+    _get_ffmpeg_binary(require_libx264=True)
+
+    with pytest.raises(VideoEncodeError):
+        with VideoWriter(
+            tmp_path / f"invalid_{input_format.value}.mp4",
+            input_format=input_format,
+        ) as writer:
+            writer.write_frame(b"not an encoded image")
+
+
+def test_video_writer_requires_encoded_input_format_for_image_bytes(tmp_path):
+    writer = VideoWriter(tmp_path / "wrong_input_format.mp4")
+
+    with pytest.raises(
+        VideoFrameError,
+        match="input_format='rawvideo' requires an array frame",
+    ):
+        writer.write_frame(_encode_png(np.zeros((4, 6, 3), dtype=np.uint8)))
+
+
+def test_video_writer_encoded_input_format_rejects_array(tmp_path):
+    writer = VideoWriter(
+        tmp_path / "wrong_input_format.mp4",
+        input_format=VideoInputFormat.PNG,
+    )
+
+    with pytest.raises(
+        VideoFrameError,
+        match="requires one complete encoded image as bytes",
+    ):
+        writer.write_frame(np.zeros((4, 6, 3), dtype=np.uint8))
+
+
+@pytest.mark.parametrize(
+    ("input_format", "encode_image"),
+    [
+        (VideoInputFormat.PNG, _encode_png),
+        (VideoInputFormat.JPG, _encode_jpeg),
+        (VideoInputFormat.JPEG, _encode_jpeg),
+    ],
+)
+def test_video_writer_leaves_encoded_frame_size_handling_to_ffmpeg(
+    tmp_path,
+    monkeypatch,
+    input_format,
+    encode_image,
+):
+    stdin = _FakeStdin()
+    proc = _FakeProc(stdin=stdin)
+    monkeypatch.setattr(shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: proc)
+    first_image = encode_image(np.zeros((4, 6, 3), dtype=np.uint8))
+    second_image = encode_image(np.zeros((6, 8, 3), dtype=np.uint8))
+    writer = VideoWriter(
+        tmp_path / f"{input_format.value}_size_change.mp4",
+        input_format=input_format,
+    )
+
+    writer.write_frame(first_image)
+    writer.write_frame(second_image)
+
+    assert writer.frame_count == 2
+    assert writer._raw_frame_size is None
+    assert bytes(stdin.data) == first_image + second_image
+    writer.abort()
 
 
 def test_video_writer_rejects_frame_size_change(tmp_path):

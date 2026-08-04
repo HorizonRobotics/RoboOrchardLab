@@ -30,6 +30,7 @@ __all__ = [
     "VideoBackendUnavailableError",
     "VideoEncodeError",
     "VideoFrameError",
+    "VideoInputFormat",
     "VideoPixelFormat",
     "VideoWriter",
     "VideoWriterError",
@@ -52,6 +53,18 @@ class VideoEncodeError(VideoWriterError):
     """Raised when ffmpeg cannot start, encode, or finalize output."""
 
 
+class VideoInputFormat(str, Enum):
+    """Supported input stream formats for :class:`VideoWriter`."""
+
+    RAWVIDEO = "rawvideo"
+    PNG = "png"
+    JPG = "jpg"
+    JPEG = "jpeg"
+
+
+_JPEG_INPUT_FORMATS = (VideoInputFormat.JPG, VideoInputFormat.JPEG)
+
+
 class VideoPixelFormat(str, Enum):
     """Supported raw input pixel formats for :class:`VideoWriter`."""
 
@@ -65,23 +78,29 @@ class VideoWriter:
     """Write an existing frame sequence to one finalized video file.
 
     Use ``VideoWriter`` when your code already produces raw RGB/BGR color
-    frames, GBR planar frames, or 16-bit grayscale frames and you want a
-    small, explicit API for turning them into a video artifact. RGB24/BGR24
-    arrays use ``(H, W, 3)`` layout, GBRP arrays use ``(3, H, W)`` G/B/R
-    plane order, and GRAY16LE arrays use ``(H, W)`` layout with native
-    little-endian ``uint16`` dtype.
+    frames, GBR planar frames, 16-bit grayscale frames, or encoded PNG/JPEG
+    frame bytes and you want a small, explicit API for turning those frames
+    into a video artifact. With the default ``input_format="rawvideo"``,
+    RGB24/BGR24 arrays use ``(H, W, 3)`` layout, GBRP arrays use
+    ``(3, H, W)`` G/B/R plane order, and GRAY16LE arrays use ``(H, W)``
+    layout with native little-endian ``uint16`` dtype. Encoded PNG/JPEG bytes
+    bypass Python image decode and are streamed through ffmpeg ``image2pipe``.
+    The caller must provide exactly one encoded image per call; image parsing
+    and decode validation are delegated to ffmpeg, so an invalid payload can
+    surface at ``write_frame()`` or ``close()``.
 
     The caller still owns frame production, output-path selection, and
     recording policy. ``VideoWriter`` owns the encoding session: ``open()``
     starts a logical session, the first successful ``write_frame()`` call
-    starts ffmpeg, and ``close()`` finalizes the result. The first written
-    frame fixes the frame size for the session; later frames must match it.
+    starts ffmpeg, and ``close()`` finalizes the result. For rawvideo input,
+    the first written frame fixes the frame size for the session; later raw
+    frames must match it.
     ``close()`` finalizes and publishes a successful session; ``abort()``
     terminates it without publishing staged output.
 
     To avoid exposing partial results as completed output, encoded data is
     written to a hidden staging file first and published to ``output_path``
-    only after ``close()`` succeeds. With the default
+    only after ``close()`` succeeds. For rawvideo input with the default
     ``output_pixel_format="yuv420p"``, frame width and height must both be
     even.
 
@@ -104,10 +123,15 @@ class VideoWriter:
             provided, opens a new logical session immediately, while still
             deferring ffmpeg startup until the first frame is written.
             Default is None.
+        input_format (VideoInputFormat | str, optional): Input stream format.
+            ``"rawvideo"`` accepts arrays; ``"png"``, ``"jpg"``, and
+            ``"jpeg"`` accept complete encoded image bytes. Default is
+            ``VideoInputFormat.RAWVIDEO``.
         pixel_format (VideoPixelFormat | str, optional): Raw input pixel
-            format. GRAY16LE requires native little-endian ``uint16`` input;
-            other supported formats use 8-bit samples. Default is
-            ``VideoPixelFormat.RGB24``.
+            format of array frames when ``input_format="rawvideo"``.
+            GRAY16LE requires native little-endian ``uint16`` input; other
+            supported formats use 8-bit samples. Ignored for encoded image
+            input. Default is ``VideoPixelFormat.RGB24``.
         fps (int, optional): Output frame rate. Default is 10.
         codec (str, optional): ffmpeg video codec name. Default is
             ``"libx264"``.
@@ -140,6 +164,7 @@ class VideoWriter:
         self,
         output_path: str | Path | None = None,
         *,
+        input_format: VideoInputFormat | str = VideoInputFormat.RAWVIDEO,
         pixel_format: VideoPixelFormat | str = VideoPixelFormat.RGB24,
         fps: int = 10,
         codec: str = "libx264",
@@ -181,6 +206,7 @@ class VideoWriter:
                 )
             normalized_extra_options[option_name] = option_value
 
+        self.input_format = VideoInputFormat(input_format)
         self.pixel_format = VideoPixelFormat(pixel_format)
         self.fps = fps
         self.codec = codec
@@ -204,7 +230,11 @@ class VideoWriter:
 
     @property
     def frame_count(self) -> int:
-        """Return the number of frames successfully written."""
+        """Return the number of frame payloads successfully written.
+
+        For encoded-image input, this counts successful pipe-write calls; it
+        does not parse the payload or report ffmpeg's decoded frame count.
+        """
 
         return self._frame_count
 
@@ -268,27 +298,32 @@ class VideoWriter:
         self._closed = False
         return self
 
-    def write_frame(self, frame: np.ndarray) -> None:
+    def write_frame(self, frame: np.ndarray | bytes) -> None:
         """Add one frame to the current recording.
 
         Use ``write_frame()`` after opening a session and producing a frame
         that should become part of the output video. The first successful
-        write starts ffmpeg lazily and fixes the frame size for the rest of
-        the session. Later frames must keep the same width and height.
+        write starts ffmpeg lazily. For rawvideo input, it also fixes the
+        frame size for the rest of the session, and later frames must keep
+        the same width and height.
 
         Args:
-            frame (np.ndarray): An RGB24/BGR24 array shaped ``(H, W, 3)``, a
-                GBRP array shaped ``(3, H, W)`` in G/B/R plane order, or a
-                GRAY16LE array shaped ``(H, W)`` with native little-endian
-                ``uint16`` dtype. RGB/BGR/GBRP arrays are coerced to
-                contiguous ``uint8``; GRAY16LE dtype and byte order are
-                validated without casting.
+            frame (np.ndarray | bytes): For ``input_format="rawvideo"``, an
+                RGB24/BGR24 array shaped ``(H, W, 3)``, a GBRP array shaped
+                ``(3, H, W)`` in G/B/R plane order, or a GRAY16LE array
+                shaped ``(H, W)`` with native little-endian ``uint16`` dtype.
+                RGB/BGR/GBRP arrays are coerced to contiguous ``uint8``;
+                GRAY16LE dtype and byte order are validated without casting.
+                For an encoded image input format, the caller must provide
+                exactly one complete PNG or JPEG image per call. Bytes are
+                written unchanged and validated by ffmpeg asynchronously.
 
         Raises:
             VideoWriterError: If the writer is not open.
-            VideoFrameError: If the frame shape is invalid, its size changes
-                after the first write, or it violates the active output
-                pixel-format constraints.
+            VideoFrameError: If the raw frame shape is invalid, a raw frame
+                changes size after the first write, the raw frame violates
+                the active output pixel-format constraints, or encoded input
+                is not provided as bytes.
             VideoBackendUnavailableError: If ffmpeg is not available.
             VideoEncodeError: If ffmpeg cannot start or accept the frame.
         """
@@ -297,21 +332,24 @@ class VideoWriter:
                 "Cannot write a frame because VideoWriter is not open."
             )
 
-        frame_np, frame_size = self._normalize_frame(frame)
+        payload, raw_frame_size = self._normalize_frame(frame)
 
         if (
-            self._raw_frame_size is not None
-            and self._raw_frame_size != frame_size
+            raw_frame_size is not None
+            and self._raw_frame_size is not None
+            and self._raw_frame_size != raw_frame_size
         ):
             raise VideoFrameError(
                 "Expected frame size "
-                f"{self._raw_frame_size}, got {frame_size}."
+                f"{self._raw_frame_size}, got {raw_frame_size}."
             )
         if self._proc is None:
-            self._validate_frame_size_for_output_format(
-                width=frame_size[0], height=frame_size[1]
-            )
-            self._start_process(width=frame_size[0], height=frame_size[1])
+            if raw_frame_size is not None:
+                self._validate_frame_size_for_output_format(
+                    width=raw_frame_size[0],
+                    height=raw_frame_size[1],
+                )
+            self._start_process(raw_frame_size=raw_frame_size)
 
         path = self.output_path
         proc = self._proc
@@ -323,7 +361,7 @@ class VideoWriter:
             )
 
         try:
-            proc.stdin.write(frame_np.tobytes())
+            proc.stdin.write(payload)
         except Exception as exc:
             cleanup_errors = self._abort_open_session()
             raise VideoEncodeError(
@@ -331,8 +369,8 @@ class VideoWriter:
                 f"{path}.{self._format_cleanup_error_suffix(cleanup_errors)}"
             ) from exc
 
-        if self._raw_frame_size is None:
-            self._raw_frame_size = frame_size
+        if raw_frame_size is not None and self._raw_frame_size is None:
+            self._raw_frame_size = raw_frame_size
         self._frame_count += 1
 
     def close(self) -> None:
@@ -492,8 +530,21 @@ class VideoWriter:
         )
 
     def _normalize_frame(
-        self, frame: np.ndarray
-    ) -> tuple[np.ndarray, tuple[int, int]]:
+        self,
+        frame: np.ndarray | bytes,
+    ) -> tuple[bytes, tuple[int, int] | None]:
+        if self.input_format is not VideoInputFormat.RAWVIDEO:
+            if not isinstance(frame, bytes):
+                raise VideoFrameError(
+                    f"input_format={self.input_format.value!r} requires one "
+                    "complete encoded image as bytes."
+                )
+            return frame, None
+        if isinstance(frame, bytes):
+            raise VideoFrameError(
+                "input_format='rawvideo' requires an array frame; select an "
+                "encoded image input_format for PNG or JPEG bytes."
+            )
         frame_np = np.asarray(frame)
         if self.pixel_format is VideoPixelFormat.GBRP:
             if frame_np.ndim != 3 or frame_np.shape[0] != 3:
@@ -501,7 +552,7 @@ class VideoWriter:
                     "Expected GBRP frame shape (3, H, W), got "
                     f"{tuple(frame_np.shape)}."
                 )
-            frame_size = (int(frame_np.shape[2]), int(frame_np.shape[1]))
+            raw_frame_size = (int(frame_np.shape[2]), int(frame_np.shape[1]))
         elif self.pixel_format is VideoPixelFormat.GRAY16LE:
             if frame_np.ndim != 2:
                 raise VideoFrameError(
@@ -513,24 +564,25 @@ class VideoWriter:
                     "GRAY16LE frames require native little-endian uint16 "
                     f"dtype, got {frame_np.dtype}."
                 )
-            frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
+            raw_frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
         elif frame_np.ndim != 3 or frame_np.shape[2] != 3:
             raise VideoFrameError(
                 f"Expected frame shape (H, W, 3), got {tuple(frame_np.shape)}."
             )
         else:
-            frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
-        if frame_size[0] <= 0 or frame_size[1] <= 0:
+            raw_frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
+        if raw_frame_size[0] <= 0 or raw_frame_size[1] <= 0:
             raise VideoFrameError(
                 "Raw video frames require positive width and height, got "
-                f"{frame_size}."
+                f"{raw_frame_size}."
             )
         if (
             self.pixel_format is not VideoPixelFormat.GRAY16LE
             and frame_np.dtype != np.uint8
         ):
             frame_np = frame_np.astype(np.uint8)
-        return np.ascontiguousarray(frame_np), frame_size
+        payload = np.ascontiguousarray(frame_np).tobytes(order="C")
+        return payload, raw_frame_size
 
     def _validate_frame_size_for_output_format(
         self,
@@ -546,7 +598,11 @@ class VideoWriter:
                 f"and height, got ({width}, {height})."
             )
 
-    def _start_process(self, *, width: int, height: int) -> None:
+    def _start_process(
+        self,
+        *,
+        raw_frame_size: tuple[int, int] | None,
+    ) -> None:
         path = self.output_path
         if path is None:
             raise VideoEncodeError(
@@ -583,6 +639,48 @@ class VideoWriter:
             )
             encoder_option_args.extend([f"-{option_name}", option_text])
         crf_args = [] if self.crf is None else ["-crf", str(self.crf)]
+        if self.input_format is VideoInputFormat.RAWVIDEO:
+            if raw_frame_size is None:
+                raise RuntimeError("rawvideo input requires a frame size.")
+            width, height = raw_frame_size
+            input_args = [
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                self.pixel_format.value,
+                "-video_size",
+                f"{width}x{height}",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                "pipe:0",
+            ]
+        elif self.input_format is VideoInputFormat.PNG:
+            input_args = [
+                "-f",
+                "image2pipe",
+                "-framerate",
+                str(self.fps),
+                "-c:v",
+                "png",
+                "-i",
+                "pipe:0",
+            ]
+        elif self.input_format in _JPEG_INPUT_FORMATS:
+            input_args = [
+                "-f",
+                "image2pipe",
+                "-framerate",
+                str(self.fps),
+                "-c:v",
+                "mjpeg",
+                "-i",
+                "pipe:0",
+            ]
+        else:
+            raise RuntimeError(
+                f"unsupported input format {self.input_format!r}."
+            )
         try:
             proc = subprocess.Popen(
                 [
@@ -592,16 +690,7 @@ class VideoWriter:
                     "-loglevel",
                     "error",
                     "-y",
-                    "-f",
-                    "rawvideo",
-                    "-pix_fmt",
-                    self.pixel_format.value,
-                    "-video_size",
-                    f"{width}x{height}",
-                    "-framerate",
-                    str(self.fps),
-                    "-i",
-                    "pipe:0",
+                    *input_args,
                     "-an",
                     "-c:v",
                     self.codec,
