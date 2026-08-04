@@ -114,6 +114,32 @@ def main(args, accelerator):
         train_dataset = build_dataset(config)
         pin_memory = config.get("pin_memory", True)
         prefetch_factor = config.get("prefetch_factor", 2)
+        memoryvla_cfg = config.get("memoryvla") or {}
+        if memoryvla_cfg.get("enable", False) and memoryvla_cfg.get(
+            "episode_stream_sampler", False
+        ):
+            # `stream` memory needs episode-ordered batches. The host default
+            # below is a global random permutation (dataset_wrapper.py:133),
+            # under which no batch ever revisits an episode, the bank stays
+            # empty and the whole module degenerates to an exact identity
+            # without erroring. Imported here rather than at module scope so
+            # the switched-off path does not import the port at all.
+            from robo_orchard_lab.models.memoryvla import (
+                MemoryVLAEpisodeStreamBatchSampler,
+            )
+
+            batch_sampler = MemoryVLAEpisodeStreamBatchSampler(
+                train_dataset,
+                config["batch_size"],
+                drop_last=True,
+            )
+        else:
+            batch_sampler = DistributedBatchFlagSampler(
+                train_dataset,
+                config["batch_size"],
+                drop_last=True,
+                dataset_sample_weights=config.get("dataset_sample_weights"),
+            )
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             num_workers=num_workers,
@@ -121,12 +147,7 @@ def main(args, accelerator):
             prefetch_factor=prefetch_factor if num_workers > 0 else None,
             collate_fn=collate_batch_dict,
             persistent_workers=num_workers > 0,
-            batch_sampler=DistributedBatchFlagSampler(
-                train_dataset,
-                config["batch_size"],
-                drop_last=True,
-                dataset_sample_weights=config.get("dataset_sample_weights"),
-            ),
+            batch_sampler=batch_sampler,
             # in_order=False,
         )
         optimizer, lr_scheduler = build_optimizer(config, model)
