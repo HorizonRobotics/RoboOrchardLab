@@ -79,6 +79,33 @@
    任何要跑训练的脚本 **cwd 必须是那个目录**，否则 `./urdf/...` 解析失败。
    开 git worktree 做移植前基线时，这 4 个链接要手工补。
 
+7. **config 键必须有真实读取者 —— 写进文档、导出类、给了默认值，都不算接上。**
+   本次 `episode_stream_sampler` 定义在 `config_holobrain_common.py:59`（ship 值 `True`）、
+   配套 sampler 类实现完整并进了 `__all__`、3 份文档写了用法，**而全仓没有一行读它**：
+   `train.py:124` 硬编码 `DistributedBatchFlagSampler`，`train.py` 压根不在移植的改动文件里。
+   开关打开什么都不会发生 —— bank 恒为 `[1]`、gate 与 add 两种融合都是**精确恒等**
+   （`s·w+(1−s)·w` 与 `(w+w)·0.5`，实测差 1~2 ULP）、7.47M 参数 grad 全 None 或精确零、
+   loss 正常、无告警、日志干净。**这是最坏的失败形态：不是错，是白跑。**
+   → **每加一个 config 键，落地前 grep 一次它的读取者；只命中「定义 + 表格 + 注释」就是没接。**
+   `$ROL_JFS/port/_shared/orphan_switch_check.py` 已把这步做成判据 K/C/D：10 秒、零误报，
+   键无人读 / 类无人构造 / 文档默认值与 ship 不符，**三个互相独立的角度同时指向同一个洞**。
+
+8. **验证装置不许自建宿主装配 —— 它补上的每一块集成，都是复审看不见的地方。**
+   `run_gears.py:138-145` 自己 import 并实例化了那个 sampler，而宿主没有任何路径能做到；
+   更广的一层是 A/B/D 档与全部 5 个消融实际跑的是 `--sampler sequential`，
+   一个**仓库里根本不存在**的手写连续索引列表，它碰巧产出 episode 连续批 ——
+   所以「68/68 张量有梯度」是这条假路径的产物，真实路径上是 64 None / 4 精确零 / 0 非零。
+   最阴的地方在于：harness 不走 `train.py` 的**理由本身成立**
+   （accelerate / checkpoint / logging 会引入这套比对承受不了的不确定性），
+   于是这个偏离在 code review 里读起来像谨慎，不像问题。
+   → **harness 只允许注入输入、抓取张量；sampler / dataloader / optimizer / model builder
+   一个都不许自己 new。harness 需要而宿主没有的东西，先补进宿主再验。**
+   本次的做法：JFS 侧一个只 wrap 不 new 的 runner，
+   `runpy.run_path("train.py", run_name="__main__")` 原样跑真实入口，
+   靠包住 `SimpleTrainer.__init__` 去读宿主自己建好的那些对象。
+   顺带一条：**护栏要查 `accelerator.prepare()` 之后的那个 dataloader** ——
+   prepare 会把 batch_sampler 重新包一层，「构造出来的」不等于「被迭代的」。
+
 ### A 与论文/直觉不一致处（**实测，不是读代码读出来的**）
 
 - **`dataloader_type` 的两个取值差别远大于名字暗示的。**

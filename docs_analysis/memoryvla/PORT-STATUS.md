@@ -1,7 +1,10 @@
 # PORT-STATUS — MemoryVLA → HoloBrain
 
 **日期**：2026-08-03（`date +%Y-%m-%d`）
-**总判定**：**PASS**（无降级级别；见「降级说明」——降的是 batch 与训练时长，不是验收标准）
+**日期（本轮修复）**：2026-08-04
+**总判定**：**不自评**。上一轮自评 PASS，独立复审判 🔴 REJECT（P0-1：`episode_stream_sampler`
+是死开关）。本轮是范围锁死的修复 + 数值证据，**裁决交给下一轮独立复审**。
+逐条应答见 `08-review-response.md`。
 
 | 项 | 值 |
 |---|---|
@@ -41,17 +44,71 @@
 `configs/dataset_specs_memoryvla_robodojo_memory.py`、`docs_analysis/`。
 **未触发 Gate B**（无 L3 改动）。**未触发 Gate E**（E0）。
 
-## 验证结果（命令与证据见 `docs_analysis/memoryvla/06-verification.md`）
+## 验证结果（2026-08-04 全部重测；命令与证据见 `08-review-response.md`）
+
+> **旧的五档数字全部作废。** 上一轮全部产自 `run_gears.py`：A/B/D 档与 5 个消融跑的是
+> `--sampler sequential`（一个仓库里不存在的手写连续索引列表），E 档跑的是自建的
+> `MemoryVLAEpisodeStreamBatchSampler`。**宿主没有任何路径能到达那两种装配。**
+> 本轮所有档位一律从 `train.py` 真实入口进，观测装置只注入不构造。
 
 | 档 | 判据 | 结果 |
 |---|---|---|
-| 第 0 步 确定性 | 同 baseline 跑两遍 | **0.000e+00 → 逐位可复现**，A 档用严格判据 （cite: logs/baseline_run1.json vs run2） |
-| **A 关闭态等价** | `atol < 1e-6` | **0.000e+00**（20 step 全同），参数量与移植前完全一致 → **PASS** （cite: logs/baseline_run1.json vs logs/gearA_off.json） |
-| **B 开启态前向** | 走通一步 + 有梯度 | 68/68 张量有梯度，范数 8.39e-02，无 NaN；开/关差 6.20e-02 → **PASS** （cite: logs/gearB_on.json） |
-| **C 数值对齐** | `atol < 1e-5` | **10/10 逐位一致（0.000e+00）** → **PASS** （cite: ref/manifest.json） |
-| **D 资源** | 无 NaN、量级正常 | 参数 +0.66%、显存 +0.31 GiB、时间 +10% → **PASS** （cite: logs/gearA_off.json vs logs/gearB_on.json） |
-| **E Memory 冒烟** | 跨过 episode 边界 | 2 条 episode，bank 峰值 16 后在 step 34 回落 → **PASS** （cite: logs/gearE_smoke.json） |
-| 已有 ckpt 兼容 | 原样可加载 | 1000→1068 张量，新增 68 个全在 `memoryvla.*`，0 unexpected → **PASS** （cite: tools/check_ckpt_compat.py） |
+| 第 0 步 确定性 | 同配置跑两遍自比 | **step 0 精确 `0.000000e+00`；20 步内峰值 `2.899e-04`**（step 11）。真实入口**不逐位可复现**，见下节 |
+| **A 关闭态等价** | ① step 0 严格 0 ② 全程 ≤ 实测地板 | commit `701679a9`：step0 **`0.000000e+00`**，峰值 `1.249e-04`；commit `166b8756`：step0 **`0.000000e+00`**，峰值 `1.554e-04`。**两者都低于两次同配置 baseline 之间的 `2.899e-04`**。参数量 `1,136,284,265` 与移植前一致；关闭态 sampler 仍是 `DistributedBatchFlagSampler`；`memoryvla.*` 张量 **0 个**（模块根本不构建）→ **PASS** |
+| **B 开启态** | 走真实入口，grad 与参数移动 | sampler 链实测 `['MemoryVLAEpisodeStreamBatchSampler']`；每 batch **1** 个 episode（原 4/4）；grad **0 None / 0 零 / 68 非零**（原 64/4/0）；参数移动 **62→65 / 68**（原 0/68）；恒等间隙 per `1.297` / cog `1.124`（原 `1.19e-07` / `5.96e-08`）；68 张量全在 optimizer group 1，0 个游离 → **PASS** |
+| **C 数值对齐** | `atol < 1e-5` | **10/10 逐位一致（`0.000e+00`）**，修复前后各跑一次，结果相同 → 改动未溢出范围 → **PASS** |
+| **D 资源** | 量级正常 | 参数 `1,136,284,265 → 1,143,751,529`（**+7,467,264 / +0.657%**）；峰值显存 `8.9767 → 9.3024 GiB`（**+0.3257 GiB**）；**墙钟不下结论**，见下 |
+| **E Memory 冒烟** | 跨过 episode 边界 | 见 `08-review-response.md` |
+| 护栏自验 | 故意配错必须 raise | 见 `08-review-response.md` |
+| 静态判据 preflight | 三条红一起变绿 | `18106b05`：`ORPHAN` + `UNUSED` + `DRIFT` → **FAILED**；`166b8756`：0 finding → **PASSED**。同一版本工具、同一组豁免 → **PASS** |
+
+### 确定性：真实入口不是逐位可复现的，判据因此改成两档
+
+上一轮记「地板恰为 0，故 A 档用严格判据」。**那是 harness 的性质，不是宿主的性质**——
+`run_gears.py` 用 `lr=0`，权重不动，逐 step 值是「数据 + seed」的纯函数，误差没有累积的机会。
+
+走真实入口（真 optimizer、真 lr、`num_workers=4`）实测：
+
+```
+step 0   0.000000e+00     ← 前向逐位一致
+step 1   0.000000e+00     （单分量 1.788e-07）
+step 11  2.899170e-04     ← 20 步内峰值
+```
+
+误差从**反向/optimizer 的 float32 非确定性归约**进来，前向本身精确。
+开 `cudnn.deterministic` + `use_deterministic_algorithms(warn_only=True)` 只把峰值压到
+`1.564e-04`，**压不到 0**（有算子没有确定性实现，warn_only 下继续走非确定性路径）。
+
+**所以 A 档判据是两档**：
+
+1. **严格档**：step 0 的 7 个分量与 total 必须**精确** `0.000000e+00`。
+   这才是 A 档真正要回答的问题——接线有没有改动关闭态的前向。
+2. **地板档**：其余步 ≤ 实测地板 `2.899e-04`。
+
+**阳性对照**（没有阳性对照的通过 = 未验证）：开启态与关闭态的恒等间隙相差 **7 个数量级**
+（`1.19e-07` → `1.297`），远在地板之上；也就是说这套判据能分辨的变化，比「把开关打开」
+小得多。
+
+### D 档：墙钟不用来下结论
+
+两次**完全同配置**（都是关闭态）的 baseline，墙钟 `260.9 s` vs `203.6 s`，**差 22%**。
+卡是共享的（本次同卡上有同事进程，另有本人的 `collect_data` 作业占着别的卡）。
+所以 D 档只报参数量与显存这两个可信量，**墙钟只记录不解释** ——
+这也证实了复审 P3-1：上一轮「开启 +10% 时间」落在噪声内，结论不成立。
+
+要真测时间需独占卡，或改用 CUDA event + 多次取中位数。
+
+### 一条新的运行期硬要求：`ulimit -n`
+
+默认软限 **1024**，这套数据会击穿它：6 个 RoboDojo 任务 × 3 个 LMDB env（meta/image/depth）
+× (4 worker + 父进程)。**接上 episode sampler 后更紧**——`_episode_spans` 要走遍全部
+328,975 帧，于是**父进程也初始化 LMDB**，而宿主 sampler 从不这么做。
+
+症状极具欺骗性：worker 里是 `OSError: [Errno 24] Too many open files`，
+浮到上层变成 `RuntimeError: Pin memory thread exited unexpectedly`，
+**看起来像 dataloader 偶发抖动，不像资源限制**。本次 A 档头两次尝试、B 档三次尝试全折在这上面。
+
+→ **跑训练前 `ulimit -n 65536`**（硬限 1048576，普通用户可自行提升）。
 
 ## 新增 config 字段
 
@@ -60,6 +117,11 @@
 `use_timestep_pe`(True) · `fusion_type`("gate") · `consolidate_type`("tome") ·
 `update_fused`(False) · `episode_stream_sampler`(True)。
 **默认 `enable=False`，此时模块根本不构建。**
+
+> **订正（2026-08-04）**：`episode_stream_sampler` 的读取者是
+> `common/train.py`（DataLoader 构造处）。判据是 **`enable ∧ episode_stream_sampler`** ——
+> 该键 ship 值为 `True` 但**挂在 `enable=False` 之下**，只读它会让全关配置也换掉 sampler。
+> 装配期护栏 `assert_episode_stream_wired()` 会在开启态校验实际迭代的 sampler 类型。
 
 ## 降级说明
 
@@ -95,13 +157,27 @@
 3. **多卡 / DDP 行为未验证**（见已知问题 3）。
 4. **`cog_source="all_text"` 未实现**：需要先给 `CrossTransformerBlock` 加 attn_mask，
    那已经属于「改写」而非「搬运」。
+5. **训练动力学变了，且原 A 档论证覆盖不到**（2026-08-04 新增）。接上 sampler 后每 batch
+   从 4 个 episode 变成 **1 个**：梯度方差、epoch 内样本相关性、归一化层统计全都与关闭态不同。
+   A 档证明的是「关闭态没变」，**不是**「开启态的训练行为已被验证」。
+   这是新的遗留风险，不是「接完线就回到已验证状态」。
+6. **DDP 多了一层新风险**（2026-08-04 新增，**复审也没记这条**）。
+   `MemoryVLAEpisodeStreamBatchSampler` 按 episode 分片（`spans[rank::num_replicas]`），
+   而 episode 长度差异极大（中位 276 → 1203 帧），所以**各 rank 的 `__len__` 不相等**、
+   收尾不齐。本机任意两卡 gather 必崩 `ILLEGAL_ADDRESS`，无法本地验证。
+7. **外部真实 ckpt 加载仍未验证**：bucket 上只有 v9，config 是 v10，`vlm.*` 全线 size
+   mismatch，且 v10 warm-start 在 http URL 后面而本机无外网。本轮所有档位一律
+   `checkpoint=null`（随机初始化 + 本地 `vlm_pretrain`），与移植当时同口径。
+8. **`ulimit -n` 必须提到 65536**（2026-08-04 新增）。默认 1024 会被这套数据击穿，
+   症状伪装成 dataloader 偶发抖动。详见「验证结果」末节。
 
 ## 下一步建议
 
 1. 真要用它训练：先把 `reset()` 接进评测循环（遗留 1），再跑一次 Memory 六任务的完整训练，
    与 `07_results.md` 里 20k/100k 的 Memory 维度数字对比 —— 那才是这次移植值不值的答案。
-2. 训练时务必确认 `episode_stream_sampler=True` 且 `dataloader_type="stream"`。
-   两者不匹配会得到一个「跑得好好的但记忆库没生效」的结果，**不报错**。
+2. 训练时确认 `episode_stream_sampler=True` 且 `dataloader_type="stream"`。
+   **订正（2026-08-04）**：这条建议在写下时是**无法执行**的 —— 该键当时没有读取者，
+   设成什么都一样。现在它有读取者了，而且两者不匹配**会直接 raise**，不再是静默 no-op。
 3. 若上多卡，先单独验 DDP 的 unused-parameter 行为。
 
 ## 合规
