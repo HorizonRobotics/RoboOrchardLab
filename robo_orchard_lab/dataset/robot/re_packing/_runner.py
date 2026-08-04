@@ -15,11 +15,7 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-import os
-import shutil
-import tempfile
-from dataclasses import dataclass, field, replace
-from types import TracebackType
+from dataclasses import dataclass, replace
 from typing import Generator, Iterable, Sequence
 
 from robo_orchard_lab.dataset.robot.dataset import RODataset
@@ -31,7 +27,6 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodeMeta,
     EpisodePackaging,
     EpisodePackagingTransform,
-    normalize_local_dataset_path,
 )
 from robo_orchard_lab.dataset.robot.packaging._episode import (
     EpisodePackagingView,
@@ -44,6 +39,9 @@ from robo_orchard_lab.dataset.robot.re_packing._source import (
     SourceReader,
     _SourceEpisodeSelection,
     make_repack_features,
+)
+from robo_orchard_lab.dataset.robot.re_packing._staging import (
+    _StagedDatasetWriteSession,
 )
 
 
@@ -74,74 +72,6 @@ class _PreparedRepackEpisode(EpisodePackaging):
 class _WrittenEpisodeState:
     target_episode_index: int
     is_complete_source_episode: bool
-
-
-@dataclass(slots=True)
-class _StagedDatasetWriteSession:
-    """Stage a dataset write and publish it only after packaging succeeds.
-
-    The context manager creates a temporary sibling path for
-    ``DatasetPackaging`` to own during the write. ``commit`` publishes the
-    staged dataset to ``target_path`` and restores an existing target if the
-    replacement fails. Leaving the context without ``commit`` removes the
-    staging path.
-    """
-
-    target_path: str
-    force_overwrite: bool
-    _staging_path: str | None = field(default=None, init=False, repr=False)
-
-    def __enter__(self) -> _StagedDatasetWriteSession:
-        self.target_path = normalize_local_dataset_path(self.target_path)
-        self._staging_path = self._make_staging_path()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        del exc_type, exc_value, traceback
-        if self._staging_path is not None and os.path.exists(
-            self._staging_path
-        ):
-            _remove_path(self._staging_path)
-
-    @property
-    def path(self) -> str:
-        """Return the active staging path passed to ``DatasetPackaging``."""
-
-        if self._staging_path is None:
-            raise RuntimeError("_StagedDatasetWriteSession is not active.")
-        return self._staging_path
-
-    def commit(self) -> None:
-        """Replace the target path with the staged dataset."""
-
-        staging_path = self.path
-        _commit_staged_dataset(
-            staging_path=staging_path,
-            target_path=self.target_path,
-        )
-        self._staging_path = None
-
-    def _make_staging_path(self) -> str:
-        if os.path.exists(self.target_path) and not self.force_overwrite:
-            raise FileExistsError(
-                f"The dataset path '{self.target_path}' already exists. "
-                "Please remove it or set force_overwrite=True to overwrite."
-            )
-
-        target_folder = os.path.dirname(self.target_path)
-        os.makedirs(target_folder, exist_ok=True)
-        staging_path = tempfile.mkdtemp(
-            prefix=f".{os.path.basename(self.target_path)}.tmp-",
-            dir=target_folder,
-        )
-        # DatasetPackaging expects ownership of the output path lifecycle.
-        _remove_path(staging_path)
-        return staging_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,34 +380,3 @@ def _resolve_target_prev_episode_index(
     if prev_state is None or not prev_state.is_complete_source_episode:
         return None
     return prev_state.target_episode_index
-
-
-def _commit_staged_dataset(*, staging_path: str, target_path: str) -> None:
-    backup_path: str | None = None
-    if os.path.exists(target_path):
-        backup_path = tempfile.mkdtemp(
-            prefix=f".{os.path.basename(target_path)}.backup-",
-            dir=os.path.dirname(target_path),
-        )
-        shutil.rmtree(backup_path)
-        os.rename(target_path, backup_path)
-
-    try:
-        os.rename(staging_path, target_path)
-    except Exception:
-        if backup_path is not None and os.path.exists(backup_path):
-            os.rename(backup_path, target_path)
-        raise
-
-    if backup_path is not None:
-        _remove_path(backup_path)
-
-
-def _remove_path(path: str) -> None:
-    if os.path.isdir(path) and not os.path.islink(path):
-        shutil.rmtree(path, ignore_errors=True)
-        return
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass

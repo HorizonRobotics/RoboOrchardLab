@@ -2393,3 +2393,115 @@ class TestMergeDataset:
                     merged_row["instruction"].md5
                     == original_row["instruction"].md5
                 )
+
+
+def test_packaging_cleans_a_same_parent_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct packaging keeps every build artifact next to its target."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+
+    monkeypatch.setenv(
+        "XDG_CACHE_HOME", str(tmp_path.parent / f".{tmp_path.name}-cache")
+    )
+    target_path = tmp_path / "dataset"
+    paths = DatasetPackagingPaths.resolve(target_path)
+    episode = DummyEpisodePackaging(gen_frame_num=1)
+
+    DatasetPackaging(
+        features=episode.features,
+        database_driver="sqlite",
+    ).packaging([episode], target_path, fail_fast=True)
+
+    assert target_path.is_dir()
+    assert not Path(paths.workspace_dir).exists()
+    assert Path(paths.workspace_dir).parent == target_path.parent
+    # filelock 3.29 removes the lock inode after release; the public
+    # contract is the stable lock path and its cache directory, not inode
+    # persistence after the writer exits.
+    assert Path(paths.coordination_lock_path).parent.is_dir()
+    assert not list(target_path.parent.rglob("*.incomplete_info.lock"))
+
+
+def test_packaging_checks_workspace_only_after_target_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A released failed writer does not strand a waiting writer."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _writer as writer_module,
+    )
+
+    monkeypatch.setenv(
+        "XDG_CACHE_HOME", str(tmp_path.parent / f".{tmp_path.name}-cache")
+    )
+    target_path = tmp_path / "dataset"
+    paths = DatasetPackagingPaths.resolve(target_path)
+    Path(paths.workspace_dir).mkdir()
+
+    class _ReleasedWriterLock:
+        def __enter__(self):
+            Path(paths.workspace_dir).rmdir()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            del exc_type, exc_value, traceback
+            return False
+
+    monkeypatch.setattr(
+        writer_module,
+        "_create_coordination_lock",
+        lambda lock_path: _ReleasedWriterLock(),
+    )
+    episode = DummyEpisodePackaging(gen_frame_num=1)
+
+    DatasetPackaging(
+        features=episode.features,
+        database_driver="sqlite",
+    ).packaging([episode], target_path, fail_fast=True)
+
+    assert target_path.is_dir()
+
+
+def test_packaging_force_overwrite_retires_reserved_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forced direct write may clean only its reserved stale workspace."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+
+    monkeypatch.setenv(
+        "XDG_CACHE_HOME", str(tmp_path.parent / f".{tmp_path.name}-cache")
+    )
+    target_path = tmp_path / "dataset"
+    paths = DatasetPackagingPaths.resolve(target_path)
+    Path(paths.workspace_dir).mkdir()
+    episode = DummyEpisodePackaging(gen_frame_num=1)
+
+    with pytest.raises(FileExistsError, match="force_overwrite"):
+        DatasetPackaging(episode.features, database_driver="sqlite").packaging(
+            [episode],
+            target_path,
+            fail_fast=True,
+        )
+
+    DatasetPackaging(episode.features, database_driver="sqlite").packaging(
+        [episode],
+        target_path,
+        force_overwrite=True,
+        fail_fast=True,
+    )
+
+    assert target_path.is_dir()
+    assert not Path(paths.workspace_dir).exists()

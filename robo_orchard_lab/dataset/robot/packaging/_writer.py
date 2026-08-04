@@ -18,9 +18,9 @@
 
 from __future__ import annotations
 import json
+import logging
 import os
 import pickle
-import shutil
 import warnings
 from dataclasses import dataclass
 from typing import Iterable, Sequence
@@ -31,6 +31,10 @@ from datasets.exceptions import DatasetGenerationError
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
 
+from robo_orchard_lab.dataset.packaging_paths import (
+    DatasetPackagingPaths,
+    _create_coordination_lock,
+)
 from robo_orchard_lab.dataset.robot.columns import (
     PreservedColumnsKeys,
     PreservedIndexColumns,
@@ -52,37 +56,19 @@ from robo_orchard_lab.dataset.robot.packaging._metadata import (
     EpisodeMetaORM,
     InstructionData,
 )
+from robo_orchard_lab.utils.filesystem import (
+    remove_path,
+    rename_noreplace,
+)
 
 __all__ = [
     "DatasetIndexState",
     "DatasetPackaging",
     "dataset_format_version",
-    "normalize_local_dataset_path",
 ]
 
 dataset_format_version = "0.1.0"
-
-
-def normalize_local_dataset_path(
-    dataset_path: str | os.PathLike[str],
-) -> str:
-    """Normalize a local RODataset output path for packaging.
-
-    This helper is the shared path boundary for `DatasetPackaging` callers.
-    It accepts local filesystem `str` and `os.PathLike[str]` inputs, rejects
-    URI-style paths before local normalization, then returns an expanded
-    absolute path string.
-    """
-
-    dataset_path_str = os.fspath(dataset_path)
-    if not isinstance(dataset_path_str, str):
-        raise TypeError("dataset_path must be a string or os.PathLike[str].")
-    if "://" in dataset_path_str:
-        raise ValueError(
-            "DatasetPackaging only supports local filesystem dataset_path. "
-            f"URI paths are not supported: {dataset_path_str!r}."
-        )
-    return os.path.abspath(os.path.expanduser(dataset_path_str))
+logger = logging.getLogger(__name__)
 
 
 class DatasetPackaging:
@@ -99,6 +85,30 @@ class DatasetPackaging:
     of view: transforms may rewrite metadata and frames or skip whole
     episodes, but database, Arrow, sidecar, staging, and rollback lifecycle
     remain owned by the packaging caller.
+
+    Each call builds under a disposable sibling workspace and publishes only a
+    complete dataset with a no-replace rename. Cooperative writers for one
+    normalized target share a cache-resident advisory lock. The target parent,
+    target, workspace, and lock must not be replaced externally during an
+    active call. ``force_overwrite=True`` may remove the existing target and
+    its reserved stale workspace before building; direct packaging does not
+    promise rollback after that removal.
+
+    Each call serializes same-target writers with a stable lock in the user
+    cache, builds Hugging Face output inside a temporary sibling workspace,
+    and publishes it with an atomic same-filesystem no-replace rename. The
+    workspace and its HF locks are removed before return, so the dataset and
+    its parent retain no packaging lock files. ``force_overwrite=True`` still
+    removes an existing target before generation and does not restore it after
+    a later failure. Writers on different hosts must share ``XDG_CACHE_HOME``
+    to coordinate writes to the same shared-filesystem target.
+
+    The internal Hugging Face builder uses a fixed config ID so HF does not
+    fingerprint the generator closure and its potentially streaming or
+    unpickleable ``episodes`` iterable. This is safe only because every call
+    owns a fresh ``hf_cache_dir`` inside its target-scoped workspace and
+    same-target calls are serialized. If that cache becomes persistent or
+    shared, its config ID must instead distinguish all cache-relevant inputs.
 
     Args:
         features (hg_datasets.Features): Payload frame features provided by
@@ -272,103 +282,110 @@ class DatasetPackaging:
                 traceback.print_exception(e)
                 return
 
-        for episode in episodes:
-            try:
-                episode = self._transform_pipeline.transform_episode(episode)
-                if episode is None:
+        try:
+            for episode in episodes:
+                try:
+                    episode = self._transform_pipeline.transform_episode(
+                        episode
+                    )
+                    if episode is None:
+                        continue
+                except Exception as e:
+                    if fail_fast:
+                        raise
+                    warnings.warn(
+                        f"Failed to transform episode {episode}. "
+                        f"Skipping this episode. Error: "
+                    )
+                    import traceback
+
+                    traceback.print_exception(e)
                     continue
-            except Exception as e:
-                if fail_fast:
-                    raise
-                warnings.warn(
-                    f"Failed to transform episode {episode}. "
-                    f"Skipping this episode. Error: "
-                )
-                import traceback
 
-                traceback.print_exception(e)
-                continue
+                try:
+                    episode_meta = episode.generate_episode_meta()
+                    if episode_meta is None:
+                        continue
+                except Exception as e:
+                    if fail_fast:
+                        raise
+                    warnings.warn(
+                        f"Failed to generate episode metadata for {episode}. "
+                        f"Skipping this episode.  Error: "
+                    )
+                    import traceback
 
-            try:
-                episode_meta = episode.generate_episode_meta()
-                if episode_meta is None:
+                    traceback.print_exception(e)
                     continue
-            except Exception as e:
-                if fail_fast:
-                    raise
-                warnings.warn(
-                    f"Failed to generate episode metadata for {episode}. "
-                    f"Skipping this episode.  Error: "
-                )
-                import traceback
 
-                traceback.print_exception(e)
-                continue
+                with Session(engine) as session:
+                    episode_meta_orm = episode_meta.get_transient_orm(
+                        self._index_state, session
+                    )
+                self._index_state.last_episode_frame_idx = -1
+                episode_meta_orm.episode.dataset_begin_index = (
+                    self._index_state.last_frame_idx + 1
+                )
+                # clear _instruction_cache for each episode
+                self._instruction_cache.clear()
+                for frame in frame_generator(episode):
+                    instruction_orm = (
+                        self._add_instruction(
+                            frame.instruction,
+                            engine=engine,
+                        )
+                        if frame.instruction
+                        else None
+                    )
+                    self._extend_frame_with_index(
+                        frame, episode_meta_orm, instruction_orm
+                    )
+                    # encode_example here.
+                    # yield self._features.encode_example(frame.features)
+                    yield frame.features
+                    # update status
+                    if instruction_orm is not None:
+                        self._index_state.last_instruction_idx = max(
+                            self._index_state.last_instruction_idx,
+                            instruction_orm.index,
+                        )
+                    self._index_state.last_episode_frame_idx += 1
+                    self._index_state.last_frame_idx += 1
 
-            with Session(engine) as session:
-                episode_meta_orm = episode_meta.get_transient_orm(
-                    self._index_state, session
-                )
-            self._index_state.last_episode_frame_idx = -1
-            episode_meta_orm.episode.dataset_begin_index = (
-                self._index_state.last_frame_idx + 1
-            )
-            # clear _instruction_cache for each episode
-            self._instruction_cache.clear()
-            for frame in frame_generator(episode):
-                instruction_orm = (
-                    self._add_instruction(frame.instruction, engine=engine)
-                    if frame.instruction
-                    else None
-                )
-                self._extend_frame_with_index(
-                    frame, episode_meta_orm, instruction_orm
-                )
-                # encode_example here.
-                # yield self._features.encode_example(frame.features)
-                yield frame.features
-                # update status
-                if instruction_orm is not None:
-                    self._index_state.last_instruction_idx = max(
-                        self._index_state.last_instruction_idx,
-                        instruction_orm.index,
+                # Update the index state with the episode metadata
+                with Session(engine, expire_on_commit=False) as session:
+                    if episode_meta_orm.robot:
+                        if (
+                            episode_meta_orm.robot.index
+                            > self._index_state.last_robot_idx
+                        ):
+                            session.add(episode_meta_orm.robot)
+                        self._index_state.last_robot_idx = max(
+                            self._index_state.last_robot_idx,
+                            episode_meta_orm.robot.index,
+                        )
+                    if episode_meta_orm.task:
+                        if (
+                            episode_meta_orm.task.index
+                            > self._index_state.last_task_idx
+                        ):
+                            session.add(episode_meta_orm.task)
+                        self._index_state.last_task_idx = max(
+                            self._index_state.last_task_idx,
+                            episode_meta_orm.task.index,
+                        )
+                    self._index_state.last_episode_idx = max(
+                        self._index_state.last_episode_idx,
+                        episode_meta_orm.episode.index,
                     )
-                self._index_state.last_episode_frame_idx += 1
-                self._index_state.last_frame_idx += 1
-
-            # Update the index state with the episode metadata
-            with Session(engine, expire_on_commit=False) as session:
-                if episode_meta_orm.robot:
-                    if (
-                        episode_meta_orm.robot.index
-                        > self._index_state.last_robot_idx
-                    ):
-                        session.add(episode_meta_orm.robot)
-                    self._index_state.last_robot_idx = max(
-                        self._index_state.last_robot_idx,
-                        episode_meta_orm.robot.index,
+                    # Update the episode metadata in the database
+                    episode_meta_orm.episode.frame_num = (
+                        self._index_state.last_episode_frame_idx + 1
                     )
-                if episode_meta_orm.task:
-                    if (
-                        episode_meta_orm.task.index
-                        > self._index_state.last_task_idx
-                    ):
-                        session.add(episode_meta_orm.task)
-                    self._index_state.last_task_idx = max(
-                        self._index_state.last_task_idx,
-                        episode_meta_orm.task.index,
-                    )
-                self._index_state.last_episode_idx = max(
-                    self._index_state.last_episode_idx,
-                    episode_meta_orm.episode.index,
-                )
-                # Update the episode metadata in the database
-                episode_meta_orm.episode.frame_num = (
-                    self._index_state.last_episode_frame_idx + 1
-                )
-                session.add(episode_meta_orm.episode)
-                session.commit()
-        engine.dispose()
+                    session.add(episode_meta_orm.episode)
+                    session.commit()
+        finally:
+            engine.dispose()
 
     def _complete_arrow_cache_as_dataset(
         self,
@@ -376,7 +393,22 @@ class DatasetPackaging:
         builder: hg_datasets.DatasetBuilder,
         split: hg_datasets.Split | None,
     ):
-        dataset_dict = builder.as_dataset(split=split)
+        split_infos = builder.info.splits
+        total_examples = (
+            None
+            if split_infos is None
+            else sum(item.num_examples for item in split_infos.values())
+        )
+        if total_examples == 0:
+            split_name = str(split or hg_datasets.Split.TRAIN)
+            empty_dataset = hg_datasets.Dataset.from_dict(
+                {name: [] for name in self._features},
+                features=self._features,
+                split=split_name,
+            )
+            dataset_dict = hg_datasets.DatasetDict({split_name: empty_dataset})
+        else:
+            dataset_dict = builder.as_dataset(split=split)
         assert isinstance(dataset_dict, hg_datasets.DatasetDict)
         assert len(dataset_dict) == 1
         for k, v in dataset_dict.items():
@@ -441,22 +473,6 @@ class DatasetPackaging:
         ) as state_file:
             json.dump(state, state_file, indent=2, sort_keys=True)
 
-        # remove lock files if exist.
-        # lock files is required during building the dataset,
-        # but not needed after the dataset is built.
-        lockfiles_postfix = [
-            ".incomplete_info.lock",
-            "_builder.lock",
-        ]
-        dataset_parent_dir = os.path.dirname(dataset_path)
-        dataset_name = os.path.basename(dataset_path)
-        for postfix in lockfiles_postfix:
-            lockfile_path = os.path.join(
-                dataset_parent_dir, f"{dataset_name}{postfix}"
-            )
-            if fs.exists(lockfile_path):
-                fs.rm(lockfile_path)
-
     def packaging(
         self,
         episodes: Iterable[EpisodePackaging],
@@ -487,102 +503,142 @@ class DatasetPackaging:
                 size in bytes. Default is "8GB".
             split (hg_datasets.Split | None): The split of the dataset.
                 If None, use "train" as the default split.
-            force_overwrite (bool): If True, overwrite the existing dataset
-                at the specified path. If False, raise an error if the path
-                already exists. Default is False.
+            force_overwrite (bool): If True, remove the existing dataset and
+                this target's reserved stale workspace before building. If
+                False, raise an error if either exists. Direct packaging does
+                not restore a removed target after a later failure. Default
+                is False.
             fail_fast (bool): If True, immediately raise the first episode
                 metadata or frame generation error instead of converting it to
                 a warning and skipping that episode. Default is False.
         """
 
-        dataset_path = normalize_local_dataset_path(dataset_path)
-
-        if os.path.exists(dataset_path):
-            if not force_overwrite:
-                raise FileExistsError(
-                    f"The dataset path '{dataset_path}' already exists. "
-                    "Please remove it or set force_overwrite=True to overwrite."  # noqa: E501
-                )
-            else:
+        packaging_paths = DatasetPackagingPaths.resolve(dataset_path)
+        # The final target can be rejected before waiting, but the workspace
+        # is owned only after this writer acquires the shared target lock.
+        packaging_paths.validate_preconditions(
+            force_overwrite=force_overwrite,
+            include_workspace=False,
+        )
+        dataset_path = packaging_paths.dataset_dir
+        os.makedirs(
+            os.path.dirname(packaging_paths.coordination_lock_path),
+            exist_ok=True,
+        )
+        with _create_coordination_lock(packaging_paths.coordination_lock_path):
+            packaging_paths.validate_locked_target_identity()
+            # The first check is a cheap preflight. This second check is the
+            # live authorization after serializing writers for this target.
+            packaging_paths.validate_preconditions(
+                force_overwrite=force_overwrite
+            )
+            target_existed = os.path.lexists(dataset_path)
+            if target_existed:
                 warnings.warn(
                     f"The dataset path '{dataset_path}' already exists. "
                     "It will be overwritten."
                 )
-                # Clean up the existing dataset path
-                shutil.rmtree(dataset_path, ignore_errors=True)
 
-        self._index_state: DatasetIndexState = DatasetIndexState()
-        self._instruction_cache.clear()
+            packaging_succeeded = False
+            try:
+                if force_overwrite:
+                    for stale_path in packaging_paths.output_roots:
+                        if os.path.lexists(stale_path):
+                            remove_path(stale_path)
 
-        # We cannot use the dataset_path directly because
-        # datasets will clean the folder before packaging
-        # if it already exists. So we create the
-        # database in a temporary path and move it later.
+                self._index_state = DatasetIndexState()
+                self._instruction_cache.clear()
 
-        db_folder = os.path.dirname(dataset_path)
-        os.makedirs(db_folder, exist_ok=True)
-        db_path = dataset_path + f"_meta.{self._database_driver}"
-        if os.path.exists(db_path):
-            warnings.warn(
-                f"The temporary meta database path '{db_path}' already "
-                "exists. It will be overwritten."
-            )
-            os.remove(db_path)
+                # HF derives its incomplete and lock paths from output_dir.
+                # Staging that output inside this workspace keeps all of those
+                # transient artifacts out of the user-provided output tree.
+                os.makedirs(os.path.dirname(dataset_path), exist_ok=True)
+                os.makedirs(packaging_paths.workspace_dir)
+                db_path = os.path.join(
+                    packaging_paths.workspace_dir,
+                    f"meta_db.{self._database_driver}",
+                )
 
-        db_new_path = os.path.join(
-            dataset_path, f"meta_db.{self._database_driver}"
-        )
-        if os.path.exists(db_new_path) and not force_overwrite:
-            raise FileExistsError(
-                f"The meta database path '{db_new_path}' already exists. "
-                "Please remove it or set force_overwrite=True to overwrite."
-            )
+                def generator():
+                    yield from self._make_packaging_generator(
+                        episodes,
+                        db_path=db_path,
+                        fail_fast=fail_fast,
+                    )
 
-        def generator():
-            yield from self._make_packaging_generator(
-                episodes,
-                db_path=db_path,
-                fail_fast=fail_fast,
-            )
+                from datasets.packaged_modules.generator.generator import (
+                    Generator,
+                )
+
+                builder = Generator(
+                    generator=generator,
+                    features=self._features,
+                    writer_batch_size=writer_batch_size,
+                    info=dataset_info,
+                    cache_dir=packaging_paths.hf_cache_dir,
+                    # The cache is isolated inside this run's workspace. A
+                    # fixed id only prevents HF from fingerprinting episodes.
+                    config_id="robo_orchard",
+                )
+                builder.download_and_prepare(
+                    output_dir=packaging_paths.builder_output_dir,
+                    max_shard_size=max_shard_size,
+                    file_format="arrow",
+                )
+                db_new_path = os.path.join(
+                    packaging_paths.builder_output_dir,
+                    f"meta_db.{self._database_driver}",
+                )
+                os.rename(db_path, db_new_path)
+
+                self._complete_arrow_cache_as_dataset(
+                    dataset_path=packaging_paths.builder_output_dir,
+                    builder=builder,
+                    split=split,
+                )
+                if os.path.lexists(dataset_path):
+                    raise FileExistsError(
+                        "The dataset target appeared while packaging was in "
+                        f"progress: {dataset_path!r}. Refusing to replace an "
+                        "artifact not owned by this writer."
+                    )
+                rename_noreplace(
+                    packaging_paths.builder_output_dir,
+                    dataset_path,
+                )
+                packaging_succeeded = True
+            except Exception as e:
+                if fail_fast and isinstance(e, DatasetGenerationError):
+                    cause = e.__cause__
+                    if cause is not None:
+                        raise cause
+                raise
+            finally:
+                self._cleanup_workspace(
+                    packaging_paths.workspace_dir,
+                    suppress_errors=not packaging_succeeded,
+                )
+
+    def _cleanup_workspace(
+        self,
+        path: str,
+        *,
+        suppress_errors: bool,
+    ) -> None:
+        """Remove an owned path without masking an active packaging error."""
 
         try:
-            from datasets.packaged_modules.generator.generator import Generator
-
-            builder = Generator(
-                generator=generator,
-                features=self._features,
-                writer_batch_size=writer_batch_size,
-                info=dataset_info,
-            )
-            builder.download_and_prepare(
-                output_dir=dataset_path,
-                max_shard_size=max_shard_size,
-                file_format="arrow",
-            )
-            db_new_path = os.path.join(
-                dataset_path, f"meta_db.{self._database_driver}"
-            )
-            os.rename(db_path, db_new_path)
-
-            # Complete the dataset with the arrow cache
-            self._complete_arrow_cache_as_dataset(
-                dataset_path=dataset_path,
-                builder=builder,
-                split=split,
-            )
-        except Exception as e:
-            if os.path.exists(dataset_path):
-                shutil.rmtree(dataset_path, ignore_errors=True)
-            if fail_fast and isinstance(e, DatasetGenerationError):
-                cause = e.__cause__
-                if cause is not None:
-                    raise cause
-            raise
-
-        finally:
-            # Clean up the temporary database file if it exists
-            if os.path.exists(db_path):
-                os.remove(db_path)
+            remove_path(path)
+        except OSError as exc:
+            if suppress_errors:
+                logger.warning(
+                    "Failed to clean packaging path %r: %s",
+                    path,
+                    exc,
+                    exc_info=True,
+                )
+            else:
+                raise
 
 
 class InstructionCache:

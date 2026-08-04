@@ -1166,3 +1166,183 @@ def test_cached_repack_episode_does_not_pollute_cached_frames(
     assert transform.frames
     assert "index" not in transform.frames[0].features
     assert "episode_index" not in transform.frames[0].features
+
+
+def test_staged_repack_holds_the_final_target_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repack serialization uses the final target instead of the stage."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _staging as staging_module,
+    )
+
+    monkeypatch.setenv(
+        "XDG_CACHE_HOME", str(tmp_path.parent / f".{tmp_path.name}-cache")
+    )
+    target_path = tmp_path / "target"
+    paths = DatasetPackagingPaths.resolve(target_path)
+    with staging_module._StagedDatasetWriteSession(
+        target_path=target_path,
+        force_overwrite=False,
+    ):
+        with pytest.raises(staging_module.filelock.Timeout):
+            staging_module.filelock.FileLock(
+                paths.coordination_lock_path,
+                timeout=0,
+            ).acquire()
+
+
+def test_staged_repack_restores_the_prior_target_after_publish_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed staged publication restores the replaced target generation."""
+
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    (target_path / "old").write_text("old", encoding="utf-8")
+    original_rename = staging_module.rename_noreplace
+    staging_path: str | None = None
+
+    def fail_final_publish(source: str, target: str) -> None:
+        if source == staging_path:
+            raise RuntimeError("publish failed")
+        original_rename(source, target)
+
+    with pytest.raises(RuntimeError, match="publish failed"):
+        with staging_module._StagedDatasetWriteSession(
+            target_path=target_path,
+            force_overwrite=True,
+        ) as stage:
+            staging_path = stage.path
+            Path(staging_path).mkdir()
+            monkeypatch.setattr(
+                staging_module,
+                "rename_noreplace",
+                fail_final_publish,
+            )
+            stage.commit()
+
+    assert (target_path / "old").read_text(encoding="utf-8") == "old"
+    assert not list(tmp_path.glob(".target.backup-*"))
+
+
+@pytest.mark.parametrize(
+    ("initial_target", "mutate_target"),
+    [
+        (
+            False,
+            lambda target: (
+                target.mkdir(),
+                (target / "unowned").write_text("unowned", encoding="utf-8"),
+            ),
+        ),
+        (
+            True,
+            lambda target: (
+                (target / "old").unlink(),
+                target.rmdir(),
+            ),
+        ),
+        (
+            True,
+            lambda target: (
+                target.rename(target.parent / "original"),
+                target.mkdir(),
+                (target / "replacement").write_text(
+                    "replacement", encoding="utf-8"
+                ),
+            ),
+        ),
+    ],
+    ids=("appears", "disappears", "is-replaced"),
+)
+def test_staged_repack_rejects_target_identity_changes(
+    tmp_path: Path,
+    initial_target: bool,
+    mutate_target,
+) -> None:
+    """Publication never removes a target changed during repacking."""
+
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    if initial_target:
+        target_path.mkdir()
+        (target_path / "old").write_text("old", encoding="utf-8")
+
+    with staging_module._StagedDatasetWriteSession(
+        target_path=target_path,
+        force_overwrite=True,
+    ) as stage:
+        Path(stage.path).mkdir()
+        mutate_target(target_path)
+        with pytest.raises(RuntimeError, match="target changed"):
+            stage.commit()
+
+    if initial_target and not target_path.exists():
+        assert not target_path.exists()
+    else:
+        assert target_path.exists()
+    if initial_target and (tmp_path / "original").exists():
+        assert (tmp_path / "original" / "old").read_text(
+            encoding="utf-8"
+        ) == "old"
+
+
+def test_staged_repack_rechecks_identity_after_backup_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A target replacement at backup rename is restored and preserved."""
+
+    from robo_orchard_lab.dataset.robot.re_packing import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    (target_path / "old").write_text("old", encoding="utf-8")
+    replaced_original = tmp_path / "replaced_original"
+    original_rename = staging_module.os.rename
+    replaced = False
+
+    def replace_before_backup(source: str, target: str) -> None:
+        nonlocal replaced
+        if source == str(target_path) and not replaced:
+            target_path.rename(replaced_original)
+            target_path.mkdir()
+            (target_path / "replacement").write_text(
+                "replacement", encoding="utf-8"
+            )
+            replaced = True
+        original_rename(source, target)
+
+    monkeypatch.setattr(staging_module.os, "rename", replace_before_backup)
+    with pytest.raises(RuntimeError, match="target changed"):
+        with staging_module._StagedDatasetWriteSession(
+            target_path=target_path,
+            force_overwrite=True,
+        ) as stage:
+            Path(stage.path).mkdir()
+            stage.commit()
+
+    assert (
+        replaced_original.joinpath("old").read_text(encoding="utf-8") == "old"
+    )
+    assert (
+        target_path.joinpath("replacement").read_text(encoding="utf-8")
+        == "replacement"
+    )
+    assert not list(tmp_path.glob(".target.backup-*"))

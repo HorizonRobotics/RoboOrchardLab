@@ -18,6 +18,9 @@
 
 from __future__ import annotations
 
+from robo_orchard_lab.dataset.packaging_paths import (
+    normalize_local_dataset_path,
+)
 from robo_orchard_lab.dataset.robot.db_orm import RobotDescriptionFormat
 from robo_orchard_lab.dataset.robot.packaging._episode import (
     ComposedEpisodePackagingTransform,
@@ -40,7 +43,6 @@ from robo_orchard_lab.dataset.robot.packaging._writer import (
     DatasetPackaging,
     InstructionCache,
     dataset_format_version,
-    normalize_local_dataset_path,
 )
 
 __all__ = [
