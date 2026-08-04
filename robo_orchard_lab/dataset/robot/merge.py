@@ -145,9 +145,25 @@ def _merge_episode_table(
     robot_mapping: np.ndarray | dict[int, int],
     task_mapping: np.ndarray | dict[int, int],
     src_index_mapping: np.ndarray | dict[int, int],
+    target_index_start: int,
     batch_size: int = 500,
-):
-    """Merge Episode table from src_session to dst_session."""
+) -> None:
+    """Merge episodes into the destination dataset's global frame coordinates.
+
+    Args:
+        src_session (Session): The source database session.
+        dst_session (Session): The destination database session.
+        robot_mapping (np.ndarray | dict[int, int]): Source-to-destination
+            robot index mapping.
+        task_mapping (np.ndarray | dict[int, int]): Source-to-destination task
+            index mapping.
+        src_index_mapping (np.ndarray | dict[int, int]):
+            Source-to-destination episode index mapping to update.
+        target_index_start (int): Global frame index assigned to the first
+            source frame in the destination dataset.
+        batch_size (int, optional): Number of episodes committed per batch.
+            Defaults to 500.
+    """
     # get next available episode index in dst_session
     src_max_episode_index = (
         dst_session.query(Episode.index).order_by(Episode.index.desc()).first()
@@ -157,15 +173,29 @@ def _merge_episode_table(
     )
     next_dst_episode_index = src_max_episode_index + 1
 
+    source_episode_indices = list(
+        src_session.scalars(select(Episode.index).order_by(Episode.index))
+    )
+    for source_episode_index in source_episode_indices:
+        src_index_mapping[source_episode_index] = next_dst_episode_index
+        next_dst_episode_index += 1
+
+    pending_episode_count = 0
     with tqdm(
         unit="rows",
-        total=src_session.query(Episode).count(),
+        total=len(source_episode_indices),
         desc=f" Merging {Episode.__tablename__} ",
     ) as bar:
-        for i, src_episode in enumerate(src_session.scalars(select(Episode))):
+        for src_episode in src_session.scalars(
+            select(Episode).order_by(Episode.index)
+        ):
             dst_episode_dict = {}
             Episode.column_copy(src_episode, dst_episode_dict)
             new_episode = Episode(**dst_episode_dict)
+            # ``-1`` denotes an unavailable frame position, not a source
+            # coordinate that can be shifted into the merged frame table.
+            if new_episode.dataset_begin_index >= 0:
+                new_episode.dataset_begin_index += target_index_start
             # remap foreign keys
             if new_episode.task_index is not None:
                 new_episode.task_index = int(
@@ -175,19 +205,49 @@ def _merge_episode_table(
                 new_episode.robot_index = int(
                     robot_mapping[new_episode.robot_index]
                 )
-            new_episode.index = next_dst_episode_index
-            src_index_mapping[src_episode.index] = next_dst_episode_index
-            next_dst_episode_index += 1
+            new_episode.index = int(src_index_mapping[src_episode.index])
+            if new_episode.prev_episode_index is not None:
+                previous_source_index = new_episode.prev_episode_index
+                previous_target_index = int(
+                    src_index_mapping[previous_source_index]
+                )
+                if previous_target_index < 0:
+                    raise ValueError(
+                        "Episode previous link references a source episode "
+                        "that is not present in the merged dataset: "
+                        f"{previous_source_index}."
+                    )
+                if previous_target_index >= new_episode.index:
+                    raise ValueError(
+                        "Episode previous link must reference an earlier "
+                        f"target episode: {previous_target_index} >= "
+                        f"{new_episode.index}."
+                    )
+                # DuckDB validates a self-referential key per INSERT. Flush
+                # the source predecessor before inserting its linked child.
+                if pending_episode_count > 0:
+                    dst_session.commit()
+                    pending_episode_count = 0
+                new_episode.prev_episode_index = previous_target_index
             dst_session.add(new_episode)
+            pending_episode_count += 1
 
-            if (i + 1) % batch_size == 0:
+            if (
+                new_episode.prev_episode_index is not None
+                or pending_episode_count == batch_size
+            ):
                 dst_session.commit()
+                pending_episode_count = 0
             bar.update(1)
-        dst_session.commit()
+        if pending_episode_count > 0:
+            dst_session.commit()
 
 
 def _merge_meta_db(
-    src_session: Session, dst_session: Session, cache_dir: str | None
+    src_session: Session,
+    dst_session: Session,
+    cache_dir: str | None,
+    target_index_start: int,
 ) -> dict[str, np.ndarray | dict[int, int]]:
     """Merge meta database from src_session to dst_session.
 
@@ -196,6 +256,8 @@ def _merge_meta_db(
         dst_session (Session): The destination database session.
         cache_dir: str | None: The directory to store the index mapping
             files. If None, use memory dict instead.
+        target_index_start (int): Global frame index assigned to the first
+            source frame in the destination dataset.
 
     Returns:
         dict[str, np.ndarray | dict[int, int]]: A mapping from table name
@@ -258,6 +320,7 @@ def _merge_meta_db(
         robot_mapping=src_index_mapping[Robot.__tablename__],
         task_mapping=src_index_mapping[Task.__tablename__],
         src_index_mapping=episode_index_mapping,
+        target_index_start=target_index_start,
     )
     src_index_mapping[Episode.__tablename__] = episode_index_mapping
 
@@ -422,6 +485,7 @@ def create_merged_dataset(
         features=features, mapping={k: [] for k in features.keys()}
     )
     for i, dataset in enumerate(tqdm(datasets, desc="Merging datasets")):
+        target_index_start = len(frame_dataset)
         # create a temporary cache directory for each dataset
         with tempfile.TemporaryDirectory() as local_cache_dir:
             with (
@@ -436,6 +500,7 @@ def create_merged_dataset(
                         if not cache_meta_idx_mappings_in_memory
                         else None
                     ),
+                    target_index_start=target_index_start,
                 )
             target_path = os.path.join(
                 cache_dir, f"mapped_meta_index_{i}.arrow"
@@ -444,7 +509,7 @@ def create_merged_dataset(
                 frame_dataset=dataset.frame_dataset,
                 index_mapping=src_idx_mapping,
                 cached_index_path=target_path,
-                target_index_start=len(frame_dataset),
+                target_index_start=target_index_start,
             )
             src_idx_mapping = None
         with tqdm(total=1, desc=" Concatenating datasets ") as pbar:

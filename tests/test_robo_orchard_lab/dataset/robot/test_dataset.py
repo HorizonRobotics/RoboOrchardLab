@@ -38,7 +38,11 @@ from robo_orchard_lab.dataset.robot.dataset import (
     ROMultiRowDataset,
     get_row_num_from_dataset_info,
 )
-from robo_orchard_lab.dataset.robot.dataset_db_engine import need_upgrade
+from robo_orchard_lab.dataset.robot.dataset_db_engine import (
+    create_engine,
+    get_local_db_url,
+    need_upgrade,
+)
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
     Instruction,
@@ -2116,6 +2120,133 @@ def example_some_empty_meta_dataset_path(
 
 
 class TestMergeDataset:
+    @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
+    def test_create_merged_dataset_remaps_source_local_previous_links(
+        self,
+        tmp_path: Path,
+        cache_source_mappings_in_memory: bool,
+    ) -> None:
+        def package_source_dataset(name: str) -> RODataset:
+            dataset_path = tmp_path / name
+            episodes = [
+                SimpleStringEpisodePackaging(
+                    ["first"], episode_data=EpisodeData(index=0)
+                ),
+                SimpleStringEpisodePackaging(
+                    ["second"],
+                    episode_data=EpisodeData(index=1, prev_episode_index=0),
+                ),
+            ]
+            DatasetPackaging(
+                features=episodes[0].features, database_driver="sqlite"
+            ).packaging(episodes=episodes, dataset_path=str(dataset_path))
+            return RODataset(str(dataset_path))
+
+        merged_cache_dir = tmp_path / "merged"
+        merged_cache_dir.mkdir()
+        merged_dataset = create_merged_dataset(
+            datasets=[
+                package_source_dataset("first_source"),
+                package_source_dataset("second_source"),
+            ],
+            cache_dir=str(merged_cache_dir),
+            cache_meta_idx_mappings_in_memory=cache_source_mappings_in_memory,
+        )
+
+        merged_episodes = list(
+            merged_dataset.iterate_meta(meta_type=Episode, ordered=True)
+        )
+
+        assert [episode.index for episode in merged_episodes] == [0, 1, 2, 3]
+        assert [episode.prev_episode_index for episode in merged_episodes] == [
+            None,
+            0,
+            None,
+            2,
+        ]
+        assert [
+            episode.dataset_begin_index for episode in merged_episodes
+        ] == [0, 1, 2, 3]
+
+    @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
+    def test_create_merged_dataset_offsets_episode_begin_indices(
+        self,
+        tmp_path: Path,
+        example_all_empty_meta_dataset_path: str,
+        example_some_empty_meta_dataset_path: str,
+        cache_source_mappings_in_memory: bool,
+    ) -> None:
+        datasets = [
+            RODataset(example_all_empty_meta_dataset_path),
+            RODataset(example_some_empty_meta_dataset_path),
+        ]
+
+        merged_dataset = create_merged_dataset(
+            datasets=datasets,
+            cache_dir=str(tmp_path),
+            cache_meta_idx_mappings_in_memory=(
+                cache_source_mappings_in_memory
+            ),
+        )
+
+        expected_begin_index = 0
+        for episode in merged_dataset.iterate_meta(
+            meta_type=Episode, ordered=True
+        ):
+            assert episode.dataset_begin_index == expected_begin_index
+            expected_begin_index += episode.frame_num
+        assert expected_begin_index == len(merged_dataset)
+
+    @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
+    def test_create_merged_dataset_preserves_unknown_episode_begin_index(
+        self,
+        tmp_path: Path,
+        cache_source_mappings_in_memory: bool,
+    ) -> None:
+        def package_source_dataset(name: str) -> tuple[RODataset, Path]:
+            dataset_path = tmp_path / name
+            episode = SimpleStringEpisodePackaging(
+                [name], episode_data=EpisodeData(index=0)
+            )
+            DatasetPackaging(
+                features=episode.features, database_driver="sqlite"
+            ).packaging(episodes=[episode], dataset_path=str(dataset_path))
+            return RODataset(str(dataset_path)), dataset_path
+
+        first_source, _ = package_source_dataset("first_source")
+        second_source, second_source_path = package_source_dataset(
+            "second_source"
+        )
+        source_engine = create_engine(
+            get_local_db_url(
+                db_path=str(second_source_path / "meta_db.sqlite"),
+                drivername="sqlite",
+            )
+        )
+        try:
+            with Session(source_engine) as session:
+                episode = session.scalar(select(Episode))
+                assert episode is not None
+                episode.dataset_begin_index = -1
+                session.commit()
+        finally:
+            source_engine.dispose()
+
+        merged_cache_dir = tmp_path / "merged"
+        merged_cache_dir.mkdir()
+        merged_dataset = create_merged_dataset(
+            datasets=[first_source, second_source],
+            cache_dir=str(merged_cache_dir),
+            cache_meta_idx_mappings_in_memory=cache_source_mappings_in_memory,
+        )
+
+        assert [
+            episode.dataset_begin_index
+            for episode in merged_dataset.iterate_meta(
+                meta_type=Episode, ordered=True
+            )
+        ] == [0, -1]
+
     @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
     def test_merge_datasets(
         self,

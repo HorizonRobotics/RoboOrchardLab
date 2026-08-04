@@ -15,6 +15,8 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+import sys
+import warnings
 from abc import abstractmethod
 from typing import (
     Any,
@@ -144,32 +146,46 @@ class MessageConverterStateful(MessageConverter[SRC_T, DST_T]):
         append_none: bool = True,
         flush: bool = True,
     ) -> Iterator[DST_T]:
-        """Make an iterator from the message converter.
+        """Convert a source iterator and finalize converter-owned state.
 
-        This is used to make an iterator from the message converter so that
-        the message converter can be used in a for loop.
+        With ``flush=True``, normal exhaustion preserves the existing
+        ``convert(None)`` then ``flush()`` order. Source errors, conversion
+        errors, and consumer close also trigger eager ``flush()`` without
+        yielding cleanup output. The original error remains primary when
+        cleanup fails.
 
         Args:
-            src: The source message to be converted. It should be an iterator
-                of the source message.
-            append_none: If True, the message converter will append None to
-                the iterator when the source message iterator ends. This is
-                used to indicate that the message converter is done with
-                the source message.
-            flush: If True, the message converter will flush the state after
-                the source message iterator ends. This is used to refresh the
-                state of the message converter so that it can be used again.
+            src: Source messages to convert.
+            append_none: Whether normal exhaustion should call
+                ``convert(None)`` before finalization.
+            flush: Whether this iterator owns converter finalization. If
+                False, the caller owns cleanup on every termination path;
+                ``append_none`` remains independent and still controls the
+                end-of-stream ``convert(None)`` call.
 
         Yields:
             The converted message.
 
         """
-        for msg in src:
-            yield from self.convert(msg)
-        if append_none:
-            yield from self.convert(None)
-        if flush:
-            yield from self.flush()
+        flush_completed = False
+        try:
+            for msg in src:
+                yield from self.convert(msg)
+            if append_none:
+                yield from self.convert(None)
+            if flush:
+                flush_output = self.flush()
+                flush_completed = True
+                yield from flush_output
+        finally:
+            if flush and not flush_completed:
+                primary = sys.exc_info()[1]
+                try:
+                    self.flush()
+                except BaseException as cleanup_error:
+                    if primary is None:
+                        raise
+                    _report_cleanup_failure(primary, cleanup_error)
 
     @property
     def stateless(self) -> bool:
@@ -252,3 +268,22 @@ class MessageConverterFactoryConfig(ClassConfig[MessageConverterFactory]):
     class_type: type[MessageConverterFactory] = MessageConverterFactory
 
     converters: Mapping[str, MessageConverterConfig[MessageConverter]]
+
+
+def _report_cleanup_failure(
+    primary: BaseException,
+    cleanup_error: BaseException,
+) -> None:
+    """Report cleanup failure without replacing an active primary exception."""
+
+    message = f"stateful message converter cleanup failed: {cleanup_error!r}"
+    try:
+        add_note = getattr(primary, "add_note", None)
+        if add_note is not None:
+            add_note(message)
+    except BaseException:
+        pass
+    try:
+        warnings.warn(message, UserWarning, stacklevel=2)
+    except BaseException:
+        pass

@@ -62,7 +62,7 @@ __all__ = [
     "ROEpisodeInfo",
     "EpisodeTimingInfo",
     "EpisodeMediaInfo",
-    "DepthEncodingInfo",
+    "DepthValueInfo",
     "parse_registered_metadata_schema",
     "resolve_metadata_schema",
     "validate_json_value",
@@ -372,41 +372,36 @@ class EpisodeTimingInfo(_ROBaseModel):
     """Nominal average episode frame rate when known."""
 
 
-class DepthEncodingInfo(_ROBaseModel):
-    """Canonical PNG uint16 depth image decoding contract for one camera.
+class DepthValueInfo(_ROBaseModel):
+    """Physical interpretation of decoded uint16 depth values.
 
-    Depth frames are stored as ``uint16`` PNG data and decoded as meters with
-    ``depth_m = stored_value / scale``. Camera names are owned by
-    :class:`EpisodeMediaInfo`, which stores one encoding entry per depth
-    camera.
+    This contract is independent of the storage representation. Whether the
+    values came from PNG images or a lossless depth-video profile, consumers
+    recover meters with ``depth_m = stored_value / scale``.
     """
 
-    format: Literal["png"] = "png"
-    """Depth image container format used in storage."""
-
-    storage_dtype: Literal["uint16"] = "uint16"
-    """Integer dtype of stored depth image pixels."""
+    sample_dtype: Literal["uint16"] = "uint16"
+    """Integer dtype of the recovered depth samples."""
 
     unit: Literal["m"] = "m"
     """Physical unit produced after applying the depth scale."""
 
     scale: FiniteFloat = Field(gt=0)
-    """Divisor that converts stored uint16 depth to meters."""
+    """Divisor that converts recovered uint16 samples to meters."""
 
     invalid_value: int | None = Field(default=0, ge=0, le=65535)
-    """Stored uint16 value that represents invalid depth."""
+    """Recovered uint16 value that represents invalid depth."""
 
 
 class EpisodeMediaInfo(_ROBaseModel):
-    """Episode-level media decoding metadata.
+    """Episode-level media value semantics.
 
-    This payload records decoding contracts that apply to media columns.
-    Depth encodings are keyed by camera name so the stored metadata is always
-    explicit at each camera boundary.
+    Storage-specific details remain in the column feature and sidecar index;
+    this payload only records how decoded depth samples map to physical values.
     """
 
-    depth_encodings: dict[str, DepthEncodingInfo] | None = None
-    """Depth image decoding contracts keyed by camera name."""
+    depth_values_by_camera: dict[str, DepthValueInfo] | None = None
+    """Depth value contracts keyed by camera name."""
 
 
 class ROEpisodeInfo(ROMetadataSchema):
@@ -414,7 +409,9 @@ class ROEpisodeInfo(ROMetadataSchema):
 
     The payload is reserved for episode-level facts needed to interpret
     training data, not for arbitrary provenance. Dataset-specific annotations
-    can be carried in ``extras`` when they are still JSON-compatible.
+    can be carried in ``extras`` when they are still JSON-compatible. Depth
+    metadata describes decoded sample values; storage representation belongs
+    to the dataset column feature and sidecar asset index.
     """
 
     schema_id: Literal["robo_orchard.episode_info"] = (
@@ -432,7 +429,7 @@ class ROEpisodeInfo(ROMetadataSchema):
     """Optional episode-level timing summary."""
 
     media: EpisodeMediaInfo | None = None
-    """Optional media decoding metadata for this episode."""
+    """Optional media value semantics for this episode."""
 
 
 def resolve_metadata_schema(

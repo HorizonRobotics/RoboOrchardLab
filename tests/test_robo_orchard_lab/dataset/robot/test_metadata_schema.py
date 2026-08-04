@@ -14,13 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import json
 from typing import Literal
 
 import pytest
 from pydantic import ValidationError
 
 from robo_orchard_lab.dataset.robot.metadata_schema import (
-    DepthEncodingInfo,
+    DepthValueInfo,
     EpisodeMediaInfo,
     EpisodeTimingInfo,
     InstructionSubtask,
@@ -102,16 +103,17 @@ def test_subtasks_reject_overlap() -> None:
         )
 
 
-def test_episode_info_dumps_timing_and_depth_encoding() -> None:
+def test_episode_info_dumps_storage_neutral_depth_values() -> None:
     episode_info = ROEpisodeInfo(
         episode_id="episode-1",
         timing=EpisodeTimingInfo(duration_s=1.5, average_fps=30.0),
         media=EpisodeMediaInfo(
-            depth_encodings={
-                "left": DepthEncodingInfo(scale=500.0),
-                "right": DepthEncodingInfo(scale=1000.0),
+            depth_values_by_camera={
+                "left": DepthValueInfo(scale=500.0),
+                "right": DepthValueInfo(scale=1000.0),
             }
         ),
+        extras={"source": "unit-test"},
     )
 
     assert episode_info.to_json_dict() == {
@@ -120,54 +122,125 @@ def test_episode_info_dumps_timing_and_depth_encoding() -> None:
         "episode_id": "episode-1",
         "timing": {"duration_s": 1.5, "average_fps": 30.0},
         "media": {
-            "depth_encodings": {
+            "depth_values_by_camera": {
                 "left": {
-                    "format": "png",
-                    "storage_dtype": "uint16",
+                    "sample_dtype": "uint16",
                     "unit": "m",
                     "scale": 500.0,
                     "invalid_value": 0,
                 },
                 "right": {
-                    "format": "png",
-                    "storage_dtype": "uint16",
+                    "sample_dtype": "uint16",
                     "unit": "m",
                     "scale": 1000.0,
                     "invalid_value": 0,
                 },
             }
         },
+        "extras": {"source": "unit-test"},
     }
 
 
-def test_depth_encoding_requires_camera_local_scale() -> None:
-    with pytest.raises(ValidationError):
-        DepthEncodingInfo.model_validate({})
-
-    with pytest.raises(ValidationError):
-        DepthEncodingInfo(scale=0)
-
-
-def test_episode_media_depth_encodings_are_keyed_by_camera() -> None:
-    media = EpisodeMediaInfo(
-        depth_encodings={
-            "front": DepthEncodingInfo(scale=1000.0),
-            "wrist": DepthEncodingInfo(scale=2000.0, invalid_value=65535),
+def test_episode_info_is_registered_by_exact_version() -> None:
+    assert (
+        resolve_metadata_schema("robo_orchard.episode_info", "1.0")
+        is ROEpisodeInfo
+    )
+    parsed = parse_registered_metadata_schema(
+        {
+            "schema_id": "robo_orchard.episode_info",
+            "schema_version": "1.0",
+            "media": {
+                "depth_values_by_camera": {
+                    "front": {"scale": 1000.0},
+                }
+            },
         }
     )
 
-    assert media.depth_encodings is not None
-    assert media.depth_encodings["front"].scale == 1000.0
-    assert media.depth_encodings["wrist"].scale == 2000.0
-    assert media.depth_encodings["wrist"].invalid_value == 65535
+    assert isinstance(parsed, ROEpisodeInfo)
+    with pytest.raises(MetadataSchemaUnknown):
+        resolve_metadata_schema("robo_orchard.episode_info", "2.0")
 
 
-def test_depth_encoding_rejects_invalid_value_outside_uint16_range() -> None:
+def test_episode_info_rejects_unreleased_depth_encoding_shape() -> None:
+    with pytest.raises(MetadataSchemaValidationError):
+        parse_registered_metadata_schema(
+            {
+                "schema_id": "robo_orchard.episode_info",
+                "schema_version": "1.0",
+                "media": {
+                    "depth_encodings": {
+                        "front": {
+                            "format": "png",
+                            "storage_dtype": "uint16",
+                            "unit": "m",
+                            "scale": 1000.0,
+                            "invalid_value": 0,
+                        }
+                    }
+                },
+            }
+        )
+
+
+def test_episode_info_round_trips_through_json_and_registry() -> None:
+    episode_info = ROEpisodeInfo(
+        media=EpisodeMediaInfo(
+            depth_values_by_camera={"front": DepthValueInfo(scale=1000.0)}
+        ),
+        extras={"source": "v1"},
+    )
+    payload = json.loads(json.dumps(episode_info.to_json_dict()))
+
+    restored = parse_registered_metadata_schema(payload)
+
+    assert type(restored) is ROEpisodeInfo
+    assert restored.to_json_dict() == episode_info.to_json_dict()
+
+
+@pytest.mark.parametrize("scale", [0, -1, float("inf"), float("nan")])
+def test_depth_value_info_rejects_invalid_scale(scale: float) -> None:
     with pytest.raises(ValidationError):
-        DepthEncodingInfo(scale=1000.0, invalid_value=-1)
+        DepthValueInfo(scale=scale)
+
+
+@pytest.mark.parametrize("invalid_value", [-1, 65536])
+def test_depth_value_info_rejects_values_outside_uint16(
+    invalid_value: int,
+) -> None:
+    with pytest.raises(ValidationError):
+        DepthValueInfo(scale=1000.0, invalid_value=invalid_value)
+
+
+def test_depth_value_info_keeps_strict_literals_and_extra_policy() -> None:
+    with pytest.raises(ValidationError):
+        DepthValueInfo.model_validate(
+            {"sample_dtype": "uint8", "scale": 1000.0}
+        )
 
     with pytest.raises(ValidationError):
-        DepthEncodingInfo(scale=1000.0, invalid_value=65536)
+        ROEpisodeInfo.model_validate(
+            {
+                "schema_id": "robo_orchard.episode_info",
+                "schema_version": "1.0",
+                "unexpected": True,
+            }
+        )
+
+
+def test_episode_media_depth_values_are_keyed_by_camera() -> None:
+    media = EpisodeMediaInfo(
+        depth_values_by_camera={
+            "front": DepthValueInfo(scale=1000.0),
+            "wrist": DepthValueInfo(scale=2000.0, invalid_value=65535),
+        }
+    )
+
+    assert media.depth_values_by_camera is not None
+    assert media.depth_values_by_camera["front"].scale == 1000.0
+    assert media.depth_values_by_camera["wrist"].scale == 2000.0
+    assert media.depth_values_by_camera["wrist"].invalid_value == 65535
 
 
 def test_episode_info_rejects_nan_timing() -> None:

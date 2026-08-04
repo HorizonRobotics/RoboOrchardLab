@@ -95,6 +95,7 @@ class _FakeStdin:
     ) -> None:
         self._write_error = write_error
         self._close_error = close_error
+        self.data = bytearray()
         self.write_calls = 0
         self.close_calls = 0
 
@@ -102,6 +103,7 @@ class _FakeStdin:
         self.write_calls += 1
         if self._write_error is not None:
             raise self._write_error
+        self.data.extend(data)
         return len(data)
 
     def close(self) -> None:
@@ -216,6 +218,8 @@ def test_video_writer_passes_preset_and_extra_options_to_ffmpeg(
     assert command[command.index("-preset") : -1] == [
         "-preset",
         str(preset),
+        "-pix_fmt",
+        "yuv420p",
         "-qp",
         "5",
         "-tune",
@@ -228,6 +232,321 @@ def test_video_writer_passes_preset_and_extra_options_to_ffmpeg(
         "stderr": subprocess.PIPE,
     }
     writer._abort_open_session()
+
+
+def test_video_writer_writes_gbrp_with_explicit_ffmpeg_recipe(
+    tmp_path,
+    monkeypatch,
+):
+    output_path = tmp_path / "depth.mp4"
+    stdin = _FakeStdin()
+    proc = _FakeProc(stdin=stdin)
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return proc
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda executable: (
+            "/opt/ffmpeg" if executable == "/opt/ffmpeg" else None
+        ),
+    )
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    planes = np.arange(3 * 4 * 6, dtype=np.uint8).reshape(3, 4, 6)
+    writer = VideoWriter(
+        output_path,
+        pixel_format=VideoPixelFormat.GBRP,
+        fps=10,
+        codec="libx265",
+        crf=None,
+        preset="veryslow",
+        extra_options={
+            "x265-params": (
+                "lossless=1:keyint=120:min-keyint=120:scenecut=0:pools=1:"
+                "frame-threads=1:log-level=error"
+            ),
+            "f": "mp4",
+        },
+        output_pixel_format="gbrp",
+        ffmpeg_path="/opt/ffmpeg",
+    )
+
+    writer.write_frame(planes)
+
+    assert bytes(stdin.data) == planes.tobytes(order="C")
+    assert len(popen_calls) == 1
+    command, kwargs = popen_calls[0]
+    assert command[:-1] == [
+        "/opt/ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gbrp",
+        "-video_size",
+        "6x4",
+        "-framerate",
+        "10",
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx265",
+        "-preset",
+        "veryslow",
+        "-pix_fmt",
+        "gbrp",
+        "-x265-params",
+        (
+            "lossless=1:keyint=120:min-keyint=120:scenecut=0:pools=1:"
+            "frame-threads=1:log-level=error"
+        ),
+        "-f",
+        "mp4",
+    ]
+    assert command[-1].startswith(str(tmp_path / ".depth."))
+    assert command[-1].endswith(".mp4")
+    assert kwargs == {
+        "stdin": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    writer.abort()
+
+
+def test_video_writer_writes_gray16le_bytes_and_ffmpeg_recipe(
+    tmp_path,
+    monkeypatch,
+):
+    output_path = tmp_path / "depth.mkv"
+    stdin = _FakeStdin()
+    proc = _FakeProc(stdin=stdin)
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return proc
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda executable: (
+            "/opt/ffmpeg" if executable == "/opt/ffmpeg" else None
+        ),
+    )
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    source = np.array(
+        [
+            [0, 9, 255, 9, 256, 9],
+            [32768, 9, 65535, 9, 1, 9],
+        ],
+        dtype=np.uint16,
+    )
+    frame = source[:, ::2]
+    assert not frame.flags.c_contiguous
+    writer = VideoWriter(
+        output_path,
+        pixel_format=VideoPixelFormat.GRAY16LE,
+        fps=10,
+        codec="ffv1",
+        crf=None,
+        extra_options={"level": 3, "coder": 0, "context": 0},
+        output_pixel_format="gray16le",
+        ffmpeg_path="/opt/ffmpeg",
+    )
+
+    writer.write_frame(frame)
+
+    assert bytes(stdin.data) == np.ascontiguousarray(frame).tobytes(order="C")
+    assert len(popen_calls) == 1
+    command, kwargs = popen_calls[0]
+    assert command[:-1] == [
+        "/opt/ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray16le",
+        "-video_size",
+        "3x2",
+        "-framerate",
+        "10",
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "ffv1",
+        "-pix_fmt",
+        "gray16le",
+        "-level",
+        "3",
+        "-coder",
+        "0",
+        "-context",
+        "0",
+    ]
+    assert command[-1].startswith(str(tmp_path / ".depth."))
+    assert command[-1].endswith(".mkv")
+    assert kwargs == {
+        "stdin": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+
+    writer.abort()
+
+    assert writer.is_closed
+    assert not output_path.exists()
+
+
+def test_video_writer_writes_bit_exact_gray16le_ffv1_with_real_ffmpeg(
+    tmp_path,
+):
+    ffmpeg_binary = _get_ffmpeg_binary()
+    encoders = subprocess.run(
+        [ffmpeg_binary, "-hide_banner", "-encoders"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if encoders.returncode != 0 or "ffv1" not in (
+        f"{encoders.stdout}\n{encoders.stderr}"
+    ):
+        pytest.skip("ffmpeg with FFV1 support is required for this test.")
+
+    frame = np.array(
+        [
+            [0, 1, 255, 256, 32768, 65535],
+            [65535, 32768, 256, 255, 1, 0],
+            [17, 19, 23, 29, 31, 37],
+            [41, 43, 47, 53, 59, 61],
+        ],
+        dtype=np.uint16,
+    )
+    output_path = tmp_path / "depth.mkv"
+    with VideoWriter(
+        output_path,
+        pixel_format=VideoPixelFormat.GRAY16LE,
+        codec="ffv1",
+        crf=None,
+        extra_options={"level": 3},
+        output_pixel_format="gray16le",
+        ffmpeg_path=ffmpeg_binary,
+    ) as writer:
+        writer.write_frame(frame)
+
+    decoded = subprocess.run(
+        [
+            ffmpeg_binary,
+            "-loglevel",
+            "error",
+            "-i",
+            str(output_path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray16le",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    decoded_frame = np.frombuffer(decoded.stdout, dtype="<u2").reshape(
+        frame.shape
+    )
+
+    assert output_path.is_file()
+    assert list(tmp_path.glob(".depth.*.mkv")) == []
+    assert np.array_equal(decoded_frame, frame)
+
+
+@pytest.mark.parametrize(
+    ("frame", "match"),
+    [
+        (
+            np.zeros((2, 3), dtype=np.uint8),
+            "native little-endian uint16 dtype",
+        ),
+        (
+            np.zeros((2, 3), dtype=np.int16),
+            "native little-endian uint16 dtype",
+        ),
+        (
+            np.zeros((2, 3), dtype=np.float32),
+            "native little-endian uint16 dtype",
+        ),
+        (
+            np.zeros((2, 3), dtype=">u2"),
+            "native little-endian uint16 dtype",
+        ),
+        (
+            np.zeros((2, 3, 1), dtype=np.uint16),
+            r"Expected GRAY16LE frame shape \(H, W\)",
+        ),
+        (
+            np.zeros((6,), dtype=np.uint16),
+            r"Expected GRAY16LE frame shape \(H, W\)",
+        ),
+        (
+            np.zeros((0, 3), dtype=np.uint16),
+            "positive width and height",
+        ),
+        (
+            np.zeros((2, 0), dtype=np.uint16),
+            "positive width and height",
+        ),
+    ],
+)
+def test_video_writer_rejects_invalid_gray16le_frame(
+    tmp_path,
+    frame,
+    match,
+):
+    writer = VideoWriter(
+        tmp_path / "invalid.mkv",
+        pixel_format=VideoPixelFormat.GRAY16LE,
+        codec="ffv1",
+        crf=None,
+        output_pixel_format="gray16le",
+    )
+
+    with pytest.raises(VideoFrameError, match=match):
+        writer.write_frame(frame)
+
+    writer.abort()
+
+
+def test_video_writer_rejects_gray16le_size_change(tmp_path, monkeypatch):
+    proc = _FakeProc(stdin=_FakeStdin())
+    monkeypatch.setattr(shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: proc)
+    writer = VideoWriter(
+        tmp_path / "depth.mkv",
+        pixel_format=VideoPixelFormat.GRAY16LE,
+        codec="ffv1",
+        crf=None,
+        output_pixel_format="gray16le",
+    )
+    writer.write_frame(np.zeros((2, 3), dtype=np.uint16))
+
+    with pytest.raises(
+        VideoFrameError,
+        match=r"Expected frame size \(3, 2\), got \(4, 2\)",
+    ):
+        writer.write_frame(np.zeros((2, 4), dtype=np.uint16))
+
+    writer.abort()
 
 
 @pytest.mark.parametrize(
@@ -408,7 +727,7 @@ def test_video_writer_reuses_after_post_start_write_failure(tmp_path):
         path=writer.output_path,
         staging_output_path=staging_output_path,
     )
-    writer._frame_size = (6, 4)
+    writer._raw_frame_size = (6, 4)
 
     with pytest.raises(
         VideoEncodeError,
@@ -461,6 +780,33 @@ def test_video_writer_reaps_process_when_finalize_fails(tmp_path):
     assert proc.wait_calls == 1
 
 
+def test_video_writer_abort_is_idempotent_and_preserves_existing_output(
+    tmp_path,
+):
+    output_path = tmp_path / "abort.mp4"
+    output_path.write_bytes(b"original")
+    staging_output_path = _write_staging_output(
+        tmp_path,
+        "abort.staging.mp4",
+    )
+    writer = VideoWriter(output_path)
+    proc = _FakeProc(stdin=_FakeStdin())
+    writer._set_proc(
+        proc,
+        path=writer.output_path,
+        staging_output_path=staging_output_path,
+    )
+
+    writer.abort()
+    writer.abort()
+
+    assert writer.is_closed
+    assert output_path.read_bytes() == b"original"
+    assert not staging_output_path.exists()
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
 def test_video_writer_commits_staged_output_on_close(tmp_path):
     output_path = tmp_path / "committed.mp4"
     staging_output_path = _write_staging_output(
@@ -485,6 +831,34 @@ def test_video_writer_commits_staged_output_on_close(tmp_path):
     assert not staging_output_path.exists()
     assert proc.kill_calls == 0
     assert proc.wait_calls == 1
+
+
+@pytest.mark.parametrize("staged_data", [None, b""])
+def test_video_writer_rejects_missing_or_empty_staged_output(
+    tmp_path,
+    staged_data,
+):
+    output_path = tmp_path / "missing_or_empty.mp4"
+    staging_output_path = tmp_path / "missing_or_empty.staging.mp4"
+    if staged_data is not None:
+        staging_output_path.write_bytes(staged_data)
+    writer = VideoWriter(output_path)
+    proc = _FakeProc(stdin=_FakeStdin())
+    writer._set_proc(
+        proc,
+        path=writer.output_path,
+        staging_output_path=staging_output_path,
+    )
+
+    with pytest.raises(
+        VideoEncodeError,
+        match="without a non-empty staged video output",
+    ):
+        writer.close()
+
+    assert writer.is_closed
+    assert not output_path.exists()
+    assert not staging_output_path.exists()
 
 
 def test_video_writer_replaces_existing_output_on_success_when_overwrite_true(
@@ -657,6 +1031,29 @@ def test_video_writer_rejects_non_color_frame(tmp_path):
         writer.write_frame(np.zeros((4, 5), dtype=np.uint8))
 
 
+@pytest.mark.parametrize(
+    ("pixel_format", "frame"),
+    [
+        (VideoPixelFormat.RGB24, np.zeros((0, 4, 3), dtype=np.uint8)),
+        (VideoPixelFormat.RGB24, np.zeros((4, 0, 3), dtype=np.uint8)),
+        (VideoPixelFormat.GBRP, np.zeros((3, 0, 4), dtype=np.uint8)),
+        (VideoPixelFormat.GBRP, np.zeros((3, 4, 0), dtype=np.uint8)),
+    ],
+)
+def test_video_writer_rejects_empty_raw_frame_dimensions(
+    tmp_path,
+    pixel_format,
+    frame,
+):
+    writer = VideoWriter(
+        tmp_path / "empty_dimension.mp4",
+        pixel_format=pixel_format,
+    )
+
+    with pytest.raises(VideoFrameError, match="positive width and height"):
+        writer.write_frame(frame)
+
+
 def test_video_writer_rejects_frame_size_change(tmp_path):
     _get_ffmpeg_binary(require_libx264=True)
     writer = VideoWriter(tmp_path / "size_change.mp4")
@@ -688,5 +1085,19 @@ def test_video_writer_raises_when_ffmpeg_missing(tmp_path, monkeypatch):
     with pytest.raises(
         VideoBackendUnavailableError,
         match="ffmpeg is not available in PATH",
+    ):
+        writer.write_frame(np.zeros((4, 6, 3), dtype=np.uint8))
+
+
+def test_video_writer_rejects_missing_explicit_ffmpeg(tmp_path, monkeypatch):
+    writer = VideoWriter(
+        tmp_path / "missing_ffmpeg.mp4",
+        ffmpeg_path="/opt/missing/ffmpeg",
+    )
+    monkeypatch.setattr(shutil, "which", lambda executable: None)
+
+    with pytest.raises(
+        VideoBackendUnavailableError,
+        match="configured ffmpeg executable is unavailable",
     ):
         writer.write_frame(np.zeros((4, 6, 3), dtype=np.uint8))

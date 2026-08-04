@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import os
+from collections.abc import Iterator
 
 import cv2
 import fsspec
@@ -33,6 +34,9 @@ from robo_orchard_lab.dataset.experimental.mcap.msg_converter import (
     FgCameraCompressedImages,
     ToBatchCameraDataConfig,
 )
+from robo_orchard_lab.dataset.experimental.mcap.msg_converter.base import (
+    MessageConverterStateful,
+)
 from robo_orchard_lab.dataset.experimental.mcap.msg_converter.joint_state import (  # noqa: E501
     ToBatchJointsStateConfig,
 )
@@ -44,6 +48,149 @@ from robo_orchard_lab.dataset.experimental.mcap.reader import (
     MakeIterMsgArgs,
     McapReader,
 )
+
+
+class _ConversionError(RuntimeError):
+    pass
+
+
+class _SourceError(RuntimeError):
+    pass
+
+
+class _CleanupError(RuntimeError):
+    pass
+
+
+class _RecordingStatefulConverter(MessageConverterStateful[int, str]):
+    def __init__(
+        self,
+        *,
+        fail_on: int | None = None,
+        cleanup_error: BaseException | None = None,
+    ):
+        self.calls: list[tuple[str, int | None]] = []
+        self._fail_on = fail_on
+        self._cleanup_error = cleanup_error
+
+    def convert(self, src: int | None) -> Iterator[str]:
+        self.calls.append(("convert", src))
+        if self._fail_on is not None and src == self._fail_on:
+            raise _ConversionError(f"cannot convert {src}")
+        yield f"converted:{src}"
+
+    def flush(self) -> list[str]:
+        self.calls.append(("flush", None))
+        if self._cleanup_error is not None:
+            raise self._cleanup_error
+        return ["flushed"]
+
+
+def test_make_iterator_preserves_normal_finalization_order() -> None:
+    """Normal exhaustion converts None before the explicit flush."""
+
+    converter = _RecordingStatefulConverter()
+
+    assert list(converter.make_iterator(iter([1, 2]))) == [
+        "converted:1",
+        "converted:2",
+        "converted:None",
+        "flushed",
+    ]
+    assert converter.calls == [
+        ("convert", 1),
+        ("convert", 2),
+        ("convert", None),
+        ("flush", None),
+    ]
+
+
+def test_make_iterator_flushes_after_source_failure() -> None:
+    """A source exception stays primary while converter state is finalized."""
+
+    converter = _RecordingStatefulConverter()
+
+    def source() -> Iterator[int]:
+        yield 1
+        raise _SourceError("source failed")
+
+    iterator = converter.make_iterator(source())
+    assert next(iterator) == "converted:1"
+    with pytest.raises(_SourceError, match="source failed"):
+        next(iterator)
+    assert converter.calls[-1] == ("flush", None)
+
+
+def test_make_iterator_flushes_after_conversion_failure() -> None:
+    """A conversion exception triggers eager converter finalization."""
+
+    converter = _RecordingStatefulConverter(fail_on=2)
+
+    with pytest.raises(_ConversionError, match="cannot convert 2"):
+        list(converter.make_iterator(iter([1, 2])))
+    assert converter.calls[-1] == ("flush", None)
+
+
+def test_make_iterator_flushes_when_consumer_closes() -> None:
+    """Closing a partial iterator eagerly finalizes the converter."""
+
+    converter = _RecordingStatefulConverter()
+    iterator = converter.make_iterator(iter([1, 2]))
+
+    assert next(iterator) == "converted:1"
+    iterator.close()
+
+    assert converter.calls[-1] == ("flush", None)
+
+
+def test_make_iterator_preserves_primary_cleanup_failure() -> None:
+    """Cleanup failures are reported without replacing conversion failures."""
+
+    converter = _RecordingStatefulConverter(
+        fail_on=2,
+        cleanup_error=_CleanupError("cleanup failed"),
+    )
+
+    with pytest.warns(UserWarning, match="cleanup failed"):
+        with pytest.raises(_ConversionError, match="cannot convert 2"):
+            list(converter.make_iterator(iter([1, 2])))
+
+
+def test_make_iterator_append_none_without_flush() -> None:
+    """append_none remains independent when the caller owns cleanup."""
+
+    source_consumed = False
+
+    def source() -> Iterator[int]:
+        nonlocal source_consumed
+        source_consumed = True
+        yield 1
+
+    converter = _RecordingStatefulConverter()
+    iterator = converter.make_iterator(
+        source(),
+        append_none=True,
+        flush=False,
+    )
+
+    assert list(iterator) == ["converted:1", "converted:None"]
+    assert source_consumed
+    assert ("flush", None) not in converter.calls
+
+
+def test_make_iterator_flush_false_leaves_lifecycle_to_caller() -> None:
+    """flush=False never finalizes the converter implicitly."""
+
+    converter = _RecordingStatefulConverter()
+
+    assert list(
+        converter.make_iterator(
+            iter([1, 2]),
+            append_none=False,
+            flush=False,
+        )
+    ) == ["converted:1", "converted:2"]
+    assert ("flush", None) not in converter.calls
 
 
 def _decode_compressed_image(data: bytes) -> np.ndarray:

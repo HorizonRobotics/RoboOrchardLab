@@ -57,24 +57,27 @@ class VideoPixelFormat(str, Enum):
 
     RGB24 = "rgb24"
     BGR24 = "bgr24"
+    GBRP = "gbrp"
+    GRAY16LE = "gray16le"
 
 
 class VideoWriter:
-    """Write an existing sequence of color frames to one finalized video file.
+    """Write an existing frame sequence to one finalized video file.
 
-    Use ``VideoWriter`` when your code already produces frames as
-    ``(H, W, 3)`` color images and you want a small, explicit API for
-    turning those frames into a video artifact. It is meant for callers that
-    want to decide when recording starts and stops, but do not want to manage
-    ffmpeg process startup, frame streaming, or failed-output cleanup
-    themselves.
+    Use ``VideoWriter`` when your code already produces raw RGB/BGR color
+    frames, GBR planar frames, or 16-bit grayscale frames and you want a
+    small, explicit API for turning them into a video artifact. RGB24/BGR24
+    arrays use ``(H, W, 3)`` layout, GBRP arrays use ``(3, H, W)`` G/B/R
+    plane order, and GRAY16LE arrays use ``(H, W)`` layout with native
+    little-endian ``uint16`` dtype.
 
     The caller still owns frame production, output-path selection, and
     recording policy. ``VideoWriter`` owns the encoding session: ``open()``
     starts a logical session, the first successful ``write_frame()`` call
     starts ffmpeg, and ``close()`` finalizes the result. The first written
-    frame fixes the frame size for the session, and later frames must match
-    that size.
+    frame fixes the frame size for the session; later frames must match it.
+    ``close()`` finalizes and publishes a successful session; ``abort()``
+    terminates it without publishing staged output.
 
     To avoid exposing partial results as completed output, encoded data is
     written to a hidden staging file first and published to ``output_path``
@@ -102,27 +105,33 @@ class VideoWriter:
             deferring ffmpeg startup until the first frame is written.
             Default is None.
         pixel_format (VideoPixelFormat | str, optional): Raw input pixel
-            format of frames passed to ``write_frame()``. Default is
+            format. GRAY16LE requires native little-endian ``uint16`` input;
+            other supported formats use 8-bit samples. Default is
             ``VideoPixelFormat.RGB24``.
         fps (int, optional): Output frame rate. Default is 10.
         codec (str, optional): ffmpeg video codec name. Default is
             ``"libx264"``.
-        crf (int, optional): ffmpeg CRF quality setting. Default is 23.
+        crf (int | None, optional): ffmpeg CRF quality setting. None omits
+            the CRF argument so a codec-specific lossless option can own the
+            rate-control contract. Default is 23.
         preset (str | int | None, optional): Encoder preset controlling the
             tradeoff between encoding speed and compression. Common string
             values include ``"fast"``, ``"medium"``, and ``"slow"``. If
             None, the encoder default is used. Default is None.
-        extra_options (dict[str, Any] | None, optional): Additional encoder
-            options passed to ffmpeg after the dedicated codec, CRF, and
-            preset arguments. Keys omit the leading ``-``; for example,
-            ``{"qp": 5, "tune": "film"}``. Values cannot be None; bool
-            values become ``1`` or ``0``, while other values are converted
-            with ``str()``. The dictionary is copied during construction, so
-            later changes to the caller's dictionary do not affect the
-            writer. Unsupported or conflicting options are reported by
-            ffmpeg. Default is None.
+        extra_options (dict[str, Any] | None, optional): Additional ffmpeg
+            output options passed after the dedicated codec, CRF, preset, and
+            output pixel-format arguments. Keys omit the leading ``-``; for
+            example, ``{"qp": 5, "tune": "film", "f": "mp4"}``. Values
+            cannot be None; bool values become ``1`` or ``0``, while other
+            values are converted with ``str()``. The dictionary is copied
+            during construction, so later changes to the caller's dictionary
+            do not affect the writer. Unsupported or conflicting options are
+            reported by ffmpeg. Default is None.
         output_pixel_format (str, optional): Encoded output pixel format.
             Default is ``"yuv420p"``.
+        ffmpeg_path (str | Path | None, optional): Exact ffmpeg executable
+            used by this writer. None resolves ``ffmpeg`` from ``PATH`` when
+            the first frame is written. Default is None.
         overwrite (bool, optional): Whether an existing target file may be
             replaced. Default is True.
     """
@@ -134,10 +143,11 @@ class VideoWriter:
         pixel_format: VideoPixelFormat | str = VideoPixelFormat.RGB24,
         fps: int = 10,
         codec: str = "libx264",
-        crf: int = 23,
+        crf: int | None = 23,
         preset: str | int | None = None,
         extra_options: dict[str, Any] | None = None,
         output_pixel_format: str = "yuv420p",
+        ffmpeg_path: str | Path | None = None,
         overwrite: bool = True,
     ) -> None:
         if fps <= 0:
@@ -146,6 +156,8 @@ class VideoWriter:
             raise ValueError("codec must be a non-empty string.")
         if not output_pixel_format:
             raise ValueError("output_pixel_format must be a non-empty string.")
+        if ffmpeg_path is not None and not str(ffmpeg_path):
+            raise ValueError("ffmpeg_path must be a non-empty path or None.")
         if preset is not None:
             if isinstance(preset, bool) or not isinstance(preset, (str, int)):
                 raise TypeError("preset must be a string, integer, or None.")
@@ -176,13 +188,14 @@ class VideoWriter:
         self.preset = preset
         self.extra_options = normalized_extra_options
         self.output_pixel_format = output_pixel_format
+        self.ffmpeg_path = None if ffmpeg_path is None else Path(ffmpeg_path)
         self.overwrite = overwrite
 
         self._output_path: Path | None = None
         self._proc: subprocess.Popen[bytes] | None = None
         self._staging_output_path: Path | None = None
         self._proc_finalizer: weakref.finalize | None = None
-        self._frame_size: tuple[int, int] | None = None
+        self._raw_frame_size: tuple[int, int] | None = None
         self._frame_count = 0
         self._closed = True
 
@@ -250,7 +263,7 @@ class VideoWriter:
 
         self._proc = None
         self._staging_output_path = None
-        self._frame_size = None
+        self._raw_frame_size = None
         self._frame_count = 0
         self._closed = False
         return self
@@ -264,8 +277,12 @@ class VideoWriter:
         the session. Later frames must keep the same width and height.
 
         Args:
-            frame (np.ndarray): Frame with shape ``(H, W, 3)``. The frame is
-                coerced to a contiguous ``uint8`` array before writing.
+            frame (np.ndarray): An RGB24/BGR24 array shaped ``(H, W, 3)``, a
+                GBRP array shaped ``(3, H, W)`` in G/B/R plane order, or a
+                GRAY16LE array shaped ``(H, W)`` with native little-endian
+                ``uint16`` dtype. RGB/BGR/GBRP arrays are coerced to
+                contiguous ``uint8``; GRAY16LE dtype and byte order are
+                validated without casting.
 
         Raises:
             VideoWriterError: If the writer is not open.
@@ -280,18 +297,19 @@ class VideoWriter:
                 "Cannot write a frame because VideoWriter is not open."
             )
 
-        frame_np = self._normalize_frame(frame)
-        frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
+        frame_np, frame_size = self._normalize_frame(frame)
 
-        if self._frame_size is not None and self._frame_size != frame_size:
+        if (
+            self._raw_frame_size is not None
+            and self._raw_frame_size != frame_size
+        ):
             raise VideoFrameError(
-                f"Expected frame size {self._frame_size}, got {frame_size}."
+                "Expected frame size "
+                f"{self._raw_frame_size}, got {frame_size}."
             )
-
         if self._proc is None:
             self._validate_frame_size_for_output_format(
-                width=frame_size[0],
-                height=frame_size[1],
+                width=frame_size[0], height=frame_size[1]
             )
             self._start_process(width=frame_size[0], height=frame_size[1])
 
@@ -313,8 +331,8 @@ class VideoWriter:
                 f"{path}.{self._format_cleanup_error_suffix(cleanup_errors)}"
             ) from exc
 
-        if self._frame_size is None:
-            self._frame_size = frame_size
+        if self._raw_frame_size is None:
+            self._raw_frame_size = frame_size
         self._frame_count += 1
 
     def close(self) -> None:
@@ -377,6 +395,19 @@ class VideoWriter:
                 f"{path}.{self._format_cleanup_error_suffix(cleanup_errors)}"
             )
 
+        if (
+            not staging_output_path.is_file()
+            or staging_output_path.stat().st_size <= 0
+        ):
+            cleanup_errors = self._cleanup_staging_output_file(
+                staging_output_path
+            )
+            raise VideoEncodeError(
+                "ffmpeg completed without a non-empty staged video output "
+                f"for {path}."
+                f"{self._format_cleanup_error_suffix(cleanup_errors)}"
+            )
+
         try:
             self._publish_staging_output_file(
                 staging_output_path,
@@ -391,6 +422,26 @@ class VideoWriter:
                 "Failed to publish finalized video output to "
                 f"{path}.{self._format_cleanup_error_suffix(cleanup_errors)}"
             ) from exc
+
+    def abort(self) -> None:
+        """Terminate the current session without publishing staged output.
+
+        Abort is idempotent. It preserves any pre-existing ``output_path`` and
+        removes only the active session's hidden staging artifact.
+
+        Raises:
+            VideoEncodeError: If process or staging cleanup cannot complete.
+        """
+
+        if self.is_closed:
+            return
+        cleanup_errors = self._abort_open_session()
+        if cleanup_errors:
+            raise VideoEncodeError(
+                "Failed to abort video output for "
+                f"{self.output_path}."
+                f"{self._format_cleanup_error_suffix(cleanup_errors)}"
+            )
 
     def __enter__(self) -> VideoWriter:
         """Use the current open session inside a ``with`` block.
@@ -431,7 +482,7 @@ class VideoWriter:
         # Abort means "this session is no longer recoverable": drop the
         # ffmpeg handle, mark the writer closed, and reap any staged output.
         self._closed = True
-        self._frame_size = None
+        self._raw_frame_size = None
         proc, staging_output_path = self._take_proc()
         if proc is None:
             return self._cleanup_staging_output_file(staging_output_path)
@@ -440,16 +491,46 @@ class VideoWriter:
             staging_output_path=staging_output_path,
         )
 
-    @staticmethod
-    def _normalize_frame(frame: np.ndarray) -> np.ndarray:
+    def _normalize_frame(
+        self, frame: np.ndarray
+    ) -> tuple[np.ndarray, tuple[int, int]]:
         frame_np = np.asarray(frame)
-        if frame_np.ndim != 3 or frame_np.shape[2] != 3:
+        if self.pixel_format is VideoPixelFormat.GBRP:
+            if frame_np.ndim != 3 or frame_np.shape[0] != 3:
+                raise VideoFrameError(
+                    "Expected GBRP frame shape (3, H, W), got "
+                    f"{tuple(frame_np.shape)}."
+                )
+            frame_size = (int(frame_np.shape[2]), int(frame_np.shape[1]))
+        elif self.pixel_format is VideoPixelFormat.GRAY16LE:
+            if frame_np.ndim != 2:
+                raise VideoFrameError(
+                    "Expected GRAY16LE frame shape (H, W), got "
+                    f"{tuple(frame_np.shape)}."
+                )
+            if not np.little_endian or frame_np.dtype != np.dtype(np.uint16):
+                raise VideoFrameError(
+                    "GRAY16LE frames require native little-endian uint16 "
+                    f"dtype, got {frame_np.dtype}."
+                )
+            frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
+        elif frame_np.ndim != 3 or frame_np.shape[2] != 3:
             raise VideoFrameError(
                 f"Expected frame shape (H, W, 3), got {tuple(frame_np.shape)}."
             )
-        if frame_np.dtype != np.uint8:
+        else:
+            frame_size = (int(frame_np.shape[1]), int(frame_np.shape[0]))
+        if frame_size[0] <= 0 or frame_size[1] <= 0:
+            raise VideoFrameError(
+                "Raw video frames require positive width and height, got "
+                f"{frame_size}."
+            )
+        if (
+            self.pixel_format is not VideoPixelFormat.GRAY16LE
+            and frame_np.dtype != np.uint8
+        ):
             frame_np = frame_np.astype(np.uint8)
-        return np.ascontiguousarray(frame_np)
+        return np.ascontiguousarray(frame_np), frame_size
 
     def _validate_frame_size_for_output_format(
         self,
@@ -477,10 +558,15 @@ class VideoWriter:
                 f"{path} because it already exists and overwrite=False."
             )
 
-        ffmpeg_binary = shutil.which("ffmpeg")
+        ffmpeg_binary = self._resolve_ffmpeg_binary()
         if ffmpeg_binary is None:
+            if self.ffmpeg_path is None:
+                raise VideoBackendUnavailableError(
+                    "ffmpeg is not available in PATH."
+                )
             raise VideoBackendUnavailableError(
-                "ffmpeg is not available in PATH."
+                "configured ffmpeg executable is unavailable: "
+                f"{self.ffmpeg_path}."
             )
 
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -488,6 +574,7 @@ class VideoWriter:
         encoder_option_args: list[str] = []
         if self.preset is not None:
             encoder_option_args.extend(["-preset", str(self.preset)])
+        encoder_option_args.extend(["-pix_fmt", self.output_pixel_format])
         for option_name, option_value in self.extra_options.items():
             option_text = (
                 str(int(option_value))
@@ -495,29 +582,30 @@ class VideoWriter:
                 else str(option_value)
             )
             encoder_option_args.extend([f"-{option_name}", option_text])
+        crf_args = [] if self.crf is None else ["-crf", str(self.crf)]
         try:
             proc = subprocess.Popen(
                 [
                     ffmpeg_binary,
-                    "-y",
+                    "-nostdin",
+                    "-hide_banner",
                     "-loglevel",
                     "error",
+                    "-y",
                     "-f",
                     "rawvideo",
-                    "-pixel_format",
+                    "-pix_fmt",
                     self.pixel_format.value,
                     "-video_size",
                     f"{width}x{height}",
                     "-framerate",
                     str(self.fps),
                     "-i",
-                    "-",
-                    "-pix_fmt",
-                    self.output_pixel_format,
-                    "-vcodec",
+                    "pipe:0",
+                    "-an",
+                    "-c:v",
                     self.codec,
-                    "-crf",
-                    str(self.crf),
+                    *crf_args,
                     *encoder_option_args,
                     str(staging_output_path),
                 ],
@@ -533,6 +621,11 @@ class VideoWriter:
             path=path,
             staging_output_path=staging_output_path,
         )
+
+    def _resolve_ffmpeg_binary(self) -> str | None:
+        if self.ffmpeg_path is None:
+            return shutil.which("ffmpeg")
+        return shutil.which(str(self.ffmpeg_path))
 
     @staticmethod
     def _finalize_process(
