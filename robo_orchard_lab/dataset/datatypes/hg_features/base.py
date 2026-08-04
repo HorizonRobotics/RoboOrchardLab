@@ -33,6 +33,10 @@ from robo_orchard_core.utils.config import (
 )
 from typing_extensions import TypeVar
 
+from robo_orchard_lab.dataset.datatypes.hg_features.tensor_pickle import (
+    _dumps_numpy_v1,
+)
+
 __all__ = [
     "RODataFeature",
     "RODictDataFeature",
@@ -244,14 +248,44 @@ def check_fields_consistency(
 @hg_dataset_feature
 @dataclass
 class PickleFeature(RODataFeature, FeatureDecodeMixin):
-    """A feature that uses pickle to serialize and deserialize data.
+    """Store trusted Python objects in an Arrow binary pickle column.
+
+    ``tensor_encoding`` is a writer policy. Decoding is driven by each pickle
+    payload, so either setting reads legacy PyTorch payloads, ``numpy_v1``
+    payloads, and columns containing both. Historical feature metadata that
+    lacks this field remains readable; it selects the ``numpy_v1`` default
+    only for subsequent writes.
+
+    ``numpy_v1`` is a dataset value codec rather than a checkpoint codec. It
+    stores supported tensor values through a NumPy array, the established
+    lower-overhead persistence path for dataset tensor values, so it is the
+    default for new writes. It preserves the dtype, shape, and values of
+    exact built-in strided tensors after detaching and normalizing them to
+    contiguous CPU storage. It does not preserve the original device,
+    autograd state, stride, storage aliasing, or tensor subclass semantics.
+    Writes raise ``TypeError`` for tensor subclasses, sparse/non-strided,
+    quantized, or meta tensors, and for dtypes NumPy cannot represent
+    losslessly (for example, ``torch.bfloat16``). Use ``torch_legacy`` when
+    native PyTorch pickle semantics are required.
+
+    Loading pickle data can execute arbitrary code. Only decode datasets from
+    trusted sources.
 
     Args:
         class_type (type | str): The class type of the object to be
             serialized/deserialized. It should be a class for initialization,
             or a string from `callable_to_string` for deserialization.
+        decode (bool, optional): Whether stored bytes may be decoded.
+            Defaults to True.
         binary_type (Literal["binary", "large_binary"], optional): The
             type of binary storage to use. Defaults to "binary".
+        compression (Literal["zstd"] | None, optional): Compression applied
+            to the complete pickle payload. Defaults to None.
+        tensor_encoding (Literal["numpy_v1", "torch_legacy"], optional):
+            Writer policy for tensors nested in the object. ``numpy_v1``
+            writes the NumPy-backed value codec; ``torch_legacy`` explicitly
+            retains native PyTorch pickle output. This setting never selects
+            a decoder. Defaults to ``numpy_v1``.
 
     """
 
@@ -263,10 +297,24 @@ class PickleFeature(RODataFeature, FeatureDecodeMixin):
 
     compression: Literal["zstd"] | None = None
 
+    # Keep this new field last so existing positional construction retains
+    # the pre-numpy_v1 argument order.
+    tensor_encoding: Literal["numpy_v1", "torch_legacy"] = "numpy_v1"
+    """Tensor writer policy; decoding always follows the stored payload.
+
+    Missing historical metadata uses ``numpy_v1`` for new writes without
+    changing readability of legacy, numpy-v1, or mixed stored cells.
+    """
+
     def __post_init__(self):
         # make sure that class_type is string for serialization
         if not isinstance(self.class_type, str):
             self.class_type = callable_to_string(self.class_type)
+        if self.tensor_encoding not in ("numpy_v1", "torch_legacy"):
+            raise ValueError(
+                "tensor_encoding must be 'numpy_v1' or 'torch_legacy', "
+                f"but got {self.tensor_encoding!r}"
+            )
 
     def _get_class_type(self) -> type:
         """Get the class type from the class_type attribute."""
@@ -329,7 +377,10 @@ class PickleFeature(RODataFeature, FeatureDecodeMixin):
         return ret
 
     def _encode_obj(self, obj: Any) -> bytes:
-        ret = pickle.dumps(obj)
+        if self.tensor_encoding == "numpy_v1":
+            ret = _dumps_numpy_v1(obj)
+        else:
+            ret = pickle.dumps(obj)
         if self.compression == "zstd":
             ret = pyzstd.compress(ret)
         return ret
