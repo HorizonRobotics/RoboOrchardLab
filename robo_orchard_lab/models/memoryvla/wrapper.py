@@ -61,6 +61,12 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryVLAMemory(nn.Module):
+    #: Training forwards to watch before ruling on bank liveness. Must be >= 2:
+    #: at batch_size 1 in `stream` mode a bank only reaches 2 on the second
+    #: forward, so 1 would fail a healthy run. 8 leaves margin and still stops
+    #: long before a real training run has spent anything.
+    BANK_LIVENESS_FORWARDS = 8
+
     """Perceptual + cognitive memory over HoloBrain's VLM features.
 
     Args:
@@ -121,6 +127,9 @@ class MemoryVLAMemory(nn.Module):
         # guardrail state; plain attributes, so nothing enters state_dict
         self._episode_check_done = False
         self._identity_check_done = False
+        self._bank_liveness_checked = False
+        self._train_forwards = 0
+        self._max_bank_len_seen = 0
 
         bank_kwargs = dict(
             dataloader_type=dataloader_type,
@@ -255,6 +264,11 @@ class MemoryVLAMemory(nn.Module):
                 text_dict["embedded"] if self.use_cognitive else None,
             )
 
+        # after the banks have written, not before: `group` clears at the top
+        # of process_batch (memory_bank.py:361), so sampling on entry reads
+        # the previous batch's residue.
+        self._check_bank_liveness()
+
         return feature_maps, text_dict
 
     # -- guardrails --------------------------------------------------------
@@ -264,29 +278,93 @@ class MemoryVLAMemory(nn.Module):
         Once per run, not per batch: a warning on every batch is a warning
         nobody reads. Training only -- at inference, batches legitimately span
         many episodes.
+
+        Applies in every bank mode. It used to return early unless
+        ``dataloader_type`` was ``"stream"``, which silenced it in the one
+        configuration that needed it most. The criterion here is a property of
+        the batch that arrived, not of a config key: one sample per episode
+        means no sample can ever read history, whatever the bank mode is
+        called. A legitimate ``group`` layout puts ``group_size`` frames of an
+        episode side by side, so it never trips this.
         """
         if self._episode_check_done or not self.training:
-            return
-        if self.dataloader_type != "stream":
             return
         self._episode_check_done = True
         distinct = len(set(episode_ids))
         logger.info(
-            "MemoryVLAMemory[stream]: first training batch holds %d distinct "
+            "MemoryVLAMemory[%s]: first training batch holds %d distinct "
             "episode(s) across %d samples.",
+            self.dataloader_type,
             distinct,
             batch_size,
         )
         if batch_size > 1 and distinct == batch_size:
             raise RuntimeError(
-                "memoryvla.dataloader_type='stream' but the first training "
-                "batch has {} samples from {} different episodes. Each sample "
-                "is then the only frame of its episode the bank ever sees, so "
-                "there is no history to retrieve and every fusion reduces to "
-                "an exact identity. Use an episode-ordered batch sampler "
-                "(memoryvla.episode_stream_sampler=True).".format(
-                    batch_size, distinct
+                "memoryvla is on (dataloader_type={!r}) but the first "
+                "training batch has {} samples from {} different episodes. "
+                "Each sample is then the only frame of its episode the bank "
+                "ever sees, so there is no history to retrieve and every "
+                "fusion reduces to an exact identity. Use an episode-ordered "
+                "batch sampler (memoryvla.episode_stream_sampler=True); every "
+                "bank mode needs one.".format(
+                    self.dataloader_type, batch_size, distinct
                 )
+            )
+
+    def _check_bank_liveness(self) -> None:
+        """Raise if, after K training forwards, no bank ever held >1 entry.
+
+        The consumer-side counterpart to ``assert_episode_stream_wired``. That
+        one asks whether the right sampler got wired; this one asks whether
+        the batches actually arriving carry episode history -- the property
+        this module needs, and the only thing that decides whether it computes
+        anything at all.
+
+        Why bank length and not the identity probe: the probe only arms once
+        history exists, and "history never exists" is precisely the failure
+        mode. P0-1 and P1-B both had that shape -- every batch a different
+        episode, every bank one entry long, every fusion an exact identity --
+        and no probe ever armed to say so.
+
+        Why it reads no config key: a guard written against key names only
+        covers the combinations someone thought of. Bank length is the
+        consequence, so this covers every combination, including
+        ``dataloader_type`` values that do not exist yet, and any code path
+        that never calls the assembly-time check at all.
+        """
+        if self._bank_liveness_checked or not self.training:
+            return
+        for bank in (self.per_mem_bank, self.cog_mem_bank):
+            if bank is None:
+                continue
+            for entries in bank.bank.values():
+                if len(entries) > self._max_bank_len_seen:
+                    self._max_bank_len_seen = len(entries)
+        self._train_forwards += 1
+        if self._train_forwards < self.BANK_LIVENESS_FORWARDS:
+            return
+        self._bank_liveness_checked = True
+        logger.info(
+            "MemoryVLAMemory bank liveness after %d training forwards: "
+            "longest episode history seen = %d.",
+            self._train_forwards,
+            self._max_bank_len_seen,
+        )
+        if self._max_bank_len_seen <= 1:
+            raise RuntimeError(
+                "MemoryVLAMemory ran {} training forwards and no episode's "
+                "memory ever grew past a single entry "
+                "(dataloader_type={!r}). The batches reaching this module are "
+                "not episode-contiguous, so every retrieval finds an empty "
+                "history and every fusion reduces to an exact identity: the "
+                "module is switched on, holds 7.47M parameters, receives no "
+                "gradient, and computes nothing. The loss stays normal and "
+                "nothing else raises -- which is the entire reason this check "
+                "exists. Both bank modes need episode-ordered batches "
+                "(`stream` carries memory across batches, `group` only within "
+                "one), so the fix is memoryvla.episode_stream_sampler=True. "
+                "Turning it off is how this state is reached, never how it is "
+                "left.".format(self._train_forwards, self.dataloader_type)
             )
 
     def _history_will_be_read(self, episode_ids) -> bool:
@@ -303,6 +381,14 @@ class MemoryVLAMemory(nn.Module):
         """
         if len(set(episode_ids)) < len(episode_ids):
             return True
+        if self.dataloader_type == "group":
+            # `group` runs bank.clear() at the top of every training call
+            # (memory_bank.py:361), so whatever is in the bank right now is
+            # about to be discarded. Counting it would arm the probe for a
+            # forward that then legitimately has no history to read, failing a
+            # run that behaves exactly as documented. Within-batch repeats
+            # above still count: those are written and read inside this call.
+            return False
         for bank in (self.per_mem_bank, self.cog_mem_bank):
             if bank is None:
                 continue

@@ -145,6 +145,46 @@ step 11  2.899170e-04     ← 20 步内峰值
 
 **浮点 loss 差仍然记录，但只作参考量，不作判据。**
 
+### 峰值显存也不是精确量 —— 本轮实测降级（方法论级）
+
+上一节把峰值显存列进「五项精确量」，依据是上一轮 5 个 run 逐位相同。**本轮 5 个同配置
+关闭态 run 并不逐位相同**：
+
+```
+base_A_stream_off      8.976670265197754
+head_A_stream_off      8.971695899963379     ← 低 4.97 MiB（0.055%）
+head_A_stream_off_r2   8.976670265197754     ← 同代码同卡重跑，回到基线值
+base_A_group_off       8.976670265197754
+head_A_group_off       8.976670265197754
+```
+
+**那个离群值不可能来自本轮改动**：关闭态每个 run 的 `port_imported` 都是 `[]`，
+被改的两个文件根本没被 import。同代码、同卡、同配置重跑一次就回到了基线值——
+这是分配器的 run-to-run 差异该有的样子，不是代码差异该有的样子。
+
+**所以峰值显存降级成参考量，与浮点 loss 同级。** 这与本轮对 A 档判据做的是同一件事，
+理由也是同一条：**一个量要成为判据，先得证明它在「除了被测对象之外的一切」下都稳定。**
+上一轮 5 个 run 恰好一致，就被当成了「精确」——样本量小的一致性不是精确性。
+
+**剩下四项精确判据全部成立**（逐样本 id 序列 / batch key 集合 / 参数量 / sampler 链），
+外加结构判据 `port_imported == []`。
+
+### 关闭态的批次顺序与训练 seed 无关（找阳性对照时挖出来的）
+
+给「逐样本 id 序列」找阳性对照时，前两次尝试都失败了，两次都不是判据的问题：
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| `--seed 1` vs `--seed 0` | **20/20 batch 完全相同** | `DistributedBatchFlagSampler._indices_generator`（`dataset_wrapper.py:133`）自建 `np.random.default_rng(self.seed + self._epoch)`，而 `self.seed` 来自一个 **`train.py` 从不传** 的构造参数。accelerate 的 `set_seed` 够不着它 |
+| `set_epoch(7)` | **20/20 batch 完全相同** | `set_epoch` 确实跑在了 trainer 随后迭代的那个 `DistributedBatchFlagSampler` 上（已记进 JSON），顺序仍不变 ⇒ 排列在 trainer 存在之前就定死了 |
+| **注入构造参数 `seed=99`** | **0/20 相同** ✅ | 这是唯一在排列决定之前能动的输入 |
+
+第三种同时证明了它**只动了顺序**：参数量、batch key 集合、sampler 链三项全部不变。
+
+**顺带一条值得写下来的宿主性质：关闭态的批次顺序与训练 seed 无关。**
+指望换 seed 就换一批数据的人会得到「一模一样」，并且很容易把这个「一样」
+当成别的东西的证据。
+
 ### D 档：墙钟不用来下结论
 
 两次**完全同配置**（都是关闭态）的 baseline，墙钟 `260.9 s` vs `203.6 s`，**差 22%**。
@@ -171,6 +211,105 @@ step 11  2.899170e-04     ← 20 步内峰值
 没有写进任何会被执行的东西**——新的 runner 自然不会设。
 这与 P0-1 是同一个形状：`04-port-plan.md` 三处预言了 sampler 风险，预言本身不会接线。
 → **凡是「跑之前必须先做 X」，就把 X 放进 runner，不要放进段落。**现已写进 `fix/gear.sh`。
+
+## `dataloader_type="group"` 的现状（2026-08-04 第三轮，P1-B）
+
+**结论先说：`group` 现在是一个可用配置，配方是 `dataloader_type="group"` **且**
+`episode_stream_sampler=True`。** 被审 commit `2b739226` 上它没有任何可用配置。
+
+### 为什么原来两条路都堵死
+
+护栏 `assert_episode_stream_wired` 当时的判据是
+`(dataloader_type == "stream") != bool(episode_stream_sampler)`，
+背后是一条**假前提**：「episode sampler 只对 `stream` 有意义」。
+
+`dataloader_type` **不是 dataloader 选择器**——`train.py` 全文零处读它
+（`git grep dataloader_type` 可证）。它只被 `memory_bank.py` 消费，选的是**记忆跨度**：
+
+| 值 | 行为 | 跨度 |
+|---|---|---|
+| `stream` | bank 跨调用存活，换 episode 才 `clear_episode`（`memory_bank.py:364-368`） | ≤ `mem_length`，跨 batch |
+| `group` | 每次训练调用顶部 `self.bank.clear()`（`memory_bank.py:361`），batch 内按 `group_size` 轮转（`:374`） | 一个 batch 之内 |
+
+**两者都需要 episode 连续的批**，只是跨度不同。于是那条 XOR 把
+`group + sampler=True`（唯一能用的组合）判成冲突并 raise，
+而 `group + sampler=False` 被放行——落进 P0-1 的失效签名，且三道护栏一道不响。
+
+### 改了什么（只动 `sampler.py` 与 `wrapper.py`，`train.py` 一行未动）
+
+1. **装配期判据从「两个键是否相符」换成「实际 sampler 链里有没有 episode sampler」。**
+   判的是拿到的对象，不是配置项的名字，所以覆盖所有键的组合，包括还没被发明的。
+2. **`wrapper.py` 的 batch 组成检查去掉了 `dataloader_type != "stream"` 的提前 return。**
+   那个闸门恰好在最需要它的那种配置下把它关掉了。
+3. **新增 bank 存活性看门狗**：跑满 K=8 次训练 forward 后，若从没有任何 episode 的
+   bank 长度超过 1，直接 raise。它**不需要历史先存在**——而「历史永远不存在」正是失效形态本身。
+   它不读任何配置键，判据是后果，所以任何路径、任何模式、将来任何新的
+   `dataloader_type` 都覆盖得到。
+4. **`_history_will_be_read` 在 `group` 下不再把「上一批残留的 bank」算作历史**：
+   `group` 会在 `process_batch` 顶部清空，算进去会对**行为完全正确**的配置误报。
+5. **三处会把使用者引向那个无护栏格子的报错文案全部改写**，
+   并加了断言禁止它们回来（见下）。
+
+### 护栏有牙 —— 人为构造退化场景，从真实入口确认它会触发
+
+**未触发即等于没有护栏。** 所以每道护栏都成对交付：一个正常配置不响的用例，
+一个已知坏配置必响的用例。故障注入用的是 runner 的 `--break-episode-order`：
+它按 sampler **自己的** span 表重排它自己的输出，**sampler 对象本身不动**，
+所以装配期护栏看到的链是对的、会放行——只有消费端能发现批次已经坏了。
+
+| 场景 | 谁应该抓到 | 实测 |
+|---|---|---|
+| `group` + sampler 关（**P1-B 的洞**） | 装配期链判据 | ✅ `rc=1`，`train.py:236` → `sampler.py:264` raise |
+| `stream` + sampler 关（既有阴性用例回归） | 装配期链判据 | ✅ `rc=1`，同一处 |
+| 故障注入，bs=4 | batch 组成检查 | ✅ `rc=1`，`wrapper.py:302`，「4 samples from 4 different episodes」 |
+| **故障注入，bs=1** | **只有看门狗能抓** | ✅ `rc=1`，`wrapper.py:354`，第 8 次 forward 报「no episode's memory ever grew past a single entry」 |
+
+**最后一行是本轮最关键的一条证据**：batch=1 时 batch 组成检查判不了（它需要 >1 个样本），
+恒等探针也永不 arm（没有历史），**三道护栏里只剩看门狗能响，而它响了**。
+这正是 `06-verification.md` 末尾那条「`group` + batch=1 会恒等但看起来正常」的警告——
+它从此不再只是一段文字。
+
+单元测试（CPU，本机无 pytest，写成退出码脚本，均在 `fix3/`）：
+`guard3_unit_test.py` **22/22**（15 个装配期用例 + 7 条文案卫生断言）·
+`guard3_probe_test.py` **24/24**（看门狗 8 · batch 组成 6 · 恒等探针 5 · `_history_will_be_read` 5）。
+
+**文案卫生断言是本轮新增的**，因为 P1-B 的成因不是缺护栏，是护栏的**文案**
+把人指引进了那个洞。断言：任何 raise 文本都不得出现
+`episode sampler is only meaningful` / `turn the episode sampler off` /
+`switch the bank to dataloader_type='group'` / `episode_stream_sampler=False`，
+且每条「sampler 不对」的报错都必须点名 `episode_stream_sampler=True` 这个正解。
+
+### 结果矩阵（全部从 `train.py` 真实入口实测）
+
+| 配置 | 结果 |
+|---|---|
+| `stream` + sampler `True` | 通过（不变） |
+| `stream` + sampler `False` | **raise**（不变，文案改写） |
+| **`group` + sampler `True`** | **通过 —— 新的可用配置** |
+| **`group` + sampler `False`** | **raise**（新；原来是静默恒等） |
+
+**不存在「memory 被构建 + 静默退化 + 无告警」的组合。**
+
+### D 档新增：`group` 路径的资源与行为（不覆盖 stream 的数值）
+
+| 档 | bank 每步最大长度 | grad None/零/非零 | 参数移动 | 恒等间隙 per / cog | 参数量 | 峰值显存 | 20 step 墙钟 |
+|---|---|---|---|---|---:|---:|---:|
+| **B `stream`** bs=4 | `4→8→12→16` 封顶 | `0/0/68` | 62/68 | `1.296956` / `1.123835` | 1,143,751,529 | 9.3024 GiB | 299.76 s |
+| **D `group`** bs=4, `group_size=16` | **恒为 4**（= batch） | `0/0/68` | 62/68 | `1.296956` / `1.123835` | 1,143,751,529 | 9.1012 GiB | 277.67 s |
+| **D `group`** bs=4, `group_size=2` | **恒为 2** | `0/12/56` | 51/68 | `1.265461` / `1.132860` | 1,143,751,529 | 9.0717 GiB | 297.21 s |
+
+三行都 `rc=0`、sampler 链都是 `['MemoryVLAEpisodeStreamBatchSampler']`、
+每 batch 1 个 episode、68 张量全在 optimizer group 1、游离 0。**墙钟只记录不解释。**
+
+**`group` 那行的 bank 恒为 4 正是它该有的样子**——记忆跨不出一个 batch，`mem_length=16`
+从头到尾不起作用。这与 `05-ablation-matrix.md` 第 7 行（假路径上量到的 bank 峰值 4）
+**在现象上一致**，但那一行的数字仍然作废：它是在宿主到不了的装配上产生的。
+
+**`group_size=2` 那一行专门跑来走到组轮转分支**（`memory_bank.py:374`）：
+`group_size=16 > batch=4` 时那条分支**永远不执行**，只跑第一行等于又一次 N=1 冒烟。
+它顺带暴露了一个该记的事实：**`group_size=2` 时有 12 个张量拿到精确零梯度**
+（bank 最长只有 2，巩固路径与更深的检索层从不激活），参数移动降到 51/68。
+不是 bug，但**选小 `group_size` 等于关掉一部分模块**，值得写在这里。
 
 ## 新增 config 字段
 
@@ -243,6 +382,18 @@ step 11  2.899170e-04     ← 20 步内峰值
    于是 `mem_length=16` 在两边覆盖的**真实时间跨度**未必可比。
    **该怎样才能验**：读 A 的 RLDS builder 的 step 定义，或论文附录的数据处理节。
    自评影响中等偏低，但**掉一条和主动不承接是两回事**——补回来。
+
+10. **`group` 现在能跑，但「能跑」不等于「该用」**（2026-08-04 第三轮新增）。
+    本轮只证明了它不再静默退化，**没有**证明它训得好。它的记忆跨度只有一个 batch，
+    `mem_length` 完全不起作用，训练动力学与 `stream` 不同且同样未验证。
+    另外 `group` 每次调用清空 bank，所以它**走不到** `clear_episode` 与 tome 巩固
+    两条路径——**`group` 的 D 档不能替代 `stream` 的 E 档冒烟**。
+    还有一条选参陷阱：实测 `group_size=2` 时 12 个张量拿到精确零梯度，
+    **把 `group_size` 调小等于关掉一部分模块**。
+11. **看门狗的 K=8 没有调优**（2026-08-04 第三轮新增）。它只需要 ≥2
+    （batch=1 的 `stream` 要到第 2 次 forward 才涨到 2），取 8 是与 B 档同量级的余量。
+    没有实验支持 8 比 4 或 16 更好。若将来出现「合法配置要跑很多步才积累历史」的用法，
+    这个数要重新定，**而且要用实测定，不是拍**。
 
 ## 下一步建议
 

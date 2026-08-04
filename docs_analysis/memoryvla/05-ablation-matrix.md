@@ -53,7 +53,20 @@
 > **状态（2026-08-04）**：本节描述的**现象是对的**，但**这一行的配方当时不可执行**，
 > 且在被审 commit `2b739226` 上它是 **P1-B** —— `dataloader_type=group` 没有任何可用配置：
 > 开 `episode_stream_sampler` 会 raise，关掉则静默退化成恒等且三道护栏一道都不响。
-> 本轮第二段修的就是这个，修完后的可用配方见下面的「订正」。
+>
+> **已修（第三轮第二段）。现在的可用配方是两个键一起设**：
+>
+> ```
+> dataloader_type="group"   且   episode_stream_sampler=True
+> ```
+>
+> 真实入口实测（`fix3/runs/2026-08-04/head_D_group_on.json`，`rc=0`，bs=4、20 step）：
+> **bank 每步最大长度恒为 4**（= batch，记忆跨不出一个 batch，与本节的现象一致）、
+> grad `0 None / 0 零 / 68 非零`、参数移动 62/68、峰值显存 9.1012 GiB。
+> 完整数值与修法见 `PORT-STATUS.md`「`dataloader_type="group"` 的现状」。
+>
+> **但本行表格里的数字仍然作废**：现象一致不等于数值可用，那一行是在
+> `--sampler sequential` 这条宿主到不了的装配上量的。要这一行的数，得在真实入口重跑。
 
 batch 就是 4。也就是说 **group 模式下记忆跨不出一个 batch**，
 `mem_length=16` 从头到尾没起过作用。这与 `01b` 里在纯模块上的实测

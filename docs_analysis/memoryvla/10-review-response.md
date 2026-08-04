@@ -11,7 +11,7 @@
 | ID | 级别 | 处置 |
 |---|---|---|
 | P1-A | P1 | **已修**（文档订正，本 commit） |
-| P1-B | P1 | **已修**（护栏改挂消费端，第二个 commit） |
+| P1-B | P1 | **已修**（护栏改挂消费端，第二个 commit）。`group` 由「无可用配置」变为**可用配置** |
 | P2-A | P2 | **已修**（本 commit） |
 | P3-A | P3 | **已修**（本 commit） |
 | P3-B | P3 | **已修**（顺手做掉；本轮 runner 写 commit 绑定） |
@@ -85,29 +85,117 @@ git diff --stat 18106b05..f6dfd1e8
 
 ---
 
-## P1-B · `dataloader_type="group"` 在 HEAD 上没有任何可用配置 —— **已修（第二个 commit）**
+## P1-B · `dataloader_type="group"` 在 HEAD 上没有任何可用配置 —— **已修**
 
-详细的修法、证据与新增 D 档数值见**第二个 commit 对本节的回填**。
-本节在第一个 commit 里先留占位，**不预先声称已修**。
+**勘察结论改变了修法。** 复审建议把恒等探针的判据换成「跑满 K 步后 bank 有没有超过 1」，
+本轮采纳了这一条，但同时发现 `group` **本来就不该是死路**：
 
-一句话方向（勘察结论，改变了复审建议的修法）：`dataloader_type` **不是 dataloader 选择器**，
-`train.py` 全文零处读它；它只被 `memory_bank.py` 消费，是**记忆跨度**设置。
-`stream` 与 `group` **都需要 episode 连续的批**，只是跨度不同——
-所以 `sampler.py:230` 那条 `(dl_type == "stream") != bool(stream_sampler)` 编码的是一条**假前提**。
+`dataloader_type` **不是 dataloader 选择器**——`train.py` 全文零处读它
+（`git grep dataloader_type` 可证）。它只被 `memory_bank.py` 消费，选的是**记忆跨度**：
+`stream` 让 bank 跨调用存活，`group` 在每次训练调用顶部 `bank.clear()`。
+**两者都需要 episode 连续的批**，只是跨度不同。
+所以 `sampler.py:230` 的 `(dl_type == "stream") != bool(stream_sampler)` 编码的是一条**假前提**
+——「episode sampler 只对 stream 有意义」——而正是这条假前提同时造成了两件事：
+把唯一能用的组合（`group` + sampler 开）判成冲突，并放行那个静默恒等的组合。
+
+**改了什么**：只有 `robo_orchard_lab/models/memoryvla/{sampler,wrapper}.py` 两个文件。
+**`train.py` 一行未动**，所以 P0-1 / P1-1 的修复成果与其全部已买到的证据保持有效。
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | 装配期判据从「两个键是否相符」换成「**实际 sampler 链里有没有 episode sampler**」 | `sampler.py:assert_episode_stream_wired` |
+| 2 | 去掉 batch 组成检查的 `dataloader_type != "stream"` 提前 return | `wrapper.py:_check_episode_stream` |
+| 3 | **新增 bank 存活性看门狗**：K=8 次训练 forward 后 bank 从没超过 1 就 raise | `wrapper.py:_check_bank_liveness` |
+| 4 | `group` 下不再把上一批残留的 bank 当历史（会对正确配置误报） | `wrapper.py:_history_will_be_read` |
+| 5 | 三处误导文案改写 + 断言禁止其回归 | `sampler.py` ×3 |
+
+**结果矩阵**（全部从 `train.py` 真实入口实测）：
+
+| 配置 | 修复前 | 修复后 |
+|---|---|---|
+| `stream` + sampler `True` | 通过 | 通过（不变） |
+| `stream` + sampler `False` | raise | raise（不变，文案改写） |
+| **`group` + sampler `True`** | **raise（「disagree」）** | **通过 —— 可用配置** |
+| **`group` + sampler `False`** | **静默恒等，护栏 0 行日志** | **raise，`rc=1`** |
+
+**不存在「memory 被构建 + 静默退化 + 无告警」的组合。**
+
+**护栏有牙（这是本条最重要的证据）**。故障注入用 runner 的 `--break-episode-order`：
+按 sampler **自己的** span 表重排它自己的输出，**sampler 对象不动**，
+所以装配期判据看到的链是对的、会放行 —— 只有消费端能发现批次已经坏了。
+
+| 场景 | 谁应该抓到 | 实测 |
+|---|---|---|
+| `group` + sampler 关 | 装配期链判据 | ✅ `rc=1`，`train.py:236` → `sampler.py:264` |
+| `stream` + sampler 关 | 装配期链判据 | ✅ `rc=1`，同一处 |
+| 故障注入 bs=4 | batch 组成检查 | ✅ `rc=1`，`wrapper.py:302` |
+| **故障注入 bs=1** | **只有看门狗能抓** | ✅ `rc=1`，`wrapper.py:354`，第 8 次 forward |
+
+最后一行是决定性的：batch=1 时 batch 组成检查判不了（需要 >1 个样本），
+恒等探针永不 arm（没有历史），**三道护栏里只剩看门狗，而它响了**。
+
+> **一次失败的尝试，留在记录里**：故障注入的第一版是「把 sampler 输出在一个滑动窗口里转置」，
+> **完全没有效果**——episode sampler 会连续吐出同一条 episode 的很多批
+> （episode 长 276–1203 帧 = batch 4 下 69–300 批），所以 8 批的窗口里全是**同一条** episode，
+> 转置是恒等。连续性在 span 表里，就得在 span 表上打断。
+> 第一版若不核对就采信，会得到「护栏没触发」这个**完全相反**的结论。
+
+**新增 D 档（`group` 路径，不覆盖 stream 的数值）**：bank 恒为 4（= batch）、
+grad `0/0/68`、参数移动 62/68、峰值显存 9.1012 GiB。另跑了 `group_size=2` 一档专门走到
+组轮转分支（`group_size=16 > batch=4` 时那条分支永不执行，只跑一档等于又一次 N=1 冒烟），
+它顺带暴露了「`group_size=2` 时 12 个张量拿到精确零梯度」。全部数值见 `PORT-STATUS.md`。
+
+**单元测试**：`fix3/guard3_unit_test.py` **22/22**、`fix3/guard3_probe_test.py` **24/24**。
+后者把复审 §4.3 的 9 用例按新语义重写并扩到 24 个，其中 group 两条的期望**翻转**。
 
 ---
 
-## P3-B · 证据 JSON 无 commit 绑定 —— **已修（第二个 commit）**
+## P3-B · 证据 JSON 无 commit 绑定 —— **已修**
 
-本轮 runner 在结果 JSON 里写 `git rev-parse HEAD` + 被跑 `train.py` 的 sha256 + 库解析路径。
-细节见第二个 commit。
+`fix3/run_real3.py` 在每个结果 JSON 里写 `provenance`：`git rev-parse HEAD`、`git_dirty`、
+被执行的那个 `train.py` 的 sha256、`robo_orchard_lab` 的解析路径、torch 版本，
+以及 **memoryvla 包四个文件各自的 sha256**（本轮改动期间工作树是 dirty 的，
+只有 commit 号不足以定位代码）。
+
+**怎么把本轮的 run 绑到本 commit**（下一轮复审需要）：
+
+```
+本轮全部 head 侧 run 的 provenance：git_head = 955fbe07（第一个 commit），git_dirty = true
+被跑的 train.py            sha256 0087ec1b9b61fdeb2930c845b60a9377b1cc42f14e7e303a98a2e8d47604e2a3
+                                 （与 2b739226 的 train.py 相同 —— 本轮未改它）
+被跑的 sampler.py          sha256 fb14d11ce90c2649d0667cbce46dd377ef2d9dd004fd65a7c817e7b64c43107e
+被跑的 wrapper.py          sha256 31ab3bcf16ea36377dcca89ce7bca438e21370908ec5b96d3820dfc598290b13
+```
+
+后两个哈希**就是本 commit 里这两个文件的内容**，`sha256sum` 可核。
+基线侧 3 个 run 的 `git_dirty = false`，`git_head = 955fbe07`（纯文档提交，代码等同 `2b739226`）。
+早于 `port_files` 字段加入的 3 个 wave-1 run 在 JSON 里没有这两个哈希，
+但它们跑在同一份文件上：那两个文件在本轮最后一次修改之后再未变动，
+**上面的哈希是在 wave-1 跑完当场取的，与现在逐位相同**。
 
 ---
 
-## P3-C · `run_real.py` 关于确定性开关的说法被其自身实测推翻 —— **已修（第二个 commit）**
+## P3-C · `run_real.py` 关于确定性开关的说法被其自身实测推翻 —— **已修**
 
-本轮 runner 是从 `fix/run_real.py` **复制**到 `fix3/` 后改的（`fix/` 原文件不动，它是上一轮的证据），
-那条注释在复制件里被改写。细节见第二个 commit。
+本轮 runner 是从 `fix/run_real.py` **复制**到 `fix3/run_real3.py` 后改的
+（`fix/` 原文件一字未动，md5 `7a033e2218422d7f8aa68f98759fb451`，它是上一轮的证据）。
+那条「These knobs pin that down so gear A can use a strict bar」已改写成实测结论：
+它们压不到 0（`det_run1` vs `det_run2` = `1.564e-04`），A 档最终也没用它们。
+
+**改完重新逐条确认了「只注入不构造」**，并顺手修掉了一处**观测装置污染被观测量**：
+
+> 原 runner 在 `_install` 里**无条件** import 了 `MemoryVLAEpisodeStreamBatchSampler`
+> （为了给构造计时）和 `MemoryVLAMemory`（为了包 forward）。两个 import 都发生在
+> `train.py` 之前，于是**观测器自己**把 port 包放进了 `sys.modules`，
+> 「关闭态从不 import port」这条结构判据**就没法测了**。
+> 改法：装载期不 import port 包任何东西；哪个 sampler 真在跑由 `_sampler_chain`
+> 读类型名回答（不需要 import），forward 探针改成在 `patched_init` 里、
+> **确认宿主已经 import 了才装**。实测关闭态 `port_imported == []`，开启态 4 个模块——
+> 判据活过来了。这正好是复审 §7.3 第 6 条提的那件事。
+
+新增的记录字段（逐条对应本轮判据）：逐样本原始 `uuid`、`batch_keys`、
+完整 bank 长度列表与 `max_len`、`port_imported`、`fault_injected`。
+**新增的代码全是「读」与「记」，没有构造 sampler / DataLoader / optimizer / model builder 中的任何一个。**
 
 ---
 
@@ -152,14 +240,55 @@ git diff --stat 18106b05..f6dfd1e8
 | §5.3 抽验 1（拷贝保真度 F） | 本轮不新增 `[port:]` 标记区间 |
 | §5.4 全部「继承、未重验」项 | 方法要素、接口语义 32 项、cite 零幻觉、mask 极性、ckpt 1000→1068 |
 
-### 需重验（本轮改动使其取证条件变化，必须重跑）
+### 需重验（本轮改动使其取证条件变化）—— **已全部重跑，结果如下**
 
-| `09` 的哪一节 | 为什么 |
+| `09` 的哪一节 | 本轮实测 |
 |---|---|
-| §4.3 探针有效性 9 用例 | 护栏语义变了：用例 6（stream 4 条不同 episode → 必 raise）仍成立；**用例 8（group 4 条不同 episode → 不检查）的期望翻转**，现在必须 raise。已在第二个 commit 里重写并重跑 |
-| §7.2 判据 **I / G / P / B** | 都在 `wrapper.py` 触及的范围内，第二个 commit 全部重跑 |
-| §5.2 C 档 | 严格说不该受影响（不经 sampler），但 `wrapper.py` 被改过，**必须重跑证明改动没有溢出** |
-| §5.3 抽验 2「纯增量」 | `sampler.py` / `wrapper.py` 本轮又长了，增删数需重新给 |
+| §4.3 探针有效性 9 用例 | **已重写并扩到 24 用例，24/24**。其中 group 两条的期望**翻转**：用例 8「group 4 条不同 episode → 不检查」现在**必须 raise** |
+| §7.2 判据 **I**（恒等探针） | 开启态 `1.296956e+00` / `1.123835e+00`（与上一轮**逐位相同**）；退化方向 5/5 会 raise |
+| §7.2 判据 **G**（梯度三态） | `0 None / 0 零 / 68 非零`（stream 与 group 都是） |
+| §7.2 判据 **P**（参数位移） | 62/68（stream 与 group 都是） |
+| §7.2 判据 **B**（关闭态 batch key） | 14 vs 14 逐个相同，stream 与 group 两条路径都测了 |
+| §5.2 **C 档** | **10/10 逐位一致，0 failed** —— 改动未溢出范围 |
+| §5.3 抽验 2「纯增量」 | 本轮 `sampler.py` **+40/−32**、`wrapper.py` **+96/−10**（`git diff --numstat 2b739226`）。**不是纯增量**，删除全部是判据重写与闸门移除，逐条在上面列了。无格式化 / 无 import 重排 / 无重命名 / 无顺手重构 |
+| §7.2 K/C/D 静态判据 | HEAD **0 finding**；**阳性对照**：同一份工具、同一组参数跑在 `18106b05` 的树上报 **2 findings（`ORPHAN episode_stream_sampler` + `UNUSED MemoryVLAEpisodeStreamBatchSampler`），EXIT=1** → HEAD 的绿是判据活着的绿。（复审在同一棵树上报 4 条，多出的两条是 `UNUSED BottleneckSE`（本轮显式 `--waive-class` 豁免）与 `DRIFT`（需 `--plan`，本轮未传）；**两侧参数完全相同**，所以对照成立） |
+| preflight `--static` 全套 | **PASSED，EXIT=0**，带与上一轮相同的两组豁免；工具 md5 与 `09` §7.1 逐个相同 |
+
+### 关闭态等价性（本轮重跑，用精确判据）
+
+| 判据 | stream 路径 | group 路径 |
+|---|---|---|
+| 逐样本 id 序列 | **20/20 batch 完全一致** | **20/20 完全一致** |
+| batch key 集合 | 14 vs 14 逐个相同 | 相同 |
+| 参数量 | `1,136,284,265` 严格相等 | 严格相等 |
+| sampler 链 | `['DistributedBatchFlagSampler']` 相同 | 相同 |
+| `port_imported`（结构判据） | `[]` —— port 包从未被 import | `[]` |
+| （参考量，非判据）loss max\|diff\| | `2.613e-04` | `1.507e-04` |
+
+**阳性对照**：注入宿主 sampler 自己的构造参数 `seed=99` → **id 序列 0/20 相同**，
+而参数量 / batch key / sampler 链 / `port_imported` **四项全不变**——只动了顺序，
+正是这条判据该抓的东西。其余四项的对照用 `enable=True`：四项全部按预期改变。
+
+### 本轮新增的两条「不算数」结论（都是方法论级，主动降级）
+
+1. **峰值显存不是精确量。** 计划里它是五项精确判据之一，依据是上一轮 5 个 run 逐位相同。
+   本轮 5 个同配置关闭态 run **不**逐位相同：4 个一致，1 个低 4.97 MiB（0.055%）。
+   离群的那个不可能来自本轮改动（`port_imported == []`，被改的文件根本没被 import），
+   且**同代码同卡重跑一次就回到基线值**。→ 降级为参考量，与浮点 loss 同级。
+   **样本量小的一致性不是精确性**，这与本轮订正 A 档判据是同一个错误的两次出现。
+2. **关闭态的批次顺序与训练 seed 无关。** 找阳性对照时发现 `--seed` 与 `set_epoch` 都动不了它
+   （`dataset_wrapper.py:133` 自建 RNG，seed 来自 `train.py` 从不传的构造参数）。
+   这条本身不是缺陷，但**指望换 seed 就换一批数据的人会得到「一模一样」**，
+   并且很容易把这个「一样」当成别的东西的证据。
+
+### 失效（本轮改动直接推翻，沿用旧值即报告失真）
+
+| `09` 的哪一节 | 怎么失效的 |
+|---|---|
+| **§4.4 全节（P1-B）** | 「`group` 的两条路都堵死了」不再成立。`group + episode_stream_sampler=True` 现在是**可用配置**；`group + False` 从静默恒等变成启动即 raise。该节的 `C_group_host.json` 描述的是**修复前**的行为 |
+| **§8「`dataloader_type="group"` 是否还有意义」** | 该条写「需要一个能产出 episode 有序批又不与护栏冲突的配置，目前不存在」——现在存在，且本轮给了它的 D 档数值 |
+| §4.2 引用的 raise 文案 | 三处误导文案已改写；引用旧文案的地方要换 |
+| §4.1 / §5.2 里「峰值显存逐位相同」作为**判据** | 见上，降级为参考量。它作为**观测**仍然成立（上一轮 5 个 run 确实一致） |
 
 ### 失效（本轮改动直接推翻，沿用旧值即报告失真）
 
@@ -174,6 +303,27 @@ git diff --stat 18106b05..f6dfd1e8
 
 - **消融矩阵未重跑**（P1-A 选了「明写未重跑」这一支）。
 - **DDP 仍未验证**：本机任意两卡 gather 必崩，与上一轮同一硬约束。
+  接上 sampler 后各 rank `spans[rank::num_replicas]` 长度不齐这条风险**依旧**，
+  且 `group` 变为可用**不改变**它。
 - **开启态训练动力学仍未验证**：`group` 变为可用后，它的动力学同样未验证，
-  与 `stream` 开启态是同一类遗留（见遗留 5）。
+  与 `stream` 开启态是同一类遗留（见遗留 5）。**「能跑」不等于「该用」**——
+  本轮只证明了 `group` 不再静默退化，没有证明它训得好。
 - **外部真实 ckpt 仍未加载**：本轮全部 run 一律 `checkpoint=null`。
+- **`group` 的长时行为未观测**：最长 20 step。`group` 每次调用清空 bank，
+  所以它压根走不到 `clear_episode` 与 tome 巩固那两条路径——
+  换句话说 `group` 的 D 档**不能**替代 stream 的 E 档冒烟。
+- **K=8 这个数没有调优**：它只需要 ≥2（batch=1 的 stream 要到第 2 次 forward 才涨到 2），
+  取 8 是与 B 档同量级的余量。没有实验支持 8 比 4 或 16 更好。
+
+### 给下一轮复审的一条提醒
+
+本轮有**两次**「判据看起来通过了，实际是装置坏了」被抓住，都不是靠读结论抓的：
+
+1. **故障注入第一版完全无效**，日志里却是一片正常的训练——若不核对
+   `distinct_episodes_in_batch` 与 bank 长度，会得出「护栏没触发」这个**相反**的结论。
+2. **`guard3_run.sh` 最初复用固定 workspace**，第二次跑时 accelerate 在**解栈过程中**
+   因残留 `checkpoint_0` 抛了 `ValueError`，把真正的 raise 埋在下面。
+   `rc != 0` 与「期望字符串出现」两个判据**同时**满足，而过程是错的。
+
+两次的共同点：**退出码与关键字都对，过程却不对**。所以本轮所有阴性用例的日志
+最后一行都是护栏自己的 raise，可以直接核。

@@ -24,7 +24,10 @@ method silently degenerates to an identity-ish transform.
 
 This sampler instead shuffles *episodes* and walks each one forward in time,
 emitting ``batch_size`` consecutive frames of a single episode per batch --
-exactly the input ``dataloader_type="stream"`` assumes.
+the input both bank modes assume. ``stream`` carries the bank across batches
+and ``group`` wipes it at every training call, so they differ in how far
+memory reaches, not in whether they need episode-ordered batches. Neither
+works without them.
 
 It wraps rather than modifies the host sampler: the host's own sampler is
 untouched, and this one is selected from config.
@@ -71,9 +74,11 @@ def _episode_spans(dataset) -> list[tuple[int, int]]:
         if get is None:
             raise TypeError(
                 f"{type(sub).__name__} has no `_get_indices`, so episode "
-                "boundaries cannot be derived. MemoryVLA's stream memory "
-                "needs episode-ordered batches; use a dataset that exposes "
-                "it, or switch the bank to dataloader_type='group'."
+                "boundaries cannot be derived. MemoryVLA's memory needs "
+                "episode-ordered batches in either bank mode, so use a "
+                "dataset that exposes it. Switching dataloader_type does not "
+                "help: `group` needs the same ordering, it just stops "
+                "carrying memory between batches."
             )
         n = len(sub)
         prev_key = None
@@ -208,7 +213,7 @@ def _sampler_chain(dataloader) -> list:
 
 
 def assert_episode_stream_wired(config: dict, dataloader) -> None:
-    """Raise unless the episode-stream switch matches what is really wired.
+    """Raise unless episode-ordered batches are what the trainer will iterate.
 
     `episode_stream_sampler` shipped as a config key that nothing read: the
     switch was on, the sampler existed, and training still ran the host's
@@ -216,6 +221,16 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
     identity and 7.47M parameters never receive a gradient -- with no error,
     no warning and a normal-looking loss. This makes that state impossible to
     reach silently.
+
+    The criterion is the object, not the keys. An earlier version asked
+    whether ``dataloader_type`` and ``episode_stream_sampler`` agreed, on the
+    premise that the sampler was only meaningful for ``stream``. That premise
+    is false -- ``dataloader_type`` selects how far memory reaches, and both
+    values need the same episode-ordered input -- and it left exactly one
+    unguarded cell: ``group`` with the sampler off passed every check while
+    reproducing the original failure verbatim. Asking what is actually in the
+    sampler chain covers every combination of keys, including ones nobody has
+    invented yet.
 
     Call after the trainer exists, so the check sees the post-``prepare()``
     dataloader rather than the one that was handed in.
@@ -227,29 +242,14 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
     stream_sampler = mv.get("episode_stream_sampler", False)
     dl_type = mv.get("dataloader_type", "stream")
 
-    if (dl_type == "stream") != bool(stream_sampler):
-        raise RuntimeError(
-            "memoryvla.dataloader_type={!r} and "
-            "memoryvla.episode_stream_sampler={!r} disagree. `stream` memory "
-            "is only meaningful with episode-ordered batches, and the episode "
-            "sampler is only meaningful for `stream`. Mismatched, the bank "
-            "runs but never retrieves anything -- which does not raise on its "
-            "own and looks exactly like a healthy run.".format(
-                dl_type, stream_sampler
-            )
-        )
-
-    if not stream_sampler:
-        return
-
     if config.get("dataset_sample_weights"):
         raise RuntimeError(
-            "memoryvla.episode_stream_sampler=True cannot be combined with "
-            "dataset_sample_weights={!r}: MemoryVLAEpisodeStreamBatchSampler "
-            "takes no such parameter, so the weights would be dropped without "
-            "a word. Drop the weights or turn the episode sampler off.".format(
-                config.get("dataset_sample_weights")
-            )
+            "memoryvla.enable=True cannot be combined with "
+            "dataset_sample_weights={!r}: the memory needs episode-ordered "
+            "batches, MemoryVLAEpisodeStreamBatchSampler is what produces "
+            "them, and it takes no such parameter -- so the weights would be "
+            "dropped without a word. Drop the weights, or leave the memory "
+            "off for this run.".format(config.get("dataset_sample_weights"))
         )
 
     # dataloader is None on the --eval_only path, where there is no training
@@ -262,11 +262,19 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
         isinstance(s, MemoryVLAEpisodeStreamBatchSampler) for s in chain
     ):
         raise RuntimeError(
-            "memoryvla.episode_stream_sampler=True but the trainer is "
-            "iterating {} -- MemoryVLAEpisodeStreamBatchSampler is not in the "
-            "chain. Episode-ordered batches are what makes the memory bank "
-            "accumulate; without them every fusion degenerates to an exact "
-            "identity and the module trains nothing.".format(
-                [type(s).__name__ for s in chain] or "no sampler at all"
+            "memoryvla.enable=True (dataloader_type={!r}, "
+            "episode_stream_sampler: {!r}) but the trainer is iterating {} -- "
+            "MemoryVLAEpisodeStreamBatchSampler is not in the chain. "
+            "Episode-ordered batches are what lets the memory bank "
+            "accumulate; without them every retrieval finds an empty history, "
+            "every fusion degenerates to an exact identity, and the module "
+            "trains nothing while the loss looks perfectly normal. "
+            "Both bank modes need those batches -- `stream` carries memory "
+            "across batches, `group` only within one -- so set "
+            "memoryvla.episode_stream_sampler=True. Turning it off is never "
+            "the fix; it is how this state is reached.".format(
+                dl_type,
+                stream_sampler,
+                [type(s).__name__ for s in chain] or "no sampler at all",
             )
         )
