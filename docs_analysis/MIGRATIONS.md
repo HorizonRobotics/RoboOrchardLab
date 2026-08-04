@@ -41,7 +41,10 @@
 | 移植了什么 | `TimestepEmbedder` / `CrossTransformerBlock` / `GateFusion` / `BottleneckSE` / `CogMemBank` / `PerMemBank` |
 | 没移植什么 | `MemoryVLA` 壳类、`ActionModel`+DiT 动作头、`prismatic` 相关、FSDP 策略、overwatch logger（协议红线：不移植 A 的基础设施） |
 
-### 改了宿主哪几处（共 4 个文件，+67 行，0 删除）
+### 改了宿主哪几处（共 5 个文件，0 删除）
+
+> **订正（2026-08-04）**：原记 4 个文件。缺的第 5 个是 `common/train.py`，
+> 也就是 P0-1：`episode_stream_sampler` 这个键当时没有任何读取者。
 
 | 文件:位置 | 改成什么形状 | 能拿到什么上下文 |
 |---|---|---|
@@ -50,6 +53,8 @@
 | `models/holobrain/structure_qwen3_5.py:__init__` | 同上一行 | — |
 | `configs/data_configs/config_robodojo_dataset.py:build_transforms` | 开关打开时给 `ItemSelection` 白名单加 `"step_index"` | `config` dict |
 | `configs/config_holobrain_common.py` | `cfg.memoryvla.*` 命名空间 + `_build_memoryvla_cfg()` + 传给 `model_config(...)` | — |
+| `common/train.py:DataLoader` | 一个 `if enable and episode_stream_sampler:` 选 batch sampler；关闭态那支构造参数一字不动 | `config` dict、`train_dataset` |
+| `common/train.py:SimpleTrainer` 之后 | 一条 `assert_episode_stream_wired(config, trainer.dataloader)`（查 post-`prepare()` 的对象）| `config`、trainer |
 
 ### ⚠️ 下次一定会再踩的坑
 

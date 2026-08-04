@@ -55,7 +55,12 @@
 加进 `ItemSelection` 白名单（training / validation / deploy 三处），**关闭时白名单一字不变**。
 
 **`config_holobrain_common.py`** —— 新增 `cfg.memoryvla.*` 命名空间（默认全关）+
-把它接到 `model_config(...)` 的 `memoryvla=` 参数 + 可选 batch sampler 选择。
+把它接到 `model_config(...)` 的 `memoryvla=` 参数。
+
+**`common/train.py`** —— batch sampler 的选择。**订正（2026-08-04）**：本节原先把
+「可选 batch sampler 选择」写在 `config_holobrain_common.py` 名下，那是做不到的 ——
+sampler 由 `train.py` 硬编码构造，config 模块无处插手。写错了落点，这条就没人实现，
+而且**没有任何东西会报错**：键存在、sampler 类存在、训练照跑。参见 P0-1。
 
 **回滚**：四处改动都是「加一个 if / 加一行 / 加一个字段」，`git revert` 单个 commit 即可；
 新增文件删目录即可。没有任何一处修改了已有语句。
@@ -75,7 +80,7 @@
 | `memoryvla.fusion_type` | str | `gate` | `add` 时无 `GateFusion` 参数 | A 默认 `gate`（cite: `vla/memory_vla.py:375`） |
 | `memoryvla.consolidate_type` | str | `tome` | — | A 默认 `tome`（cite: `vla/memory_vla.py:376`） |
 | `memoryvla.update_fused` | bool | False | — | A 默认 False（cite: `vla/memory_vla.py:377`） |
-| `memoryvla.episode_stream_sampler` | bool | False | 用宿主原 sampler | 本次新增；`stream` 模式下应设 True （方案，非实测）|
+| `memoryvla.episode_stream_sampler` | bool | **True** | 用宿主原 `DistributedBatchFlagSampler` | 本次新增；仅在 `enable=True` 时生效。**订正（2026-08-04）**：本行原写默认 `False`，与 ship 值 `config_holobrain_common.py:59` 的 `True` 相反 —— 文档与实现相反，把「缺失」升级成了「误导」。读取者：`train.py`（2026-08-04 接入）|
 
 `token_size` 不做成字段：直接取 `config["embed_dims"]`，避免两处配置漂移。
 

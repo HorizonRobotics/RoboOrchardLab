@@ -32,6 +32,7 @@ from robo_orchard_lab.models.memoryvla.memory_bank import (
 )
 from robo_orchard_lab.models.memoryvla.sampler import (
     MemoryVLAEpisodeStreamBatchSampler,
+    assert_episode_stream_wired,
 )
 from robo_orchard_lab.models.memoryvla.wrapper import MemoryVLAMemory
 
@@ -44,4 +45,5 @@ __all__ = [
     "TimestepEmbedder",
     "MemoryVLAMemory",
     "MemoryVLAEpisodeStreamBatchSampler",
+    "assert_episode_stream_wired",
 ]

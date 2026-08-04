@@ -38,7 +38,10 @@ from typing import Iterator, Optional
 import numpy as np
 from torch.utils.data import Sampler
 
-__all__ = ["MemoryVLAEpisodeStreamBatchSampler"]
+__all__ = [
+    "MemoryVLAEpisodeStreamBatchSampler",
+    "assert_episode_stream_wired",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -177,3 +180,93 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
                     continue
                 yield batch
         self._epoch += 1
+
+
+def _sampler_chain(dataloader) -> list:
+    """Every sampler object the loader delegates to, outermost first.
+
+    ``accelerator.prepare()`` can replace ``batch_sampler`` with a
+    ``BatchSamplerShard`` wrapper (accelerate/data_loader.py:239), so the
+    sampler that was constructed is not necessarily the one being iterated.
+    Only the unwrapped chain answers "what is training actually reading".
+    """
+    chain = []
+    cur = getattr(dataloader, "batch_sampler", None)
+    if cur is None:
+        cur = getattr(dataloader, "sampler", None)
+    for _ in range(8):
+        if cur is None:
+            break
+        chain.append(cur)
+        nxt = getattr(cur, "batch_sampler", None)
+        if nxt is None:
+            nxt = getattr(cur, "sampler", None)
+        if nxt is None or nxt is cur:
+            break
+        cur = nxt
+    return chain
+
+
+def assert_episode_stream_wired(config: dict, dataloader) -> None:
+    """Raise unless the episode-stream switch matches what is really wired.
+
+    `episode_stream_sampler` shipped as a config key that nothing read: the
+    switch was on, the sampler existed, and training still ran the host's
+    random-permutation sampler, under which the memory banks are an exact
+    identity and 7.47M parameters never receive a gradient -- with no error,
+    no warning and a normal-looking loss. This makes that state impossible to
+    reach silently.
+
+    Call after the trainer exists, so the check sees the post-``prepare()``
+    dataloader rather than the one that was handed in.
+    """
+    mv = config.get("memoryvla") or {}
+    if not mv.get("enable", False):
+        return
+
+    stream_sampler = mv.get("episode_stream_sampler", False)
+    dl_type = mv.get("dataloader_type", "stream")
+
+    if (dl_type == "stream") != bool(stream_sampler):
+        raise RuntimeError(
+            "memoryvla.dataloader_type={!r} and "
+            "memoryvla.episode_stream_sampler={!r} disagree. `stream` memory "
+            "is only meaningful with episode-ordered batches, and the episode "
+            "sampler is only meaningful for `stream`. Mismatched, the bank "
+            "runs but never retrieves anything -- which does not raise on its "
+            "own and looks exactly like a healthy run.".format(
+                dl_type, stream_sampler
+            )
+        )
+
+    if not stream_sampler:
+        return
+
+    if config.get("dataset_sample_weights"):
+        raise RuntimeError(
+            "memoryvla.episode_stream_sampler=True cannot be combined with "
+            "dataset_sample_weights={!r}: MemoryVLAEpisodeStreamBatchSampler "
+            "takes no such parameter, so the weights would be dropped without "
+            "a word. Drop the weights or turn the episode sampler off.".format(
+                config.get("dataset_sample_weights")
+            )
+        )
+
+    # dataloader is None on the --eval_only path, where there is no training
+    # sampler to check at all.
+    if dataloader is None:
+        return
+
+    chain = _sampler_chain(dataloader)
+    if not any(
+        isinstance(s, MemoryVLAEpisodeStreamBatchSampler) for s in chain
+    ):
+        raise RuntimeError(
+            "memoryvla.episode_stream_sampler=True but the trainer is "
+            "iterating {} -- MemoryVLAEpisodeStreamBatchSampler is not in the "
+            "chain. Episode-ordered batches are what makes the memory bank "
+            "accumulate; without them every fusion degenerates to an exact "
+            "identity and the module trains nothing.".format(
+                [type(s).__name__ for s in chain] or "no sampler at all"
+            )
+        )

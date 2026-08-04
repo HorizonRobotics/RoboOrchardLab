@@ -223,6 +223,17 @@ def main(args, accelerator):
         val_dataloader=val_dataloader,
         metric=metric,
     )
+    if (config.get("memoryvla") or {}).get("enable", False):
+        # Checked here, after the trainer ran accelerator.prepare()
+        # (hook_based_trainer.py:296), because prepare() may re-wrap
+        # batch_sampler: what was constructed above is not necessarily what
+        # gets iterated. Imported inside the branch so the switched-off path
+        # never imports the port.
+        from robo_orchard_lab.models.memoryvla import (
+            assert_episode_stream_wired,
+        )
+
+        assert_episode_stream_wired(config, trainer.dataloader)
     if args.eval_only:
         assert val_dataset is not None, (
             "The validation dataset must be specified when eval_only=True."

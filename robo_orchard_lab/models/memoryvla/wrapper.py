@@ -52,6 +52,11 @@ from robo_orchard_lab.models.memoryvla.memory_bank import (
 
 __all__ = ["MemoryVLAMemory"]
 
+# The identity probe below fails under this. 1e-5 sits far above float32
+# rounding (the measured degenerate gap was 1-2 ULP, ~6e-08) and far below
+# a working bank (measured ~1.2 with the episode sampler).
+IDENTITY_TOL = 1e-5
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,6 +117,10 @@ class MemoryVLAMemory(nn.Module):
         self.use_timestep_pe = use_timestep_pe
         self.episode_id_key = episode_id_key
         self.timestep_key = timestep_key
+        self.dataloader_type = dataloader_type
+        # guardrail state; plain attributes, so nothing enters state_dict
+        self._episode_check_done = False
+        self._identity_check_done = False
 
         bank_kwargs = dict(
             dataloader_type=dataloader_type,
@@ -208,6 +217,21 @@ class MemoryVLAMemory(nn.Module):
         if not self.training:
             self._autoreset_for_eval(episode_ids)
 
+        self._check_episode_stream(episode_ids, batch_size)
+        probe = (
+            self.training
+            and not self._identity_check_done
+            and self._history_will_be_read(episode_ids)
+        )
+        per_in = (
+            fm0.detach().clone() if probe and self.use_perceptual else None
+        )
+        cog_in = (
+            text_dict["embedded"].detach().clone()
+            if probe and self.use_cognitive
+            else None
+        )
+
         if self.use_perceptual:
             feature_maps = list(feature_maps)
             feature_maps[0] = self._forward_perceptual(
@@ -223,7 +247,101 @@ class MemoryVLAMemory(nn.Module):
                 timesteps,
             )
 
+        if probe:
+            self._assert_not_identity(
+                per_in,
+                feature_maps[0] if self.use_perceptual else None,
+                cog_in,
+                text_dict["embedded"] if self.use_cognitive else None,
+            )
+
         return feature_maps, text_dict
+
+    # -- guardrails --------------------------------------------------------
+    def _check_episode_stream(self, episode_ids, batch_size) -> None:
+        """Log the first batch's episode spread; raise if all-distinct.
+
+        Once per run, not per batch: a warning on every batch is a warning
+        nobody reads. Training only -- at inference, batches legitimately span
+        many episodes.
+        """
+        if self._episode_check_done or not self.training:
+            return
+        if self.dataloader_type != "stream":
+            return
+        self._episode_check_done = True
+        distinct = len(set(episode_ids))
+        logger.info(
+            "MemoryVLAMemory[stream]: first training batch holds %d distinct "
+            "episode(s) across %d samples.",
+            distinct,
+            batch_size,
+        )
+        if batch_size > 1 and distinct == batch_size:
+            raise RuntimeError(
+                "memoryvla.dataloader_type='stream' but the first training "
+                "batch has {} samples from {} different episodes. Each sample "
+                "is then the only frame of its episode the bank ever sees, so "
+                "there is no history to retrieve and every fusion reduces to "
+                "an exact identity. Use an episode-ordered batch sampler "
+                "(memoryvla.episode_stream_sampler=True).".format(
+                    batch_size, distinct
+                )
+            )
+
+    def _history_will_be_read(self, episode_ids) -> bool:
+        """Would at least one sample in this batch retrieve real history?
+
+        Two ways it can: an episode already carries entries from an earlier
+        batch, or two samples here share an episode -- ``process_batch`` walks
+        the batch in order and writes as it goes, so the later one reads what
+        the earlier one just stored.
+
+        Needed because at the very first frame of an episode the bank IS empty
+        and the identity bypass is the correct answer. Probing before history
+        exists would fail a run that is behaving exactly as designed.
+        """
+        if len(set(episode_ids)) < len(episode_ids):
+            return True
+        for bank in (self.per_mem_bank, self.cog_mem_bank):
+            if bank is None:
+                continue
+            if any(len(bank.bank.get(eid, [])) > 0 for eid in episode_ids):
+                return True
+        return False
+
+    def _assert_not_identity(self, per_in, per_out, cog_in, cog_out) -> None:
+        """Raise if the module returned its input back, to within noise.
+
+        Generic on purpose. The specific bug was `s*w + (1-s)*w == w`, but any
+        cause of "the switch is on and the method is algebraically a no-op"
+        lands here, which is the class of failure that produces no symptom.
+        """
+        self._identity_check_done = True
+        gaps = {}
+        if per_in is not None and per_out is not None:
+            gaps["perceptual"] = float((per_out.detach() - per_in).abs().max())
+        if cog_in is not None and cog_out is not None:
+            gaps["cognitive"] = float((cog_out.detach() - cog_in).abs().max())
+        logger.info(
+            "MemoryVLAMemory identity probe on the first forward that reads "
+            "history: %s (tolerance %g)",
+            {k: f"{v:.6e}" for k, v in gaps.items()},
+            IDENTITY_TOL,
+        )
+        # min, not max: the two banks share episode ids and are written in
+        # lockstep, so both always have history at the same time. Requiring
+        # only one of them to be non-degenerate would let a single dead stream
+        # hide behind a live one.
+        if gaps and min(gaps.values()) <= IDENTITY_TOL:
+            raise RuntimeError(
+                "MemoryVLAMemory is a numerical identity: history was "
+                "available and it changed its input by {} (tolerance {:g}). "
+                "The module is switched on and consuming parameters, but "
+                "mathematically it is doing nothing.".format(
+                    {k: f"{v:.6e}" for k, v in gaps.items()}, IDENTITY_TOL
+                )
+            )
 
     def _forward_perceptual(self, fm, episode_ids, timesteps):
         # [B, cams, C, h, w] -> [B, cams*h*w, C]

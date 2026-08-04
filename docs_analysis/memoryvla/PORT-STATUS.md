@@ -24,7 +24,10 @@
 | `ActionModel` / DiT | 放弃 | A 的动作头；宿主有自己的 `HoloBrainActionDecoder`，换掉等于换模型 | — （判断/方案，非实测） |
 | FSDP 策略 / overwatch / CLI / trainer | 放弃 | 协议红线：A 的基础设施一律接宿主的 | — （判断/方案，非实测） |
 
-## 侵入度：**L1**，触及宿主已有文件 **4 个**，+67 行，**0 删除**
+## 侵入度：**L1**，触及宿主已有文件 **5 个**，**0 删除**
+
+> **订正（2026-08-04）**：原记 4 个文件。移植当时漏掉了 `common/train.py`，
+> 而那正是 P0-1 —— sampler 开关没有读取者。修复后 `train.py` 是第 5 个。
 
 | 文件 | 档 | 改动 |
 |---|---|---|
@@ -32,6 +35,7 @@
 | `models/holobrain/structure_qwen3_5.py` | L1 | 一行 `build`（它跳过父类 `__init__`，必须单独加） （判断/方案，非实测） |
 | `configs/data_configs/config_robodojo_dataset.py` | L1 | 开关打开时给 ItemSelection 白名单加 `step_index` （判断/方案，非实测） |
 | `configs/config_holobrain_common.py` | L1 | `cfg.memoryvla.*` 命名空间 + `_build_memoryvla_cfg()` （判断/方案，非实测） |
+| `common/train.py` | L1 | 一个开关判断选 batch sampler + 一条装配期护栏调用（2026-08-04 修复 P0-1）|
 
 新增文件（L0）：`models/memoryvla/{__init__,memory_bank,wrapper,sampler}.py`、
 `configs/dataset_specs_memoryvla_robodojo_memory.py`、`docs_analysis/`。
