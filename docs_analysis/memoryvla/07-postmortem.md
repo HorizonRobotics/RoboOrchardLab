@@ -138,7 +138,33 @@ A 的 `scale = torch.sigmoid(self.proj(torch.cat([x1, x2], dim=-1)))` 一行，
 佐证：本次指向 A 的**类定义行** 13/13 精确，指向块内中段行则大量漂移——
 **符号锚点天然抗漂移**（`06a` §2）。
 
-### 3.3 需要豁免机制的两条
+### 3.3 第四次推翻：判据匹配到了自己的文档
+
+把三条判据封进 `preflight.sh` 后第一次实跑，**S（全局副作用扫描）报了失败**，命中的是：
+
+```
+07-postmortem.md:89:+| **S** | 全局副作用扫描 | `git diff … | grep -nE "manual_seed|set_default_dtype|…"` |
+```
+
+——**本文件第 89 行，也就是 S 判据自己的定义**。grep 扫了 `git diff` 的全部内容，
+而文档里为了说明这条判据，逐字写下了它要找的模式。
+
+两处修正：
+
+1. **只扫 `*.py`**（`git diff <base>..HEAD -- "*.py"`）。文档不是可执行面，
+   扫它只会产生噪声，而**噪声是判据被整体关掉的第一步**。
+2. **diff 基线必须显式传 `--base`，不猜**。原实现用
+   `merge-base HEAD @{u} || HEAD~1` 兜底，而本分支没有 upstream，于是退化成
+   `HEAD~1`——只扫了最后一个提交。**基线猜错时，这条判据既可能扫不到东西、
+   也可能扫整个历史，而两种都长得像通过。** 改成不传就跳过并说明原因。
+
+修正后同一命令：S 变为 `none` → PASS。
+
+> 这一条单独列出来，是因为它和 P0-1 是**同一个形状**：
+> 一个东西看起来在工作（判据响了 / 开关写着 True），实际指向的对象是错的。
+> 判据本身也会有「已声明未接线」式的缺陷，**判据必须先被回放验证，才能拿去验别人**。
+
+### 3.4 需要豁免机制的两条
 
 **C** 与 **F** 都会在**合法情形**下响：
 
@@ -200,7 +226,9 @@ A 的 `scale = torch.sigmoid(self.proj(torch.cat([x1, x2], dim=-1)))` 一行，
 
 ## 5. 可复用脚本
 
-### 5.1 本次 21 个证据文件的分类
+### 5.1 本次 24 个证据文件的分类
+
+（`$ROL_JFS/port/memoryvla/review/`，含复跑 JSON、一次性脚本、基线快照、提交信息草稿）
 
 | 文件 | 与 memoryvla 的耦合 | 处置 |
 |---|---|---|
@@ -224,10 +252,56 @@ A 的 `scale = torch.sigmoid(self.proj(torch.cat([x1, x2], dim=-1)))` 一行，
 | **`orphan_switch_check.py`** | 判据 K + C + D。纯静态、无 GPU、不 import 项目 | `--repo --namespace --config --subdir [--plan] [--waive-class/-key]` | ✅ 12 键 / 8 类 / 12 行，**4 findings 全为真，0 FP 0 FN** |
 | **`port_probe.py`** | 判据 I + G + P + O + B。一次运行内五项观测 | `--config-file --dataset-file --dataset-kwargs --syspath --namespace --attr --sampler` | ✅ 双向验证：`host` → `INERT`(exit 1)、`episode` → `ACTIVE`(exit 0)，且复现已知数值 |
 | **`copy_fidelity_check.py`** | 判据 F。按 `[port:]` 标记回源比对 | `--subdir --source-repo [--waive] [--min-ratio]` | ✅ 6 标记：4 个 ratio ≥ 0.998，2 个 DRIFT 均为已声明改写 |
+| **`preflight.sh`** | 把上面三者串成一条命令，任一不过即 exit 1。分 `--static`（秒级无 GPU）与 `--runtime`（分钟级需 GPU）两档 | `--method <名>` 基本够用（按 `models/<method>/` 与 `docs_analysis/<method>/` 约定推导）；另需 `--base <基点 commit>`、可选 `--source-repo`、`--waive-*` | ✅ 见 §5.3 |
 
 三者都**不 import 被审方法的任何符号**，靠参数定位；`port_probe.py` 的恒等探针
 按 (shape, dtype) 匹配进出张量，因此对「shape in = shape out」形状的移植模块通用
 ——而这正是移植协议本身要求的形状。
+
+### 5.3 `preflight.sh` 在本次移植上的实跑结果
+
+**为什么是脚本而不是段落**：本次 P0-1 的风险在三份文档里都被正确预警过
+（`03:111`、`04:99`、`sampler.py:19-27` 的 docstring 甚至精确写出了失效形态），
+**唯独没有一行代码去执行它**。再往协议里加一段散文，就是把同一个失败模式复制一份。
+判据要有用，必须是**退出码**。
+
+```bash
+bash $ROL_JFS/port/_shared/preflight.sh \
+     --method memoryvla --base 3ce31c0c \
+     --source-repo ~/git_repo/MemoryVLA --static
+```
+
+**不加豁免**（~5 秒）：
+
+```
+  FAIL  K/C/D  orphan switches, dead classes, default drift
+  FAIL  F      copy fidelity against the source repo
+  PASS  S      global side effects reachable with the switch OFF
+```
+
+**加上两条合法豁免**（`--waive-class BottleneckSE --waive-copy L105-L136 --waive-copy L335-L357`）：
+
+```
+  ORPHAN  episode_stream_sampler                NO READER ANYWHERE
+  UNUSED  MemoryVLAEpisodeStreamBatchSampler    NEVER CONSTRUCTED OR REFERENCED
+  DRIFT   episode_stream_sampler                plan='False'  shipped=True
+  ──
+  FAIL  K/C/D      PASS  F      PASS  S
+```
+
+**残留的三条失败，全部指向 P0-1，且从三个互相独立的角度**：
+键无人读 / 类无人构造 / 文档默认值与 ship 不符。**噪声为零。**
+
+意义有三层：
+
+1. **一条 5 秒的命令，收敛到了一次完整审查才建立起来的那个 P0。**
+2. **它是修复的验收判据**：P0-1 修好之后这三条必须同时变绿——
+   只修配置键不接 sampler，`UNUSED` 那条仍会红。
+3. **豁免列表本身是产出**：`--waive-class BottleneckSE` 与两条 `--waive-copy`
+   恰好就是这次移植「刻意不接入」和「刻意改写」的完整清单，可审计、可复核。
+
+> 这个脚本自己也被 §3.3 咬过一次（S 判据匹配到了本文档里它自己的定义）。
+> **判据必须先被回放验证，才能拿去验别人。**
 
 ---
 
@@ -269,3 +343,34 @@ A 的 `scale = torch.sigmoid(self.proj(torch.cat([x1, x2], dim=-1)))` 一行，
 
 不选 F 与 C 进前三的原因：两者都需要豁免机制才能用，而豁免机制本身要人维护；
 在只能加三条的预算下，**优先选零维护成本的**。
+
+> 若这三条以 `preflight.sh --static` 的形式一起落地，边际成本几乎为零
+> （K/C/D 同一个脚本、同一次 AST 遍历），届时 F 与 C 顺带纳入是划算的。
+
+---
+
+## 7. 附录：本次审查会话结束时的状态
+
+**为什么记在这里**：审查协议要求收尾时「A repo 全程只读、工作树干净、不越界写入」。
+这些我逐条实测通过了，但若只留在对话里，三个月后无法复核。
+**「验过了」和「验过的记录」不是一回事**——这本身就是本次审查反复用到的判据
+（`06f` §7：产物存在 ≠ 产生它的操作可行）。
+
+| 项 | 状态 | 判据 |
+|---|---|---|
+| 提交 | **3 个**，全部在 `review/memoryvla`，从被审 commit `18106b05` 拉出 | `git log --oneline 18106b05..HEAD \| wc -l` → 3 |
+| 改动范围 | **8 个报告文件，零代码改动** | `git diff --name-status 18106b05..HEAD` 全部为 `A docs_analysis/memoryvla/0[67]*` |
+| `port/memoryvla` 分支 | **未被追加提交**，仍为 `18106b05` | `git rev-parse --short port/memoryvla` |
+| 宿主工作树 | 干净 | `git status --porcelain` 为空 |
+| `.gitignore` | 未被触碰 | `git diff --stat 3ce31c0c..HEAD -- .gitignore \| wc -l` → 0 |
+| **A repo（`~/git_repo/MemoryVLA`）** | **与 R0 基线逐字节一致** | `status --porcelain \| md5sum` = `9815d522644f15ab4edd56e5b33d1d03`，与 `review/A_repo_baseline.txt` 记录的开审前快照相同 |
+| A repo HEAD | `0eef5c3`，未移动 | 与 `PORT-STATUS.md` 自述一致 |
+| 审查用基线 worktree | **已清理** | `git worktree list` 只剩主树；该 worktree 曾建在 `review/baseline_3ce31c0c`，一条命令可重建 |
+| 运行期产物 | 全部落 JFS，未写 bucket、未写 `$HOME` 根或 `/tmp` | `env_selfcheck` → `SELFCHECK OK` |
+
+⚠️ **A repo 开审前就是脏的**（13 个 M + 7 个 `??`，来自它自己的 repro/存储迁移工作，
+与本次移植无关）。所以判据不是「A repo 干净」，而是「**与开审前快照一致**」——
+`review/A_repo_baseline.txt` 在 R0 第一步就固定了这个快照，否则收尾时无法区分
+「本来就脏」与「被我弄脏」。**下次审查第一件事仍应是给 A repo 拍快照。**
+
+未推送：`review/memoryvla` 没有配置 upstream，3 个提交目前只在本机。
