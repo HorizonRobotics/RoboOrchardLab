@@ -1,10 +1,32 @@
 # 05 — 消融矩阵与正交性
 
+> # ⛔ 本文全部数值已失效，不可用于任何结论（标注于 2026-08-04）
+>
+> **数据来源**：`$ROL_JFS/port/memoryvla/tools/run_gears.py --sampler sequential`。
+> 那是一条**宿主到不了的装配**——`--sampler sequential` 是 harness 自己写的连续索引列表，
+> 仓库里根本不存在这个东西；它碰巧产出 episode 连续的批，于是记忆库看起来一直在工作。
+> 真实入口（`train.py`）当时走的是 `DistributedBatchFlagSampler` 全局随机排列，
+> bank 恒为 `[1]`、融合精确恒等、7.47M 参数 grad `64 None / 4 零 / 0 非零`。
+> 详见 `06-review-report.md` 的 **P1-1** 与 `08-review-response.md`。
+>
+> **失效状态**：下表 7 行**未重跑**，本轮也不打算重跑（消融本身不是本轮范围）。
+> 数字**故意保留不删**——它们记录了失效是怎么发生的，删掉就看不见了。
+>
+> **现行有效数值**在 `PORT-STATUS.md`「验证结果」与 `08-review-response.md`，
+> 全部从 `train.py` 真实入口产出。唯一**不受影响**的是 C 档（`06-verification.md` C 档），
+> 它不经过 sampler。
+
 全部跑在 RoboDojo Memory 维度任务上（`swap_T`），8 step，batch 4，单卡，固定 seed，`lr=0`。
-**每一行都只靠 config 切换，没有改一行代码** —— 这是挂载点选对了的判据。
+~~**每一行都只靠 config 切换，没有改一行代码** —— 这是挂载点选对了的判据。~~
+**订正（2026-08-04）**：这句**已不成立**。`mode=group` 那一行现在需要同时设两个键
+（`dataloader_type=group` **且** `episode_stream_sampler=True`），见下面第 1 小节。
 所有开关都是 `config["memoryvla"]` 里的键，可由 `train.py --kwargs` 直接传。
 
 ## 矩阵
+
+> **⛔ 下表 7 行全部产自假路径，已失效，未重跑（2026-08-04 标注）。**
+> `峰值显存` 一列另有一层问题：真实入口关闭态实测 `8.98 GiB`、开启态 `9.30 GiB`，
+> 与下表的 `7.47 / 7.78 G` 差一档——那是 harness 不装 accelerate/checkpoint 的结果。
 
 | 配置 | 开关 | memoryvla 参数 | step0 loss | vs base 最大逐 step 差 | 峰值显存 | bank 峰值长度 |
 |---|---|---:|---:|---:|---:|---:|
@@ -16,11 +38,22 @@
 | consolidate=fifo | `consolidate_type=fifo` | 7,467,264 | 2.406754 | 4.030e-02 | 7.78 G | 16 （cite: logs/abl_consolidate_fifo.json） |
 | **mode=group** | `dataloader_type=group` | 7,467,264 | 2.406754 | 3.887e-02 | 7.58 G | **4** （cite: logs/abl_mode_group.json） |
 
-**每一行 vs base 都 > 0**，说明每个开关都真的生效了，没有哪个是摆设。
+~~**每一行 vs base 都 > 0**，说明每个开关都真的生效了，没有哪个是摆设。~~
+
+> **⛔ 这条结论建立在假路径上，已失效，未重跑（2026-08-04 标注）。**
+> 「每一行 vs base 都 > 0」在 `--sampler sequential` 下成立，因为那条路径下 batch 恰好
+> episode 连续、记忆库真的在工作。在**真实入口**上，当时这些配置**每一行都是恒等**——
+> 差值全部来自随机性而非记忆库。也就是说这句话恰好把「全都是摆设」读成了「没有哪个是摆设」。
+> **要重新回答「每个开关是否真的生效」，必须在真实入口上重跑整张表；本轮未做。**
 
 ## 三处值得单独说的
 
 ### 1. `mode=group` 的 bank 峰值是 4，其余都是 16 —— 在真实模型上复现了那个反直觉行为
+
+> **状态（2026-08-04）**：本节描述的**现象是对的**，但**这一行的配方当时不可执行**，
+> 且在被审 commit `2b739226` 上它是 **P1-B** —— `dataloader_type=group` 没有任何可用配置：
+> 开 `episode_stream_sampler` 会 raise，关掉则静默退化成恒等且三道护栏一道都不响。
+> 本轮第二段修的就是这个，修完后的可用配方见下面的「订正」。
 
 batch 就是 4。也就是说 **group 模式下记忆跨不出一个 batch**，
 `mem_length=16` 从头到尾没起过作用。这与 `01b` 里在纯模块上的实测
