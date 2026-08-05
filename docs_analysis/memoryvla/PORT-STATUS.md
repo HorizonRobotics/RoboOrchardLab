@@ -46,14 +46,20 @@
 > **根因不是粗心，是标题那一行没有基点限定** —— 一个不带基点的数字无法自证过期。
 > 现行口径因此改成「基点 + 截至 commit + 逐文件表」，任何一次代码提交后重跑下面的命令即可。
 >
-> **基点 `18106b05`，截至 `49b2178c`：**
+> **基点 `18106b05`：**
 >
-> | 文件 | +/− |
-> |---|---:|
-> | `projects/holobrain_internal/common/train.py` | **+38 / −6** |
-> | `robo_orchard_lab/models/memoryvla/sampler.py` | **+106 / −5** |
-> | `robo_orchard_lab/models/memoryvla/wrapper.py` | **+204 / −0** |
-> | `robo_orchard_lab/models/memoryvla/__init__.py` | **+2 / −0** |
+> | 文件 | 截至 `49b2178c`（第三轮 tip） | 截至 `fc33a5db`（第四轮代码提交） |
+> |---|---:|---:|
+> | `projects/holobrain_internal/common/train.py` | **+38 / −6** | **+38 / −6**（本轮一行未动） |
+> | `robo_orchard_lab/models/memoryvla/sampler.py` | **+106 / −5** | **+202 / −5** |
+> | `robo_orchard_lab/models/memoryvla/wrapper.py` | **+204 / −0** | **+330 / −0** |
+> | `robo_orchard_lab/models/memoryvla/__init__.py` | **+2 / −0** | **+2 / −0** |
+>
+> 「触及宿主已有文件 **5 个**」在两个 commit 上都成立
+> （`config_holobrain_common.py` · `config_robodojo_dataset.py` · `train.py` ·
+> `structure.py` · `structure_qwen3_5.py`）。
+> 第四轮另新增 3 个**测试文件**（`tests/test_robo_orchard_lab/models/memoryvla/`），
+> 属新增而非触及。
 >
 > 重跑命令（**它不是闸门**，只是把「这几个数怎么算出来的」钉死，让下一次重算是机械动作
 > 而不是回忆；脚本形式在 `$ROL_JFS/port/memoryvla/fix4/intrusion_line.sh`）：
@@ -208,6 +214,26 @@ head_A_group_off       8.976670265197754
 > 同代码的关闭态 run，得到 `8.976670265197754` vs `8.971459388732910`（差 5.21 MiB），
 > 且低值与本轮记的 `8.971695899963379` **也不相同** —— 与「分配器 run-to-run 差异」一致，
 > 与「代码差异」不一致。**降级正当，不是把不利判据洗掉。**
+>
+> **第四轮又一次复现**：关闭态 `stream`，`f770afe0` 上 `8.976670265197754`、
+> `fc33a5db` 上 `8.971459388732910`（差 **5.34 MiB**），而同一对 commit 的关闭态 `group`
+> 两边**逐位相同**。同一份代码差异在两条路径上给出不同的显存差 ⇒ 差的不是代码。
+>
+> **观测器污染，本轮终于测出了数（补上 `09` §7.3 ⑥ 与 `MIGRATIONS.md` 教训 9 的欠账）。**
+> 同一开启态配置（`stream` bs=4，20 步）跑两次，一次带 identity 探针一次 `--no-identity`：
+>
+> ```
+> with identity probe : 9.302354336 GiB   (gpu 3, 20 forwards recorded)
+> without             : 9.301393032 GiB   (gpu 0,  0 forwards recorded)
+> difference          : +0.98 MiB  (+0.010%)
+> ```
+>
+> **这个数要连着噪声地板一起读**：run-to-run 抖动本身就有 ~5 MiB 量级，
+> 所以正确结论是「**观测器开销在这套测量下不可分辨，上界约 5 MiB**」，
+> **不是**「开销是 0.98 MiB」。
+> 顺带**订正 `MIGRATIONS.md` 教训 9 里那句「直接把 D 档显存读数抬高了 6 MiB 量级」**——
+> 那是推断不是实测，实测差值比它小一个量级，且落在噪声里。
+> 这恰好是同一条教训的第三次出现：**一个量在被当成任何东西之前，先得知道它的地板在哪。**
 
 ### 关闭态的批次顺序与训练 seed 无关（找阳性对照时挖出来的）
 
@@ -309,6 +335,21 @@ head_A_group_off       8.976670265197754
 这正是 `06-verification.md` 末尾那条「`group` + batch=1 会恒等但看起来正常」的警告——
 它从此不再只是一段文字。
 
+> **第四轮重跑（commit `fc33a5db`）+ 新增第三档。**
+> 前两档仍然触发，行号随本轮改动位移；第三档是**本轮新增的、专门去找残留洞的**一档。
+>
+> | 场景 | 实测 | 判定 |
+> |---|---|---|
+> | 故障注入，`stream` bs=4，4 步 | raise `wrapper.py:372 in _check_episode_stream`，**第 0 次 forward** | ✅ 仍触发 |
+> | 故障注入，`stream` bs=1，12 步 | raise `wrapper.py:462 in _check_bank_liveness`，**第 8 次 forward**，`grad 68/0/0` | ✅ 仍触发 |
+> | **故障注入，`stream` bs=1，4 步（新增）** | **`rc=0`**、bank `[1,1,1,1]`、`grad 64/4/0`、移动 `0/68`、护栏日志只有 1 行正常 INFO | ❌ **无人看守 —— 这就是残留洞** |
+>
+> 第三档**如实交付，不掩盖**：它需要主动注入（或 `_episode_spans` 在别的数据集上不成立，遗留 12），
+> **不是配置可达**的。它证明的是 K 这个时间闸门在短跑下的窗口仍然存在，只是已经不再有配置能走进去。
+>
+> **每一档都核对了 raise 的栈帧函数名，不只看退出码** —— 上一轮复审踩过一次
+> GPU OOM 被 `rc=3` 促成「按预期 raise」。`gear4.sh` 的期望写成 `raise:<函数名>`，对不上直接判 BAD。
+
 单元测试（CPU，本机无 pytest，写成退出码脚本，均在 `fix3/`）：
 `guard3_unit_test.py` **22/22**（15 个装配期用例 + 7 条文案卫生断言）·
 `guard3_probe_test.py` **24/24**（看门狗 8 · batch 组成 6 · 恒等探针 5 · `_history_will_be_read` 5）。
@@ -317,9 +358,16 @@ head_A_group_off       8.976670265197754
 > `git ls-files | grep -c guard3` = `0`，仓内 memoryvla 相关测试为 **0 个**，
 > 没有任何 runner 会再跑它们。也就是说上面那两个 `22/22` / `24/24` 是**一次性的手工结果**，
 > 不是回归保护 —— 而下一段说「加了断言禁止它们回来」时，默认读者会读成后者。
-> **本轮第三段把它们改写进 `tests/test_robo_orchard_lab/models/memoryvla/`**
-> （`tests/Makefile: test_ut` 的目标树），届时这段口径会一并更新；在那之前，
-> 这里的准确说法是：**断言写在 `$ROL_JFS/port/memoryvla/fix3/`，尚未进仓，不会被自动执行。**
+>
+> **已修（commit `fc33a5db`）**：改写进
+> `tests/test_robo_orchard_lab/models/memoryvla/{test_sampler_guard,test_wrapper_guards}.py`，
+> 即 `tests/Makefile` 的 `test_ut` 目标树（`pytest -c tests/pytest.ini tests/test_robo_orchard_lab`）。
+> 合计 **84 项，全过**（46 项承接自 `fix3/`，其余为本轮新增，含 P1-C 的跨度用例与扩展的文案卫生断言）。
+>
+> ⚠️ **这句话的准确边界**：执行证据来自 `.git/run_tests_nopytest.py`
+> （本机 `holobrain_internal` 没有 pytest，装它会破 E0「宿主主环境零改动」）。
+> **「CI 里的 pytest 会不会真的收集到这两个文件」本轮无法验证**，已记入无法验证清单。
+> 能给的结构性论证只到「文件落在 `test_ut` 的目标树内」。
 
 **文案卫生断言是本轮新增的**，因为 P1-B 的成因不是缺护栏，是护栏的**文案**
 把人指引进了那个洞。断言：任何 raise 文本都不得出现
@@ -367,8 +415,44 @@ head_A_group_off       8.976670265197754
 >    而文案断言了前者。
 >
 > 而 `group` ∧ `batch_size == 1` **在构造期就是静态可判的**，根本不需要等任何 forward。
-> **修复在本轮第三段**（`P1-C`），修完这里换成带 `batch_size` / `group_size` 维度的实测矩阵。
-> 在那之前，`group` 的正确用法是 **`batch_size ≥ 2` 且 `group_size ≥ 2`**。
+> **已在第四轮修复**（commit `fc33a5db`），实测矩阵见下。
+
+### 支持矩阵（2026-08-05 第四轮，commit `fc33a5db`，全部从 `train.py` 真实入口实测）
+
+**记忆跨度是这张表的组织原则**：`group` 在 `process_batch` 顶部 `bank.clear()`
+（`memory_bank.py:361`），批内每 `group_size` 个样本再 `clear_episode` 上一组
+（`:374-377`，配 episode sampler 时那是**同一条** episode）
+⇒ **`group` 的记忆跨度 = `min(group_size, batch_size)`**，等于 1 就一定退化。
+`stream` 的 bank 跨调用存活，所以 `batch_size=1` 在那边完全合法。
+
+| `dataloader_type` | sampler | `batch_size` | `group_size` | `max_step` | 结果 | **谁在看守** |
+|---|---|---:|---:|---:|---|---|
+| `stream` / `group` | **False** | 任意 | 任意 | 任意 | **raise** `sampler.py:264` | 装配期**链**判据，`train_forwards=0` |
+| **`group`** | True | **1** | 16 | **4** | **raise** `sampler.py:344` | 装配期**跨度**判据（**新**），`fwd=0`、护栏日志 0 行、训练从未开始 |
+| **`group`** | True | **1** | 16 | 12 | **raise** `sampler.py:344` | 同上 —— **与步数无关** |
+| **`group`** | True | 4 | **1** | 4 | **raise** `sampler.py:344`，`min(1, 4) = 1` | 同上 —— **`group_size=1` 是同一个失效的另一个键** |
+| `group` | True | 4 | 16 | 4 | 通过，bank **恒为 4**，`grad 0/0/68`，移动 63/68 | 第一批检查 fwd0（批次坏了就在这里死） |
+| `group` | True | 4 | 16 | 12 | 通过，同上 | 第一批检查 fwd0 **+** 看门狗 fwd8（`maxbank=4`） |
+| `stream` | True | 4 | 16 | 4 | 通过，bank `4→8→12→16` | 第一批检查 fwd0 |
+| `stream` | True | 4 | 16 | 20 | 通过，同上，恒等间隙 `1.296956` / `1.123835` | 第一批检查 **+** 看门狗 fwd8 |
+| `stream` | True | **1** | 16 | 4 | 通过，bank `1→2→3→4` | 第一批检查 fwd0（判不了 bs=1，但会记录观测值） |
+| `stream` | True | **1** | 16 | 12 | 通过，bank 涨到 8，`grad 0/0/68`，移动 62/68 | 第一批检查 **+** 看门狗 fwd8（`maxbank=8`） |
+| `stream` | True | 4 | 16 (`mem_length=1`) | 12 | 通过，`grad 0/12/56`，移动 51/68 | 看门狗 fwd8 **主动站下**并 `WARNING`（见下） |
+
+**`group` 现在没有「被构建 + 静默退化 + 无告警」的组合**：三种致命配置全部在
+**第一次 forward 之前**就 raise，与 `max_step` 无关；能跑的两格都有 fwd0 的看守。
+
+**一处主动去掉的误报**：`mem_length=1` 时巩固每写一条就把 bank 压回 1 条，
+**bank 长度上界就是 1**，但那一条是真历史、检索照常发生 —— 实测 `grad 0/12/56`、
+参数移动 51/68，模块**在工作**。旧判据会在第 8 次 forward 无故打死这个 run。
+现在它 `WARNING` 说明「这条判据在此配置下失明，站下不裁决」，不 raise。
+**误报是对「触发时必须指向真实原因」最彻底的违反**，所以一并修了。
+
+**残留洞，如实写明**：`stream` + `batch_size=1` + 批次**实际不连续** + 跑不满 K 步
+⇒ 仍然无人看守。实测（第三档故障注入，`--break-episode-order`，4 步）：
+`rc=0`、bank `[1,1,1,1]`、`grad 64/4/0`、参数移动 `0/68`、只有 1 行正常 INFO。
+**它不是配置可达的** —— 要么 `_episode_spans` 在别的数据集上不成立（遗留 12），
+要么像这里一样主动注入。同一注入跑满 12 步则被看门狗抓住（`wrapper.py:462`，第 8 次 forward）。
 
 ### D 档新增：`group` 路径的资源与行为（不覆盖 stream 的数值）
 
@@ -474,8 +558,22 @@ head_A_group_off       8.976670265197754
     （batch=1 的 `stream` 要到第 2 次 forward 才涨到 2），取 8 是与 B 档同量级的余量。
     没有实验支持 8 比 4 或 16 更好。若将来出现「合法配置要跑很多步才积累历史」的用法，
     这个数要重新定，**而且要用实测定，不是拍**。
-    **第四轮补充**：K 还有一个当时没记的性质 —— 它是**时间闸门**，
-    所以「跑不满 K 步」这一档完全没有保护，见「结果矩阵」下的 P1-C 订正。
+
+    **第四轮补充 —— K 的取值依据与它现在的角色。**
+
+    当时漏记了 K 最重要的性质：**它是时间闸门**，所以「跑不满 K 步」那一档
+    **完全没有保护**，而 4–8 step 恰是本项目自己的冒烟长度。这就是 P1-C 的一半。
+
+    | 问 | 答 |
+    |---|---|
+    | 下界 | **2**。`stream` + `batch_size=1` 的健康 run 要到**第 2 次** forward bank 才到 2（实测 `f4_B_stream_bs1_s12` 的 bank 序列 `1,2,3,4,…`）。取 1 会打死一个正常 run |
+    | 为什么留到 8 | 余量。episode 可能只有 1 帧，连着几条极短 episode 会把「bank 涨过 1」推后；8 仍远小于任何真实训练 |
+    | 上界怎么定 | **仍未做**。要枚举所有合法配置的「首次积累历史所需 forward 数」再取上确界，本轮没做 |
+    | **它现在是不是唯一防线** | **不是了。** 所有**配置可达**的退化都被提前到装配期（`sampler.py:264` 链判据 / `sampler.py:344` 跨度判据）或第一次 forward（`wrapper.py:372` 第一批检查）。留给 K 的是**只有跑起来才知道**的一类：批次本该 episode 连续而实际不是 |
+    | 剩下的窗口 | `stream` + bs=1 + 批次实际不连续 + 步数 < K。见支持矩阵末尾的「残留洞」 |
+
+    **一条方法论**：带计数 / 时间闸门的判据，**必须交付「闸门未到达时的行为」这一档证据**，
+    否则它只在长跑里成立，而冒烟恰恰是短跑。已写进 `MIGRATIONS.md` 教训 13。
 
 12. **`_episode_spans` 在其他数据集上的正确性未验证**（2026-08-05 第四轮**补回**，复审 P3-H）。
     这一条是 `09-incremental-review.md` §8 新增五条之一，**上一轮承接时掉了**。

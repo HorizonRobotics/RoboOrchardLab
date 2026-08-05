@@ -118,7 +118,15 @@ git diff --stat 18106b05..f6dfd1e8
 | **`group` + sampler `True`** | **raise（「disagree」）** | **通过 —— 可用配置** |
 | **`group` + sampler `False`** | **静默恒等，护栏 0 行日志** | **raise，`rc=1`** |
 
-**不存在「memory 被构建 + 静默退化 + 无告警」的组合。**
+~~**不存在「memory 被构建 + 静默退化 + 无告警」的组合。**~~
+
+> **⛔ 订正（2026-08-05，第四轮，复审 P1-C）：这句话当时就是错的，已撤回。**
+> 上面这张矩阵只有 `dataloader_type` × `sampler` 两个维度，而失效需要**三个** ——
+> `group` + sampler `True` + **`batch_size=1`** 是纯配置可达的静默退化：
+> `rc=0`、bank `[1,1,1,1]`、`grad 64/4/0`、参数移动 `0/68`、零告警。
+> 「`group` + sampler `True` 通过」这一格因此**成立得比写的窄**。
+> 修复与带 `batch_size` / `group_size` 维度的实测矩阵见 `PORT-STATUS.md`
+> 「支持矩阵（2026-08-05 第四轮）」与 `12-review-response.md`。
 
 **护栏有牙（这是本条最重要的证据）**。故障注入用 runner 的 `--break-episode-order`：
 按 sampler **自己的** span 表重排它自己的输出，**sampler 对象不动**，
