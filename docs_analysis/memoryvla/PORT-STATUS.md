@@ -733,6 +733,16 @@ head_A_group_off       8.976670265197754
     要拆开需要第三臂（关闭 + stream sampler），而 `train.py:118` 现在只在
     `memoryvla.enable=True` 时才构造那个 sampler ⇒ 需要改代码。本轮按用户决定不拆。
 
+29. **`export.py`的产物布局不是评测消费的布局**（2026-08-05）。它把 processor 写在
+    顶层、模型写在 `model/` 下，并生成一个 `model/ckpt/` 目录，里面的 symlink 指向
+    **本机 checkout**（`/home/users/kun01.wu-labs/git_repo/...`）。评测要的是 v9 那种
+    扁平布局：一个目录，`ckpt` 是**单个**指向 pod 可见路径的 symlink。
+    直接 `cp -r` 导出树 ⇒ 在开发机上解析得开、在 pod 里 dangling。
+    已加 `scripts/assemble_deploy_package.sh` 做转换并自检
+    （`model.config.json` 里有 `MemoryVLAMemory`、processor 里有 `step_index`）。
+    `link_model_resource` 见到已存在的 `ckpt` 会**直接返回不替换**
+    （`deploy_policy.py:233`），所以这个坑不会被运行期兜底修掉。
+
 ## 下一步建议
 
 1. ~~先把 `reset()` 接进评测循环（遗留 1）~~ **已做**（`0c8a0f01`，并在 `7744cfd2`
