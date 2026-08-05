@@ -1,6 +1,6 @@
 {
-    "job_name": "holobrain_robodojo_mvla_100k_conveyor_mem",
-    "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-holobrain_robodojo_mvla_100k_conveyor_mem",
+    "job_name": "holobrain_robodojo_mvla_15k_conveyor_mem",
+    "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-holobrain_robodojo_mvla_15k_conveyor_mem",
     "clear_workspace": true,
     "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-trasnformers5102",
     "input_bucket": "robot_lab,robot_lab2",
@@ -16,7 +16,7 @@
         "export PYTHONPATH=${WORKING_PATH}/robo_orchard_lab:$PYTHONPATH"
     ],
     "python_launcher": "accelerate",
-    "python_executable": "train.py --workspace /job_data --logging_dir /job_tboard --config configs/config_holobrain_common.py --kwargs '{\"dataset_specs\":\"configs/dataset_specs_robodojo_conveyor.py\",\"with_depth\":true,\"with_depth_loss\":false,\"batch_size\":16,\"max_step\":100000,\"save_step_freq\":5000,\"num_workers\":8,\"memoryvla\":{\"enable\":true,\"use_perceptual\":true,\"use_cognitive\":true,\"dataloader_type\":\"stream\",\"group_size\":16,\"mem_length\":16,\"retrieval_layers\":2,\"use_timestep_pe\":true,\"fusion_type\":\"gate\",\"consolidate_type\":\"tome\",\"update_fused\":false,\"episode_stream_sampler\":true}}'",
+    "python_executable": "train.py --workspace /job_data --logging_dir /job_tboard --config configs/config_holobrain_common.py --kwargs '{\"dataset_specs\":\"configs/dataset_specs_robodojo_conveyor.py\",\"with_depth\":true,\"with_depth_loss\":false,\"batch_size\":16,\"max_step\":15000,\"save_step_freq\":2500,\"num_workers\":8,\"memoryvla\":{\"enable\":true,\"use_perceptual\":true,\"use_cognitive\":true,\"dataloader_type\":\"stream\",\"group_size\":16,\"mem_length\":16,\"retrieval_layers\":2,\"use_timestep_pe\":true,\"fusion_type\":\"gate\",\"consolidate_type\":\"tome\",\"update_fused\":false,\"episode_stream_sampler\":true}}'",
     "to_upload": [
         "robo_orchard_lab",
         "projects/holobrain_internal/common/configs",

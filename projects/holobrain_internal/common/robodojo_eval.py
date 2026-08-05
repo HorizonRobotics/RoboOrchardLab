@@ -158,6 +158,19 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model_dir", required=True)
     parser.add_argument("--model_processor", required=True)
     parser.add_argument(
+        "--valid_action_step",
+        type=int,
+        default=None,
+        help=(
+            "How many of the predicted actions to execute before observing "
+            "again. Defaults to the policy's deploy.yml (32). This is also "
+            "the memory's write stride at inference: the bank gets one entry "
+            "per forward, so 32 means one entry per 32 env frames while "
+            "training writes one per frame. Lowering it costs 32/k times the "
+            "eval compute and buys alignment with how the bank was trained."
+        ),
+    )
+    parser.add_argument(
         "--robodojo_root", type=Path, default=Path("/opt/robodojo")
     )
     parser.add_argument("--conda_root", type=Path, default=Path("/opt/conda"))
@@ -675,6 +688,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         ROBODOJO_EVAL_RESULT_DIR=str(args.eval_result_dir),
         HOLOBRAIN_VLM_CKPT_DIR=str(args.vlm_ckpt_dir),
         HOLOBRAIN_URDF_DIR=str(args.urdf_dir),
+    )
+    if args.valid_action_step is not None:
+        env["HOLOBRAIN_VALID_ACTION_STEP"] = str(args.valid_action_step)
+        logger.info(f"valid_action_step: {args.valid_action_step}")
+    env.update(
         OMNI_KIT_ACCEPT_EULA="YES",
         HOME="/tmp/robodojo-home",
     )
