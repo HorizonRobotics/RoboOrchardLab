@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -32,6 +33,26 @@ from robo_orchard_lab.dataset.robot.engine import (
     create_tables,
     create_temp_engine,
 )
+
+
+def test_create_temp_engine_preserves_parent_with_tmp_in_name(
+    tmp_path: Path,
+) -> None:
+    """Only the generated filename suffix changes for temporary engines."""
+
+    database_parent = tmp_path / "sidecar.tmp"
+    database_parent.mkdir()
+
+    with create_temp_engine(
+        dir=str(database_parent),
+        prefix="sidecar-",
+        drivername="sqlite",
+    ) as engine:
+        assert engine.url.database is not None
+        database_path = Path(engine.url.database)
+        assert database_path.parent == database_parent
+        assert database_path.suffix == ".sqlite"
+        create_tables(engine, base=DatasetORMBase)
 
 
 @pytest.fixture(scope="session")

@@ -218,9 +218,9 @@ if __name__ == "__main__":
         # metric
         "torchmetrics>=1.6",
         "datasets>=4.0.0",
-        "sqlalchemy",
-        "duckdb-engine",
-        "duckdb<=1.3.2",
+        "sqlalchemy>=2.0.45,<2.1.0",
+        "duckdb-engine>=0.17.0,<0.18.0",
+        "duckdb>=1.5.3,<1.6.0",
         "fsspec",
         "sortedcontainers",
         "numpydantic",

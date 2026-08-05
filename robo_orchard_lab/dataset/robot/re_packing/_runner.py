@@ -27,6 +27,7 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodeMeta,
     EpisodePackaging,
     EpisodePackagingTransform,
+    StagedDatasetWriteSession,
 )
 from robo_orchard_lab.dataset.robot.packaging._episode import (
     EpisodePackagingView,
@@ -39,9 +40,6 @@ from robo_orchard_lab.dataset.robot.re_packing._source import (
     SourceReader,
     _SourceEpisodeSelection,
     make_repack_features,
-)
-from robo_orchard_lab.dataset.robot.re_packing._staging import (
-    _StagedDatasetWriteSession,
 )
 
 
@@ -350,7 +348,7 @@ def repack_dataset(
         source_reader=SourceReader(dataset),
     )
     packing = DatasetPackaging(features=target_features)
-    with _StagedDatasetWriteSession(
+    with StagedDatasetWriteSession(
         target_path=target_path,
         force_overwrite=force_overwrite,
     ) as output:

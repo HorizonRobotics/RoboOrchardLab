@@ -39,6 +39,7 @@ or planning shapes in `templates/`.
   `references/state-recovery-guideline.md`.
 - RODataset metadata, repack, and persistence:
   `references/rodataset-metadata-guideline.md`,
+  `references/rodataset-packaging-lifecycle-guideline.md`,
   `references/rodataset-repack-guideline.md`, and
   `references/rodataset-upgrade-guideline.md`.
 - Experimental MCAP export:

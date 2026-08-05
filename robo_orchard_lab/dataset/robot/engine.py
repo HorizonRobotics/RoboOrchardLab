@@ -195,10 +195,25 @@ def create_temp_engine(
     drivername: str = "duckdb",
     **kwargs,
 ) -> Generator[Engine, Any, None]:
-    """Create a temporary SQLite engine."""
+    """Create one temporary database engine in a caller-owned directory.
+
+    The generated file changes only its final ``.tmp`` suffix to the selected
+    backend suffix. This preserves a caller directory whose own name contains
+    ``.tmp``, such as the standard linked-worktree location.
+
+    Args:
+        dir: Existing local directory that owns the temporary database files.
+        prefix: Prefix for the generated database filename.
+        drivername: SQLAlchemy backend name used for the temporary database.
+        **kwargs: Options forwarded to :func:`create_engine`.
+
+    Yields:
+        A writable SQLAlchemy engine that is disposed and removed on exit.
+    """
     db_fd, db_path = tempfile.mkstemp(dir=dir, prefix=prefix, suffix=".tmp")
 
-    db_file = db_path.replace(".tmp", f".{drivername}")
+    db_root, _ = os.path.splitext(db_path)
+    db_file = f"{db_root}.{drivername}"
     tmp_db_url = URL.create(drivername=drivername, database=db_file)
     local_engine = create_engine(tmp_db_url, readonly=False, **kwargs)
     try:

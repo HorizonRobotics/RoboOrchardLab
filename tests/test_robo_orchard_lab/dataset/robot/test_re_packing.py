@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 import importlib.util
+import os
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -34,12 +35,24 @@ from robo_orchard_lab.dataset.robot.packaging import (
     IdentityEpisodePackagingTransform,
     InstructionData,
     RobotData,
+    StagedDatasetWriteSession,
     TaskData,
 )
 from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
 from robo_orchard_lab.dataset.robot.re_packing._errors import (
     RepackFrameTransformError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _use_test_packaging_lock_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "XDG_CACHE_HOME",
+        str(tmp_path.parent / f".{tmp_path.name}-cache"),
+    )
 
 
 class _SimpleRepackEpisode(EpisodePackaging):
@@ -430,7 +443,8 @@ def test_repack_runner_uses_unified_internal_names() -> None:
     assert not hasattr(repack_runner_module, "_RepackEpisodeRunner")
     assert not hasattr(repack_runner_module, "_StagedDatasetOutput")
     assert hasattr(repack_runner_module, "RepackEpisodeRunner")
-    assert hasattr(repack_runner_module, "_StagedDatasetWriteSession")
+    assert hasattr(repack_runner_module, "StagedDatasetWriteSession")
+    assert not hasattr(repack_runner_module, "_StagedDatasetWriteSession")
     assert hasattr(repack_runner_module, "repack_dataset")
     assert not hasattr(repack_runner_module, "_run_repack_dataset")
     assert hasattr(repack_source_module, "SourceReader")
@@ -500,6 +514,555 @@ def test_repack_dataset_rejects_removed_legacy_keywords(
         )
 
 
+def test_staging_cleanup_failure_does_not_mask_repack_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An active repack error keeps priority over staging cleanup failure."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    session = StagedDatasetWriteSession(
+        target_path=str(tmp_path / "target"),
+        force_overwrite=False,
+    )
+    original_remove_path = staging_module.remove_path
+    with pytest.raises(RuntimeError, match="repack failed") as exc_info:
+        with session as output:
+            workspace_path = DatasetPackagingPaths.resolve(
+                output.path
+            ).workspace_dir
+            Path(workspace_path).mkdir(parents=True, exist_ok=True)
+
+            def fail_workspace_cleanup(
+                path: str,
+                *,
+                missing_ok: bool = True,
+            ) -> None:
+                if path == workspace_path:
+                    raise PermissionError("workspace cleanup failed")
+                original_remove_path(path, missing_ok=missing_ok)
+
+            monkeypatch.setattr(
+                staging_module,
+                "remove_path",
+                fail_workspace_cleanup,
+            )
+            raise RuntimeError("repack failed")
+
+    assert exc_info.value.__notes__ is not None
+    assert "workspace cleanup failed" in exc_info.value.__notes__[0]
+
+
+@pytest.mark.parametrize(
+    ("body_error", "expected_type", "expected_message"),
+    [
+        (None, PermissionError, "workspace cleanup failed"),
+        (RuntimeError("write failed"), RuntimeError, "write failed"),
+    ],
+)
+def test_staged_session_exit_preserves_first_error_across_teardown_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body_error: RuntimeError | None,
+    expected_type: type[BaseException],
+    expected_message: str,
+) -> None:
+    """Later teardown failures are notes, not replacement primary errors."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    class _ReleaseFailureLock:
+        def release(self) -> None:
+            raise OSError("release failed")
+
+    session = StagedDatasetWriteSession(
+        target_path=str(tmp_path / "target"),
+        force_overwrite=False,
+    )
+    original_remove_path = staging_module.remove_path
+    original_close_target_identity = (
+        staging_module.StagedDatasetWriteSession._close_target_identity_fd
+    )
+
+    def fail_workspace_cleanup(
+        path: str,
+        *,
+        missing_ok: bool = True,
+    ) -> None:
+        if path == workspace_path:
+            raise PermissionError("workspace cleanup failed")
+        original_remove_path(path, missing_ok=missing_ok)
+
+    def close_then_fail(
+        self: StagedDatasetWriteSession,
+    ) -> None:
+        original_close_target_identity(self)
+        raise OSError("identity handle close failed")
+
+    with pytest.raises(expected_type, match=expected_message) as exc_info:
+        with session as output:
+            workspace_path = DatasetPackagingPaths.resolve(
+                output.path
+            ).workspace_dir
+            Path(workspace_path).mkdir(parents=True, exist_ok=True)
+            original_lock = session._coordination_lock
+            assert original_lock is not None
+            original_lock.release()
+            session._coordination_lock = _ReleaseFailureLock()
+            monkeypatch.setattr(
+                staging_module,
+                "remove_path",
+                fail_workspace_cleanup,
+            )
+            monkeypatch.setattr(
+                staging_module.StagedDatasetWriteSession,
+                "_close_target_identity_fd",
+                close_then_fail,
+            )
+            if body_error is not None:
+                raise body_error
+
+    notes = exc_info.value.__notes__ or []
+    if body_error is not None:
+        assert any("clean staged dataset paths" in note for note in notes)
+    assert any(
+        "release the dataset target coordination lock" in note
+        for note in notes
+    )
+    assert any(
+        "close the staged dataset target identity handle" in note
+        for note in notes
+    )
+
+
+def test_staged_session_setup_rollback_preserves_setup_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup rollback keeps its triggering error over later teardown errors."""
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    class _ReleaseFailureLock:
+        def acquire(self) -> None:
+            pass
+
+        def release(self) -> None:
+            raise OSError("release failed")
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    session = StagedDatasetWriteSession(
+        target_path=str(target_path),
+        force_overwrite=True,
+    )
+    original_close_target_identity = (
+        staging_module.StagedDatasetWriteSession._close_target_identity_fd
+    )
+
+    def fail_staging_path(self: StagedDatasetWriteSession) -> str:
+        raise RuntimeError("setup failed")
+
+    def close_then_fail(
+        self: StagedDatasetWriteSession,
+    ) -> None:
+        original_close_target_identity(self)
+        raise OSError("identity handle close failed")
+
+    monkeypatch.setattr(
+        staging_module,
+        "_create_coordination_lock",
+        lambda _lock_path: _ReleaseFailureLock(),
+    )
+    monkeypatch.setattr(
+        staging_module.StagedDatasetWriteSession,
+        "_make_staging_path",
+        fail_staging_path,
+    )
+    monkeypatch.setattr(
+        staging_module.StagedDatasetWriteSession,
+        "_close_target_identity_fd",
+        close_then_fail,
+    )
+
+    with pytest.raises(RuntimeError, match="setup failed") as exc_info:
+        session.__enter__()
+
+    notes = exc_info.value.__notes__ or []
+    assert any(
+        "identity handle during setup rollback" in note for note in notes
+    )
+    assert any(
+        "coordination lock during setup rollback" in note for note in notes
+    )
+
+
+def test_staged_session_holds_final_target_coordination_lock(
+    tmp_path: Path,
+) -> None:
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_paths = DatasetPackagingPaths.resolve(target_path)
+
+    with StagedDatasetWriteSession(
+        target_path=str(target_path),
+        force_overwrite=False,
+    ):
+        with pytest.raises(staging_module.filelock.Timeout):
+            staging_module.filelock.FileLock(
+                target_paths.coordination_lock_path,
+                timeout=0,
+            ).acquire()
+
+
+def test_staged_session_preserves_target_that_appears_without_force(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    observed_target_inode: int | None = None
+    original_publish = staging_module.rename_noreplace
+
+    def inject_external_target(src: str, dst: str) -> None:
+        nonlocal observed_target_inode
+        if dst == str(target_path):
+            target_path.mkdir()
+            observed_target_inode = target_path.stat().st_ino
+        original_publish(src, dst)
+
+    monkeypatch.setattr(
+        staging_module,
+        "rename_noreplace",
+        inject_external_target,
+    )
+
+    with StagedDatasetWriteSession(
+        target_path=str(target_path),
+        force_overwrite=False,
+    ) as output:
+        Path(output.path).mkdir()
+
+        with pytest.raises(FileExistsError):
+            output.commit()
+
+    assert target_path.is_dir()
+    assert not list(target_path.iterdir())
+    assert target_path.stat().st_ino == observed_target_inode
+    assert not list(tmp_path.rglob("*.lock"))
+
+
+def test_staged_session_preserves_replacement_target_with_force(
+    tmp_path: Path,
+) -> None:
+    """Force only replaces the target identity present when staging began."""
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    original_marker = target_path / "original"
+    original_marker.write_text("original", encoding="utf-8")
+
+    with StagedDatasetWriteSession(
+        target_path=str(target_path),
+        force_overwrite=True,
+    ) as output:
+        original_marker.unlink()
+        target_path.rmdir()
+        target_path.mkdir()
+        external_marker = target_path / "external"
+        external_marker.write_text("external", encoding="utf-8")
+        Path(output.path).mkdir()
+
+        with pytest.raises(RuntimeError, match="target changed"):
+            output.commit()
+
+    assert external_marker.read_text(encoding="utf-8") == "external"
+
+
+def test_staged_session_preserves_new_target_with_force(
+    tmp_path: Path,
+) -> None:
+    """Force does not authorize a target created after staging begins."""
+
+    target_path = tmp_path / "target"
+    with StagedDatasetWriteSession(
+        target_path=str(target_path),
+        force_overwrite=True,
+    ) as output:
+        target_path.mkdir()
+        external_marker = target_path / "external"
+        external_marker.write_text("external", encoding="utf-8")
+        Path(output.path).mkdir()
+
+        with pytest.raises(RuntimeError, match="target changed"):
+            output.commit()
+
+    assert external_marker.read_text(encoding="utf-8") == "external"
+
+
+def test_staged_session_restores_target_after_publish_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt after backup creation restores the prior target."""
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    original_marker = target_path / "original"
+    original_marker.write_text("original", encoding="utf-8")
+    original_publish = staging_module.rename_noreplace
+    staged_path: str | None = None
+
+    def interrupt_staged_publish(src: str, dst: str) -> None:
+        if src == staged_path and dst == str(target_path):
+            raise KeyboardInterrupt
+        original_publish(src, dst)
+
+    with pytest.raises(KeyboardInterrupt):
+        with StagedDatasetWriteSession(
+            target_path=str(target_path),
+            force_overwrite=True,
+        ) as output:
+            staged_path = output.path
+            Path(staged_path).mkdir()
+            monkeypatch.setattr(
+                staging_module,
+                "rename_noreplace",
+                interrupt_staged_publish,
+            )
+            output.commit()
+
+    assert original_marker.read_text(encoding="utf-8") == "original"
+    assert staged_path is not None
+    assert not os.path.lexists(staged_path)
+    assert not list(tmp_path.glob(".target.backup-*"))
+
+
+def test_staged_session_restores_target_after_backup_rename_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt after moving the target to backup restores that target."""
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    original_marker = target_path / "original"
+    original_marker.write_text("original", encoding="utf-8")
+    original_rename = staging_module.os.rename
+
+    def interrupt_after_backup_rename(source: str, destination: str) -> None:
+        original_rename(source, destination)
+        if source == str(target_path):
+            raise KeyboardInterrupt("backup rename interrupted")
+
+    monkeypatch.setattr(
+        staging_module.os,
+        "rename",
+        interrupt_after_backup_rename,
+    )
+    with pytest.raises(KeyboardInterrupt, match="backup rename interrupted"):
+        with StagedDatasetWriteSession(
+            target_path=str(target_path),
+            force_overwrite=True,
+        ) as output:
+            Path(output.path).mkdir()
+            output.commit()
+
+    assert original_marker.read_text(encoding="utf-8") == "original"
+    assert not list(tmp_path.glob(".target.backup-*"))
+
+
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="requires Windows directory handles",
+)
+def test_staged_session_overwrites_existing_directory_on_windows(
+    tmp_path: Path,
+) -> None:
+    """Windows identity handles permit the owned target replacement."""
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    (target_path / "old").write_text("old", encoding="utf-8")
+
+    with StagedDatasetWriteSession(
+        target_path=str(target_path),
+        force_overwrite=True,
+    ) as output:
+        staged_path = Path(output.path)
+        staged_path.mkdir()
+        (staged_path / "new").write_text("new", encoding="utf-8")
+        output.commit()
+
+    assert (target_path / "new").read_text(encoding="utf-8") == "new"
+    assert not (target_path / "old").exists()
+
+
+def test_staged_session_surfaces_backup_cleanup_after_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed backup cleanup reports a post-publication cleanup failure."""
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    (target_path / "old").write_text("old", encoding="utf-8")
+    original_remove_path = staging_module.remove_path
+
+    def fail_published_backup_cleanup(
+        path: str,
+        *,
+        missing_ok: bool = True,
+    ) -> None:
+        if (
+            Path(path).name.startswith(".target.backup-")
+            and (Path(path) / "old").exists()
+        ):
+            raise PermissionError("backup cleanup failed")
+        original_remove_path(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(
+        staging_module,
+        "remove_path",
+        fail_published_backup_cleanup,
+    )
+    with pytest.raises(PermissionError, match="backup cleanup failed"):
+        with StagedDatasetWriteSession(
+            target_path=str(target_path),
+            force_overwrite=True,
+        ) as output:
+            staged_path = Path(output.path)
+            staged_path.mkdir()
+            (staged_path / "new").write_text("new", encoding="utf-8")
+            output.commit()
+
+    assert (target_path / "new").read_text(encoding="utf-8") == "new"
+    backups = list(tmp_path.glob(".target.backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "old").read_text(encoding="utf-8") == "old"
+
+
+def test_staged_session_preserves_publish_error_when_restore_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restore diagnostics do not mask the publication failure."""
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    (target_path / "old").write_text("old", encoding="utf-8")
+
+    def fail_publish_and_restore(src: str, dst: str) -> None:
+        if Path(src).name.startswith(".target.tmp-"):
+            raise RuntimeError("publish failed")
+        raise PermissionError(f"restore failed: {src} -> {dst}")
+
+    monkeypatch.setattr(
+        staging_module,
+        "rename_noreplace",
+        fail_publish_and_restore,
+    )
+
+    with pytest.raises(RuntimeError, match="publish failed") as exc_info:
+        with StagedDatasetWriteSession(
+            target_path=str(target_path),
+            force_overwrite=True,
+        ) as output:
+            Path(output.path).mkdir()
+            output.commit()
+
+    assert exc_info.value.__notes__ is not None
+    assert (
+        "Failed to restore the prior dataset target"
+        in (exc_info.value.__notes__[0])
+    )
+    assert "PermissionError" in exc_info.value.__notes__[0]
+    assert not target_path.exists()
+    backups = list(tmp_path.glob(".target.backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "old").read_text(encoding="utf-8") == "old"
+
+
+def test_directory_cleanup_errors_reach_exception_priority_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An idle staging cleanup surfaces its first removal error."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    staging_dir = tmp_path / "staging-workspace"
+    staging_dir.mkdir()
+    session = StagedDatasetWriteSession(
+        target_path=str(tmp_path / "target"),
+        force_overwrite=False,
+    )
+    session._staging_path = str(staging_dir)
+    session._staging_paths = DatasetPackagingPaths.resolve(staging_dir)
+    original_remove_path = staging_module.remove_path
+
+    def fail_directory_cleanup(
+        path: str,
+        *,
+        missing_ok: bool = True,
+    ) -> None:
+        if path == str(staging_dir):
+            raise PermissionError(f"directory cleanup failed: {path}")
+        original_remove_path(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(
+        staging_module,
+        "remove_path",
+        fail_directory_cleanup,
+    )
+
+    with pytest.raises(PermissionError, match="directory cleanup failed"):
+        session._cleanup_staging_paths()
+
+
 def test_transform_mode_rejects_duplicate_and_split_frame_indices(
     tmp_path: Path,
 ) -> None:
@@ -551,6 +1114,7 @@ def test_transform_mode_preserves_existing_target_on_late_failure(
     assert len(target_dataset) == 2
     assert target_dataset[0]["value"] == 990
     assert target_dataset[0]["text"] == "episode-99-frame-0"
+    assert not list(tmp_path.rglob("*.lock"))
 
 
 def test_transform_mode_replaces_existing_target_after_success(
@@ -580,6 +1144,7 @@ def test_transform_mode_replaces_existing_target_after_success(
     assert len(target_dataset) == len(source_dataset)
     assert target_dataset[0]["value"] == 0
     assert target_dataset[0]["text"] == "episode-0-frame-0"
+    assert not list(tmp_path.rglob("*.lock"))
 
 
 class _RequireValueTransform(IdentityEpisodePackagingTransform):
@@ -1177,7 +1742,7 @@ def test_staged_repack_holds_the_final_target_lock(
     from robo_orchard_lab.dataset.packaging_paths import (
         DatasetPackagingPaths,
     )
-    from robo_orchard_lab.dataset.robot.re_packing import (
+    from robo_orchard_lab.dataset.robot.packaging import (
         _staging as staging_module,
     )
 
@@ -1186,7 +1751,7 @@ def test_staged_repack_holds_the_final_target_lock(
     )
     target_path = tmp_path / "target"
     paths = DatasetPackagingPaths.resolve(target_path)
-    with staging_module._StagedDatasetWriteSession(
+    with staging_module.StagedDatasetWriteSession(
         target_path=target_path,
         force_overwrite=False,
     ):
@@ -1197,13 +1762,124 @@ def test_staged_repack_holds_the_final_target_lock(
             ).acquire()
 
 
+def test_repack_cleans_private_stage_coordination_locks(
+    tmp_path: Path,
+) -> None:
+    """Repeated repacks leave no newly created private-stage locks."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+    )
+
+    source_dataset = _make_source_dataset(tmp_path)
+    target_path = tmp_path / "target"
+    target_paths = DatasetPackagingPaths.resolve(target_path)
+    lock_dir = Path(target_paths.coordination_lock_path).parent
+    initial_locks = set(lock_dir.glob("*.lock"))
+
+    for _ in range(2):
+        repack_dataset(
+            source_dataset,
+            str(target_path),
+            writer_batch_size=1,
+            force_overwrite=True,
+        )
+
+    remaining_locks = set(lock_dir.glob("*.lock"))
+    assert remaining_locks <= initial_locks | {
+        Path(target_paths.coordination_lock_path)
+    }
+
+
+def test_staged_repack_cleans_private_stage_lock_after_failed_write(
+    tmp_path: Path,
+) -> None:
+    """An aborted repack retires its released direct-writer stage lock."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+        _create_coordination_lock,
+    )
+
+    stage_lock_path: Path | None = None
+    with pytest.raises(RuntimeError, match="write failed"):
+        with StagedDatasetWriteSession(
+            target_path=tmp_path / "target",
+            force_overwrite=False,
+        ) as stage:
+            stage_paths = DatasetPackagingPaths.resolve(stage.path)
+            stage_lock_path = Path(stage_paths.coordination_lock_path)
+            stage_lock = _create_coordination_lock(
+                stage_paths.coordination_lock_path
+            )
+            stage_lock.acquire(timeout=0)
+            stage_lock.release()
+            stage_lock_path.touch(exist_ok=True)
+            assert stage_lock_path.is_file()
+            raise RuntimeError("write failed")
+
+    assert stage_lock_path is not None
+    assert not stage_lock_path.exists()
+
+
+def test_staged_repack_retires_private_lock_after_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace cleanup error does not strand the released stage lock."""
+
+    from robo_orchard_lab.dataset.packaging_paths import (
+        DatasetPackagingPaths,
+        _create_coordination_lock,
+    )
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    stage_lock_path: Path | None = None
+    with pytest.raises(RuntimeError, match="write failed"):
+        with StagedDatasetWriteSession(
+            target_path=tmp_path / "target",
+            force_overwrite=False,
+        ) as stage:
+            stage_paths = DatasetPackagingPaths.resolve(stage.path)
+            Path(stage_paths.workspace_dir).mkdir()
+            stage_lock_path = Path(stage_paths.coordination_lock_path)
+            stage_lock = _create_coordination_lock(
+                stage_paths.coordination_lock_path
+            )
+            stage_lock.acquire(timeout=0)
+            stage_lock.release()
+            stage_lock_path.touch(exist_ok=True)
+            original_remove_path = staging_module.remove_path
+
+            def fail_workspace_cleanup(
+                path: str,
+                *,
+                missing_ok: bool = True,
+            ) -> None:
+                if path == stage_paths.workspace_dir:
+                    raise OSError("workspace cleanup failed")
+                original_remove_path(path, missing_ok=missing_ok)
+
+            monkeypatch.setattr(
+                staging_module,
+                "remove_path",
+                fail_workspace_cleanup,
+            )
+            raise RuntimeError("write failed")
+
+    assert stage_lock_path is not None
+    assert not stage_lock_path.exists()
+
+
 def test_staged_repack_restores_the_prior_target_after_publish_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed staged publication restores the replaced target generation."""
 
-    from robo_orchard_lab.dataset.robot.re_packing import (
+    from robo_orchard_lab.dataset.robot.packaging import (
         _staging as staging_module,
     )
 
@@ -1219,7 +1895,7 @@ def test_staged_repack_restores_the_prior_target_after_publish_failure(
         original_rename(source, target)
 
     with pytest.raises(RuntimeError, match="publish failed"):
-        with staging_module._StagedDatasetWriteSession(
+        with staging_module.StagedDatasetWriteSession(
             target_path=target_path,
             force_overwrite=True,
         ) as stage:
@@ -1273,7 +1949,7 @@ def test_staged_repack_rejects_target_identity_changes(
 ) -> None:
     """Publication never removes a target changed during repacking."""
 
-    from robo_orchard_lab.dataset.robot.re_packing import (
+    from robo_orchard_lab.dataset.robot.packaging import (
         _staging as staging_module,
     )
 
@@ -1282,7 +1958,7 @@ def test_staged_repack_rejects_target_identity_changes(
         target_path.mkdir()
         (target_path / "old").write_text("old", encoding="utf-8")
 
-    with staging_module._StagedDatasetWriteSession(
+    with staging_module.StagedDatasetWriteSession(
         target_path=target_path,
         force_overwrite=True,
     ) as stage:
@@ -1307,7 +1983,7 @@ def test_staged_repack_rechecks_identity_after_backup_rename(
 ) -> None:
     """A target replacement at backup rename is restored and preserved."""
 
-    from robo_orchard_lab.dataset.robot.re_packing import (
+    from robo_orchard_lab.dataset.robot.packaging import (
         _staging as staging_module,
     )
 
@@ -1331,7 +2007,7 @@ def test_staged_repack_rechecks_identity_after_backup_rename(
 
     monkeypatch.setattr(staging_module.os, "rename", replace_before_backup)
     with pytest.raises(RuntimeError, match="target changed"):
-        with staging_module._StagedDatasetWriteSession(
+        with staging_module.StagedDatasetWriteSession(
             target_path=target_path,
             force_overwrite=True,
         ) as stage:
@@ -1345,4 +2021,41 @@ def test_staged_repack_rechecks_identity_after_backup_rename(
         target_path.joinpath("replacement").read_text(encoding="utf-8")
         == "replacement"
     )
+    assert not list(tmp_path.glob(".target.backup-*"))
+
+
+def test_staged_repack_restores_target_after_backup_identity_read_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A post-backup identity-read failure restores the prior target."""
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        _staging as staging_module,
+    )
+
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    (target_path / "old").write_text("old", encoding="utf-8")
+    original_read_target_identity = staging_module._read_target_identity
+
+    def fail_backup_identity_read(path: str) -> tuple[int, int, int] | None:
+        if Path(path).name.startswith(".target.backup-"):
+            raise OSError("identity read failed")
+        return original_read_target_identity(path)
+
+    monkeypatch.setattr(
+        staging_module,
+        "_read_target_identity",
+        fail_backup_identity_read,
+    )
+    with pytest.raises(OSError, match="identity read failed"):
+        with staging_module.StagedDatasetWriteSession(
+            target_path=target_path,
+            force_overwrite=True,
+        ) as stage:
+            Path(stage.path).mkdir()
+            stage.commit()
+
+    assert (target_path / "old").read_text(encoding="utf-8") == "old"
     assert not list(tmp_path.glob(".target.backup-*"))

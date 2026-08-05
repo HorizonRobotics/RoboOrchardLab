@@ -71,6 +71,9 @@ Local agent asset index lives in `.agents/README.md`.
   `re_packing/`, frame selection, transform failure semantics, or
   previous-episode remapping:
   `.agents/references/rodataset-repack-guideline.md`
+- RODataset direct packaging, same-parent staging, target coordination,
+  workspace cleanup, or final publication:
+  `.agents/references/rodataset-packaging-lifecycle-guideline.md`
 - RODataset metadata database table upgrades, deprecated ORM shapes, fixed
   legacy fixtures, or persisted identity changes:
   `.agents/references/rodataset-upgrade-guideline.md`

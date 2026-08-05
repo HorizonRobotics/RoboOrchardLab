@@ -1,0 +1,4 @@
+# Lowest dependency set validated for SQLAlchemy reflection and sidecar IO.
+duckdb==1.5.3
+duckdb-engine==0.17.0
+sqlalchemy==2.0.45
