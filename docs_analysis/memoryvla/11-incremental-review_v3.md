@@ -554,11 +554,14 @@ bash ~/storage_policy/tools/port/preflight.sh --method memoryvla --base 18106b05
 
 **所以 HEAD 上的 `EXIT=0` 是判据活着的绿。**
 
-> ⚠️ **改动方声称的那次阳性对照，磁盘上没有产物。**
-> `10-review-response.md` 写「同一份工具、同一组参数跑在 `18106b05` 的树上报 **2 findings**，EXIT=1」，
-> 但 `fix3/runs/2026-08-04/preflight_base_control.txt` 全文只有一行：
-> `not a git repo: .../fix3/wt_18106b05 -- pass --repo, or cd to the host repo first`，
-> 且 `fix3/` 下**没有任何文件含 `ORPHAN`**。
+> ⚠️ **改动方声称的那次阳性对照，磁盘上没有留下工具输出。**
+> `10-review-response.md` 与 `49b2178c` 的提交信息都写了「同一份工具、同一组参数跑在 `18106b05`
+> 的树上报 **2 findings**，EXIT=1」。但 `fix3/` 下**只有两个 preflight 输出文件**：
+> `runs/2026-08-04/preflight_head.txt`（HEAD，正常）与 `runs/2026-08-04/preflight_base_control.txt`，
+> 而后者全文只有一行：
+> `not a git repo: .../fix3/wt_18106b05 -- pass --repo, or cd to the host repo first`。
+> `fix3/` 下另一处出现 `ORPHAN` 的是 `msg2.txt` —— 那是提交信息草稿，
+> **是同一条声称的复述，不是工具输出**。
 > 成因很清楚：preflight 的判据是 `[[ -d .git ]]`，而 **`git worktree` 的 `.git` 是文件不是目录**，
 > `git archive` 出来的树则完全没有 `.git` —— 两种「建基线树」的常用做法**都过不了这一关**。
 > 本复审改用 `git clone --shared --no-checkout` + `checkout 18106b05`（`.git` 212 K，真目录）跑通。
