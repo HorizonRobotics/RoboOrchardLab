@@ -352,6 +352,12 @@ class HoloBrainRoboDojoPolicy:
         self.pipeline = pipeline
         self._obs: dict[str, Any] | None = None
         self._batch_obs: dict[int, dict[str, Any]] = {}
+        # How many observations this episode has produced. `deploy.py`
+        # calls update_obs once per env step and get_action once per
+        # `valid_action_step` of them, so counting the former is the exact
+        # env frame index -- including for episodes that end early. See
+        # _run_holobrain for why the processor's own value cannot be used.
+        self._env_step = 0
 
         if pipeline is None and model is None:
             if cfg.model_dir is None:
@@ -480,13 +486,52 @@ class HoloBrainRoboDojoPolicy:
             instruction=_extract_instruction(obs, self.cfg.task_name),
         )
 
+    def _has_memory(self) -> bool:
+        """Whether the loaded model carries episode-scoped memory.
+
+        `structure.py` sets `memoryvla` to None when the port is switched
+        off, so this is also the switch: everything below it is inert on a
+        baseline model.
+        """
+        target = self.model
+        if target is None and self.pipeline is not None:
+            target = getattr(self.pipeline, "model", None)
+        return getattr(target, "memoryvla", None) is not None
+
     def _run_holobrain(self, data: MultiArmManipulationInput) -> Any:
         with torch.inference_mode():
             if self.pipeline is not None:
+                if self._has_memory():
+                    raise RuntimeError(
+                        "This model has episode-scoped memory, and the "
+                        "pipeline path cannot supply it with a frame index: "
+                        "the correction below happens between pre_process "
+                        "and the model, and HoloBrainInferencePipeline does "
+                        "both in one call. Memory would silently see frame 0 "
+                        "for the entire episode. Load the model directly "
+                        "(pipeline=None), which is what robodojo_eval.py "
+                        "does, or teach the pipeline to take a step index."
+                    )
                 return self.pipeline(data)
             if self.processor is None or self.model is None:
                 raise RuntimeError("Policy is missing processor or model.")
             model_input = self.processor.pre_process(data)
+            if "step_index" in model_input:
+                # processor.py:158 derives step_index from
+                # len(history_joint_state) - 1, and data_preprocess above
+                # always builds that list with exactly one entry -- so on
+                # this path the processor's value is 0 on every frame of
+                # every episode. Training feeds the real frame index from
+                # the dataset, and TimestepEmbedder encodes it, so leaving
+                # it at 0 makes the whole episode share one positional
+                # encoding: the memory keeps its contents but loses all
+                # sense of when anything happened.
+                #
+                # step_index only survives ItemSelection when the memory is
+                # switched on (config_robodojo_dataset.py:288-293), so this
+                # key is itself the switch and a baseline package is
+                # untouched.
+                model_input["step_index"] = [max(0, self._env_step - 1)]
             model_outputs = self.model(model_input)
             return self.processor.post_process(model_outputs, model_input)
 
@@ -523,12 +568,14 @@ class HoloBrainRoboDojoPolicy:
 
     def update_obs(self, obs: dict[str, Any]) -> None:
         self._obs = obs
+        self._env_step += 1
 
     def update_obs_batch(self, obs_list: list[dict[str, Any]]) -> None:
         self._batch_obs = {
             int(obs.get("env_idx", index)): obs
             for index, obs in enumerate(obs_list)
         }
+        self._env_step += 1
 
     def get_action(self) -> list[dict[str, np.ndarray]]:
         if self._obs is None:
@@ -546,6 +593,20 @@ class HoloBrainRoboDojoPolicy:
             raise KeyError(
                 f"Missing RoboDojo observations for env indices: {missing}."
             )
+        if len(env_idx_list) > 1 and self._has_memory():
+            raise RuntimeError(
+                "Batched evaluation across {} envs is not supported by a "
+                "model with episode-scoped memory. The loop below runs one "
+                "forward per env, but they share this policy's single "
+                "episode identity, so all {} envs would read and write one "
+                "memory bank -- each acting on the others' history, with no "
+                "error and only the score to show for it. `deploy.yml` sets "
+                "eval_batch: false and main.py:313 forces num_envs to 1 on "
+                "the strength of it; that setting is now a correctness "
+                "requirement, not a throughput choice.".format(
+                    len(env_idx_list), len(env_idx_list)
+                )
+            )
         return [
             action_chunk_to_dicts(
                 self.predict_actions(self._batch_obs[env_idx])
@@ -556,6 +617,7 @@ class HoloBrainRoboDojoPolicy:
     def reset(self) -> None:
         self._obs = None
         self._batch_obs.clear()
+        self._env_step = 0
         target = self.pipeline if self.pipeline is not None else self.model
         reset = getattr(target, "reset", None)
         if callable(reset):

@@ -32,6 +32,65 @@ from robo_orchard_lab.utils import log_basic_config
 
 logger = logging.getLogger(__file__)
 
+#: Tensor count of a fully built MemoryVLAMemory (perceptual + cognitive),
+#: measured on every on-state run of the port since 09. A package that
+#: reloads with fewer has lost part of the module.
+MEMORYVLA_TENSORS = 68
+
+
+def _assert_memory_survived_export(
+    workspace, model_path, processors, required
+):
+    """A package exported with the memory on must still have it.
+
+    Everything else about this port fails loudly by now; this was the one
+    remaining way to end up switched on and computing nothing. `export.py`
+    assembles the artefacts that evaluation actually loads, and nothing
+    between here and a benchmark run asks whether the memory made it: a
+    model whose `memoryvla` came back None, or a processor whose
+    ItemSelection dropped `step_index`, evaluates cleanly and just scores
+    worse. Checked here because this is the last place that still knows the
+    config said the memory was on.
+    """
+    reloaded = ModelMixin.load_model(model_path, load_impl="native")
+    memory = getattr(reloaded, "memoryvla", None)
+    if memory is None:
+        raise RuntimeError(
+            "memoryvla.enable=True, but the model reloaded from "
+            f"{model_path} has memoryvla=None. The exported package would "
+            "evaluate as a plain baseline and report nothing about it."
+        )
+    n = len(list(memory.state_dict()))
+    if n != MEMORYVLA_TENSORS:
+        raise RuntimeError(
+            f"memoryvla reloaded with {n} tensors, expected "
+            f"{MEMORYVLA_TENSORS}. Part of the module did not survive the "
+            "round trip through the package."
+        )
+
+    for dataset_name in processors:
+        if required is not None and dataset_name not in required:
+            continue
+        name = f"{dataset_name}_processor.json"
+        with open(os.path.join(workspace, name)) as f:
+            spec = json.load(f)
+        text = json.dumps(spec)
+        if '"step_index"' not in text:
+            raise RuntimeError(
+                f"{name} has no `step_index` among its ItemSelection keys. "
+                "The memory reads it to place each frame in time; without it "
+                "every retrieval at evaluation raises, or -- worse, if some "
+                "future default fills it in -- silently shares one position "
+                "across the episode. It is added only when the memory is on "
+                "(config_robodojo_dataset.py:288-293), so its absence means "
+                "the processor was built from a config that had it off."
+            )
+    logger.info(
+        "memoryvla survived export: %d tensors, step_index in every "
+        "exported processor.",
+        n,
+    )
+
 
 def main(args):
     os.makedirs(args.workspace, exist_ok=True)
@@ -113,6 +172,13 @@ def main(args):
             logger.info(
                 f"Reload {dataset_name} inference pipeline successfully."
             )
+
+    # Unconditional, not gated on --reload_test: the packages that go to a
+    # benchmark are the ones nobody remembered to pass the flag for.
+    if (config.get("memoryvla") or {}).get("enable", False):
+        _assert_memory_survived_export(
+            args.workspace, model_path, processors, required_datasets
+        )
 
 
 if __name__ == "__main__":

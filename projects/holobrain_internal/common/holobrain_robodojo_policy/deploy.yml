@@ -9,6 +9,11 @@ env_cfg_type: arx_x5
 seed: 0
 action_type: joint
 gpu_id: null
+# Required, not merely preferred, for any model with episode-scoped memory:
+# get_action_batch runs one forward per env but they share this policy's
+# single episode identity, so N envs would read and write one memory bank.
+# main.py:313 forces num_envs to 1 while this is false; deploy_policy.py
+# raises if it is ever flipped with a memory-carrying model.
 eval_batch: false
 
 model_dir: null
