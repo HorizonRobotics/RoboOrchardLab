@@ -2,13 +2,18 @@
 
 **日期**：2026-08-03（`date +%Y-%m-%d`）
 **日期（第二轮修复）**：2026-08-04 · **日期（第三轮修复）**：2026-08-04
+**日期（第四轮修复）**：2026-08-05
 **总判定**：**不自评**。
 第一轮自评 PASS → 独立复审 🔴 **REJECT**（P0-1：`episode_stream_sampler` 是死开关）。
 第二轮修复 → 独立增量复审 🟡 **ACCEPT-WITH-FIXES**（P0×0 · P1×2 · P2×1 · P3×4，
 见 `09-incremental-review.md`）：P0-1 与 P1-1 确认真闭环，剩下的是「修的覆盖面比声称的窄」。
-第三轮（本轮）修 P1-A / P1-B / P2-A / P3-A，同样是范围锁死的修复 + 数值证据，
+第三轮修 P1-A / P1-B / P2-A / P3-A → 独立增量复审 🟡 **ACCEPT-WITH-FIXES**
+（P0×0 · **P1×1** · P2×3 · P3×4，见 `11-incremental-review_v3.md`）：P1-A / P1-B 主干确认真闭环，
+但 P1-B 的修法留了一个**配置可达**的角落（`group` + `batch_size=1`）。
+第四轮（本轮）修 P1-C / P2-A′ / P2-B / P2-C / P3-E / P3-F / P3-H，
 **裁决交给下一轮独立复审**。
-逐条应答：第二轮见 `08-review-response.md`，第三轮见 `10-review-response.md`。
+逐条应答：第二轮见 `08-review-response.md`，第三轮见 `10-review-response.md`，
+第四轮见 `12-review-response.md`。
 
 | 项 | 值 |
 |---|---|
@@ -31,14 +36,41 @@
 | `ActionModel` / DiT | 放弃 | A 的动作头；宿主有自己的 `HoloBrainActionDecoder`，换掉等于换模型 | — （判断/方案，非实测） |
 | FSDP 策略 / overwatch / CLI / trainer | 放弃 | 协议红线：A 的基础设施一律接宿主的 | — （判断/方案，非实测） |
 
-## 侵入度：**L1**，触及宿主已有文件 **5 个**，`train.py` +38/−6 · `sampler.py` +94/−1
+## 侵入度：**L1**，触及宿主已有文件 **5 个**
+
+> **订正 3（2026-08-05，第四轮，复审 P2-A′）：这一行的数字**第三次**带着过期值发布。**
+> 标题原写 `train.py +38/−6 · sampler.py +94/−1`，而 `+94/−1` 与订正块里的
+> `wrapper.py +118/−0` 都是 `18106b05..f6dfd1e8` 的量；它们随第二个 commit `49b2178c`
+> 一起发布，而那个 commit 恰好让它们过期。
+>
+> **根因不是粗心，是标题那一行没有基点限定** —— 一个不带基点的数字无法自证过期。
+> 现行口径因此改成「基点 + 截至 commit + 逐文件表」，任何一次代码提交后重跑下面的命令即可。
+>
+> **基点 `18106b05`，截至 `49b2178c`：**
+>
+> | 文件 | +/− |
+> |---|---:|
+> | `projects/holobrain_internal/common/train.py` | **+38 / −6** |
+> | `robo_orchard_lab/models/memoryvla/sampler.py` | **+106 / −5** |
+> | `robo_orchard_lab/models/memoryvla/wrapper.py` | **+204 / −0** |
+> | `robo_orchard_lab/models/memoryvla/__init__.py` | **+2 / −0** |
+>
+> 重跑命令（**它不是闸门**，只是把「这几个数怎么算出来的」钉死，让下一次重算是机械动作
+> 而不是回忆；脚本形式在 `$ROL_JFS/port/memoryvla/fix4/intrusion_line.sh`）：
+>
+> ```bash
+> git diff --numstat 18106b05..HEAD -- robo_orchard_lab/models/memoryvla \
+>     projects/holobrain_internal/common/train.py     # 逐文件 +/−
+> git diff --numstat --diff-filter=M 3ce31c0c..HEAD -- "*.py"   # 「触及宿主已有文件 N 个」
+> ```
 
 > **订正（2026-08-04）**：原记 4 个文件。移植当时漏掉了 `common/train.py`，
 > 而那正是 P0-1 —— sampler 开关没有读取者。修复后 `train.py` 是第 5 个。
 
 > **订正 2（2026-08-04，复审 P2-A）**：本标题原写 **「0 删除」**，**不成立**。
-> 实测 `git diff --stat 18106b05..f6dfd1e8`：`train.py` **+38/−6**、`sampler.py` **+94/−1**、
-> `wrapper.py` +118/−0（这个确实是纯增量）。
+> 实测 `git diff --stat 18106b05..f6dfd1e8`：`train.py` **+38/−6**、~~`sampler.py` **+94/−1**~~、
+> ~~`wrapper.py` +118/−0~~（划掉的两个是 `f6dfd1e8` 的量，已被上面的订正 3 取代；
+> 这个基点标注本身是诚实的，错的是标题那一行没有基点）。
 >
 > 那 6 行删除是**代码位移，不是逻辑改动**：`DistributedBatchFlagSampler(...)` 原本是
 > `DataLoader(...)` 的一个实参，接线时被提到前面成了局部变量 `batch_sampler`，
@@ -125,18 +157,21 @@ step 11  2.899170e-04     ← 20 步内峰值
 它继承自第一轮，而第一轮那个 `0` 是在 harness 路径上测的——harness 消除了真实入口的
 不确定性来源（`lr=0`，权重不动）。**照字面套会得到一个不适用的严格判据。**
 
-**现行判据：五项精确量，逐项与基线严格比对。**
+**现行判据：~~五项~~ 四项精确量 + 一条结构判据，逐项与基线严格比对。**
+（**峰值显存这一项已在下一节被实测降级为参考量**，第四轮复审用独立装置再次确认了降级正当。）
 
 | 精确量 | 判据 | 为什么它精确 |
 |---|---|---|
 | 逐样本 id 序列（每 batch 的原始 `uuid`） | 与基线完全一致 | 接线改的就是选 batch 的那段代码，而它唯一能破坏的就是这个。无噪声 |
-| batch key 集合 | 完全一致 | 关闭态 14 个；多一个 key 就说明数据管线被动了 |
-| 参数量 | 严格相等 | 关闭态 `1,136,284,265` |
-| 峰值显存 | 严格相等 | 关闭态实测逐位相同 `8.975615978240967 GiB` |
+| batch key 集合 | 完全一致 | 关闭态 14 个 / 开启态 15 个（多 `step_index`）；多一个 key 就说明数据管线被动了 |
+| 参数量 | 严格相等 | 关闭态 `1,136,284,265` / 开启态 `1,143,751,529` |
+| ~~峰值显存~~ | ~~严格相等~~ | ~~关闭态实测逐位相同 `8.975615978240967 GiB`~~ —— **已降级，见下一节** |
 | sampler 链（类型与嵌套） | 完全一致 | `['DistributedBatchFlagSampler']`；查 `accelerator.prepare()` **之后**那个 |
 
-外加一条结构性判据：关闭态 `sys.modules` 里**不应出现** `robo_orchard_lab.models.memoryvla*`
-（`train.py` 与 `_build_memoryvla_cfg` 两处 import 都在分支内）。
+**结构判据（比上面四项都强）**：关闭态 `sys.modules` 里 `robo_orchard_lab.models.memoryvla*`
+**一个都不出现**（`train.py` 与 `_build_memoryvla_cfg` 两处 import 都在分支内）。
+它证明的是「被改的文件根本没参与执行」，而不是「执行了但结果一样」——
+所以关闭态的**运行时**那一档，主要作用是标定噪声地板与判据分辨力，而不是等价性的主要证据。
 
 **每一条精确判据都必须配阳性对照。** 没有阳性对照的「一致」结论不算证据——
 判据可能只是失灵了。已实测的对照：`num_workers` 4→0 使浮点差达 `1.028e-01`，
@@ -168,6 +203,11 @@ head_A_group_off       8.976670265197754
 
 **剩下四项精确判据全部成立**（逐样本 id 序列 / batch key 集合 / 参数量 / sampler 链），
 外加结构判据 `port_imported == []`。
+
+> **第四轮：降级已被独立复现（2026-08-05）。** 复审用**自己的**装置跑两次同配置、同卡、
+> 同代码的关闭态 run，得到 `8.976670265197754` vs `8.971459388732910`（差 5.21 MiB），
+> 且低值与本轮记的 `8.971695899963379` **也不相同** —— 与「分配器 run-to-run 差异」一致，
+> 与「代码差异」不一致。**降级正当，不是把不利判据洗掉。**
 
 ### 关闭态的批次顺序与训练 seed 无关（找阳性对照时挖出来的）
 
@@ -273,6 +313,14 @@ head_A_group_off       8.976670265197754
 `guard3_unit_test.py` **22/22**（15 个装配期用例 + 7 条文案卫生断言）·
 `guard3_probe_test.py` **24/24**（看门狗 8 · batch 组成 6 · 恒等探针 5 · `_history_will_be_read` 5）。
 
+> **订正（2026-08-05，第四轮，复审 P2-C）：这两个脚本当时不在 git 里。**
+> `git ls-files | grep -c guard3` = `0`，仓内 memoryvla 相关测试为 **0 个**，
+> 没有任何 runner 会再跑它们。也就是说上面那两个 `22/22` / `24/24` 是**一次性的手工结果**，
+> 不是回归保护 —— 而下一段说「加了断言禁止它们回来」时，默认读者会读成后者。
+> **本轮第三段把它们改写进 `tests/test_robo_orchard_lab/models/memoryvla/`**
+> （`tests/Makefile: test_ut` 的目标树），届时这段口径会一并更新；在那之前，
+> 这里的准确说法是：**断言写在 `$ROL_JFS/port/memoryvla/fix3/`，尚未进仓，不会被自动执行。**
+
 **文案卫生断言是本轮新增的**，因为 P1-B 的成因不是缺护栏，是护栏的**文案**
 把人指引进了那个洞。断言：任何 raise 文本都不得出现
 `episode sampler is only meaningful` / `turn the episode sampler off` /
@@ -285,10 +333,42 @@ head_A_group_off       8.976670265197754
 |---|---|
 | `stream` + sampler `True` | 通过（不变） |
 | `stream` + sampler `False` | **raise**（不变，文案改写） |
-| **`group` + sampler `True`** | **通过 —— 新的可用配置** |
+| **`group` + sampler `True`** | **通过 —— 新的可用配置**（前提见下面的订正：要 `batch_size ≥ 2` 且 `group_size ≥ 2`） |
 | **`group` + sampler `False`** | **raise**（新；原来是静默恒等） |
 
-**不存在「memory 被构建 + 静默退化 + 无告警」的组合。**
+> ### ⛔ 订正（2026-08-05，第四轮，复审 P1-C）：这张表**只有两个维度，而失效需要三个**
+>
+> 这里原本写着一句 **「不存在「memory 被构建 + 静默退化 + 无告警」的组合」**。
+> **那句话已被实测证伪，本轮撤回。** 反例是**纯配置可达**的 —— 没有任何故障注入，
+> sampler 也正确接在链上：
+>
+> ```
+> dataloader_type="group"  +  batch_size=1  +  episode_stream_sampler=True  +  max_step=4
+>
+> error                     : None            rc = 0
+> bank max_len / step       : [1, 1, 1, 1]
+> grad none / zero / nonzero: 64 / 4 / 0      ← P0-1 的失效签名，逐项相同
+> params moved              : 0 / 68          ← P0-1 的失效签名，逐项相同
+> identity gap              : per=5.960464e-08   cog=0.000000e+00   ← 精确恒等
+> guard log lines           : 2（两条都是正常 INFO，无任何告警）
+> _bank_liveness_checked    : False           ← 看门狗从未裁决（4 < K=8）
+> ```
+>
+> 同一配置跑满 12 步确实会 raise，但**触发时说错了原因**：文案断言
+> 「The batches reaching this module are **not episode-contiguous**」——它们**是**连续的
+> （`distinct_episodes_in_batch = 1`）；并建议 `memoryvla.episode_stream_sampler=True`
+> ——它**已经**是 `True`。使用者照做会发现无事可做。
+>
+> **两条真正的病因**（比落点更值得记）：
+> 1. **时间闸门** —— 看门狗要跑满 `K=8` 次 forward 才裁决，所以 **< 8 步的运行完全无保护**，
+>    而 4–8 step 恰是本项目自己的冒烟长度（`05-ablation-matrix.md` 整张表 8 step，
+>    `09` 的 `C_group_host.json` 4 step）。
+> 2. **归因歧义** —— `bank 恒为 1` 既可能是「批次坏了」，也可能是「这个配置下记忆本来就不可能」，
+>    而文案断言了前者。
+>
+> 而 `group` ∧ `batch_size == 1` **在构造期就是静态可判的**，根本不需要等任何 forward。
+> **修复在本轮第三段**（`P1-C`），修完这里换成带 `batch_size` / `group_size` 维度的实测矩阵。
+> 在那之前，`group` 的正确用法是 **`batch_size ≥ 2` 且 `group_size ≥ 2`**。
 
 ### D 档新增：`group` 路径的资源与行为（不覆盖 stream 的数值）
 
@@ -394,6 +474,29 @@ head_A_group_off       8.976670265197754
     （batch=1 的 `stream` 要到第 2 次 forward 才涨到 2），取 8 是与 B 档同量级的余量。
     没有实验支持 8 比 4 或 16 更好。若将来出现「合法配置要跑很多步才积累历史」的用法，
     这个数要重新定，**而且要用实测定，不是拍**。
+    **第四轮补充**：K 还有一个当时没记的性质 —— 它是**时间闸门**，
+    所以「跑不满 K 步」这一档完全没有保护，见「结果矩阵」下的 P1-C 订正。
+
+12. **`_episode_spans` 在其他数据集上的正确性未验证**（2026-08-05 第四轮**补回**，复审 P3-H）。
+    这一条是 `09-incremental-review.md` §8 新增五条之一，**上一轮承接时掉了**。
+    `sampler.py:_episode_spans` 假设「一条 episode 的帧在全局索引里连续」，
+    只在 RoboDojo Memory 六任务上验过。换数据集若这个假设整体不成立，看门狗**会**报警
+    （bank 涨不过 1）；但**若只是部分错位**（大部分连续、少数跨界），
+    现有判据一条都抓不到 —— bank 照样涨得起来，恒等探针照样 arm。
+    **该怎样才能验**：换一个数据集，比对 `_episode_spans` 的输出与该数据集自己的 episode 边界定义。
+
+13. **长时训练稳定性未观测**（2026-08-05 第四轮**补回**，复审 P3-H）。
+    同样是 `09` §8 新增五条之一，**上一轮承接时掉了**。第三轮最长 20 step、本轮最长 20 step，
+    都远短于第二轮的 60 step。`tome` 巩固要 bank 满 `mem_length=16` 才触发、
+    `clear_episode` 要跨 episode 边界才走到，**两者在 epoch 尺度上的行为仍未观测**。
+    这条与遗留 2（`fifo` vs `tome`）相邻但不同：那条问「两种巩固谁更好」，
+    这条问「跑久了会不会坏」（bank 泄漏、显存爬升、episode 键累积）。
+
+> **为什么这两条会掉两次**（P3-A → P3-H 是同一形状的复发）：缺的不是这一次的细心，
+> 是**承接动作没有清单化** —— 上一轮是「重写一遍风险清单」，重写就会漏。
+> 本轮起改成**逐条打勾**：每轮在 review-response 里放一张
+> 「上一轮报告的无法验证清单 × 每一条承接到本文件哪一节」的对照表，逐条勾。
+> 第四轮的那张表在 `12-review-response.md`。
 
 ## 下一步建议
 
