@@ -68,27 +68,45 @@ def _assert_memory_survived_export(
             "round trip through the package."
         )
 
+    # Only the dataset configs that wire the memory add step_index to their
+    # ItemSelection whitelist -- today that is RoboDojo alone, and a full
+    # export writes a processor for all 23 datasets. So this is not "every
+    # processor must have it": it is "the ones this export was for must",
+    # and when the export was for everything, at least one must, because
+    # none at all is the switched-on-and-carrying-nothing case.
+    carriers = []
     for dataset_name in processors:
         if required is not None and dataset_name not in required:
             continue
         name = f"{dataset_name}_processor.json"
         with open(os.path.join(workspace, name)) as f:
-            spec = json.load(f)
-        text = json.dumps(spec)
-        if '"step_index"' not in text:
+            text = json.dumps(json.load(f))
+        if '"step_index"' in text:
+            carriers.append(dataset_name)
+        elif required is not None:
             raise RuntimeError(
-                f"{name} has no `step_index` among its ItemSelection keys. "
-                "The memory reads it to place each frame in time; without it "
-                "every retrieval at evaluation raises, or -- worse, if some "
-                "future default fills it in -- silently shares one position "
-                "across the episode. It is added only when the memory is on "
+                f"{name} was named in --dataset_names with the memory "
+                "switched on, but it has no `step_index` among its "
+                "ItemSelection keys. The memory reads it to place each frame "
+                "in time; without it every retrieval at evaluation raises, "
+                "or -- worse, if some future default fills it in -- silently "
+                "shares one position across the whole episode. It is added "
+                "only when the memory is on "
                 "(config_robodojo_dataset.py:288-293), so its absence means "
-                "the processor was built from a config that had it off."
+                "this processor was built from a config that had it off."
             )
+    if not carriers:
+        raise RuntimeError(
+            "memoryvla.enable=True, but not one of the exported processors "
+            f"({sorted(processors)}) carries `step_index`. The package would "
+            "load a memory that cannot tell one frame from another. Only "
+            "dataset configs that wire the memory add the key; check that "
+            "the one you are exporting for is among them."
+        )
     logger.info(
-        "memoryvla survived export: %d tensors, step_index in every "
-        "exported processor.",
+        "memoryvla survived export: %d tensors; step_index carried by %s.",
         n,
+        carriers,
     )
 
 
