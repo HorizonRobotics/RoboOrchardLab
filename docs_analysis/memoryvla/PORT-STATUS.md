@@ -665,14 +665,87 @@ head_A_group_off       8.976670265197754
 >
 > 三条已按这条判据补进上面的**遗留 15 / 16 / 17**。
 
+### 2026-08-05 投产轮新增（不是复审，是把它真用起来时发现的）
+
+18. **`step_index` 在推理时曾恒为 0 —— 已修，但只有单测覆盖**
+    （2026-08-05）。`deploy_policy.data_preprocess` 永远构造
+    `history_joint_state=[joint_state]`（长度 1），而 `processor.py:158` 用
+    `len(history_joint_state) - 1` 算它 ⇒ 整条 episode 的时序 PE 是同一个常量。
+    训练侧喂的是数据集里的真实帧号。修法是数 `update_obs` 的调用次数（`deploy.py`
+    每个 env step 调一次，每 `valid_action_step` 次才调一次 `get_action`），在
+    `pre_process` 与模型之间注入。**没有端到端证据** —— 需要 Isaac Sim 与 AIDI job。
+
+19. **`0c8a0f01` 提交信息里「`_timesteps` 抛 TypeError」那句是错的**（2026-08-05 订正）。
+    它来自 `eval_path_probe.py` 手工构造的 batch，没跑真实 transform 链——真实 deploy
+    链末尾有 `UnsqueezeBatch`（`agibot/transforms.py:507`），会把 `0` 包成 `[0]`，那处不会抛。
+    **同一条信息里的 `uuid` KeyError 是真的**（deploy 态 `ItemSelection` 白名单里确实没有 `uuid`）。
+    标量广播那段代码保留（无害，且下一个输入形状不受承诺约束）。
+    **教训**：探针复刻数据结构时，复刻的是「我以为的形状」不是「真实管道产出的形状」。
+
+20. **accelerate 会在自分片的 sampler 之上再分一次 —— 已修**（2026-08-05）。
+    `prepare()` 无条件把 `batch_sampler` 包进 `BatchSamplerShard`
+    （`accelerate/data_loader.py:1252`，无 opt-out），取 `batches[rank::N]`；
+    而 `MemoryVLAEpisodeStreamBatchSampler` 已按 episode 自分片。两者叠加实测：
+    2 rank 各读 24/96 帧，并集 48，且 rank 0 的 episode 0 是 `[0,1,2,3]` 后接
+    `[8,9,10,11]`（中间有洞）。8 卡下是 1/64，16 卡下 1/256，**loss 全程正常**。
+    **单进程永远看不到这个** —— accelerate 在 1 进程时不包。这就是它藏了这么久的原因。
+    修法是每个 batch 发 N 次让下游 stride 变成恒等，并由 `assert_episode_stream_wired`
+    强制要求那层 wrapper 必须在、且 N 必须一致。
+
+21. **`batch_size` 不是自由旋钮**（2026-08-05）。在 `stream` 下它同时决定
+    **一次 forward 往 bank 里塞几个连续帧**。为了显存把 16 改成 8，改的不只是吞吐，
+    还有记忆的写入粒度。任何调 bs 的决定都要连带说明对记忆语义的影响。
+
+22. **bs=16 在独占卡上的显存未测**（2026-08-05）。本机实测：单卡 bs=16 在已有同事
+    10.35 GiB 常驻时，涨到 21.18 GiB 后 OOM；bs=8 跑完。AIDI 上卡是独占的 31.37 GiB，
+    v9 基线（无 memoryvla）在同硬件跑过 bs=16，但**开启 memoryvla 的 bs=16 峰值没有数**。
+    上大 job 前应先提一个 sanity job。
+
+23. **记忆写入粒度训练/评测不一致**（2026-08-05，只记录不改）。训练每帧写一次 bank，
+    评测每 `valid_action_step`（32）帧才写一次。`tome` 把任意长度压到 16 槽，
+    修完遗留 18 后两侧 PE 的取值范围一致（0…episode 长度），残留的是压缩粒度差异。
+    可能的改法：给 bank 加 `memory_stride`，训练时每 32 帧才写。**留作消融，未做。**
+
+24. **`tome` 不保证最新一帧的时间戳留在 bank 里**（2026-08-05）。它取**相邻**最相似的
+    一对合并，**包括最后一对**，并保留较早那个的 timestep（`memory_bank.py:313-318`）。
+    所以刚观测到的帧可能立刻被平均进前一帧并丢掉时间戳。这是上游行为不是移植走样，
+    对当前决策无害（检索发生在巩固之前），但**bank 里最新的时间戳不能当作
+    「这条 episode 走到哪了」的信号**。已有强制用例覆盖。
+
+25. **`eval_batch: false` 已从性能选项变成正确性依赖**（2026-08-05）。
+    `get_action_batch` 对每个 env 逐个 forward，但它们共用 policy 的单一 episode 身份
+    ⇒ N 个并行 env 的记忆会合并进同一条 bank。`main.py:313` 在该值为 false 时把
+    `num_envs` 强制成 1，所以今天到不了；`deploy_policy.py` 现在会 raise，`deploy.yml`
+    也写了原因。**开启 memoryvla 时不要把它翻成 true。**
+
+26. **另外 6 个 benchmark 的 deploy policy 有同一个 `history_joint_state=[x]` 形状**
+    （2026-08-05）。libero / robotwin / geniesim3 / behavior1k / robocasa / robochallenge
+    今天都不开 memoryvla，所以踩不到；一旦开启，`step_index` 会同样恒为 0，而且**同样不报错**。
+
+27. **断点续训会丢 episode 顺序**（2026-08-05）。`MemoryVLAEpisodeStreamBatchSampler._epoch`
+    不进 accelerate 的 `sampler.bin`，resume 之后 episode 排列从头开始。
+    影响是数据顺序不可复现，不影响正确性。
+
+28. **对照组混淆：开启臂与关闭臂差的不只是模块**（2026-08-05）。开启臂用
+    `MemoryVLAEpisodeStreamBatchSampler`（一个 batch = 同一 episode 的 16 个连续帧），
+    关闭臂用宿主的全局随机排列。所以 A/B 的结论只能写成
+    **「memoryvla 这套配方 vs v9 基线配方」**，不能写成「memory 模块的增益」。
+    要拆开需要第三臂（关闭 + stream sampler），而 `train.py:118` 现在只在
+    `memoryvla.enable=True` 时才构造那个 sampler ⇒ 需要改代码。本轮按用户决定不拆。
+
 ## 下一步建议
 
-1. 真要用它训练：先把 `reset()` 接进评测循环（遗留 1），再跑一次 Memory 六任务的完整训练，
-   与 `07_results.md` 里 20k/100k 的 Memory 维度数字对比 —— 那才是这次移植值不值的答案。
+1. ~~先把 `reset()` 接进评测循环（遗留 1）~~ **已做**（`0c8a0f01`，并在 `7744cfd2`
+   补上真实帧号）。仍然成立的是后半句：跑一次 Memory 六任务的完整训练，与
+   `07_results.md` 里 20k/100k 的 Memory 维度数字对比 —— 那才是这次移植值不值的答案。
+   配置已生成，见 `aidi_submit_config/submit_cfg_holobrain_robodojo_mvla_100k_*.json`
+   四臂（单任务/六任务 × 开/关）。**读结论前先看遗留 28 的混淆说明。**
 2. 训练时确认 `episode_stream_sampler=True` 且 `dataloader_type="stream"`。
    **订正（2026-08-04）**：这条建议在写下时是**无法执行**的 —— 该键当时没有读取者，
    设成什么都一样。现在它有读取者了，而且两者不匹配**会直接 raise**，不再是静默 no-op。
-3. 若上多卡，先单独验 DDP 的 unused-parameter 行为。
+3. ~~若上多卡，先单独验 DDP 的 unused-parameter 行为。~~ 2 卡 × 6 步实测无
+   unused-parameter 告警（bs=8，v10 暖启动）。多卡真正的坑是别的：见**遗留 20**
+   （accelerate 二次分片，已修）与**遗留 22**（bs=16 显存未测）。
 
 ## 合规
 
