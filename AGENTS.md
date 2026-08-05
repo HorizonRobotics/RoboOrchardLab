@@ -63,6 +63,10 @@ Local agent asset index lives in `.agents/README.md`.
 - RODataset metadata schema, `Task.info`, `InstructionData.json_content`,
   `EpisodeData.info`, metadata parsing, or metadata export:
   `.agents/references/rodataset-metadata-guideline.md`
+- RODataset read-time ImageEncoded materialization, batch or MultiRow read
+  semantics, `RODatasetItem` reader options, or stored-schema versus runtime
+  value contracts:
+  `.agents/references/rodataset-reader-materialization-guideline.md`
 - Experimental MCAP export, `Dict2Mcap`, `Dataset2Mcap`,
   `FoxgloveMcapWriter`, `FoxgloveEncoder`, `StampedMessage` topic maps,
   converter contracts, or Pydantic JSON topics:

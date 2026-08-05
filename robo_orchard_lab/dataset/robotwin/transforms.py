@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 import copy
-from typing import Type
+from typing import Any, Mapping, Type
 
 import cv2
 import numpy as np
@@ -125,6 +125,8 @@ class EpisodeSampler(MultiRowSampler):
         self,
         index_dataset: HFDataset,
         index: int,
+        *,
+        row_data: Mapping[str, Any] | None = None,
     ) -> dict[str, list[int | None]]:
         """Sample all row indices of the episode containing the given index.
 
@@ -136,13 +138,20 @@ class EpisodeSampler(MultiRowSampler):
             index_dataset (HFDataset): Dataset used for indexing, must contain
                 'episode_index' column.
             index (int): Current data row index to process.
+            row_data (Mapping[str, Any] | None, optional): Materialized
+                data for the current row. Its ``episode_index`` avoids
+                re-reading the current index row. Defaults to None.
 
         Returns:
             dict[str, list[int | None]]: Returns a dictionary where the key is
             the target column name and the value is a list containing all row
             indices of that episode.
         """
-        cur_row = index_dataset[index]
+        cur_row = (
+            row_data
+            if row_data is not None and "episode_index" in row_data
+            else index_dataset[index]
+        )
         cur_episode_idx = cur_row["episode_index"]
 
         # 1. Search forward to find the start boundary of the episode

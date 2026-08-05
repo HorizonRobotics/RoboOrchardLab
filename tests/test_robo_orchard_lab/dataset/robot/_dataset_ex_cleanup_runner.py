@@ -148,15 +148,64 @@ def _count_open_fds() -> int:
     return len(os.listdir("/proc/self/fd"))
 
 
+def _read_rss_bytes(pid: int) -> int | None:
+    try:
+        statm_fields = (
+            Path(f"/proc/{pid}/statm").read_text(encoding="utf-8").split()
+        )
+        resident_pages = int(statm_fields[1])
+    except (OSError, IndexError, ValueError):
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
+def _read_thread_count(pid: int) -> int | None:
+    try:
+        return sum(1 for _ in Path(f"/proc/{pid}/task").iterdir())
+    except OSError:
+        return None
+
+
 def _child_pids() -> list[int]:
     return sorted(child.pid for child in mp.active_children())
 
 
 def _snapshot() -> dict[str, object]:
+    child_pids = _child_pids()
+    process_rss_bytes = _read_rss_bytes(os.getpid())
+    process_thread_count = _read_thread_count(os.getpid())
+    if process_rss_bytes is None or process_thread_count is None:
+        raise RuntimeError(
+            "Unable to read current process metrics from procfs."
+        )
+    child_rss_bytes = {
+        str(pid): rss_bytes
+        for pid in child_pids
+        if (rss_bytes := _read_rss_bytes(pid)) is not None and rss_bytes > 0
+    }
+    child_thread_counts = {
+        str(pid): thread_count
+        for pid in child_pids
+        if (thread_count := _read_thread_count(pid)) is not None
+        and thread_count > 0
+    }
+    expected_child_keys = {str(pid) for pid in child_pids}
+    child_metrics_complete = (
+        set(child_rss_bytes) == expected_child_keys
+        and set(child_thread_counts) == expected_child_keys
+    )
     return {
-        "child_pids": _child_pids(),
+        "child_metrics_complete": child_metrics_complete,
+        "child_pids": child_pids,
+        "child_rss_bytes": child_rss_bytes,
+        "child_thread_counts": child_thread_counts,
         "fd_count": _count_open_fds(),
         "prefetch_threads": _count_prefetch_threads(),
+        "process_thread_count": process_thread_count,
+        "process_rss_bytes": process_rss_bytes,
+        "total_rss_bytes": process_rss_bytes + sum(child_rss_bytes.values()),
+        "total_thread_count": process_thread_count
+        + sum(child_thread_counts.values()),
     }
 
 
@@ -172,6 +221,7 @@ def _wait_for_state(
         if (
             last_snapshot["child_pids"] == expected_child_pids
             and last_snapshot["prefetch_threads"] == expected_prefetch_threads
+            and last_snapshot["child_metrics_complete"] is True
         ):
             return last_snapshot
         time.sleep(0.05)

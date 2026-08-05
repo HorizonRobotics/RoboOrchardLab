@@ -15,17 +15,21 @@
 # permissions and limitations under the License.
 from __future__ import annotations
 import bisect
+import inspect
 import json
 import os
 import shutil
 import warnings
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from types import TracebackType
 from typing import (
     Any,
     Callable,
     Iterable,
     Literal,
+    Mapping,
+    Sequence,
     TypeAlias,
     TypeVar,
     overload,
@@ -39,7 +43,8 @@ from datasets import (
     Features,
 )
 from datasets.arrow_dataset import Column, SplitDict
-from robo_orchard_core.utils.config import ClassType
+from pydantic import Field, model_validator
+from robo_orchard_core.utils.config import ClassType, Config
 from sqlalchemy import URL, Engine, Select, select
 from sqlalchemy.orm import Session, make_transient
 from sqlalchemy.sql import func
@@ -71,6 +76,7 @@ from robo_orchard_lab.dataset.robot.row_sampler import (
 
 __all__ = [
     "RODataset",
+    "RODatasetImageDecodeOptions",
     "RODatasetInfo",
     "ROMultiRowDataset",
     "ConcatRODataset",
@@ -96,6 +102,47 @@ class RODatasetInfo:
     dataset_transform: Callable[[dict], dict]
 
 
+class RODatasetImageDecodeOptions(Config):
+    """Configure opt-in ImageEncoded feature materialization.
+
+    The reader applies these options only to top-level columns whose stored
+    feature is :class:`BatchCameraDataEncodedFeature`. ``columns=None``
+    selects every such column. Supplying an explicit column list narrows the
+    selection and validates it against the stored feature schema.
+
+    This config does not enable video decoding or change user transforms.
+    Omit it from a reader to preserve encoded camera values.
+
+    Args:
+        backend (Literal["pil", "cv2"]): Image decode backend. Default is
+            ``"pil"``.
+        columns (tuple[str, ...] | None): Explicit ImageEncoded columns, or
+            None to discover all ImageEncoded columns. Default is None.
+        invert_rgb (bool): Whether newly decoded RGB/BGR metadata should be
+            inverted. Already decoded values are never modified. Default is
+            False.
+    """
+
+    backend: Literal["pil", "cv2"] = "pil"
+    columns: tuple[str, ...] | None = None
+    invert_rgb: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.columns is not None and not self.columns:
+            raise ValueError(
+                "RODatasetImageDecodeOptions.columns must contain at least "
+                "one column when specified."
+            )
+        if self.columns is not None and len(set(self.columns)) != len(
+            self.columns
+        ):
+            raise ValueError(
+                "RODatasetImageDecodeOptions.columns contains duplicate "
+                "column names."
+            )
+
+
 class RODataset(TorchDataset):
     """The RoboOrchard dataset for robot data.
 
@@ -103,6 +150,14 @@ class RODataset(TorchDataset):
     separate database to store the episode-level information. The huggingface
     datasets (pyarrow_dataset) is used as table format, and SQLAlchemy with
     DuckDB are used to manage the database.
+
+    A dataset owns its metadata database resource. Call :meth:`close` when it
+    is no longer needed, or use a ``with`` block for deterministic cleanup.
+    Views created in the same process by methods such as :meth:`select` share
+    that resource and therefore share one closed state. ``close()`` is
+    idempotent and closing any related view invalidates metadata access through
+    all of them. Serialization recreates one process-local resource for each
+    original shared reader lifecycle.
 
 
     Note:
@@ -122,6 +177,10 @@ class RODataset(TorchDataset):
             If True, the `episode`, `task`, `robot`, and `instruction` fields
             will be added and the corresponding index fields will be removed.
             Defaults to False.
+        image_decode_options (RODatasetImageDecodeOptions | Mapping, optional):
+            Opt-in materialization for stored
+            ``BatchCameraDataEncodedFeature`` columns. ``None`` preserves
+            encoded camera values. Defaults to None.
 
     """
 
@@ -133,8 +192,7 @@ class RODataset(TorchDataset):
     information.
 
     """
-    db_engine: Engine
-    """The SQLAlchemy engine for the meta database"""
+
     index_dataset: HFDataset
     """The same as `frame_dataset`, but only contains the preserved index columns.
 
@@ -152,6 +210,10 @@ class RODataset(TorchDataset):
         dataset_path: str,
         storage_options: dict | None = None,
         meta_index2meta: bool = False,
+        *,
+        image_decode_options: (
+            RODatasetImageDecodeOptions | Mapping[str, Any] | None
+        ) = None,
     ):
         dataset_path = os.path.expanduser(dataset_path)
 
@@ -178,6 +240,7 @@ class RODataset(TorchDataset):
             column_names=list(PreservedIndexColumnsKeys)
         )
         self.meta_index2meta = meta_index2meta
+        self._set_image_decode_options(image_decode_options)
         # recover state dict
         from datasets import config as hg_datasets_config
 
@@ -199,13 +262,19 @@ class RODataset(TorchDataset):
         frame_dataset: HFDataset,
         meta_db_engine: Engine,
         meta_index2meta: bool = False,
+        *,
+        image_decode_options: (
+            RODatasetImageDecodeOptions | Mapping[str, Any] | None
+        ) = None,
     ) -> RODataset:
         """Create a RODataset from a frame dataset and meta db engine.
 
-        This method does not perform any checks on the input frame_dataset
-        and meta_db_engine. It is the caller's responsibility to ensure
-        that the frame_dataset contains the necessary index columns and
-        that the meta_db_engine is connected to a valid meta database.
+        The frame dataset must not contain an indices mapping, and explicit
+        image decode columns are validated against its stored features before
+        this method takes ownership of ``meta_db_engine``. The caller remains
+        responsible for providing the preserved index columns and a valid
+        metadata database. A returned dataset owns ``meta_db_engine`` and
+        disposes it when the dataset or any related view is closed.
         """
 
         if frame_dataset._indices is not None:
@@ -215,18 +284,17 @@ class RODataset(TorchDataset):
             )
 
         ret = RODataset.__new__(RODataset)
-
-        state_dict = {
-            "frame_dataset": frame_dataset,
-            "index_dataset": frame_dataset.select_columns(
-                column_names=list(PreservedIndexColumnsKeys)
-            ),
-            "meta_index2meta": meta_index2meta,
-            "_dataset_format_version": None,
-            "db_engine": meta_db_engine,
-            "_transform": None,
-        }
-        ret.__setstate__(state_dict)
+        ret.frame_dataset = frame_dataset
+        ret.index_dataset = frame_dataset.select_columns(
+            column_names=list(PreservedIndexColumnsKeys)
+        )
+        ret.meta_index2meta = meta_index2meta
+        ret._dataset_format_version = None
+        ret._transform = None
+        # Validate reader policy before taking ownership of the caller's
+        # engine.
+        ret._set_image_decode_options(image_decode_options)
+        ret._db_resource = _RODatasetDBResource(meta_db_engine)
         return ret
 
     def _get_info_dict(self) -> RODatasetInfo:
@@ -265,25 +333,221 @@ class RODataset(TorchDataset):
     def __getstate__(self) -> dict:
         """Get the state of the dataset for pickling."""
         state = self._get_state_()
-        # remove db_engine from state to avoid pickling issues
-        engine: Engine = state.pop("db_engine")
-        state["db_engine_url"] = engine.url
+        state.pop("_image_decoder", None)
+        state.pop("_image_decode_columns", None)
+        if self._db_resource.closed:
+            raise RuntimeError("Cannot pickle a closed RODataset.")
         return state
 
     def __setstate__(self, state: dict):
         """Set the state of the dataset from a pickled state."""
-        # restore db_engine from url
         state = state.copy()
-        if (db_engine_url := state.pop("db_engine_url", None)) is not None:
-            state["db_engine"] = create_engine(db_engine_url, readonly=True)
-        else:
-            if "db_engine" not in state:
+        if state.pop("_closed", False):
+            raise ValueError("Cannot restore a closed RODataset state.")
+
+        image_decode_options = state.pop("_image_decode_options", None)
+        state.pop("_image_decoder", None)
+        state.pop("_image_decode_columns", None)
+
+        db_resource = state.pop("_db_resource", None)
+        if db_resource is None:
+            db_engine_url = state.pop("db_engine_url", None)
+            engine = state.pop("db_engine", None)
+            if engine is None:
+                engine = state.pop("_db_engine", None)
+            if db_engine_url is not None:
+                engine = create_engine(db_engine_url, readonly=True)
+            if engine is None:
                 raise KeyError(
                     "db_engine_url not found in state. "
                     "Cannot restore db_engine."
                 )
-        # restore other state
+            db_resource = _RODatasetDBResource(engine)
+        elif db_resource.closed:
+            raise ValueError("Cannot restore a closed RODataset resource.")
+
+        state["_db_resource"] = db_resource
         self.__dict__.update(state)
+        self._set_image_decode_options(image_decode_options)
+
+    @property
+    def image_decode_options(self) -> RODatasetImageDecodeOptions | None:
+        """Return the configured ImageEncoded materialization policy."""
+
+        return self._image_decode_options
+
+    def _set_image_decode_options(
+        self,
+        options: RODatasetImageDecodeOptions | Mapping[str, Any] | None,
+    ) -> None:
+        """Validate image decode intent and build its stateless decoder."""
+
+        if options is None:
+            normalized_options = None
+        elif isinstance(options, RODatasetImageDecodeOptions):
+            normalized_options = options
+        elif isinstance(options, Mapping):
+            normalized_options = RODatasetImageDecodeOptions.model_validate(
+                dict(options)
+            )
+        else:
+            raise TypeError(
+                "image_decode_options must be "
+                "RODatasetImageDecodeOptions, a mapping, or None; got "
+                f"{type(options).__name__}."
+            )
+
+        self._image_decode_options = normalized_options
+        self._image_decode_columns = ()
+        self._image_decoder = None
+        if normalized_options is None:
+            return
+
+        available_features = self.frame_dataset.features
+        if normalized_options.columns is None:
+            columns = tuple(
+                column
+                for column, feature in available_features.items()
+                if isinstance(feature, BatchCameraDataEncodedFeature)  # noqa: F405
+            )
+        else:
+            missing_columns = [
+                column
+                for column in normalized_options.columns
+                if column not in available_features
+            ]
+            if missing_columns:
+                raise KeyError(
+                    "Image decode columns are missing from the dataset: "
+                    + ", ".join(missing_columns)
+                )
+            columns = normalized_options.columns
+            invalid_columns = [
+                column
+                for column in columns
+                if not isinstance(
+                    available_features[column],
+                    BatchCameraDataEncodedFeature,  # noqa: F405
+                )
+            ]
+            if invalid_columns:
+                invalid_details = ", ".join(
+                    f"{column}={type(available_features[column]).__name__}"
+                    for column in invalid_columns
+                )
+                raise ValueError(
+                    "Image decode columns must use "
+                    "BatchCameraDataEncodedFeature; got "
+                    f"{invalid_details}."
+                )
+
+        self._image_decode_columns = columns
+        if not columns:
+            return
+
+        from robo_orchard_lab.transforms.image.decode import (
+            ImageDecodeConfig,
+        )
+
+        self._image_decoder = ImageDecodeConfig(
+            input_columns=columns,
+            backend=normalized_options.backend,
+            invert_rgb=normalized_options.invert_rgb,
+        )()
+
+    def _materialize_storage_features(
+        self,
+        raw_row: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Materialize configured storage features before later stages."""
+
+        row = dict(raw_row)
+        if self._image_decoder is None:
+            return row
+        encoded_values = {
+            column: row[column]
+            for column in self._image_decode_columns
+            if column in row
+        }
+        if encoded_values:
+            row.update(self._image_decoder.transform(**encoded_values))
+        return row
+
+    def _materialize_storage_feature_rows(
+        self,
+        raw_rows: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Materialize one ordered batch before later read stages.
+
+        Subclasses may override this seam to combine storage work across rows
+        while preserving input order and cardinality.
+
+        Args:
+            raw_rows (Sequence[Mapping[str, Any]]): Raw frame-table rows.
+
+        Returns:
+            list[dict[str, Any]]: Materialized rows in input order.
+        """
+
+        return [self._materialize_storage_features(row) for row in raw_rows]
+
+    def _requires_storage_materialization(self) -> bool:
+        """Return whether row reads must apply the storage-feature hook."""
+
+        return self._image_decoder is not None
+
+    @property
+    def db_engine(self) -> Engine:
+        """Return the active metadata database engine.
+
+        A closed reader cannot reopen its metadata connection pool. Construct
+        a new reader instead of accessing metadata after :meth:`close`.
+        """
+
+        return self._db_resource.active_engine
+
+    @db_engine.setter
+    def db_engine(self, engine: Engine) -> None:
+        """Initialize the metadata engine before a reader owns a resource.
+
+        Raises:
+            RuntimeError: If this reader already belongs to a metadata
+                resource lifecycle.
+        """
+
+        db_resource = getattr(self, "_db_resource", None)
+        if db_resource is not None:
+            raise RuntimeError(
+                "Cannot replace the metadata engine after RODataset resource "
+                "initialization."
+            )
+        self._db_resource = _RODatasetDBResource(engine)
+
+    def close(self) -> None:
+        """Release the metadata database engine owned by this dataset.
+
+        The operation is idempotent. Closing a dataset invalidates the
+        database resource used for metadata lookups; create a new reader when
+        further database access is required.
+        """
+
+        self._db_resource.close()
+
+    def __enter__(self) -> Self:
+        """Enter a dataset resource context and return this reader."""
+
+        _ = self.db_engine
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release the metadata database resource at context exit."""
+
+        self.close()
 
     def _load_db(self, dataset_path: str) -> Engine:
         return create_engine(
@@ -412,6 +676,19 @@ class RODataset(TorchDataset):
         )
         ret = type(self).__new__(type(self))
         ret.__dict__.update(state_dict)
+        if (
+            ret._image_decode_options is not None
+            and ret._image_decode_options.columns is not None
+        ):
+            ret._image_decode_options = ret._image_decode_options.model_copy(
+                update={
+                    "columns": tuple(
+                        column_mapping.get(column, column)
+                        for column in ret._image_decode_options.columns
+                    )
+                }
+            )
+        ret._set_image_decode_options(ret._image_decode_options)
         return ret
 
     def select_columns(
@@ -458,6 +735,23 @@ class RODataset(TorchDataset):
 
         ret = type(self).__new__(type(self))
         ret.__dict__.update(state_dict)
+        if (
+            ret._image_decode_options is not None
+            and ret._image_decode_options.columns is not None
+        ):
+            selected_columns = tuple(
+                column
+                for column in ret._image_decode_options.columns
+                if column in ret.frame_dataset.features
+            )
+            ret._image_decode_options = (
+                ret._image_decode_options.model_copy(
+                    update={"columns": selected_columns}
+                )
+                if selected_columns
+                else None
+            )
+        ret._set_image_decode_options(ret._image_decode_options)
         return ret
 
     def save_to_disk(
@@ -674,12 +968,47 @@ class RODataset(TorchDataset):
                 Otherwise, returns a dict with the frame data.
         """
 
-        ret: dict | list = self.frame_dataset[index]
+        ret = self._get_frame_data_without_meta_conversion(index)
         if self.meta_index2meta:
             if isinstance(ret, dict):
                 ret = self.convert_meta_index2meta(data=ret)
             else:
                 ret = self.convert_meta_index2meta(data=ret, column_name=index)  # type: ignore # noqa: E501
+        return ret
+
+    def _get_frame_data_without_meta_conversion(
+        self,
+        index: int | slice | list[int] | str,
+    ) -> dict | list:
+        """Read and materialize frame data while preserving raw index fields.
+
+        This internal stage lets multi-row sampling reuse the current row's
+        preserved index columns before optional metadata expansion removes
+        them. User transforms are applied by later public access stages.
+        """
+
+        ret: dict | list = self.frame_dataset[index]
+        if (
+            not isinstance(index, str)
+            and self._requires_storage_materialization()
+        ):
+            if isinstance(index, int):
+                if not isinstance(ret, dict):
+                    raise TypeError("Integer row access must return a dict.")
+                return self._materialize_storage_features(ret)
+
+            if not isinstance(ret, dict):
+                raise TypeError("Batch row access must return a dict.")
+            row_count = len(next(iter(ret.values()))) if len(ret) > 0 else 0
+            if row_count > 0:
+                raw_rows = [
+                    {column: values[offset] for column, values in ret.items()}
+                    for offset in range(row_count)
+                ]
+                rows = self._materialize_storage_feature_rows(raw_rows)
+                ret = {
+                    column: [row[column] for row in rows] for column in rows[0]
+                }
         return ret
 
     def make_iter(self) -> Iterable[dict]:
@@ -903,8 +1232,17 @@ class ROMultiRowDataset(RODataset):
         row_sampler: MultiRowSamplerConfig,
         storage_options: dict | None = None,
         meta_index2meta: bool = False,
+        *,
+        image_decode_options: (
+            RODatasetImageDecodeOptions | Mapping[str, Any] | None
+        ) = None,
     ):
-        super().__init__(dataset_path, storage_options, meta_index2meta)
+        super().__init__(
+            dataset_path,
+            storage_options,
+            meta_index2meta,
+            image_decode_options=image_decode_options,
+        )
         self._column_datasets = {}
         self._set_row_sampler(row_sampler())
 
@@ -937,6 +1275,10 @@ class ROMultiRowDataset(RODataset):
     ) -> ROMultiRowDataset:
         """Create a ROMultiRowDataset from an existing RODataset.
 
+        The returned dataset shares the source dataset's metadata database
+        lifecycle. Closing either object invalidates metadata access through
+        both objects.
+
         Args:
             dataset (RODataset): The base dataset to extend.
             row_sampler (MultiRowSamplerConfig): The configuration for the
@@ -953,31 +1295,76 @@ class ROMultiRowDataset(RODataset):
     def __getitem_no_transform__(self, index: int | slice | list[int]) -> dict:
         cached_index_dataset = CachedIndexDataset(self.index_dataset)
 
-        def fast_column_get(col_name: str, idx_rows: list[int | None]):
-            col_dataset = self._column_datasets[col_name]
-            not_none_idx_rows = []
-            not_none_idx_row_offset = []
-            for i, idx in enumerate(idx_rows):
-                if idx is not None:
-                    not_none_idx_rows.append(idx)
-                    not_none_idx_row_offset.append(i)
+        def materialize_sampled_column(
+            col_name: str,
+            per_row_indices: list[list[int | None]],
+            current_values: dict[int, Any],
+        ) -> list[list[Any | None]]:
+            """Read each non-current referenced row once per batch."""
 
-            not_none_row = col_dataset[not_none_idx_rows][col_name]
-            tmp_dict = {
-                i: val
-                for i, val in zip(
-                    not_none_idx_row_offset, not_none_row, strict=True
+            referenced_indices = list(
+                dict.fromkeys(
+                    sampled_index
+                    for row_indices in per_row_indices
+                    for sampled_index in row_indices
+                    if sampled_index is not None
+                    and sampled_index not in current_values
                 )
-            }
-            return [tmp_dict.get(i, None) for i in range(len(idx_rows))]
+            )
+            values_by_index = dict(current_values)
+            if referenced_indices:
+                referenced_values = self._column_datasets[col_name][
+                    referenced_indices
+                ][col_name]
+                if col_name in self._image_decode_columns:
+                    referenced_values = [
+                        self._materialize_storage_features({col_name: value})[
+                            col_name
+                        ]
+                        for value in referenced_values
+                    ]
+                values_by_index.update(
+                    zip(
+                        referenced_indices,
+                        referenced_values,
+                        strict=True,
+                    )
+                )
+            return [
+                [
+                    None
+                    if sampled_index is None
+                    else values_by_index[sampled_index]
+                    for sampled_index in row_indices
+                ]
+                for row_indices in per_row_indices
+            ]
 
         if isinstance(index, int):
-            cur_row = super().__getitem_no_transform__(index)
+            row_data = self._get_frame_data_without_meta_conversion(index)
+            if not isinstance(row_data, dict):
+                raise TypeError("Integer row access must return a dict.")
+            cur_row = (
+                self.convert_meta_index2meta(data=row_data)
+                if self.meta_index2meta
+                else row_data
+            )
             # update column that needs multi-row sampling
-            for col_name, idx_rows in self._row_sampler.sample_row_idx(
-                cached_index_dataset, index
+            for col_name, idx_rows in (
+                self._row_sampler._sample_row_idx_with_row_data(
+                    cached_index_dataset,
+                    index,
+                    row_data,
+                )
             ).items():
-                cur_row[col_name] = fast_column_get(col_name, idx_rows)
+                current_values = (
+                    {index: cur_row[col_name]} if col_name in cur_row else {}
+                )
+                cur_row[col_name] = materialize_sampled_column(
+                    col_name,
+                    [idx_rows],
+                    current_values,
+                )[0]
             return cur_row
         else:
             if isinstance(index, slice):
@@ -987,29 +1374,42 @@ class ROMultiRowDataset(RODataset):
             assert isinstance(index, list), (
                 "Index must be an int, slice, or list of ints."
             )
-            cur_rows = super().__getitem_no_transform__(index)
+            row_data = self._get_frame_data_without_meta_conversion(index)
+            if not isinstance(row_data, dict):
+                raise TypeError("Batch row access must return a dict.")
+            cur_rows = (
+                self.convert_meta_index2meta(data=row_data)
+                if self.meta_index2meta
+                else row_data
+            )
             # update column that needs multi-row sampling
 
             # first collect all column rows
-            new_rows: dict[str, list[list[int | None]]] = (
-                self._row_sampler.sample_row_idx_batch(
-                    cached_index_dataset, index
+            sampled_indices_by_column: dict[str, list[list[int | None]]] = (
+                self._row_sampler._sample_row_idx_batch_with_row_data(
+                    cached_index_dataset,
+                    index,
+                    row_data,
                 )
             )
-            for k, v in new_rows.items():
-                # flatten and get all rows at once for each column
-                flattened_rows = []
-                [flattened_rows.extend(row) for row in v]
-                flattened_rows = fast_column_get(k, flattened_rows)
-                # reshape back to list of list
-                cnt = 0
-                for i in range(len(v)):
-                    v[i] = flattened_rows[cnt : cnt + len(v[i])]  # noqa: E203
-                    cnt += len(v[i])
-                new_rows[k] = v
+            sampled_values_by_column: dict[str, list[list[Any | None]]] = {}
+            for k, v in sampled_indices_by_column.items():
+                current_values = (
+                    {
+                        current_index: cur_rows[k][offset]
+                        for offset, current_index in enumerate(index)
+                    }
+                    if k in cur_rows
+                    else {}
+                )
+                sampled_values_by_column[k] = materialize_sampled_column(
+                    k,
+                    v,
+                    current_values,
+                )
 
             for k in cur_rows:
-                cur_rows[k] = new_rows.get(k, cur_rows[k])
+                cur_rows[k] = sampled_values_by_column.get(k, cur_rows[k])
             return cur_rows
 
     def __getitem__(self, index: int | slice | list[int]) -> dict:
@@ -1024,7 +1424,8 @@ class ConcatRODataset(TorchDataset):
 
     This class extends `RODataset` to support concatenation of multiple
     datasets. It provides a unified interface to access data from all
-    concatenated datasets.
+    concatenated datasets. Every input must use the same stored features and
+    row materialization policy, including image decode options.
 
     Args:
         datasets (list[RODataset]): A list of RODataset instances to
@@ -1047,6 +1448,11 @@ class ConcatRODataset(TorchDataset):
             if ds.meta_index2meta != datasets[0].meta_index2meta:
                 raise ValueError(
                     "All datasets must have the same meta_index2meta "
+                    "to be concatenated."
+                )
+            if ds.image_decode_options != datasets[0].image_decode_options:
+                raise ValueError(
+                    "All datasets must have the same image_decode_options "
                     "to be concatenated."
                 )
             if ds.transform != datasets[0].transform:
@@ -1200,39 +1606,129 @@ class ConcatRODataset(TorchDataset):
 
 
 class RODatasetItem(DatasetItem[RODataset]):
-    """A DatasetItem for RODataset."""
+    """Lazily construct a configured ``RODataset``-compatible reader.
+
+    ``image_decode_options`` is the common opt-in ImageEncoded materialization
+    policy. ``reader_init_kwargs`` is reserved for reader-specific constructor
+    keywords such as an internal sidecar reader's ``sidecar_options``. Common
+    construction fields remain owned by this item and cannot be overridden
+    through that second keyword path.
+    """
 
     class_type: ClassType[RODataset] = RODataset
     dataset_path: str
     storage_options: dict | None = None
     meta_index2meta: bool = False
-
+    image_decode_options: RODatasetImageDecodeOptions | None = None
     transform: Callable | None = None
+    reader_init_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_reader_contract(self) -> Self:
+        """Reject invalid reader types and constructor arguments early."""
+
+        self._reader_init_kwargs()
+        return self
+
+    def _reader_init_kwargs(self) -> dict[str, Any]:
+        """Return validated constructor arguments for ``class_type``."""
+
+        reader_type = self.class_type
+        if not isinstance(reader_type, type) or not issubclass(
+            reader_type, RODataset
+        ):
+            raise ValueError("class_type must be an RODataset subclass.")
+
+        reserved_keys = {
+            "dataset_path",
+            "storage_options",
+            "meta_index2meta",
+            "image_decode_options",
+            "transform",
+        }
+        overridden_keys = sorted(
+            reserved_keys.intersection(self.reader_init_kwargs)
+        )
+        if overridden_keys:
+            raise ValueError(
+                "reader_init_kwargs cannot override RODatasetItem fields: "
+                f"{', '.join(overridden_keys)}"
+            )
+
+        kwargs = {
+            "dataset_path": self.dataset_path,
+            "storage_options": self.storage_options,
+            "meta_index2meta": self.meta_index2meta,
+            **self.reader_init_kwargs,
+        }
+        if self.image_decode_options is not None:
+            kwargs["image_decode_options"] = self.image_decode_options
+        try:
+            inspect.signature(reader_type).bind(**kwargs)
+        except TypeError as exc:
+            raise ValueError(
+                f"Invalid constructor arguments for {reader_type.__name__}: "
+                f"{exc}"
+            ) from exc
+        return kwargs
 
     def get_dataset_row_num(self) -> int:
         """Get the number of rows in the dataset."""
+        reader_init_kwargs = self._reader_init_kwargs()
         rows = get_row_num_from_dataset_info(
             dataset_path=self.dataset_path,
         )
         if rows is not None:
             return rows
 
-        dataset = RODataset(
-            dataset_path=self.dataset_path,
-            storage_options=self.storage_options,
-            meta_index2meta=self.meta_index2meta,
-        )
-        return len(dataset)
+        with self.class_type(**reader_init_kwargs) as dataset:
+            return len(dataset)
 
     def _create_dataset(self) -> RODataset:
         """Create a dataset from the dataset item configuration."""
-        dataset = RODataset(
-            dataset_path=self.dataset_path,
-            storage_options=self.storage_options,
-            meta_index2meta=self.meta_index2meta,
-        )
+        dataset = self.class_type(**self._reader_init_kwargs())
         dataset.set_transform(self.transform)
         return dataset
+
+
+@dataclass(slots=True)
+class _RODatasetDBResource:
+    """Share one terminal metadata-engine lifecycle across dataset views."""
+
+    engine: Engine
+    closed: bool = False
+
+    @property
+    def active_engine(self) -> Engine:
+        """Return the engine or reject access after the shared close."""
+
+        if self.closed:
+            raise RuntimeError(
+                "RODataset is closed; construct a new reader for metadata "
+                "access."
+            )
+        return self.engine
+
+    def close(self) -> None:
+        """Dispose the shared engine exactly once."""
+
+        if self.closed:
+            return
+        self.engine.dispose()
+        self.closed = True
+
+    def __getstate__(self) -> dict:
+        """Serialize the resource URL while preserving graph-level aliases."""
+
+        if self.closed:
+            raise RuntimeError("Cannot pickle a closed RODataset resource.")
+        return {"db_engine_url": self.engine.url}
+
+    def __setstate__(self, state: dict) -> None:
+        """Recreate a process-local engine for one unpickled resource graph."""
+
+        self.engine = create_engine(state["db_engine_url"], readonly=True)
+        self.closed = False
 
 
 def _get_dataset_db_url(dataset_path: str) -> URL:

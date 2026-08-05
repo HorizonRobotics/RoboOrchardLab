@@ -64,6 +64,15 @@ class TableMixin(metaclass=ABCMeta):
         After shuffling, the order of the indices will be changed, but the
         set of indices will remain the same.
 
+        When ``generator`` is None, implementations derive a temporary
+        generator from the current process's default Torch RNG. PyTorch seeds
+        that default RNG separately in each DataLoader worker, which avoids
+        replaying an identical explicit-generator state copied from the parent
+        process by ``fork``. Creating the temporary generator is intentional;
+        its cost is normally dominated by permutation and table
+        materialization. Callers that pass an explicit generator remain
+        responsible for making its state process-local when using workers.
+
         Args:
             generator (torch.Generator | np.random.Generator | None, optional):
                 Generator used in shuffling. If None, a new generator will be
@@ -210,6 +219,8 @@ class IndiceTable(TableMixin):
         self, generator: torch.Generator | np.random.Generator | None = None
     ) -> IndiceTable:
         if generator is None:
+            # Derive the shuffle stream from the process-local default RNG.
+            # DataLoader seeds that RNG independently in each worker.
             seed = int(torch.empty((), dtype=torch.int64).random_().item())
             generator = torch.Generator()
             generator.manual_seed(seed)
@@ -407,6 +418,8 @@ class ChunkedIndiceTable(TableMixin):
         self, generator: torch.Generator | np.random.Generator | None = None
     ) -> ChunkedIndiceTable:
         if generator is None:
+            # Derive one worker-local stream and reuse it for chunk order and
+            # all per-chunk permutations below.
             seed = int(torch.empty((), dtype=torch.int64).random_().item())
             generator = torch.Generator()
             generator.manual_seed(seed)

@@ -37,9 +37,10 @@ or planning shapes in `templates/`.
   `references/robot-interactive-env-guideline.md`,
   `references/robotwin-env-guideline.md`, and
   `references/state-recovery-guideline.md`.
-- RODataset metadata, repack, and persistence:
+- RODataset reading, metadata, repack, and persistence:
   `references/rodataset-metadata-guideline.md`,
   `references/rodataset-packaging-lifecycle-guideline.md`,
+  `references/rodataset-reader-materialization-guideline.md`,
   `references/rodataset-repack-guideline.md`, and
   `references/rodataset-upgrade-guideline.md`.
 - Experimental MCAP export:

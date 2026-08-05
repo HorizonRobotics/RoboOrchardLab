@@ -41,7 +41,13 @@ __all__ = [
 
 
 class ImageDecode(DictTransform[dict[str, BatchCameraData]]):
-    """A transform to decode BatchCameraDataEncoded to BatchCameraData."""
+    """Ensure selected camera values are decoded ``BatchCameraData``.
+
+    Encoded values are decoded with the configured backend. Values already
+    materialized as ``BatchCameraData`` are returned unchanged, so reader-level
+    image or video materialization can compose with caller transforms without
+    a second decode or RGB/BGR inversion.
+    """
 
     cfg: ImageDecodeConfig
     is_variadic: bool = True
@@ -51,7 +57,7 @@ class ImageDecode(DictTransform[dict[str, BatchCameraData]]):
         self.cfg = cfg
 
     def transform(self, **kwargs) -> dict[str, BatchCameraData]:
-        """Decode the image data from bytes to PIL images."""
+        """Decode encoded values and pass materialized values through."""
         if self.cfg.backend == "pil":
             # return img.decode(self._decode_impl_pil)
             impl = self._decode_impl_pil
@@ -73,9 +79,12 @@ class ImageDecode(DictTransform[dict[str, BatchCameraData]]):
                 elif self.cfg.invert_rgb and out.pix_fmt == ImageMode.BGR:
                     out.pix_fmt = ImageMode.RGB
                 ret[key] = out
+            elif isinstance(value, BatchCameraData):
+                ret[key] = value
             else:
                 raise TypeError(
-                    f"Expected BatchCameraDataEncoded for key '{key}', "
+                    "Expected BatchCameraDataEncoded or BatchCameraData for "
+                    f"key '{key}', "
                     f"but got {type(value)}."
                 )
         return ret

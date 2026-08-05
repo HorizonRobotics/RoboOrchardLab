@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import Any, Mapping
+
 import numpy as np
 from datasets import Dataset as HFDataset
 from robo_orchard_core.utils.config import ClassType
@@ -53,8 +55,28 @@ class EpisodeChunkSampler(MultiRowSampler):
         self,
         index_dataset: HFDataset,
         index: int,
+        *,
+        row_data: Mapping[str, Any] | None = None,
     ) -> dict[str, list[int | None]]:
-        cur_row = index_dataset[index]
+        """Sample one episode-local chunk.
+
+        Args:
+            index_dataset (HFDataset): Dataset containing episode indices.
+            index (int): Current packed row index.
+            row_data (Mapping[str, Any] | None, optional): Materialized
+                data for the current row. Its ``episode_index`` avoids
+                re-reading the current index row. Defaults to None.
+
+        Returns:
+            dict[str, list[int | None]]: Sampled indices for each target
+                column.
+        """
+
+        cur_row = (
+            row_data
+            if row_data is not None and "episode_index" in row_data
+            else index_dataset[index]
+        )
         cur_episode_idx = cur_row["episode_index"]
         dataset_len = len(index_dataset)
 

@@ -103,10 +103,20 @@ def _assert_cleanup_payload(payload: dict[str, object]) -> None:
 
     baseline_child_pids = baseline["child_pids"]
     assert isinstance(baseline_child_pids, list)
+    assert baseline["child_metrics_complete"] is True
+    baseline_child_keys = {str(pid) for pid in baseline_child_pids}
+    assert set(baseline["child_rss_bytes"]) == baseline_child_keys
+    assert set(baseline["child_thread_counts"]) == baseline_child_keys
     baseline_prefetch_threads = baseline["prefetch_threads"]
     assert isinstance(baseline_prefetch_threads, int)
     baseline_fd_count = baseline["fd_count"]
     assert isinstance(baseline_fd_count, int)
+    baseline_process_rss = baseline["process_rss_bytes"]
+    assert isinstance(baseline_process_rss, int)
+    assert baseline_process_rss > 0
+    baseline_process_threads = baseline["process_thread_count"]
+    assert isinstance(baseline_process_threads, int)
+    assert baseline_process_threads > 0
 
     num_workers = payload["num_workers"]
     assert isinstance(num_workers, int)
@@ -121,6 +131,8 @@ def _assert_cleanup_payload(payload: dict[str, object]) -> None:
 
     cycle_child_pid_sets: list[tuple[int, ...]] = []
     cycle_fd_counts: list[int] = []
+    cycle_process_thread_counts: list[int] = []
+    child_thread_counts_by_pid: dict[str, list[int]] = {}
     for cycle in per_cycle:
         assert isinstance(cycle, dict)
         if close_mode == "early-break":
@@ -130,10 +142,33 @@ def _assert_cleanup_payload(payload: dict[str, object]) -> None:
         assert cycle["prefetch_threads"] == baseline_prefetch_threads
         child_pids = cycle["child_pids"]
         assert isinstance(child_pids, list)
+        assert cycle["child_metrics_complete"] is True
         cycle_child_pid_sets.append(tuple(child_pids))
         fd_count = cycle["fd_count"]
         assert isinstance(fd_count, int)
         cycle_fd_counts.append(fd_count)
+        process_rss_bytes = cycle["process_rss_bytes"]
+        total_rss_bytes = cycle["total_rss_bytes"]
+        child_rss_bytes = cycle["child_rss_bytes"]
+        process_thread_count = cycle["process_thread_count"]
+        total_thread_count = cycle["total_thread_count"]
+        child_thread_counts = cycle["child_thread_counts"]
+        assert isinstance(process_rss_bytes, int)
+        assert isinstance(total_rss_bytes, int)
+        assert isinstance(child_rss_bytes, dict)
+        assert total_rss_bytes >= process_rss_bytes > 0
+        assert isinstance(process_thread_count, int)
+        assert isinstance(total_thread_count, int)
+        assert isinstance(child_thread_counts, dict)
+        expected_child_keys = {str(pid) for pid in child_pids}
+        assert set(child_rss_bytes) == expected_child_keys
+        assert set(child_thread_counts) == expected_child_keys
+        assert total_thread_count >= process_thread_count > 0
+        cycle_process_thread_counts.append(process_thread_count)
+        for pid, thread_count in child_thread_counts.items():
+            assert isinstance(pid, str)
+            assert isinstance(thread_count, int)
+            child_thread_counts_by_pid.setdefault(pid, []).append(thread_count)
 
     if num_workers > 0 and persistent_workers:
         assert cycle_child_pid_sets
@@ -149,8 +184,40 @@ def _assert_cleanup_payload(payload: dict[str, object]) -> None:
         )
 
     assert after_cleanup["child_pids"] == baseline_child_pids
+    assert after_cleanup["child_metrics_complete"] is True
+    assert set(after_cleanup["child_rss_bytes"]) == baseline_child_keys
+    assert set(after_cleanup["child_thread_counts"]) == baseline_child_keys
     assert after_cleanup["prefetch_threads"] == baseline_prefetch_threads
     assert isinstance(after_cleanup["fd_count"], int)
+    assert isinstance(after_cleanup["process_rss_bytes"], int)
+    assert isinstance(after_cleanup["total_rss_bytes"], int)
+    assert isinstance(after_cleanup["child_rss_bytes"], dict)
+    assert isinstance(after_cleanup["process_thread_count"], int)
+    assert isinstance(after_cleanup["total_thread_count"], int)
+    assert isinstance(after_cleanup["child_thread_counts"], dict)
+    assert (
+        after_cleanup["total_rss_bytes"]
+        >= (after_cleanup["process_rss_bytes"])
+        > 0
+    )
+    assert (
+        after_cleanup["total_thread_count"]
+        >= (after_cleanup["process_thread_count"])
+        > 0
+    )
+    assert after_cleanup["process_thread_count"] <= (
+        baseline_process_threads + 2
+    )
+    if cycle_process_thread_counts:
+        assert (
+            max(cycle_process_thread_counts) - min(cycle_process_thread_counts)
+            <= 2
+        )
+    if num_workers > 0 and persistent_workers:
+        assert child_thread_counts_by_pid
+        for thread_counts in child_thread_counts_by_pid.values():
+            assert len(thread_counts) == len(per_cycle)
+            assert max(thread_counts) - min(thread_counts) <= 1
     fd_tolerance = 8 + 8 * num_workers
     if pin_memory_requested:
         fd_tolerance += 8

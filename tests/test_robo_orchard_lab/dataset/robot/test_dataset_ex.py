@@ -17,17 +17,20 @@
 import gc
 import multiprocessing as mp
 import os
+import pickle
 import threading
 import time
 import weakref
 from typing import Any, cast
 
+import numpy as np
 import pytest
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DataLoaderConfiguration
 from robo_orchard_core.utils.config import ClassType
 from torch.utils.data import (
+    DataLoader as TorchDataLoader,
     Dataset,
     IterableDataset as TorchIterableDataset,
 )
@@ -37,6 +40,7 @@ from robo_orchard_lab.dataset.robot import (
     BatchLoaderConfig,
     DataLoader,
     DatasetItem,
+    DatasetWithIndices,
     IterableDatasetMixin,
     IterableWithLenDataset,
     ShardConfig,
@@ -83,6 +87,19 @@ class BatchedArrayDataset(ArrayDataset):
     def __getitems__(self, indices: list[int]) -> list:
         self.getitems_calls.append(list(indices))
         return [self.data[idx] for idx in indices]
+
+
+class DelayedBatchedArrayDataset(BatchedArrayDataset):
+    def __init__(self, data: list, delay: float) -> None:
+        super().__init__(data)
+        self._delay = delay
+        self._getitems_call_count = 0
+
+    def __getitems__(self, indices: list[int]) -> list:
+        if self._delay > 0 and self._getitems_call_count % 2 == 0:
+            time.sleep(self._delay)
+        self._getitems_call_count += 1
+        return super().__getitems__(indices)
 
 
 class ArrayIterableDataset(TorchIterableDataset):
@@ -258,6 +275,310 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
     @pytest.fixture(params=["dummy_array_dataset"])
     def total_batch_consistency_test_dataset(self, request):
         return request.getfixturevalue(request.param)
+
+    @pytest.mark.parametrize(
+        "resample_ratio,expected_length",
+        [
+            (0.5, 5),
+            (1.0, 10),
+            (2.5, 25),
+        ],
+    )
+    def test_resample_ratio_controls_exact_logical_row_count(
+        self,
+        dummy_array_dataset: ArrayDataset,
+        resample_ratio: float,
+        expected_length: int,
+    ):
+        dataset = DatasetWithIndices(dummy_array_dataset).to_iterable_dataset(
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratio=resample_ratio,
+        )
+
+        items = list(dataset)
+
+        assert len(items) == dataset.total_iterator_length == expected_length
+        if resample_ratio < 1:
+            assert len(set(items)) == expected_length
+        else:
+            for cycle_start in range(0, expected_length - 9, 10):
+                assert sorted(items[cycle_start : cycle_start + 10]) == list(
+                    range(10)
+                )
+
+    @pytest.mark.parametrize("generator_kind", ["torch", "numpy"])
+    def test_oversampling_prefetch_is_independent_of_source_latency(
+        self,
+        generator_kind: str,
+    ):
+        """Seeded source cycles and reservoir shuffle use separate streams."""
+
+        def collect(delay: float) -> list[int]:
+            generator: torch.Generator | np.random.Generator
+            if generator_kind == "torch":
+                generator = torch.Generator().manual_seed(7)
+            else:
+                generator = np.random.default_rng(7)
+            dataset = DatasetWithIndices(
+                DelayedBatchedArrayDataset(list(range(12)), delay)
+            ).to_iterable_dataset(
+                shuffle=ShuffleConfig(
+                    shuffle=True,
+                    chunk_size=2,
+                    prefetch_factor=2,
+                ),
+                generator=generator,
+                resample_ratio=10.0,
+            )
+            return list(dataset)
+
+        fast_items = collect(delay=0.0)
+        delayed_items = collect(delay=0.001)
+
+        assert fast_items == delayed_items
+        assert len(fast_items) == 120
+        assert all(fast_items.count(value) == 10 for value in range(12))
+
+    @pytest.mark.parametrize("generator_kind", ["torch", "numpy"])
+    def test_size_one_prefetch_preserves_sampling_generator_stream(
+        self,
+        generator_kind: str,
+    ):
+        """Size-one prefetch is a pass-through without RNG splitting."""
+
+        if generator_kind == "torch":
+            prefetch_generator: torch.Generator | np.random.Generator = (
+                torch.Generator().manual_seed(7)
+            )
+            direct_generator: torch.Generator | np.random.Generator = (
+                torch.Generator().manual_seed(7)
+            )
+        else:
+            prefetch_generator = np.random.default_rng(7)
+            direct_generator = np.random.default_rng(7)
+
+        shuffle_config = ShuffleConfig(
+            shuffle=True,
+            chunk_size=1,
+            prefetch_factor=1,
+        )
+        prefetch_items = list(
+            DatasetWithIndices(
+                ArrayDataset(list(range(12)))
+            ).to_iterable_dataset(
+                shuffle=shuffle_config,
+                generator=prefetch_generator,
+                resample_ratio=2.0,
+            )
+        )
+        direct_dataset = DatasetWithIndices(
+            ArrayDataset(list(range(12)))
+        ).to_iterable_dataset(
+            shuffle=shuffle_config,
+            generator=direct_generator,
+            resample_ratio=2.0,
+        )
+        direct_items = list(
+            direct_dataset._torch_iter(direct_dataset.indice_sampler)
+        )
+
+        assert prefetch_items == direct_items
+        if isinstance(prefetch_generator, torch.Generator):
+            assert isinstance(direct_generator, torch.Generator)
+            assert torch.equal(
+                prefetch_generator.get_state(),
+                direct_generator.get_state(),
+            )
+        else:
+            assert isinstance(direct_generator, np.random.Generator)
+            assert (
+                prefetch_generator.bit_generator.state
+                == direct_generator.bit_generator.state
+            )
+
+    @pytest.mark.parametrize("prefetch_factor", [0, -1])
+    def test_nonpositive_sample_prefetch_size_still_raises(
+        self,
+        dummy_array_dataset: ArrayDataset,
+        prefetch_factor: int,
+    ):
+        dataset = DatasetWithIndices(dummy_array_dataset).to_iterable_dataset(
+            shuffle=ShuffleConfig(
+                shuffle=True,
+                chunk_size=1,
+                prefetch_factor=prefetch_factor,
+            ),
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="prefetch_size must be greater than 0",
+        ):
+            list(dataset)
+
+    @pytest.mark.parametrize(
+        "resample_ratio,exception",
+        [
+            (0.0, ValueError),
+            (-1.0, ValueError),
+            (float("nan"), ValueError),
+            (float("inf"), ValueError),
+            (True, TypeError),
+            ("1.0", TypeError),
+        ],
+    )
+    def test_resample_ratio_validates_public_contract(
+        self,
+        dummy_array_dataset: ArrayDataset,
+        resample_ratio: Any,
+        exception: type[Exception],
+    ):
+        with pytest.raises(exception):
+            IterableWithLenDataset(
+                dummy_array_dataset,
+                shuffle=True,
+                resample_ratio=resample_ratio,
+            )
+
+    @pytest.mark.parametrize("resample_ratio", [0.5, 2.0])
+    def test_resample_ratio_requires_shuffle(
+        self,
+        dummy_array_dataset: ArrayDataset,
+        resample_ratio: float,
+    ):
+        with pytest.raises(ValueError, match="require shuffle=True"):
+            IterableWithLenDataset(
+                dummy_array_dataset,
+                shuffle=False,
+                resample_ratio=resample_ratio,
+            )
+
+    def test_resample_ratio_batches_the_complete_stream_once(self):
+        dataset = IterableWithLenDataset(
+            ArrayDataset([0, 1]),
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratio=2.0,
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=4,
+                drop_last=True,
+            ),
+        )
+
+        batches = list(dataset)
+
+        assert len(batches) == 1
+        assert sorted(batches[0].tolist()) == [0, 0, 1, 1]
+
+    def test_resample_ratio_survives_views_and_dataloader_clone(
+        self,
+        dummy_array_dataset: ArrayDataset,
+    ):
+        dataset = IterableWithLenDataset(
+            dummy_array_dataset,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratio=2.0,
+        )
+        sharded = dataset.shard(num_shards=2, index=0)
+        taken = dataset.take(slice(0, 3))
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            use_dataset_side_batching=True,
+        )
+
+        assert sharded.resample_ratio == 2.0
+        assert sharded.total_iterator_length == 10
+        assert taken.resample_ratio == 2.0
+        assert taken.total_iterator_length == 6
+        assert isinstance(dataloader.dataset, IterableWithLenDataset)
+        assert dataloader.dataset.resample_ratio == 2.0
+
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_worker_sharding_precedes_oversampling_for_tiny_dataset(
+        self,
+        use_dataset_side_batching: bool,
+    ):
+        num_workers = 2
+        dataset = IterableWithLenDataset(
+            ArrayDataset([7]),
+            shuffle=True,
+            resample_ratio=2.0,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=num_workers,
+            use_dataset_side_batching=use_dataset_side_batching,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        batches = list(dataloader)
+
+        assert len(batches) == len(dataloader) == 1
+        assert batches[0].tolist() == [7, 7]
+
+    def test_worker_targets_preserve_global_downsample_length(self):
+        num_workers = 2
+        dataset = IterableWithLenDataset(
+            ArrayDataset([0, 1, 2]),
+            shuffle=True,
+            resample_ratio=0.5,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=None,
+            num_workers=num_workers,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        items = list(dataloader)
+
+        assert len(items) == dataset.total_iterator_length == 2
+        assert len(set(items)) == 2
+
+    @pytest.mark.parametrize("resample_ratio", [0.75, 2.0])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_shuffled_multi_worker_resampling_uses_disjoint_worker_shards(
+        self,
+        resample_ratio: float,
+        use_dataset_side_batching: bool,
+    ):
+        num_workers = 2
+        dataset = IterableWithLenDataset(
+            ArrayDataset(list(range(8))),
+            shuffle=True,
+            resample_ratio=resample_ratio,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=2 if use_dataset_side_batching else None,
+            num_workers=num_workers,
+            generator=torch.Generator().manual_seed(0),
+            use_dataset_side_batching=use_dataset_side_batching,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        dataloader_items = list(dataloader)
+        items = (
+            [int(item) for batch in dataloader_items for item in batch]
+            if use_dataset_side_batching
+            else [int(item) for item in dataloader_items]
+        )
+
+        if resample_ratio < 1:
+            assert len(items) == 6
+            assert len(set(items)) == 6
+        else:
+            assert sorted(items) == sorted([*range(8), *range(8)])
 
     @pytest.mark.parametrize(
         "batch_size, num_workers, drop_last",
@@ -559,6 +880,270 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             ArrayDatasetItem(data=list(range(100, 110))),
         ]
 
+    def test_resample_ratios_control_exact_row_counts(self):
+        downsampled = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(10))),
+                ArrayDatasetItem(data=list(range(100, 110))),
+            ],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=[0.5, 0.5],
+        )
+        oversampled = DictIterableDataset(
+            [ArrayDatasetItem(data=list(range(10)))],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=2.5,
+        )
+
+        downsampled_items = list(downsampled)
+        first = [item for item in downsampled_items if item < 100]
+        second = [item for item in downsampled_items if item >= 100]
+        oversampled_items = list(oversampled)
+
+        assert len(first) == len(set(first)) == 5
+        assert len(second) == len(set(second)) == 5
+        assert downsampled.total_iterator_length == 10
+        assert sorted(oversampled_items[:10]) == list(range(10))
+        assert sorted(oversampled_items[10:20]) == list(range(10))
+        assert len(set(oversampled_items[20:])) == 5
+        assert oversampled.total_iterator_length == 25
+
+    def test_resample_ratio_input_forms_preserve_scale_one_behavior(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+    ):
+        outputs = [
+            list(
+                DictIterableDataset(
+                    dummy_dataset_items,
+                    shuffle=False,
+                    resample_ratios=ratios,
+                )
+            )
+            for ratios in (None, 1.0, [1.0, 1.0])
+        ]
+
+        assert outputs[0] == outputs[1] == outputs[2]
+
+    @pytest.mark.parametrize(
+        "resample_ratios,exception",
+        [
+            ([], ValueError),
+            ([0.0], ValueError),
+            ([-1.0], ValueError),
+            ([float("nan")], ValueError),
+            ([float("inf")], ValueError),
+            ([True], TypeError),
+            (["1.0"], TypeError),
+        ],
+    )
+    def test_resample_ratios_validate_public_contract(
+        self,
+        resample_ratios: Any,
+        exception: type[Exception],
+    ):
+        with pytest.raises(exception):
+            DictIterableDataset(
+                [ArrayDatasetItem(data=[0])],
+                shuffle=True,
+                resample_ratios=resample_ratios,
+            )
+
+    @pytest.mark.parametrize("resample_ratios", [0.5, 2.0, [1.0, 2.0]])
+    def test_resample_ratios_require_shuffle(
+        self,
+        resample_ratios: float | list[float],
+    ):
+        datasets = [ArrayDatasetItem(data=[0])]
+        if isinstance(resample_ratios, list):
+            datasets.append(ArrayDatasetItem(data=[1]))
+
+        with pytest.raises(ValueError, match="require shuffle=True"):
+            DictIterableDataset(
+                datasets,
+                shuffle=False,
+                resample_ratios=resample_ratios,
+            )
+
+    @pytest.mark.parametrize(
+        "dataset_names,exception",
+        [
+            ([], ValueError),
+            (["only_one"], ValueError),
+            ("one_string", TypeError),
+            (["valid", 1], TypeError),
+        ],
+    )
+    def test_dataset_names_validate_public_contract(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+        dataset_names: Any,
+        exception: type[Exception],
+    ):
+        with pytest.raises(exception):
+            DictIterableDataset(
+                dummy_dataset_items,
+                dataset_names=dataset_names,
+            )
+
+    def test_zero_target_items_are_skipped_without_zero_weight_division(self):
+        mixed = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=[0]),
+                ArrayDatasetItem(data=[100, 101]),
+            ],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=[0.5, 1.0],
+        )
+        all_zero = DictIterableDataset(
+            [ArrayDatasetItem(data=[0])],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=[0.5],
+        )
+
+        assert sorted(mixed) == [100, 101]
+        assert mixed._total_indices_length == [0, 2]
+        assert list(all_zero) == []
+        assert all_zero.total_iterator_length == 0
+
+    def test_resampling_batches_the_complete_target_row_stream_once(self):
+        dataset = DictIterableDataset(
+            [ArrayDatasetItem(data=list(range(10)))],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=2.0,
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=4,
+                drop_last=False,
+            ),
+        )
+
+        batches = list(dataset)
+        flattened = [int(item) for batch in batches for item in batch]
+
+        assert len(batches) == dataset.get_total_batch_num(
+            num_workers=0,
+            batch_size=4,
+            drop_last=False,
+        )
+        assert sorted(flattened) == sorted([*range(10), *range(10)])
+
+    def test_resampling_batches_across_natural_cycles_before_drop_last(self):
+        dataset = DictIterableDataset(
+            [ArrayDatasetItem(data=[0, 1])],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=2.0,
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=4,
+                drop_last=True,
+            ),
+        )
+
+        batches = list(dataset)
+
+        assert len(batches) == 1
+        assert sorted(batches[0].tolist()) == [0, 0, 1, 1]
+        assert (
+            dataset.get_total_batch_num(
+                num_workers=0,
+                batch_size=4,
+                drop_last=True,
+            )
+            == 1
+        )
+
+    def test_resampling_fails_when_positive_metadata_yields_no_rows(self):
+        class _EmptyDespiteMetadataItem(ArrayDatasetItem):
+            def get_dataset_row_num(self) -> int:
+                return 1
+
+        dataset = DictIterableDataset(
+            [_EmptyDespiteMetadataItem(data=[])],
+            shuffle=True,
+            resample_ratios=2.0,
+        )
+
+        with pytest.raises(RuntimeError, match="produced no rows"):
+            list(dataset)
+
+    def test_resample_metadata_survives_shard_and_dataloader_clone(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+    ):
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            shuffle=True,
+            resample_ratios=[0.5, 2.0],
+            dataset_names=["first", "second"],
+        )
+
+        sharded = dataset.shard(num_shards=2, index=1)
+        dataloader = DataLoader(
+            dataset,
+            batch_size=3,
+            use_dataset_side_batching=True,
+        )
+
+        assert sharded._resample_ratios == [0.5, 2.0]
+        assert sharded._dataset_names == ["first", "second"]
+        assert isinstance(dataloader.dataset, DictIterableDataset)
+        assert dataloader.dataset._resample_ratios == [0.5, 2.0]
+        assert dataloader.dataset._dataset_names == ["first", "second"]
+
+    def test_summary_reports_resampled_and_real_sharded_ratios(self):
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(10))),
+                ArrayDatasetItem(data=list(range(10, 20))),
+            ],
+            shuffle=True,
+            resample_ratios=[1.0, 3.0],
+            dataset_names=["aaa", "数\n据"],
+        )
+
+        summary = dataset.summary()
+        lines = summary.splitlines()
+
+        assert len(lines) == 4
+        assert lines[0].startswith(" " * 28 + "name sample_ratio")
+        assert "[frame_ratio]" in lines[0]
+        assert lines[1].startswith("├" + "-" * 27 + "aaa:")
+        assert lines[2].startswith("├" + "-" * 25 + "数_据:")
+        assert "25.00%" in lines[1]
+        assert "75.00%" in lines[2]
+        assert "50.00%" in lines[1]
+        assert "50.00%" in lines[2]
+        assert lines[3].endswith("[    20]")
+        assert lines[0].index("name") + len("name") == (
+            lines[1].index(":") + 1
+        )
+        assert lines[0].index("sample_ratio") + len("sample_ratio") == (
+            lines[1].index("25.00%") + len("25.00%")
+        )
+        assert lines[0].index("frame_ratio") + len("frame_ratio") == (
+            lines[1].index("50.00%") + len("50.00%")
+        )
+        assert lines[0].index("length") + len("length") == (
+            lines[1].index("10") + len("10")
+        )
+
+    def test_summary_handles_an_empty_shard(self):
+        dataset = DictIterableDataset(
+            [ArrayDatasetItem(data=[0])],
+            shard_kwargs=ShardConfig(shard_strategy="drop_last"),
+        ).shard(num_shards=2, index=1)
+
+        summary = dataset.summary()
+
+        assert "item_0" in summary
+        assert summary.count("0.00%") == 4
+        assert summary.splitlines()[-1].endswith("[     0]")
+
     def test_dataloader_item_consistency(
         self, dummy_dataset_items: list[DatasetItem]
     ):
@@ -612,6 +1197,74 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
 
         assert "DictIterableDataset(" in repr_text
         assert "dataset_items=2" in repr_text
+
+    @pytest.mark.skipif(
+        (
+            "spawn" not in mp.get_all_start_methods()
+            or "file_descriptor"
+            not in torch.multiprocessing.get_all_sharing_strategies()
+        ),
+        reason="requires spawn workers with file-descriptor Torch IPC",
+    )
+    def test_torch_generator_is_safe_for_spawn_workers(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+    ) -> None:
+        """Spawn workers restore Torch RNG state without shared storage FDs."""
+
+        generator = torch.Generator().manual_seed(17)
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            shuffle=False,
+            generator=generator,
+        )
+        # The project DataLoader clones iterable datasets before Torch starts
+        # workers. Use Torch's loader directly to exercise the serialization
+        # boundary used by the profiling runner.
+        dataloader = TorchDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=1,
+            multiprocessing_context="spawn",
+        )
+
+        sharing_strategy = torch.multiprocessing.get_sharing_strategy()
+        try:
+            # The test suite normally selects ``file_system`` IPC globally.
+            # Production uses Torch's Linux ``file_descriptor`` default, whose
+            # generator-state transport is the boundary under test here.
+            torch.multiprocessing.set_sharing_strategy("file_descriptor")
+            batches = list(dataloader)
+        finally:
+            torch.multiprocessing.set_sharing_strategy(sharing_strategy)
+
+        assert batches
+        assert sorted(
+            item
+            for batch in batches
+            for item in cast(torch.Tensor, batch).tolist()
+        ) == [*range(10), *range(100, 110)]
+
+    def test_torch_generator_pickle_preserves_rng_state(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+    ) -> None:
+        """Dataset serialization must not change Torch shuffle sequences."""
+
+        generator = torch.Generator().manual_seed(23)
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            shuffle=True,
+            generator=generator,
+        )
+        expected_state = generator.get_state().clone()
+
+        restored = pickle.loads(pickle.dumps(dataset))
+
+        assert isinstance(restored._generator, torch.Generator)
+        assert restored._generator is not generator
+        assert torch.equal(restored._generator.get_state(), expected_state)
+        assert "_serialized_torch_generator" not in restored.__dict__
 
     def test_use_dataset_side_batching_option(
         self, dummy_dataset_items: list[DatasetItem]
@@ -697,6 +1350,107 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
 
         assert child_iters[0].closed is True
         assert child_iters[1].closed is True
+
+    @pytest.mark.parametrize("stop_early", [False, True])
+    @pytest.mark.parametrize("resample_ratio", [1.0, 2.5])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_iteration_closes_datasets_created_by_items(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+        monkeypatch: pytest.MonkeyPatch,
+        stop_early: bool,
+        resample_ratio: float,
+        use_dataset_side_batching: bool,
+    ) -> None:
+        """Close item-created datasets on exhaustion and early exit."""
+
+        class _CloseTrackingArrayDataset(ArrayDataset):
+            def __init__(self, data: list) -> None:
+                super().__init__(data)
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        created_datasets: list[_CloseTrackingArrayDataset] = []
+
+        def create_closeable_dataset(
+            item: ArrayDatasetItem,
+        ) -> _CloseTrackingArrayDataset:
+            created = _CloseTrackingArrayDataset(item.data)
+            created_datasets.append(created)
+            return created
+
+        monkeypatch.setattr(
+            ArrayDatasetItem,
+            "_create_dataset",
+            create_closeable_dataset,
+        )
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            shuffle=resample_ratio != 1.0,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=resample_ratio,
+            batch_loader_kwargs=(
+                BatchLoaderConfig(batch_size=3)
+                if use_dataset_side_batching
+                else None
+            ),
+        )
+        dataset_iter = iter(dataset)
+
+        if stop_early:
+            first_item = next(dataset_iter)
+            if use_dataset_side_batching:
+                assert len(first_item) == 3
+            else:
+                assert first_item in {*range(10), *range(100, 110)}
+            cast(Any, dataset_iter).close()
+        else:
+            list(dataset_iter)
+
+        assert created_datasets
+        assert all(created.closed for created in created_datasets)
+
+    def test_iteration_failure_closes_dataset_created_by_item(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Close the item-created dataset when row iteration fails."""
+
+        class _FailingArrayDataset(ArrayDataset):
+            def __init__(self, data: list) -> None:
+                super().__init__(data)
+                self.closed = False
+
+            def __getitem__(self, index: int) -> Any:
+                raise RuntimeError(f"row {index} failed")
+
+            def close(self) -> None:
+                self.closed = True
+
+        created_datasets: list[_FailingArrayDataset] = []
+
+        def create_failing_dataset(
+            item: ArrayDatasetItem,
+        ) -> _FailingArrayDataset:
+            created = _FailingArrayDataset(item.data)
+            created_datasets.append(created)
+            return created
+
+        monkeypatch.setattr(
+            ArrayDatasetItem,
+            "_create_dataset",
+            create_failing_dataset,
+        )
+        dataset = DictIterableDataset(dummy_dataset_items, shuffle=False)
+
+        with pytest.raises(RuntimeError, match="row 0 failed"):
+            list(dataset)
+
+        assert len(created_datasets) == 1
+        assert created_datasets[0].closed is True
 
     def test_use_dataset_side_batching_aligns_batch_loader_kwargs(
         self, dummy_dataset_items: list[DatasetItem]
@@ -860,6 +1614,108 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             drop_last=drop_last,
         )
 
+    @pytest.mark.parametrize("resample_ratio", [0.5, 2.0])
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_resampled_total_batch_consistency_across_workers(
+        self,
+        dummy_dataset_items: list[DatasetItem],
+        resample_ratio: float,
+        use_dataset_side_batching: bool,
+    ):
+        batch_size = 4
+        num_workers = 2
+        dataset = DictIterableDataset(
+            dummy_dataset_items,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=resample_ratio,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            drop_last=False,
+            use_dataset_side_batching=use_dataset_side_batching,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        self._check_dataloader_total_batch_consistency(
+            dataloader=dataloader,
+            dataset=(
+                cast(IterableDatasetMixin, dataloader.dataset)
+                if use_dataset_side_batching
+                else dataset
+            ),
+            batch_size=batch_size,
+            drop_last=False,
+        )
+
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_worker_sharding_precedes_oversampling_for_tiny_dataset(
+        self,
+        use_dataset_side_batching: bool,
+    ):
+        num_workers = 2
+        dataset = DictIterableDataset(
+            [ArrayDatasetItem(data=[7])],
+            shuffle=True,
+            resample_ratios=2.0,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=num_workers,
+            use_dataset_side_batching=use_dataset_side_batching,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        batches = list(dataloader)
+
+        assert len(batches) == len(dataloader) == 1
+        assert batches[0].tolist() == [7, 7]
+
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_shuffled_multi_worker_resampling_uses_each_item_worker_shard(
+        self,
+        use_dataset_side_batching: bool,
+    ):
+        num_workers = 2
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(8))),
+                ArrayDatasetItem(data=list(range(100, 108))),
+            ],
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+            resample_ratios=0.75,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=2 if use_dataset_side_batching else None,
+            num_workers=num_workers,
+            generator=torch.Generator().manual_seed(0),
+            use_dataset_side_batching=use_dataset_side_batching,
+            multiprocessing_context=_get_dataloader_multiprocessing_context(
+                num_workers
+            ),
+        )
+
+        dataloader_items = list(dataloader)
+        items = (
+            [int(item) for batch in dataloader_items for item in batch]
+            if use_dataset_side_batching
+            else [int(item) for item in dataloader_items]
+        )
+        first = [item for item in items if item < 100]
+        second = [item for item in items if item >= 100]
+
+        assert len(first) == len(set(first)) == 6
+        assert len(second) == len(set(second)) == 6
+
     def test_dict_iterable_self_batched_overrides_dataset_config(
         self, dummy_dataset_items: list[DatasetItem]
     ):
@@ -980,25 +1836,27 @@ class TestCreatePrefetchIterator:
             for thread in threading.enumerate()
         )
 
-    def test_waits_for_full_prefetch_window_before_shuffle(self):
-        # When shuffling is enabled, the iterator should wait for a full
-        # prefetch window before yielding any item so that the shuffle has a
-        # meaningful sample pool.
-        allow_second_item = threading.Event()
+    def test_waits_for_k_plus_t_candidates_before_first_partition(self):
+        # K=12 uses an effective T=2. The producer must publish the replacement
+        # chunk atomically, so thirteen live-source candidates are
+        # insufficient.
+        allow_last_chunk_item = threading.Event()
         first_item_ready = threading.Event()
         yielded_items = []
 
         def blocking_iter():
-            yield 0
-            if not allow_second_item.wait(timeout=1):
-                raise TimeoutError("Timed out waiting for the second item.")
-            yield 1
+            yield from range(13)
+            if not allow_last_chunk_item.wait(timeout=1):
+                raise TimeoutError(
+                    "Timed out waiting for the last chunk item."
+                )
+            yield 13
 
         generator = torch.Generator()
         generator.manual_seed(0)
         prefetch_iter = create_prefetch_iterator(
             iter(blocking_iter()),
-            prefetch_size=2,
+            prefetch_size=12,
             shuffle=True,
             generator=generator,
         )
@@ -1010,19 +1868,537 @@ class TestCreatePrefetchIterator:
         consumer_thread = threading.Thread(target=consume_first_item)
         consumer_thread.start()
 
-        # The consumer must still be blocked because only one sample is ready
-        # and `prefetch_size=2` has not been satisfied yet.
+        # The producer has one item in its reserved local chunk. It must not
+        # publish or wake the consumer until the second item is available.
         assert not first_item_ready.wait(timeout=0.1)
 
-        # Once the second sample arrives, the first shuffled item can be
-        # yielded and the remaining item should still be preserved.
-        allow_second_item.set()
+        allow_last_chunk_item.set()
         assert first_item_ready.wait(timeout=1)
-        assert yielded_items[0] in {0, 1}
+        assert yielded_items[0] in range(14)
 
         consumer_thread.join(timeout=1)
         remaining_items = list(prefetch_iter)
-        assert sorted(yielded_items + remaining_items) == [0, 1]
+        assert sorted(yielded_items + remaining_items) == list(range(14))
+
+    def test_chunk_partition_matches_one_torch_randperm(self):
+        actual_generator = torch.Generator().manual_seed(0)
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(14)),
+            prefetch_size=12,
+            shuffle=True,
+            generator=actual_generator,
+        )
+
+        actual_outputs = [next(prefetch_iter) for _ in range(2)]
+
+        expected_generator = torch.Generator().manual_seed(0)
+        pool = list(range(14))
+        indices = torch.randperm(14, generator=expected_generator).tolist()
+        assert actual_outputs == [pool[index] for index in indices[:2]]
+        assert cast(Any, prefetch_iter)._shuffle_reservoir == [
+            pool[index] for index in indices[2:]
+        ]
+        assert torch.equal(
+            actual_generator.get_state(),
+            expected_generator.get_state(),
+        )
+        cast(Any, prefetch_iter).close()
+
+    def test_chunk_partition_matches_one_numpy_permutation(self):
+        actual_generator = np.random.default_rng(0)
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(14)),
+            prefetch_size=12,
+            shuffle=True,
+            generator=actual_generator,
+        )
+
+        actual_outputs = [next(prefetch_iter) for _ in range(2)]
+
+        expected_generator = np.random.default_rng(0)
+        pool = list(range(14))
+        indices = expected_generator.permutation(14).tolist()
+        assert actual_outputs == [pool[index] for index in indices[:2]]
+        assert cast(Any, prefetch_iter)._shuffle_reservoir == [
+            pool[index] for index in indices[2:]
+        ]
+        assert (
+            actual_generator.bit_generator.state
+            == expected_generator.bit_generator.state
+        )
+        cast(Any, prefetch_iter).close()
+
+    def test_partial_eof_chunk_partitions_only_available_candidates(self):
+        actual_generator = torch.Generator().manual_seed(11)
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(13)),
+            prefetch_size=12,
+            shuffle=True,
+            generator=actual_generator,
+        )
+
+        actual_output = next(prefetch_iter)
+
+        expected_generator = torch.Generator().manual_seed(11)
+        pool = list(range(13))
+        indices = torch.randperm(13, generator=expected_generator).tolist()
+        assert actual_output == pool[indices[0]]
+        assert cast(Any, prefetch_iter)._shuffle_reservoir == [
+            pool[index] for index in indices[1:]
+        ]
+        assert torch.equal(
+            actual_generator.get_state(),
+            expected_generator.get_state(),
+        )
+        cast(Any, prefetch_iter).close()
+
+    def test_non_divisible_k_waits_for_full_live_partition_chunk(self):
+        allow_last_chunk_item = threading.Event()
+        first_item_ready = threading.Event()
+        outputs: list[int] = []
+
+        def blocking_iter():
+            yield from range(14)
+            if not allow_last_chunk_item.wait(timeout=1):
+                raise TimeoutError(
+                    "Timed out waiting for the last chunk item."
+                )
+            yield 14
+
+        actual_generator = torch.Generator().manual_seed(12)
+        prefetch_iter = create_prefetch_iterator(
+            iter(blocking_iter()),
+            prefetch_size=13,
+            shuffle=True,
+            generator=actual_generator,
+        )
+
+        def consume_first_item():
+            outputs.append(next(prefetch_iter))
+            first_item_ready.set()
+
+        consumer_thread = threading.Thread(target=consume_first_item)
+        consumer_thread.start()
+        assert not first_item_ready.wait(timeout=0.1)
+
+        allow_last_chunk_item.set()
+        assert first_item_ready.wait(timeout=1)
+        consumer_thread.join(timeout=1)
+
+        expected_generator = torch.Generator().manual_seed(12)
+        pool = list(range(15))
+        indices = torch.randperm(15, generator=expected_generator).tolist()
+        assert outputs == [pool[indices[0]]]
+        assert list(cast(Any, prefetch_iter)._ready_queue) == [
+            pool[indices[1]]
+        ]
+        assert cast(Any, prefetch_iter)._shuffle_reservoir == [
+            pool[index] for index in indices[2:]
+        ]
+        assert torch.equal(
+            actual_generator.get_state(),
+            expected_generator.get_state(),
+        )
+        assert sorted(outputs + list(prefetch_iter)) == list(range(15))
+
+    def test_non_divisible_k_reuses_partial_queue_without_deadlock(self):
+        source_length = 200
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(source_length)),
+            prefetch_size=38,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(13),
+        )
+        consume_done = threading.Event()
+        outputs: list[int] = []
+        errors: list[BaseException] = []
+
+        def consume_all():
+            try:
+                outputs.extend(prefetch_iter)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                consume_done.set()
+
+        consumer_thread = threading.Thread(target=consume_all)
+        consumer_thread.start()
+        if not consume_done.wait(timeout=2):
+            cast(Any, prefetch_iter).close(timeout=1)
+        consumer_thread.join(timeout=1)
+
+        assert consume_done.is_set()
+        assert errors == []
+        assert sorted(outputs) == list(range(source_length))
+
+    @pytest.mark.parametrize("prefetch_size", range(6, 129))
+    def test_chunk_layout_keeps_two_chunks_within_1_5k(
+        self,
+        prefetch_size: int,
+    ):
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(1000)),
+            prefetch_size=prefetch_size,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(1),
+        )
+        state = cast(Any, prefetch_iter)._state
+
+        chunk_size = state.producer_chunk_size
+        incoming_capacity = state.buffer_capacity
+        headroom = prefetch_size // 2
+        expected_chunk_size = min(16, headroom // 3)
+        expected_capacity = (
+            (headroom - expected_chunk_size) // expected_chunk_size
+        ) * expected_chunk_size
+        assert chunk_size == expected_chunk_size
+        assert incoming_capacity == expected_capacity
+        assert incoming_capacity >= 2 * chunk_size
+        assert incoming_capacity % chunk_size == 0
+        assert (
+            prefetch_size + chunk_size + incoming_capacity
+            <= prefetch_size + prefetch_size // 2
+        )
+
+        cast(Any, prefetch_iter).close()
+
+    @pytest.mark.parametrize("prefetch_size", range(2, 6))
+    def test_small_k_scalar_fallback_shares_1_5k_headroom(
+        self,
+        prefetch_size: int,
+    ):
+        produced_count = 0
+
+        def counted_iter():
+            nonlocal produced_count
+            for item in range(100):
+                produced_count += 1
+                yield item
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(counted_iter()),
+            prefetch_size=prefetch_size,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(1),
+        )
+        state = cast(Any, prefetch_iter)._state
+        assert state.producer_chunk_size == 1
+        assert state.buffer_capacity == prefetch_size // 2
+        assert cast(Any, prefetch_iter)._shuffle_uses_shared_headroom_credit
+
+        outputs = []
+        for item in prefetch_iter:
+            outputs.append(item)
+            assert produced_count - len(outputs) <= (
+                prefetch_size + prefetch_size // 2
+            )
+
+        assert sorted(outputs) == list(range(100))
+
+    def test_small_k_releases_credit_only_on_the_next_request(self):
+        produced_count = 0
+
+        def counted_iter():
+            nonlocal produced_count
+            for item in range(100):
+                produced_count += 1
+                yield item
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(counted_iter()),
+            prefetch_size=2,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(1),
+        )
+        state = cast(Any, prefetch_iter)._state
+
+        first_item = next(prefetch_iter)
+        assert first_item in range(3)
+        assert produced_count == 3
+        with state.condition:
+            assert state.consumer_reserved_size == 1
+            assert len(state.incoming_queue) == 0
+
+        time.sleep(0.05)
+        assert produced_count == 3
+
+        second_item = next(prefetch_iter)
+        assert second_item in range(4)
+        cast(Any, prefetch_iter).close()
+
+    def test_chunk_credits_keep_total_materialization_within_1_5k(self):
+        produced_count = 0
+
+        def counted_iter():
+            nonlocal produced_count
+            for item in range(300):
+                produced_count += 1
+                yield item
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(counted_iter()),
+            prefetch_size=128,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(1),
+        )
+        state = cast(Any, prefetch_iter)._state
+
+        for _ in range(100):
+            if produced_count == 48:
+                break
+            time.sleep(0.01)
+        assert produced_count == 48
+        with state.condition:
+            assert state.producer_chunk_size == 16
+            assert state.buffer_capacity == 48
+            assert len(state.incoming_queue) == 48
+            assert state.producer_reserved_size == 0
+
+        yielded_item = next(prefetch_iter)
+        assert yielded_item in range(192)
+
+        # The yielded item plus K reservoir, T-1 active outputs, and N shared
+        # producer-side items account for exactly 1.5K materialized samples.
+        for _ in range(100):
+            if produced_count == 192:
+                break
+            time.sleep(0.01)
+        assert produced_count == 192
+        time.sleep(0.05)
+        assert produced_count == 192
+        with state.condition:
+            iterator_owned = (
+                len(cast(Any, prefetch_iter)._shuffle_reservoir)
+                + len(cast(Any, prefetch_iter)._ready_queue)
+                + len(cast(Any, prefetch_iter)._shuffle_pending_incoming)
+                + len(state.incoming_queue)
+                + state.producer_reserved_size
+            )
+        assert iterator_owned == 191
+        assert iterator_owned + 1 <= 128 + 128 // 2
+
+        del yielded_item
+        cast(Any, prefetch_iter).close()
+
+    def test_slow_producer_does_not_drain_shuffle_reservoir(self):
+        allow_next_item = threading.Event()
+        producer_waiting = threading.Event()
+        second_item_ready = threading.Event()
+        yielded_items: list[int] = []
+
+        def blocking_iter():
+            yield from range(14)
+            producer_waiting.set()
+            if not allow_next_item.wait(timeout=1):
+                raise TimeoutError("Timed out waiting for the next item.")
+            yield 14
+            yield 15
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(blocking_iter()),
+            prefetch_size=12,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(2),
+        )
+
+        yielded_items.append(next(prefetch_iter))
+        assert producer_waiting.wait(timeout=1)
+        assert len(cast(Any, prefetch_iter)._ready_queue) == 1
+
+        # The second output was already partitioned with the first one, so a
+        # slow producer cannot add another per-sample handoff here.
+        yielded_items.append(next(prefetch_iter))
+
+        def consume_third_item():
+            yielded_items.append(next(prefetch_iter))
+            second_item_ready.set()
+
+        consumer_thread = threading.Thread(target=consume_third_item)
+        consumer_thread.start()
+        assert not second_item_ready.wait(timeout=0.1)
+
+        allow_next_item.set()
+        assert second_item_ready.wait(timeout=1)
+        consumer_thread.join(timeout=1)
+
+        remaining_items = list(prefetch_iter)
+        assert sorted(yielded_items + remaining_items) == list(range(16))
+
+    @pytest.mark.parametrize("source_length", [0, 1, 3, 4, 5, 6, 20])
+    def test_streaming_shuffle_preserves_input_multiset(
+        self,
+        source_length: int,
+    ):
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(source_length)),
+            prefetch_size=4,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(3),
+        )
+
+        assert sorted(prefetch_iter) == list(range(source_length))
+
+    @pytest.mark.parametrize("generator_kind", ["torch", "numpy"])
+    def test_producer_timing_does_not_change_shuffle_order(
+        self,
+        generator_kind: str,
+    ):
+        def collect(delay: float) -> list[int]:
+            def source_iter():
+                for item in range(30):
+                    if delay > 0 and item % 3 == 0:
+                        time.sleep(delay)
+                    yield item
+
+            if generator_kind == "torch":
+                generator: torch.Generator | np.random.Generator = (
+                    torch.Generator().manual_seed(4)
+                )
+            else:
+                generator = np.random.default_rng(4)
+            return list(
+                create_prefetch_iterator(
+                    iter(source_iter()),
+                    prefetch_size=4,
+                    shuffle=True,
+                    generator=generator,
+                )
+            )
+
+        assert collect(delay=0.0) == collect(delay=0.001)
+
+    def test_torch_chunk_rng_matches_repeated_randperm(self):
+        prefetch_size = 12
+        chunk_size = 2
+        output_count = 4
+        actual_generator = torch.Generator().manual_seed(5)
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(100)),
+            prefetch_size=prefetch_size,
+            shuffle=True,
+            generator=actual_generator,
+        )
+
+        actual_outputs = [next(prefetch_iter) for _ in range(output_count)]
+        cast(Any, prefetch_iter).close()
+
+        expected_generator = torch.Generator().manual_seed(5)
+        reservoir = list(range(prefetch_size))
+        expected_outputs = []
+        for chunk_start in range(
+            prefetch_size,
+            prefetch_size + output_count,
+            chunk_size,
+        ):
+            pool = reservoir + list(
+                range(chunk_start, chunk_start + chunk_size)
+            )
+            indices = torch.randperm(
+                len(pool),
+                generator=expected_generator,
+            ).tolist()
+            expected_outputs.extend(
+                pool[index] for index in indices[:chunk_size]
+            )
+            reservoir = [pool[index] for index in indices[chunk_size:]]
+
+        assert actual_outputs == expected_outputs
+        assert torch.equal(
+            actual_generator.get_state(),
+            expected_generator.get_state(),
+        )
+
+    @pytest.mark.parametrize("generator_kind", ["torch", "numpy"])
+    def test_chunk_rng_matches_reference_for_all_supported_k(
+        self,
+        generator_kind: str,
+    ):
+        for prefetch_size in range(2, 129):
+            headroom = prefetch_size // 2
+            chunk_size = min(16, headroom // 3) if headroom >= 3 else 1
+            source = list(range(prefetch_size + 2 * chunk_size + 1))
+            if generator_kind == "torch":
+                actual_generator: torch.Generator | np.random.Generator = (
+                    torch.Generator().manual_seed(17)
+                )
+                expected_generator: torch.Generator | np.random.Generator = (
+                    torch.Generator().manual_seed(17)
+                )
+            else:
+                actual_generator = np.random.default_rng(17)
+                expected_generator = np.random.default_rng(17)
+
+            actual = list(
+                create_prefetch_iterator(
+                    iter(source),
+                    prefetch_size=prefetch_size,
+                    shuffle=True,
+                    generator=actual_generator,
+                )
+            )
+
+            reservoir = source[:prefetch_size]
+            expected = []
+            for offset in range(prefetch_size, len(source), chunk_size):
+                incoming = source[offset : offset + chunk_size]
+                pool = reservoir + incoming
+                if isinstance(expected_generator, torch.Generator):
+                    indices = torch.randperm(
+                        len(pool),
+                        generator=expected_generator,
+                    ).tolist()
+                else:
+                    indices = expected_generator.permutation(
+                        len(pool)
+                    ).tolist()
+                expected.extend(
+                    pool[index] for index in indices[: len(incoming)]
+                )
+                reservoir = [pool[index] for index in indices[len(incoming) :]]
+
+            if isinstance(expected_generator, torch.Generator):
+                tail_indices = torch.randperm(
+                    len(reservoir),
+                    generator=expected_generator,
+                ).tolist()
+            else:
+                tail_indices = expected_generator.permutation(
+                    len(reservoir)
+                ).tolist()
+            expected.extend(reservoir[index] for index in tail_indices)
+
+            assert actual == expected, prefetch_size
+            if isinstance(actual_generator, torch.Generator):
+                assert isinstance(expected_generator, torch.Generator)
+                assert torch.equal(
+                    actual_generator.get_state(),
+                    expected_generator.get_state(),
+                ), prefetch_size
+            else:
+                assert isinstance(expected_generator, np.random.Generator)
+                assert (
+                    actual_generator.bit_generator.state
+                    == expected_generator.bit_generator.state
+                ), prefetch_size
+
+    def test_early_close_commits_the_whole_chunk_rng_draw(self):
+        actual_generator = torch.Generator().manual_seed(6)
+        prefetch_iter = create_prefetch_iterator(
+            iter(range(100)),
+            prefetch_size=12,
+            shuffle=True,
+            generator=actual_generator,
+        )
+
+        next(prefetch_iter)
+        cast(Any, prefetch_iter).close()
+
+        expected_generator = torch.Generator().manual_seed(6)
+        torch.randperm(14, generator=expected_generator)
+        assert torch.equal(
+            actual_generator.get_state(),
+            expected_generator.get_state(),
+        )
 
     def test_prefetches_next_window_while_consuming_current_window(self):
         # After the first window is handed to the consumer, the producer should
@@ -1093,8 +2469,19 @@ class TestCreatePrefetchIterator:
 
         assert self._count_prefetch_threads() == baseline_threads
 
-    def test_close_waits_for_short_inflight_prefetch_item(self):
+    def test_close_waits_for_short_inflight_prefetch_item(
+        self,
+        caplog,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
         tail_item_started = threading.Event()
+
+        monkeypatch.setattr(
+            prefetch_module,
+            "_PREFETCH_CLOSE_JOIN_TIMEOUT_SEC",
+            0.02,
+        )
+        caplog.set_level("INFO")
 
         def slow_tail_iter():
             yield 0
@@ -1117,8 +2504,10 @@ class TestCreatePrefetchIterator:
         cast(Any, prefetch_iter).close()
 
         assert self._count_prefetch_threads() == baseline_threads
+        assert "continuing the soft close wait" in caplog.text
+        assert "exited and was joined" in caplog.text
 
-    def test_close_raises_when_inflight_prefetch_item_blocks(self):
+    def test_close_warns_when_inflight_prefetch_item_blocks(self, caplog):
         tail_item_started = threading.Event()
         allow_tail_item = threading.Event()
 
@@ -1141,14 +2530,13 @@ class TestCreatePrefetchIterator:
         assert tail_item_started.wait(timeout=1)
 
         start = time.monotonic()
-        with pytest.raises(
-            RuntimeError,
-            match="Prefetch producer thread did not exit",
-        ):
-            cast(Any, prefetch_iter).close(timeout=0.2)
+        cast(Any, prefetch_iter).close(timeout=0.2)
         elapsed = time.monotonic() - start
 
         assert elapsed < 0.7
+        assert "close() is returning while the producer remains alive" in (
+            caplog.text
+        )
 
         allow_tail_item.set()
         for _ in range(40):
@@ -1157,6 +2545,262 @@ class TestCreatePrefetchIterator:
             threading.Event().wait(0.05)
 
         assert self._count_prefetch_threads() == baseline_threads
+
+    @pytest.mark.parametrize("observation_path", ["next", "close"])
+    def test_producer_error_is_raised_before_blocking_source_close(
+        self,
+        observation_path: str,
+    ):
+        class _ErrorThenBlockingCloseIterator:
+            def __init__(self) -> None:
+                self.next_started = threading.Event()
+                self.allow_error = threading.Event()
+                self.close_started = threading.Event()
+                self.allow_close = threading.Event()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                self.next_started.set()
+                if not self.allow_error.wait(timeout=1):
+                    raise TimeoutError("Timed out waiting to raise error.")
+                raise RuntimeError("primary source error")
+
+            def close(self) -> None:
+                self.close_started.set()
+                if not self.allow_close.wait(timeout=1):
+                    raise TimeoutError("Timed out waiting to close source.")
+                raise RuntimeError("secondary source close error")
+
+        source_iter = _ErrorThenBlockingCloseIterator()
+        prefetch_iter = create_prefetch_iterator(
+            source_iter,
+            prefetch_size=4,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(6),
+        )
+        assert source_iter.next_started.wait(timeout=1)
+
+        observer_done = threading.Event()
+        observer_errors: list[BaseException] = []
+
+        def observe_producer_error():
+            try:
+                if observation_path == "next":
+                    next(prefetch_iter)
+                else:
+                    cast(Any, prefetch_iter).close(timeout=2.0)
+            except BaseException as exc:
+                observer_errors.append(exc)
+            finally:
+                observer_done.set()
+
+        observer_thread = threading.Thread(target=observe_producer_error)
+        if observation_path == "next":
+            observer_thread.start()
+            time.sleep(0.05)
+            source_iter.allow_error.set()
+            assert source_iter.close_started.wait(timeout=1)
+        else:
+            source_iter.allow_error.set()
+            assert source_iter.close_started.wait(timeout=1)
+            observer_thread.start()
+
+        try:
+            assert observer_done.wait(timeout=0.5)
+            assert len(observer_errors) == 1
+            assert isinstance(observer_errors[0], RuntimeError)
+            assert str(observer_errors[0]) == "primary source error"
+            if observation_path == "next":
+                start = time.monotonic()
+                cast(Any, prefetch_iter).close(timeout=2.0)
+                assert time.monotonic() - start < 0.5
+        finally:
+            source_iter.allow_close.set()
+            observer_thread.join(timeout=1)
+            cast(Any, prefetch_iter).close(timeout=1)
+
+    def test_close_observes_producer_error_arriving_during_wait(self):
+        class _LateErrorThenBlockingCloseIterator:
+            def __init__(self) -> None:
+                self.next_started = threading.Event()
+                self.allow_error = threading.Event()
+                self.close_started = threading.Event()
+                self.allow_close = threading.Event()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> int:
+                self.next_started.set()
+                if not self.allow_error.wait(timeout=2):
+                    raise TimeoutError("Timed out waiting to raise error.")
+                raise RuntimeError("late primary source error")
+
+            def close(self) -> None:
+                self.close_started.set()
+                if not self.allow_close.wait(timeout=2):
+                    raise TimeoutError("Timed out waiting to close source.")
+
+        source_iter = _LateErrorThenBlockingCloseIterator()
+        prefetch_iter = create_prefetch_iterator(
+            source_iter,
+            prefetch_size=4,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(9),
+        )
+        assert source_iter.next_started.wait(timeout=1)
+
+        close_done = threading.Event()
+        close_errors: list[BaseException] = []
+
+        def close_prefetch_iter():
+            try:
+                cast(Any, prefetch_iter).close(timeout=2.0)
+            except BaseException as exc:
+                close_errors.append(exc)
+            finally:
+                close_done.set()
+
+        close_thread = threading.Thread(target=close_prefetch_iter)
+        close_thread.start()
+        state = cast(Any, prefetch_iter)._state
+        for _ in range(100):
+            with state.condition:
+                if state.consumer_closed:
+                    break
+            time.sleep(0.01)
+        with state.condition:
+            assert state.consumer_closed
+
+        source_iter.allow_error.set()
+        try:
+            assert source_iter.close_started.wait(timeout=1)
+            assert close_done.wait(timeout=0.5)
+            assert len(close_errors) == 1
+            assert isinstance(close_errors[0], RuntimeError)
+            assert str(close_errors[0]) == "late primary source error"
+        finally:
+            source_iter.allow_close.set()
+            close_thread.join(timeout=1)
+            cast(Any, prefetch_iter).close(timeout=1)
+
+    def test_close_releases_buffered_sample_references(self):
+        class _Payload:
+            pass
+
+        payload_refs: list[weakref.ReferenceType[_Payload]] = []
+
+        def payload_iter():
+            for _ in range(100):
+                payload = _Payload()
+                payload_refs.append(weakref.ref(payload))
+                yield payload
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(payload_iter()),
+            prefetch_size=4,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(7),
+        )
+        yielded_item = next(prefetch_iter)
+        for _ in range(40):
+            if len(payload_refs) == 6:
+                break
+            time.sleep(0.01)
+        assert len(payload_refs) == 6
+
+        del yielded_item
+        cast(Any, prefetch_iter).close()
+        gc.collect()
+
+        assert all(payload_ref() is None for payload_ref in payload_refs)
+
+    def test_close_releases_producer_local_sample_before_source_close(self):
+        class _Payload:
+            pass
+
+        class _OnePayloadThenBlockingCloseIterator:
+            def __init__(self) -> None:
+                self.produced = False
+                self.payload_ref: weakref.ReferenceType[_Payload] | None = None
+                self.close_started = threading.Event()
+                self.allow_close = threading.Event()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> _Payload:
+                if self.produced:
+                    raise StopIteration
+                self.produced = True
+                payload = _Payload()
+                self.payload_ref = weakref.ref(payload)
+                return payload
+
+            def close(self) -> None:
+                self.close_started.set()
+                self.allow_close.wait()
+
+        source_iter = _OnePayloadThenBlockingCloseIterator()
+        prefetch_iter = create_prefetch_iterator(
+            source_iter,
+            prefetch_size=2,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(10),
+        )
+        state = cast(Any, prefetch_iter)._state
+        for _ in range(100):
+            with state.condition:
+                if state.incoming_queue:
+                    break
+            time.sleep(0.01)
+        with state.condition:
+            assert len(state.incoming_queue) == 1
+        assert source_iter.payload_ref is not None
+
+        cast(Any, prefetch_iter).close(
+            raise_producer_errors=False,
+            timeout=0.0,
+        )
+        try:
+            assert source_iter.close_started.wait(timeout=1)
+            gc.collect()
+            assert source_iter.payload_ref() is None
+        finally:
+            source_iter.allow_close.set()
+            cast(Any, prefetch_iter).close(timeout=1)
+
+    def test_producer_error_releases_buffered_sample_references(self):
+        class _Payload:
+            pass
+
+        payload_refs: list[weakref.ReferenceType[_Payload]] = []
+
+        def failing_payload_iter():
+            for _ in range(7):
+                payload = _Payload()
+                payload_refs.append(weakref.ref(payload))
+                yield payload
+            raise RuntimeError("payload source failed")
+
+        prefetch_iter = create_prefetch_iterator(
+            iter(failing_payload_iter()),
+            prefetch_size=4,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(8),
+        )
+
+        with pytest.raises(RuntimeError, match="payload source failed"):
+            while True:
+                yielded_item = next(prefetch_iter)
+                del yielded_item
+
+        cast(Any, prefetch_iter).close()
+        gc.collect()
+
+        assert all(payload_ref() is None for payload_ref in payload_refs)
 
     def test_close_logs_producer_error_in_gc_close_path(self, caplog):
         baseline_threads = self._count_prefetch_threads()
@@ -1178,7 +2822,7 @@ class TestCreatePrefetchIterator:
                 break
             time.sleep(0.05)
 
-        cast(Any, prefetch_iter).close(raise_on_timeout=False)
+        cast(Any, prefetch_iter).close(raise_producer_errors=False)
 
         assert "producer-side exception" in caplog.text
 
@@ -1298,7 +2942,10 @@ class TestCreatePrefetchIterator:
 
         assert source_iter.closed is True
 
-    def test_second_close_consumes_error_after_first_close_timeout(self):
+    def test_second_close_consumes_error_after_first_close_timeout(
+        self,
+        caplog,
+    ):
         source_blocked = threading.Event()
         unblock_source = threading.Event()
 
@@ -1319,11 +2966,10 @@ class TestCreatePrefetchIterator:
 
         assert next(prefetch_iter) == 0
         assert source_blocked.wait(timeout=1)
-        with pytest.raises(
-            RuntimeError,
-            match="Prefetch producer thread did not exit",
-        ):
-            cast(Any, prefetch_iter).close(timeout=0.05)
+        cast(Any, prefetch_iter).close(timeout=0.05)
+        assert "close() is returning while the producer remains alive" in (
+            caplog.text
+        )
 
         unblock_source.set()
         for _ in range(40):

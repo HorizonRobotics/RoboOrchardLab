@@ -75,3 +75,34 @@ class TestImageDecoder:
         assert ret["head_camera"].sensor_data.shape[-1] == 3
 
         print(ret["head_camera"].sensor_data.shape)
+
+    def test_decode_passes_already_decoded_camera_data_through(
+        self,
+        ROBO_ORCHARD_TEST_WORKSPACE: str,
+    ) -> None:
+        """Reader-materialized values are not decoded or inverted twice."""
+
+        path = os.path.join(
+            ROBO_ORCHARD_TEST_WORKSPACE,
+            "robo_orchard_workspace/datasets/robotwin/ro_dataset",
+        )
+        with RODataset(dataset_path=path) as dataset:
+            encoded = dataset[0]["head_camera"]
+        first_decoder = ImageDecodeConfig(
+            input_columns=["head_camera"],
+            backend="cv2",
+        )()
+        decoded = first_decoder.transform(head_camera=encoded)["head_camera"]
+        original_pix_fmt = decoded.pix_fmt
+        pass_through_decoder = ImageDecodeConfig(
+            input_columns=["head_camera"],
+            backend="pil",
+            invert_rgb=True,
+        )()
+
+        materialized = pass_through_decoder.transform(head_camera=decoded)[
+            "head_camera"
+        ]
+
+        assert materialized is decoded
+        assert materialized.pix_fmt == original_pix_fmt

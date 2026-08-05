@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 import inspect
+import math
+import unicodedata
 import warnings
 from abc import ABCMeta, abstractmethod
 from functools import partial
@@ -179,11 +181,8 @@ def _wrap_with_prefetch_if_needed(
     helper leaves batched iteration unwrapped.
     """
     prefetch_size = shuffle_config.prefetch_size
-    if (
-        prefetch_size is not None
-        and shuffle_config.shuffle
-        and batch_loader_kwargs is None
-    ):
+    if _uses_sample_prefetch(shuffle_config, batch_loader_kwargs):
+        assert prefetch_size is not None
         logger.debug(
             "Applying prefetching with prefetch size: %d", prefetch_size
         )
@@ -199,6 +198,68 @@ def _wrap_with_prefetch_if_needed(
         shuffle_config.shuffle,
     )
     return iterator
+
+
+def _uses_sample_prefetch(
+    shuffle_config: ShuffleConfig,
+    batch_loader_kwargs: BatchLoaderConfig | None,
+) -> bool:
+    """Return whether one iteration owns a threaded sample prefetcher.
+
+    A size-one prefetch configuration is the documented pass-through path in
+    ``create_prefetch_iterator``. It has no producer thread or reservoir, so
+    this predicate must leave the sampler's explicit generator untouched.
+    """
+
+    prefetch_size = shuffle_config.prefetch_size
+    if prefetch_size is not None and prefetch_size <= 0:
+        raise ValueError("prefetch_size must be greater than 0.")
+
+    return (
+        prefetch_size is not None
+        and prefetch_size > 1
+        and shuffle_config.shuffle
+        and batch_loader_kwargs is None
+    )
+
+
+def _split_prefetch_generator(
+    generator: torch.Generator | np.random.Generator | None,
+) -> tuple[
+    torch.Generator | np.random.Generator | None,
+    torch.Generator | np.random.Generator | None,
+]:
+    """Derive source and reservoir RNG streams before the producer starts.
+
+    Source resampling runs in the prefetch producer thread while reservoir
+    shuffle runs in the consumer thread. Splitting an explicit generator in
+    the calling thread prevents their draw order from depending on thread
+    scheduling or backing-store latency. ``None`` retains the pre-existing
+    unseeded behavior because no caller-owned stream is shared.
+    """
+
+    if generator is None:
+        return None, None
+    if isinstance(generator, torch.Generator):
+        seed_tensor = torch.empty((), dtype=torch.int64)
+        source_seed = int(seed_tensor.random_(generator=generator).item())
+        reservoir_seed = int(seed_tensor.random_(generator=generator).item())
+        source_generator = torch.Generator(device=generator.device)
+        source_generator.manual_seed(source_seed)
+        reservoir_generator = torch.Generator(device=generator.device)
+        reservoir_generator.manual_seed(reservoir_seed)
+        return source_generator, reservoir_generator
+    if isinstance(generator, np.random.Generator):
+        max_seed = np.iinfo(np.int64).max
+        source_seed = int(generator.integers(max_seed, dtype=np.int64))
+        reservoir_seed = int(generator.integers(max_seed, dtype=np.int64))
+        return np.random.default_rng(source_seed), np.random.default_rng(
+            reservoir_seed
+        )
+    raise TypeError(
+        "Prefetch shuffle generator must be a torch.Generator, "
+        "numpy.random.Generator, or None."
+    )
 
 
 class DataLoader(TorchDataLoader):
@@ -404,6 +465,7 @@ class DataLoader(TorchDataLoader):
                 shard_kwargs=dataset.shard_kwargs,
                 generator=dataset.indice_sampler.generator,
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
+                resample_ratio=dataset.resample_ratio,
             )
         elif isinstance(dataset, DictIterableDataset):
             cloned_dataset = DictIterableDataset(
@@ -413,6 +475,8 @@ class DataLoader(TorchDataLoader):
                 generator=dataset._generator,
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
                 max_dataset_concurrency=dataset._max_dataset_concurrency,
+                resample_ratios=dataset._resample_ratios,
+                dataset_names=dataset._dataset_names,
             )
         else:
             raise TypeError(
@@ -694,6 +758,54 @@ class DatasetWithIndices(TorchDataset, Generic[DatasetType]):
             indices=self.indices.take(key),
         )
 
+    def to_iterable_dataset(
+        self,
+        shuffle: bool | ShuffleConfig = False,
+        shard_kwargs: ShardConfig | None = None,
+        generator: torch.Generator | np.random.Generator | None = None,
+        batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
+        resample_ratio: float = 1.0,
+    ) -> IterableWithLenDataset[DatasetType]:
+        """Create a length-aware iterable view over the selected indices.
+
+        The returned view owns shuffling, PyTorch worker sharding, optional
+        row-level resampling, and optional dataset-side batching. A non-unit
+        resampling ratio is only valid when shuffling is enabled.
+
+        Args:
+            shuffle (bool | ShuffleConfig, optional): Shuffle policy for each
+                natural pass over the selected indices. Defaults to False.
+            shard_kwargs (ShardConfig | None, optional): Worker/process shard
+                policy. Defaults to None, which uses :class:`ShardConfig`
+                defaults.
+            generator (torch.Generator | np.random.Generator | None, optional):
+                Random generator used by shuffling. Defaults to None.
+            batch_loader_kwargs (BatchLoaderConfig | dict | None, optional):
+                Dataset-side batch construction. Defaults to None, which
+                yields individual samples.
+            resample_ratio (float, optional): Finite positive multiplier for
+                the selected row count. Values other than 1.0 require
+                ``shuffle=True``. Defaults to 1.0.
+
+        Returns:
+            IterableWithLenDataset[DatasetType]: An iterable dataset view that
+                preserves the selected index table.
+
+        Raises:
+            TypeError: If ``resample_ratio`` is not numeric.
+            ValueError: If the ratio is invalid or non-unit resampling is
+                requested without shuffling.
+        """
+        return IterableWithLenDataset(
+            dataset=self.dataset,
+            indices=self.indices,
+            shuffle=shuffle,
+            shard_kwargs=shard_kwargs,
+            generator=generator,
+            batch_loader_kwargs=batch_loader_kwargs,
+            resample_ratio=resample_ratio,
+        )
+
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}({repr(self.dataset)}, "
@@ -715,31 +827,17 @@ class DatasetWithIndices(TorchDataset, Generic[DatasetType]):
         else:
             return [self.dataset[self.indices[i]] for i in index]
 
-    def to_iterable_dataset(
-        self,
-        shuffle: bool | ShuffleConfig = False,
-        shard_kwargs: ShardConfig | None = None,
-        generator: torch.Generator | np.random.Generator | None = None,
-        batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
-    ) -> IterableWithLenDataset[DatasetType]:
-        return IterableWithLenDataset(
-            dataset=self.dataset,
-            indices=self.indices,
-            shuffle=shuffle,
-            shard_kwargs=shard_kwargs,
-            generator=generator,
-            batch_loader_kwargs=batch_loader_kwargs,
-        )
-
 
 class IterableWithLenDataset(
     TorchIterableDataset, IterableDatasetMixin, Generic[DatasetType]
 ):
-    """A Iterable dataset wrapper that allows indexing with an IndiceTable.
+    """Expose an indexable dataset as a length-aware iterable dataset.
 
-    This class is designed to be compatible with PyTorch's DataLoader with
-    multiple workers. When used with multiple workers, each worker will only
-    iterate over its own shard of the data.
+    Use this wrapper when the backing dataset remains indexable but callers
+    need iterable loading, exact logical lengths, PyTorch worker sharding, or
+    dataset-side batching. With multiple workers, the physical index table is
+    sharded first and each worker resamples only its own shard; worker targets
+    are allocated so their sum remains the exact global logical row count.
 
     Note:
         The purpose of this class is to provide a way to wrap an indexable
@@ -750,18 +848,17 @@ class IterableWithLenDataset(
         indices should be compatible with the sharding strategy used in
         the DataLoader.
 
-          At runtime this wrapper has two distinct iteration modes:
+        At runtime this wrapper has two distinct iteration modes:
 
-          1. If ``batch_loader_kwargs`` is None, it yields individual samples by
-              resolving indices from ``indice_sampler``. In this mode outer
-              PyTorch worker sharding is applied directly to the sampler.
-          2. If ``batch_loader_kwargs`` is set, it builds an inner
-              single-process dataloader over the current dataset view and lets
-              that inner loader form ready-made batches. The outer loader then
-              only forwards those ready-made batches.
+        1. If ``batch_loader_kwargs`` is None, it yields individual samples by
+           resolving indices from ``indice_sampler``. Outer PyTorch worker
+           sharding is applied directly to the sampler.
+        2. If ``batch_loader_kwargs`` is set, it builds an inner single-process
+           dataloader over the worker-local view. The outer loader only forwards
+           those ready-made batches.
 
-          ``__iter__`` wraps either mode with optional prefetch buffering when
-          sample-level iteration is active.
+        ``__iter__`` wraps either mode with optional prefetch buffering when
+        sample-level iteration is active.
 
     Args:
         dataset (DatasetType): The underlying dataset to wrap.
@@ -783,6 +880,15 @@ class IterableWithLenDataset(
             dataset will be wrapped with a DataLoader to return batches
             of data. Defaults to None, which means no batch loader will
             be used.
+        resample_ratio (float, optional): Finite positive multiplier for the
+            logical row count. Ratios below one take a shuffled prefix; ratios
+            above one repeat natural shuffled cycles plus a final prefix.
+            Values other than 1.0 require ``shuffle=True``. Defaults to 1.0.
+
+    Raises:
+        TypeError: If ``resample_ratio`` is not numeric.
+        ValueError: If indices cannot be inferred, the ratio is not finite and
+            positive, or non-unit resampling is requested without shuffling.
 
     """  # noqa: E501
 
@@ -798,6 +904,7 @@ class IterableWithLenDataset(
         shard_kwargs: ShardConfig | None = None,
         generator: torch.Generator | np.random.Generator | None = None,
         batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
+        resample_ratio: float = 1.0,
     ):
         logger.debug(
             "Initializing IterableWithLenDataset with shuffle config: %s, "
@@ -809,6 +916,14 @@ class IterableWithLenDataset(
         self.dataset = dataset
         indices = self._resolve_indices(dataset, indices)
         self._shuffle_config = self._normalize_shuffle_config(shuffle)
+        self._resample_ratio = _normalize_resample_ratio(
+            resample_ratio,
+            name="resample_ratio",
+        )
+        if self.resample_ratio != 1.0 and not self._shuffle_config.shuffle:
+            raise ValueError(
+                "resample_ratio values other than 1.0 require shuffle=True."
+            )
 
         self.indice_sampler = self._create_indice_sampler(
             indices=indices,
@@ -825,6 +940,229 @@ class IterableWithLenDataset(
         )
         self._batch_loader_kwargs = self._normalize_batch_loader_kwargs(
             batch_loader_kwargs
+        )
+
+    @property
+    def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
+        return self._batch_loader_kwargs
+
+    @property
+    def shard_kwargs(self) -> ShardConfig:
+        return self._shard_kwargs
+
+    @property
+    def resample_ratio(self) -> float:
+        """Return the logical row-count multiplier for this dataset view."""
+        return self._resample_ratio
+
+    def shuffle_indices(self):
+        """Shuffle the dataset indices."""
+        self.indice_sampler.shuffle_indices()
+
+    def shard(self, num_shards: int, index: int):
+        """Shard the dataset into multiple shards.
+
+        Args:
+            num_shards (int): The total number of shards to create.
+            index (int): The ID of the shard to return. Must be in the
+                range [0, num_shards - 1].
+
+        Returns:
+            IterableWithLenDataset[DatasetType]: A new dataset view with the
+                same shuffle and batching configuration, but restricted to the
+                selected shard of indices.
+        """
+        shard_sampler = self.indice_sampler.shard(
+            num_shards=num_shards,
+            shard_id=index,
+            contiguous=self.shard_kwargs.contiguous,
+        )
+        return IterableWithLenDataset(
+            dataset=self.dataset,
+            indices=shard_sampler.table,
+            shard_kwargs=self.shard_kwargs,
+            shuffle=self._shuffle_config,
+            generator=shard_sampler.generator,
+            batch_loader_kwargs=self.batch_loader_kwargs,
+            resample_ratio=self.resample_ratio,
+        )
+
+    def take(
+        self, key: int | slice | range | Iterator[int]
+    ) -> IterableWithLenDataset[DatasetType]:
+        """Return a new IterableWithLenDataset with the rows specified by key."""  # noqa: E501
+        return IterableWithLenDataset(
+            dataset=self.dataset,
+            indices=self.indice_sampler.table.take(key),
+            shard_kwargs=self.shard_kwargs,
+            shuffle=self._shuffle_config,
+            generator=self.indice_sampler.generator,
+            batch_loader_kwargs=self.batch_loader_kwargs,
+            resample_ratio=self.resample_ratio,
+        )
+
+    def iter(self):
+        """Iterate over the current dataset view.
+
+        This method does not apply outer PyTorch worker sharding by itself;
+        ``__iter__`` chooses the worker-local view first and then delegates
+        here.
+
+        Yields:
+            Any: Individual samples or ready-made batches, depending on
+            whether ``batch_loader_kwargs`` is configured.
+
+        """
+        yield from self._iter_with_indice_sampler(self.indice_sampler)
+
+    def _iter_with_indice_sampler(
+        self,
+        indice_sampler: IndiceTableSampler,
+    ) -> Iterator[Any]:
+        """Iterate using the sampler selected for one logical stream."""
+
+        if self.batch_loader_kwargs is None:
+            logger.debug("Iterating without batch loader,...")
+            yield from self._iter_indices(
+                self._iter_resampled_indices(
+                    indice_sampler,
+                    self.total_iterator_length,
+                )
+            )
+            return
+
+        logger.debug(
+            "Iterating with batch loader, shuffle: %s, batch loader: %s",
+            self._shuffle_config,
+            self.batch_loader_kwargs,
+        )
+        inner_loader = self._create_inner_batch_loader(indice_sampler)
+        inner_iter = iter(inner_loader)
+        primary_exc: BaseException | None = None
+        try:
+            for item in inner_iter:
+                yield item
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            close_iterators_best_effort(
+                [inner_iter],
+                primary_exc=primary_exc,
+            )
+
+    def __iter__(self):
+        """Yield the worker-local logical stream with optional prefetching.
+
+        PyTorch worker sharding is applied before resampling. Prefetch
+        buffering is only added while iteration remains sample-level;
+        dataset-side batching stays the single source of batch construction.
+        When explicit seeded shuffling and prefetching are both active, source
+        resampling and reservoir shuffle use deterministic independent streams.
+
+        Yields:
+            Any: Individual samples or ready-made batches, depending on
+            ``batch_loader_kwargs``.
+        """
+        indice_sampler = self.indice_sampler
+        prefetch_generator = indice_sampler.generator
+        if _uses_sample_prefetch(
+            self._shuffle_config,
+            self.batch_loader_kwargs,
+        ):
+            source_generator, prefetch_generator = _split_prefetch_generator(
+                indice_sampler.generator
+            )
+            indice_sampler = IndiceTableSampler(
+                indices=indice_sampler.table,
+                shuffle=indice_sampler.shuffle,
+                generator=source_generator,
+            )
+        iterator = _wrap_with_prefetch_if_needed(
+            self._torch_iter(indice_sampler),
+            shuffle_config=self._shuffle_config,
+            generator=prefetch_generator,
+            batch_loader_kwargs=self.batch_loader_kwargs,
+        )
+        primary_exc: BaseException | None = None
+        try:
+            for item in iterator:
+                yield item
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            close_iterators_best_effort(
+                [iterator],
+                primary_exc=primary_exc,
+            )
+
+    @property
+    def total_iterator_length(self) -> int:
+        """Return the exact logical row count after resampling."""
+        return round(len(self.indice_sampler) * self.resample_ratio)
+
+    @property
+    def total_dataset_length(self) -> int:
+        """Return the backing dataset length before index selection.
+
+        Raises:
+            ValueError: If the backing dataset does not expose a length.
+        """
+        if not isinstance(self.dataset, Sized):
+            raise ValueError(
+                "Underlying dataset does not have a length, cannot get "
+                "total dataset length."
+            )
+        return len(self.dataset)
+
+    def get_total_batch_num(
+        self, num_workers: int, batch_size: int = 1, drop_last: bool = False
+    ) -> int:
+        """Calculate the batches produced by the matching DataLoader setup.
+
+        The calculation applies the same shard-first proportional target
+        allocation as runtime iteration, then applies batching independently
+        to each worker's logical rows.
+
+        Args:
+            num_workers (int): DataLoader worker count. Values below two use
+                one logical worker.
+            batch_size (int, optional): DataLoader batch size. Defaults to 1.
+            drop_last (bool, optional): Whether each worker drops its final
+                incomplete batch. Defaults to False.
+
+        Returns:
+            int: Total number of batches yielded across all workers.
+        """
+        worker_rows = _distribute_rows_to_workers(
+            base_rows=len(self.indice_sampler),
+            target_rows=self.total_iterator_length,
+            num_workers=num_workers,
+        )
+        return sum(
+            _get_batch_num(
+                batch_size=batch_size,
+                num_samples=rows,
+                drop_last=drop_last,
+            )
+            for rows in worker_rows
+        )
+
+    @property
+    def n_shards(self) -> int:
+        """Return the accelerate-compatible shard-count hint.
+
+        The logical row count preserves the existing compatibility behavior
+        expected by ``accelerate.prepare_data_loader``.
+        """
+        return self.total_iterator_length
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}({repr(self.dataset)}, "
+            f"indices={repr(self.indice_sampler)}, "
+            f"resample_ratio={self.resample_ratio})"
         )
 
     @staticmethod
@@ -873,95 +1211,6 @@ class IterableWithLenDataset(
             return BatchLoaderConfig(**batch_loader_kwargs)
         return batch_loader_kwargs
 
-    @property
-    def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
-        return self._batch_loader_kwargs
-
-    @property
-    def shard_kwargs(self) -> ShardConfig:
-        return self._shard_kwargs
-
-    def shuffle_indices(self):
-        """Shuffle the dataset indices."""
-        self.indice_sampler.shuffle_indices()
-
-    def shard(self, num_shards: int, index: int):
-        """Shard the dataset into multiple shards.
-
-        Args:
-            num_shards (int): The total number of shards to create.
-            index (int): The ID of the shard to return. Must be in the
-                range [0, num_shards - 1].
-
-        Returns:
-            IterableWithLenDataset[DatasetType]: A new dataset view with the
-                same shuffle and batching configuration, but restricted to the
-                selected shard of indices.
-        """
-        shard_sampler = self.indice_sampler.shard(
-            num_shards=num_shards,
-            shard_id=index,
-            contiguous=self.shard_kwargs.contiguous,
-        )
-        return IterableWithLenDataset(
-            dataset=self.dataset,
-            indices=shard_sampler.table,
-            shard_kwargs=self.shard_kwargs,
-            shuffle=self._shuffle_config,
-            generator=shard_sampler.generator,
-            batch_loader_kwargs=self.batch_loader_kwargs,
-        )
-
-    def take(
-        self, key: int | slice | range | Iterator[int]
-    ) -> IterableWithLenDataset[DatasetType]:
-        """Return a new IterableWithLenDataset with the rows specified by key."""  # noqa: E501
-        return IterableWithLenDataset(
-            dataset=self.dataset,
-            indices=self.indice_sampler.table.take(key),
-            shard_kwargs=self.shard_kwargs,
-            shuffle=self._shuffle_config,
-            generator=self.indice_sampler.generator,
-            batch_loader_kwargs=self.batch_loader_kwargs,
-        )
-
-    def iter(self):
-        """Iterate over the current dataset view.
-
-        This method does not apply outer PyTorch worker sharding by itself;
-        ``__iter__`` chooses the worker-local view first and then delegates
-        here.
-
-        Returns:
-            Iterator[Any]: Either individual samples or ready-made batches,
-                depending on whether ``batch_loader_kwargs`` is configured.
-
-        """
-        if self.batch_loader_kwargs is None:
-            logger.debug("Iterating without batch loader,...")
-            yield from self._iter_indices(self.indice_sampler)
-            return
-
-        logger.debug(
-            "Iterating with batch loader, shuffle: %s, batch loader: %s",
-            self._shuffle_config,
-            self.batch_loader_kwargs,
-        )
-        inner_loader = self._create_inner_batch_loader()
-        inner_iter = iter(inner_loader)
-        primary_exc: BaseException | None = None
-        try:
-            for item in inner_iter:
-                yield item
-        except BaseException as exc:
-            primary_exc = exc
-            raise
-        finally:
-            close_iterators_best_effort(
-                [inner_iter],
-                primary_exc=primary_exc,
-            )
-
     def _iter_indices(self, indice_iter: Iterable[int]) -> Iterator[Any]:
         """Yield samples for the provided indices.
 
@@ -974,7 +1223,55 @@ class IterableWithLenDataset(
             indice_iter,
         )
 
-    def _create_inner_batch_loader(self) -> TorchDataLoader:
+    def _iter_resampled_indices(
+        self,
+        indice_sampler: IndiceTableSampler,
+        target_rows: int,
+    ) -> Iterator[int]:
+        """Yield exactly ``target_rows`` from one physical index shard.
+
+        Re-entering the sampler starts a new natural cycle. A shuffled
+        sampler therefore produces a fresh permutation for every oversampling
+        cycle without materializing a repeated index table.
+
+        Args:
+            indice_sampler (IndiceTableSampler): Worker-local physical index
+                shard to consume.
+            target_rows (int): Exact logical rows to yield from that shard.
+
+        Yields:
+            int: Backing-dataset indices from complete natural cycles followed
+            by at most one partial cycle.
+
+        Raises:
+            RuntimeError: If sampler length metadata disagrees with iteration.
+        """
+        remaining = target_rows
+        while remaining > 0:
+            cycle_target = min(len(indice_sampler), remaining)
+            cycle_count = 0
+            for index in indice_sampler:
+                cycle_count += 1
+                yield index
+                if cycle_count >= cycle_target:
+                    break
+            if cycle_count == 0:
+                raise RuntimeError(
+                    "Indice sampler reported a positive row count but "
+                    "produced no rows."
+                )
+            if cycle_count != cycle_target:
+                raise RuntimeError(
+                    "Indice sampler row metadata does not match iteration: "
+                    f"expected {cycle_target} rows in a cycle, but got "
+                    f"{cycle_count}."
+                )
+            remaining -= cycle_count
+
+    def _create_inner_batch_loader(
+        self,
+        indice_sampler: IndiceTableSampler,
+    ) -> TorchDataLoader:
         """Build the inner dataloader used for dataset-side batching.
 
         The inner loader always uses ``num_workers=0``. Worker/process sharding
@@ -983,123 +1280,73 @@ class IterableWithLenDataset(
         logic and make nested batching much harder to reason about.
         """
         assert self.batch_loader_kwargs is not None
-        # create a DataLoader with 0 worker to load batches of data,
-        # and the sharding will be handled by the DataLoader's worker
-        # initialization function.
         return torch.utils.data.DataLoader(
             dataset=IterableWithLenDataset(
                 dataset=self.dataset,
-                indices=self.indice_sampler.table,
+                indices=indice_sampler.table,
                 shard_kwargs=self.shard_kwargs,
                 shuffle=self._shuffle_config,
-                generator=self.indice_sampler.generator,
+                generator=indice_sampler.generator,
                 batch_loader_kwargs=None,
+                resample_ratio=self.resample_ratio,
             ),
             num_workers=0,
             **self.batch_loader_kwargs.to_dict(),
         )
 
-    def _torch_iter(self):
+    def _torch_iter(
+        self,
+        indice_sampler: IndiceTableSampler | None = None,
+    ) -> Iterator[Any]:
         """Iterate over the dataset and yield data samples.
 
         This method is designed to be compatible with PyTorch's DataLoader with
         multiple workers.
 
-        In plain sample mode, worker sharding happens here by slicing the
-        sampler per worker. In dataset-side batching mode, the method skips
-        that extra branch and delegates to ``iter()``, which rebuilds batches
-        from the already worker-local dataset view.
+        In plain sample mode, worker sharding happens here before the logical
+        target is allocated and sampled. In dataset-side batching mode, the
+        outer worker initializer has already built a worker-local dataset view,
+        so this method delegates to :meth:`iter` and lets its inner loader form
+        batches from that view.
         """
+        if indice_sampler is None:
+            indice_sampler = self.indice_sampler
         if (
             self.batch_loader_kwargs is not None
             or not self._is_torch_multi_worker()
         ):
-            yield from self.iter()
+            yield from self._iter_with_indice_sampler(indice_sampler)
             return
 
-        yield from self._iter_indices(self._get_multi_worker_sharded_indices())
+        worker_info = torch.utils.data.get_worker_info()
+        assert worker_info is not None
+        worker_sampler = self._get_multi_worker_sharded_indices(indice_sampler)
+        target_rows = _distribute_rows_to_workers(
+            base_rows=len(self.indice_sampler),
+            target_rows=self.total_iterator_length,
+            num_workers=worker_info.num_workers,
+        )[worker_info.id]
+        yield from self._iter_indices(
+            self._iter_resampled_indices(worker_sampler, target_rows)
+        )
 
-    def _get_multi_worker_sharded_indices(self) -> IndiceTableSampler:
+    def _get_multi_worker_sharded_indices(
+        self,
+        indice_sampler: IndiceTableSampler,
+    ) -> IndiceTableSampler:
+        """Return the current PyTorch worker's physical index shard.
+
+        This method slices ``indice_sampler`` directly instead of calling
+        :meth:`shard`, which would create another iterable wrapper and risk
+        recursive worker sharding.
+        """
         worker_info = torch.utils.data.get_worker_info()
         assert worker_info is not None
         # do not call shard() here to avoid recursive sharding.
-        return self.indice_sampler.shard(
+        return indice_sampler.shard(
             num_shards=worker_info.num_workers,
             shard_id=worker_info.id,
             contiguous=self.shard_kwargs.contiguous,
-        )
-
-    def __iter__(self):
-        """Return the public iterator, optionally wrapped with prefetching.
-
-        Prefetch buffering is only added when iteration is still sample-level.
-        Once dataset-side batching is active, the inner batching layer remains
-        the single source of batch construction.
-        """
-        iterator = _wrap_with_prefetch_if_needed(
-            self._torch_iter(),
-            shuffle_config=self._shuffle_config,
-            generator=self.indice_sampler.generator,
-            batch_loader_kwargs=self.batch_loader_kwargs,
-        )
-        primary_exc: BaseException | None = None
-        try:
-            for item in iterator:
-                yield item
-        except BaseException as exc:
-            primary_exc = exc
-            raise
-        finally:
-            close_iterators_best_effort(
-                [iterator],
-                primary_exc=primary_exc,
-            )
-
-    @property
-    def total_iterator_length(self) -> int:
-        """Get the total number of data samples in the iterator."""
-        return len(self.indice_sampler)
-
-    @property
-    def total_dataset_length(self) -> int:
-        """Get the total length of the underlying dataset."""
-        if not isinstance(self.dataset, Sized):
-            raise ValueError(
-                "Underlying dataset does not have a length, cannot get "
-                "total dataset length."
-            )
-        return len(self.dataset)
-
-    def get_total_batch_num(
-        self, num_workers: int, batch_size: int = 1, drop_last: bool = False
-    ) -> int:
-        """Calculate the total number of batches for the dataset.
-
-        Pytorch `DataLoader` with multiple workers will shard the dataset into
-        `num_workers` shards, and the default method to calculate the total
-        number of batches does not consider the sharding, which will cause
-        inaccurate total batch number when using multiple workers. This method
-        provides a way to calculate the actual batch number.
-
-        Note:
-            The parameters should be the same as the parameters used in the
-            DataLoader, otherwise the calculated batch number may
-            be inaccurate.
-
-        Args:
-            num_workers (int): The number of workers to use for loading
-                the data.
-            batch_size (int, optional): The batch size to use for loading
-                the data. Defaults to 1.
-            drop_last (bool, optional): Whether to drop the last incomplete
-                batch. Defaults to False.
-
-        """
-        return _get_total_batch_num(
-            rows=self.total_iterator_length,
-            num_workers=num_workers,
-            batch_size=batch_size,
-            drop_last=drop_last,
         )
 
     def _is_torch_multi_worker(self) -> bool:
@@ -1107,27 +1354,6 @@ class IterableWithLenDataset(
 
         worker_info = torch.utils.data.get_worker_info()
         return worker_info is not None and worker_info.num_workers > 1
-
-    @property
-    def n_shards(self) -> int:
-        """Get the number of shards for the current dataset.
-
-        Currently this property returns the total number of data samples in the
-        iterator.
-
-        Note:
-            In most cases, we do not need to know the number of shards, but
-            this is reserved to be compatible with `prepare` method in
-            accelerate, which needs to know the number of shards to prepare
-            the dataset.
-        """
-        return self.total_iterator_length
-
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}({repr(self.dataset)}, "
-            f"indices={repr(self.indice_sampler)}, "
-        )
 
 
 class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
@@ -1265,11 +1491,18 @@ class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
 
 
 class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
-    """A dataset that is created from a list of DatasetItems.
+    """Mix multiple dataset items with optional per-item resampling.
 
     This dataset will create a DatasetWithIndices for each DatasetItem, and
-    iterate over the datasets in a round-robin way. This is useful when we want
-    to combine multiple datasets together and load them in an iterable way.
+    iterate over the datasets in a weighted round-robin way. Resampling scales
+    each item's sharded row count before scheduling: ratios below one truncate
+    the sample stream, while ratios above one restart it for additional rows.
+    Non-unit ratios require shuffling. In multi-worker loading, every child
+    dataset is physically sharded first and resampled only within that shard.
+
+    When dataset-side batching is configured, resampling still happens at the
+    row level. Batching is applied once to the complete resampled row stream,
+    so ``drop_last`` only affects its final incomplete batch.
 
     Args:
         datasets (Iterable[DatasetItem]): An iterable of DatasetItems to create
@@ -1289,6 +1522,22 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             optional configuration for using a batch loader. If provided, the
             dataset will be wrapped with a DataLoader to return batches of
             data. Defaults to None, which means no batch loader will be used.
+        max_dataset_concurrency (int, optional): Maximum number of dataset-item
+            iterators kept active by the weighted scheduler. Defaults to 4.
+        resample_ratios (float | Iterable[float] | None, optional): A finite,
+            positive row-count multiplier applied to every dataset item, or
+            one multiplier per item. Defaults to None, which uses 1.0 for each
+            item. Values other than 1.0 require ``shuffle=True``. Ratios are
+            fixed at construction time.
+        dataset_names (Iterable[str] | None, optional): Optional names aligned
+            with ``datasets`` and used by :meth:`summary`. Defaults to None,
+            which generates ``item_0``, ``item_1``, and so on.
+
+    Raises:
+        TypeError: If ratios are not numeric or names are not strings.
+        ValueError: If iterable argument lengths do not match ``datasets``, or
+            a ratio is non-finite, not positive, or non-unit while shuffling is
+            disabled.
 
     """  # noqa: E501
 
@@ -1302,6 +1551,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         generator: torch.Generator | np.random.Generator | None = None,
         batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
         max_dataset_concurrency: int = 4,
+        resample_ratios: float | Iterable[float] | None = None,
+        dataset_names: Iterable[str] | None = None,
     ):
         # try to make this instance compatible with HF Iterable at class-level
         # or instance-level if class-level MRO change fails
@@ -1325,8 +1576,108 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             batch_loader_kwargs = BatchLoaderConfig(**batch_loader_kwargs)
         self._batch_loader_kwargs = batch_loader_kwargs
         self._max_dataset_concurrency = max_dataset_concurrency
+
+        if resample_ratios is None:
+            ratio_values: list[Any] = [1.0] * len(self.dataset_items)
+        elif isinstance(resample_ratios, Iterable) and not isinstance(
+            resample_ratios, (str, bytes)
+        ):
+            try:
+                ratio_values = list(resample_ratios)
+            except TypeError as exc:
+                raise TypeError(
+                    "resample_ratios must be a float or an iterable of floats."
+                ) from exc
+        else:
+            ratio_values = [resample_ratios] * len(self.dataset_items)
+
+        if len(ratio_values) != len(self.dataset_items):
+            raise ValueError(
+                "resample_ratios must contain one value per dataset item, "
+                f"but got {len(ratio_values)} values for "
+                f"{len(self.dataset_items)} items."
+            )
+        self._resample_ratios = [
+            _normalize_resample_ratio(
+                ratio,
+                name=f"resample_ratios[{index}]",
+            )
+            for index, ratio in enumerate(ratio_values)
+        ]
+        if (
+            any(ratio != 1.0 for ratio in self._resample_ratios)
+            and not self._shuffle.shuffle
+        ):
+            raise ValueError(
+                "resample_ratios values other than 1.0 require shuffle=True."
+            )
+        if dataset_names is None:
+            name_values = [
+                f"item_{index}" for index in range(len(self.dataset_items))
+            ]
+        else:
+            if isinstance(dataset_names, str):
+                raise TypeError(
+                    "dataset_names must be an iterable of strings, not one "
+                    "string."
+                )
+            try:
+                name_values = list(dataset_names)
+            except TypeError as exc:
+                raise TypeError(
+                    "dataset_names must be an iterable of strings."
+                ) from exc
+            if len(name_values) != len(self.dataset_items):
+                raise ValueError(
+                    "dataset_names must contain one value per dataset item, "
+                    f"but got {len(name_values)} values for "
+                    f"{len(self.dataset_items)} items."
+                )
+            for index, name in enumerate(name_values):
+                if not isinstance(name, str):
+                    raise TypeError(
+                        "dataset_names values must be strings, but value at "
+                        f"index {index} is {type(name).__name__}."
+                    )
+        self._dataset_names = name_values
         self._total_dataset_length: list[int] | None = None
         self._total_indices_length: list[int] | None = None
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Serialize Torch RNG state without multiprocessing shared storage.
+
+        A ``torch.Generator`` stores its state in a tensor. Under a spawned
+        DataLoader worker, Torch's default ``file_descriptor`` IPC strategy
+        transports that tensor as shared storage, which is not reliable across
+        every supported runtime. Plain bytes preserve the exact RNG sequence
+        while keeping dataset startup independent of Torch storage IPC.
+        """
+
+        state = self.__dict__.copy()
+        generator = state.get("_generator")
+        if isinstance(generator, torch.Generator):
+            state["_generator"] = None
+            state["_serialized_torch_generator"] = (
+                str(generator.device),
+                bytes(generator.get_state().tolist()),
+            )
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore a Torch generator serialized by :meth:`__getstate__`."""
+
+        serialized_generator = state.pop(
+            "_serialized_torch_generator",
+            None,
+        )
+        if serialized_generator is not None:
+            device, generator_state = serialized_generator
+            generator = torch.Generator(device=device)
+            generator.set_state(
+                torch.tensor(list(generator_state), dtype=torch.uint8)
+            )
+            state["_generator"] = generator
+        self.__dict__.update(state)
 
     @property
     def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
@@ -1349,6 +1700,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             batch_loader_kwargs=self.batch_loader_kwargs,
             max_dataset_concurrency=self._max_dataset_concurrency,
             shard_kwargs=self.shard_kwargs,
+            resample_ratios=self._resample_ratios,
+            dataset_names=self._dataset_names,
         )
 
     def __repr__(self) -> str:
@@ -1382,8 +1735,102 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             f"max_dataset_concurrency={self._max_dataset_concurrency})"
         )
 
+    def summary(self) -> str:
+        """Return the current shard's row-level dataset mixture summary.
+
+        ``sample_ratio`` uses resampled row counts, while ``frame_ratio`` and
+        ``length`` use the real sharded row counts before resampling. These
+        sharded lengths can be smaller than :attr:`total_dataset_length`.
+        With dataset-side batching, row-level sample ratios can differ slightly
+        from the observed batch ratio because each dataset item forms batches
+        independently and may drop one final incomplete batch.
+
+        Returns:
+            str: A display-width-aligned table suitable for logs or consoles.
+
+        Example:
+            ``print(dataset.summary())`` renders a table like::
+
+                                            name sample_ratio [frame_ratio] [length]
+                ├---------------------------aaa:       25.00% [     50.00%] [    10]
+                ├-------------------------数_据:       75.00% [     50.00%] [    10]
+                ├-------------------------total:      100.00% [    100.00%] [    20]
+        """  # noqa: E501
+
+        def char_width(char: str) -> int:
+            if unicodedata.combining(char):
+                return 0
+            return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+
+        def format_name(name: str, width: int) -> str:
+            sanitized = "".join(
+                "_" if unicodedata.category(char).startswith("C") else char
+                for char in name
+            )
+            kept_reversed: list[str] = []
+            display_width = 0
+            for char in reversed(sanitized):
+                next_width = char_width(char)
+                if display_width + next_width > width:
+                    break
+                kept_reversed.append(char)
+                display_width += next_width
+            visible_name = "".join(reversed(kept_reversed))
+            return "-" * (width - display_width) + visible_name
+
+        _ = self.total_iterator_length
+        assert self._total_indices_length is not None
+        scaled_rows = self._total_indices_length
+        base_rows = [
+            item.get_sharded_row_num(shard_config=self.shard_kwargs)
+            for item in self.dataset_items
+        ]
+        total_scaled_rows = sum(scaled_rows)
+        total_base_rows = sum(base_rows)
+        length_width = max(len("length"), len(str(total_base_rows)))
+        name_width = 30
+        sample_ratio_width = len("sample_ratio")
+        frame_ratio_width = len("frame_ratio")
+        lines = [
+            f"{'name':>{name_width + 2}} "
+            f"{'sample_ratio':>{sample_ratio_width}} "
+            f"[{'frame_ratio':>{frame_ratio_width}}] "
+            f"[{'length':>{length_width}}]"
+        ]
+        for name, scaled_length, base_length in zip(
+            self._dataset_names,
+            scaled_rows,
+            base_rows,
+            strict=True,
+        ):
+            sample_ratio = (
+                scaled_length / total_scaled_rows
+                if total_scaled_rows > 0
+                else 0.0
+            )
+            frame_ratio = (
+                base_length / total_base_rows if total_base_rows > 0 else 0.0
+            )
+            lines.append(
+                f"├{format_name(name, name_width)}: "
+                f"{sample_ratio:>{sample_ratio_width}.2%} "
+                f"[{frame_ratio:>{frame_ratio_width}.2%}] "
+                f"[{base_length:>{length_width}}]"
+            )
+
+        total_sample_ratio = 1.0 if total_scaled_rows > 0 else 0.0
+        total_frame_ratio = 1.0 if total_base_rows > 0 else 0.0
+        lines.append(
+            f"├{format_name('total', name_width)}: "
+            f"{total_sample_ratio:>{sample_ratio_width}.2%} "
+            f"[{total_frame_ratio:>{frame_ratio_width}.2%}] "
+            f"[{total_base_rows:>{length_width}}]"
+        )
+        return "\n".join(lines)
+
     @property
     def total_dataset_length(self) -> int:
+        """Return the physical row count before configured sharding."""
         if self._total_dataset_length is None:
             self._total_dataset_length = [
                 item.get_dataset_row_num() for item in self.dataset_items
@@ -1392,55 +1839,88 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
 
     @property
     def total_iterator_length(self) -> int:
+        """Return the exact combined logical row count after resampling."""
         if self._total_indices_length is None:
             self._total_indices_length = [
-                item.get_sharded_row_num(shard_config=self.shard_kwargs)
-                for item in self.dataset_items
+                round(
+                    item.get_sharded_row_num(shard_config=self.shard_kwargs)
+                    * ratio
+                )
+                for item, ratio in zip(
+                    self.dataset_items,
+                    self._resample_ratios,
+                    strict=True,
+                )
             ]
         return sum(self._total_indices_length)
 
     def get_total_batch_num(
         self, num_workers: int, batch_size: int, drop_last: bool
     ) -> int:
-        total_batch_num = 0
+        """Calculate batches for the matching mixed-dataset DataLoader setup.
+
+        Row targets are first allocated per dataset item and physical worker
+        shard. With dataset-side batching, each item-worker stream forms its
+        own batches; otherwise each worker batches the combined item streams.
+
+        Args:
+            num_workers (int): DataLoader worker count. Values below two use
+                one logical worker.
+            batch_size (int): Batch size applied by the relevant batching
+                layer.
+            drop_last (bool): Whether each independently batched stream drops
+                its final incomplete batch.
+
+        Returns:
+            int: Total number of batches yielded across all workers.
+        """
         _ = self.total_iterator_length
         assert self._total_indices_length is not None
+        base_rows = [
+            item.get_sharded_row_num(shard_config=self.shard_kwargs)
+            for item in self.dataset_items
+        ]
+        item_worker_rows = [
+            _distribute_rows_to_workers(
+                base_rows=item_base_rows,
+                target_rows=target_rows,
+                num_workers=num_workers,
+            )
+            for item_base_rows, target_rows in zip(
+                base_rows,
+                self._total_indices_length,
+                strict=True,
+            )
+        ]
 
         if self.batch_loader_kwargs is not None:
-            for indices_length in self._total_indices_length:
-                total_batch_num += _get_total_batch_num(
-                    rows=indices_length,
-                    num_workers=num_workers,
+            return sum(
+                _get_batch_num(
                     batch_size=batch_size,
+                    num_samples=worker_rows,
                     drop_last=drop_last,
                 )
-            return total_batch_num
+                for item_rows in item_worker_rows
+                for worker_rows in item_rows
+            )
 
         if num_workers <= 1:
-            return _get_total_batch_num(
-                rows=self.total_iterator_length,
-                num_workers=1,
+            return _get_batch_num(
                 batch_size=batch_size,
+                num_samples=self.total_iterator_length,
                 drop_last=drop_last,
             )
 
-        ret = 0
-        for workder_id in range(num_workers):
-            # get the total number of rows for the worker by
-            # summing up the rows for each dataset item.
-            total_worker_rows = 0
-            for indices_length in self._total_indices_length:
-                worker_rows = indices_length // num_workers
-                if workder_id < indices_length % num_workers:
-                    worker_rows += 1
-                total_worker_rows += worker_rows
-            ret += _get_total_batch_num(
-                rows=total_worker_rows,
-                num_workers=1,
+        return sum(
+            _get_batch_num(
                 batch_size=batch_size,
+                num_samples=sum(
+                    item_rows[worker_id] for item_rows in item_worker_rows
+                ),
                 drop_last=drop_last,
             )
-        return ret
+            for worker_id in range(num_workers)
+        )
 
     @property
     def n_shards(self) -> int:
@@ -1457,46 +1937,17 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         state = AcceleratorState()
         return max(self.total_iterator_length, state.num_processes + 1)
 
-    def _prepare_dataset_for_iter(
-        self,
-        cur_dataset_iters: list[tuple[int, Iterator[Any]]],
-        remaining_dataset_indices: list[int],
-    ) -> np.ndarray:
-        """Prepare the dataset for iteration and return the sampling weights.
-
-        Args:
-            cur_dataset_iters (list[tuple[int, Iterator]]): The current
-                dataset iterators.
-            remaining_dataset_indices (list[int]): The remaining dataset
-                indices to be processed.
-
-        Returns:
-            np.ndarray: The sampling weights for each dataset iterator.
-        """
-        while (
-            len(cur_dataset_iters) < self._max_dataset_concurrency
-            and len(remaining_dataset_indices) > 0
-        ):
-            idx = remaining_dataset_indices.pop(0)
-            data_item = self.dataset_items[idx]
-            iter_dataset = data_item.create_dataset(
-                shard_config=self.shard_kwargs
-            ).to_iterable_dataset(
-                shuffle=self._shuffle,
-                shard_kwargs=self.shard_kwargs,
-                generator=self._generator,
-                batch_loader_kwargs=self.batch_loader_kwargs,
-            )
-            cur_dataset_iters.append((idx, iter(iter_dataset)))
-        assert self._total_indices_length is not None
-        weights = []
-        for idx, _ in cur_dataset_iters:
-            weights.append(self._total_indices_length[idx])
-        weights = np.array(weights, dtype=np.float32)
-        weights = weights / weights.sum()
-        return weights
-
     def __iter__(self):
+        """Yield the weighted mixture and close all materialized datasets.
+
+        At most ``max_dataset_concurrency`` item iterators are active. Shuffled
+        iteration selects among them using resampled row-count weights; ordered
+        iteration drains each item in sequence. Exhausted, failed, and
+        caller-abandoned streams all close their child iterators.
+
+        Yields:
+            Any: One sample or dataset-side batch from an active dataset item.
+        """
         cur_dataset_iters: list[tuple[int, Iterator[Any]]] = []
         dataset_indices = list(
             IndiceTableSampler(
@@ -1505,8 +1956,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 generator=self._generator,
             )
         )
-        # Access total_iterator_length to trigger the calculation of total
-        # iterator length
         _ = self.total_iterator_length
         assert self._total_indices_length is not None
         weights = self._prepare_dataset_for_iter(
@@ -1517,8 +1966,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         primary_exc: BaseException | None = None
         try:
             while len(cur_dataset_iters) > 0:
-                # calulate the sampling weight for each dataset iterator based
-                # on the indices length of the corresponding dataset.
                 if self._shuffle.shuffle:
                     if isinstance(self._generator, np.random.Generator):
                         selected_idx = self._generator.choice(
@@ -1539,7 +1986,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                         )
                 else:
                     selected_idx = 0
-                idx, iter_dataset = cur_dataset_iters[selected_idx]
+                _, iter_dataset = cur_dataset_iters[selected_idx]
                 try:
                     item = next(iter_dataset)
                     yield item
@@ -1558,6 +2005,194 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 [iter_dataset for _, iter_dataset in cur_dataset_iters],
                 primary_exc=primary_exc,
             )
+
+    def _iter_dataset_item(
+        self,
+        data_item: DatasetItem[Any],
+        *,
+        resample_ratio: float,
+        expected_rows: int,
+    ) -> Iterator[Any]:
+        """Iterate one materialized item and close its resources.
+
+        ``DictIterableDataset`` owns every dataset materialized from a
+        ``DatasetItem``. Closing this generator therefore closes both the
+        child iterator stack and the underlying dataset on exhaustion, early
+        break, or failure. Resampling itself belongs to the child
+        ``IterableWithLenDataset``.
+
+        Args:
+            data_item (DatasetItem[Any]): Lazy dataset configuration to
+                materialize for this iterator.
+            resample_ratio (float): Validated ratio forwarded to the child
+                iterable.
+            expected_rows (int): Logical rows derived from item metadata.
+
+        Yields:
+            Any: Samples or dataset-side batches from the child iterable.
+
+        Raises:
+            RuntimeError: If materialized row metadata disagrees with the
+                configured item metadata.
+        """
+
+        dataset_with_indices = data_item.create_dataset(
+            shard_config=self.shard_kwargs
+        )
+        dataset_iter: Iterator[Any] | None = None
+        primary_exc: BaseException | None = None
+        try:
+            iterable_dataset = dataset_with_indices.to_iterable_dataset(
+                shuffle=self._shuffle,
+                shard_kwargs=self.shard_kwargs,
+                generator=self._generator,
+                batch_loader_kwargs=self.batch_loader_kwargs,
+                resample_ratio=resample_ratio,
+            )
+            actual_rows = iterable_dataset.total_iterator_length
+            if actual_rows != expected_rows:
+                detail = (
+                    "produced no rows"
+                    if actual_rows == 0 and expected_rows > 0
+                    else f"produced {actual_rows} rows"
+                )
+                raise RuntimeError(
+                    "DatasetItem row metadata does not match the materialized "
+                    f"dataset: expected {expected_rows} rows but {detail}."
+                )
+            dataset_iter = iter(iterable_dataset)
+            yield from dataset_iter
+        except BaseException as exc:
+            primary_exc = exc
+            raise
+        finally:
+            close_iterators_best_effort(
+                [dataset_iter, dataset_with_indices.dataset],
+                primary_exc=primary_exc,
+            )
+
+    def _prepare_dataset_for_iter(
+        self,
+        cur_dataset_iters: list[tuple[int, Iterator[Any]]],
+        remaining_dataset_indices: list[int],
+    ) -> np.ndarray:
+        """Fill active iterator slots and return their sampling weights.
+
+        This method mutates both input lists: zero-target items are discarded,
+        and positive-target items are materialized until the concurrency limit
+        is reached. Returned weights follow ``cur_dataset_iters`` order and use
+        each item's global logical target.
+
+        Args:
+            cur_dataset_iters (list[tuple[int, Iterator[Any]]]): Active item
+                indices and their owned iterators.
+            remaining_dataset_indices (list[int]): Pending item indices,
+                consumed from the front.
+
+        Returns:
+            np.ndarray: Normalized weights for active iterators, or an empty
+                array when no positive-target items remain.
+        """
+        assert self._total_indices_length is not None
+        while (
+            len(cur_dataset_iters) < self._max_dataset_concurrency
+            and len(remaining_dataset_indices) > 0
+        ):
+            idx = remaining_dataset_indices.pop(0)
+            target_rows = self._total_indices_length[idx]
+            if target_rows <= 0:
+                continue
+            data_item = self.dataset_items[idx]
+            dataset_iter = self._iter_dataset_item(
+                data_item,
+                resample_ratio=self._resample_ratios[idx],
+                expected_rows=target_rows,
+            )
+            cur_dataset_iters.append((idx, dataset_iter))
+        weights = [
+            self._total_indices_length[idx] for idx, _ in cur_dataset_iters
+        ]
+        weights = np.array(weights, dtype=np.float32)
+        if len(weights) > 0:
+            weights = weights / weights.sum()
+        return weights
+
+
+def _normalize_resample_ratio(value: float, *, name: str) -> float:
+    """Normalize one caller-provided resampling ratio.
+
+    Args:
+        value (float): Caller-provided ratio to normalize. Booleans and text
+            are rejected.
+        name (str): Parameter label used in validation errors.
+
+    Returns:
+        float: A finite, strictly positive ratio.
+
+    Raises:
+        TypeError: If ``value`` is not numeric.
+        ValueError: If the normalized ratio is not finite and positive.
+    """
+    if isinstance(value, (bool, str, bytes)):
+        raise TypeError(f"{name} must be a float, but got {value!r}.")
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TypeError(f"{name} must be a float, but got {value!r}.") from exc
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError(
+            f"{name} must be finite and positive, but got {ratio!r}."
+        )
+    return ratio
+
+
+def _distribute_rows_to_workers(
+    base_rows: int,
+    target_rows: int,
+    num_workers: int,
+) -> list[int]:
+    """Allocate an exact resampled target across physical worker shards.
+
+    The allocation mirrors the quotient-and-remainder worker sharding used by
+    :class:`IndiceTableSampler`, then applies a largest-remainder allocation.
+    The returned targets therefore sum exactly to ``target_rows``, and workers
+    with empty physical shards receive no logical rows.
+
+    Args:
+        base_rows (int): Physical rows before worker sharding.
+        target_rows (int): Logical rows required after resampling.
+        num_workers (int): Requested worker count. Values below two use one
+            logical worker.
+
+    Returns:
+        list[int]: Per-worker logical row targets in worker-ID order.
+    """
+    if num_workers <= 1:
+        return [target_rows]
+    if base_rows == 0:
+        return [0] * num_workers
+
+    rows_per_worker = base_rows // num_workers
+    residual_rows = base_rows % num_workers
+    base_rows_by_worker = [
+        rows_per_worker + (worker_id < residual_rows)
+        for worker_id in range(num_workers)
+    ]
+    target_numerators = [
+        target_rows * worker_rows for worker_rows in base_rows_by_worker
+    ]
+    targets = [numerator // base_rows for numerator in target_numerators]
+    remaining = target_rows - sum(targets)
+    remainder_order = sorted(
+        range(num_workers),
+        key=lambda worker_id: (
+            -(target_numerators[worker_id] % base_rows),
+            worker_id,
+        ),
+    )
+    for worker_id in remainder_order[:remaining]:
+        targets[worker_id] += 1
+    return targets
 
 
 def _get_batch_num(batch_size: int, num_samples: int, drop_last: bool) -> int:
