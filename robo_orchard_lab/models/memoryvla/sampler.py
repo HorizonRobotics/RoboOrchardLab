@@ -100,6 +100,37 @@ def _episode_spans(dataset) -> list[tuple[int, int]]:
 class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
     """Yield batches of consecutive frames drawn from a single episode.
 
+    Two things here exist only because of what happens downstream, and both
+    are no-ops at ``num_replicas == 1``:
+
+    **Every batch is emitted num_replicas times.** ``accelerator.prepare()``
+    wraps whatever is in ``batch_sampler`` in ``BatchSamplerShard``
+    (accelerate/data_loader.py:1252), unconditionally and with no opt-out,
+    and that wrapper keeps ``batches[process_index::num_processes]``. This
+    sampler has already sharded -- by episode, which is the whole point,
+    since a batch-level shard cuts episodes in half -- so the two compose
+    into a shard of a shard: measured at two ranks, each rank saw 24 of 96
+    frames, the union covered 48, and rank 0's stream through episode 0 ran
+    ``[0,1,2,3]`` then ``[8,9,10,11]``, a hole where ``[4,5,6,7]`` should be.
+    At 8 GPUs that is 1/64 of the data, and nothing about it is visible in
+    the loss. Emitting each batch N times makes the downstream stride an
+    identity. ``assert_episode_stream_wired`` refuses to start if that
+    wrapper turns out not to be there, because then this would hand every
+    batch out N times for real.
+
+    **Batch counts are equalised across ranks.** Sharding by episode gives
+    ranks unequal totals (measured: 41007 vs 40999 on the RoboDojo set). The
+    host trainer carries a standing TODO about exactly that
+    (hook_based_trainer.py:412: "If the dataloader has a different number of
+    batches, the training loop may hang or produce unexpected results"), and
+    100k steps over ~41k batches per rank crosses two epoch boundaries, so
+    this sampler must not be the thing that walks into it. Every rank can
+    compute every other rank's total from the same span list, so the common
+    minimum is taken locally -- no collective, no backend or device
+    assumptions at construction time. The cost is the tail of the
+    longer-shard ranks: at 600 episodes over 16 ranks, at most one episode
+    each, re-drawn every epoch because the episode order is reshuffled.
+
     Args:
         data_source: the training dataset.
         batch_size: frames per batch. All of them come from one episode.
@@ -112,6 +143,13 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
         allow_partial_episode_batches: keep the trailing partial batch. Off by
             default; turning it on makes batch sizes ragged.
     """
+
+    #: How many times ``__iter__`` hands out each batch, == num_replicas.
+    #: A class default rather than only an instance attribute so that a
+    #: half-built stub (``object.__new__``, as several tests use) reads as
+    #: single-process instead of raising. ``__init__`` always overrides it,
+    #: so a real instance can never fall back to this by accident.
+    _emit_repeat: int = 1
 
     def __init__(
         self,
@@ -144,19 +182,52 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
         spans = _episode_spans(data_source)
         # shard by episode; an episode must not straddle ranks
         self.spans = spans[rank::num_replicas]
-        self._num_batches = sum(
-            self._batches_in(end - start) for start, end in self.spans
-        )
+        # Every rank sees the same `spans`, so every rank can price every
+        # other rank's shard without talking to it. See the class docstring
+        # for why they have to end up equal.
+        per_rank = [
+            sum(self._batches_in(e - s) for s, e in spans[r::num_replicas])
+            for r in range(num_replicas)
+        ]
+        self._num_batches_local = per_rank[rank]
+        self._num_batches = min(per_rank)
+        # accelerate's BatchSamplerShard will take every num_replicas-th
+        # batch back out; see the class docstring.
+        self._emit_repeat = num_replicas
         logger.info(
             "MemoryVLAEpisodeStreamBatchSampler: %d episodes total, %d on "
-            "rank %d/%d, %d batches of %d",
+            "rank %d/%d, %d batches of %d (own shard yields %d, truncated to "
+            "the per-rank minimum so DDP cannot deadlock at an epoch "
+            "boundary; each emitted %dx for BatchSamplerShard to undo)",
             len(spans), len(self.spans), rank, num_replicas,
-            self._num_batches, batch_size,
+            self._num_batches, batch_size, self._num_batches_local,
+            self._emit_repeat,
         )
         if not self.spans:
             raise ValueError(
                 "no episodes on this rank -- the dataset yielded no episode "
                 "spans, so stream memory would never accumulate."
+            )
+        dropped = self._num_batches_local - self._num_batches
+        if dropped and dropped > 0.05 * self._num_batches_local:
+            logger.warning(
+                "MemoryVLAEpisodeStreamBatchSampler: equalising rank batch "
+                "counts drops %d of this rank's %d batches per epoch (%.1f%%) "
+                "-- %d episodes do not divide %d ways evenly enough. Per-rank "
+                "totals are %s. Either use fewer ranks or accept the loss; it "
+                "falls on a different set of episodes each epoch because the "
+                "episode order is reshuffled.",
+                dropped, self._num_batches_local,
+                100.0 * dropped / self._num_batches_local,
+                len(spans), num_replicas, per_rank,
+            )
+        if self._num_batches == 0:
+            raise ValueError(
+                "some rank's episode shard yields 0 batches of {} ({} per "
+                "rank across {} rank(s)), so that rank would train on "
+                "nothing while the others ran. Either the dataset is too "
+                "small to shard this many ways, or batch_size exceeds the "
+                "shortest episode.".format(batch_size, per_rank, num_replicas)
             )
 
     def _batches_in(self, n: int) -> int:
@@ -171,11 +242,12 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
         self._epoch += 1
 
     def __len__(self) -> int:
-        return self._num_batches
+        return self._num_batches * self._emit_repeat
 
     def __iter__(self) -> Iterator[list[int]]:
         rng = np.random.default_rng(self.seed + self._epoch)
         order = rng.permutation(len(self.spans))
+        emitted = 0
         for j in order:
             start, end = self.spans[j]
             # forward in time within the episode -- never shuffled
@@ -183,7 +255,12 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
                 batch = list(range(b, min(b + self.batch_size, end)))
                 if len(batch) < self.batch_size and self.drop_last:
                     continue
-                yield batch
+                if emitted >= self._num_batches:
+                    self._epoch += 1
+                    return
+                for _ in range(self._emit_repeat):
+                    yield batch
+                emitted += 1
         self._epoch += 1
 
 
@@ -236,6 +313,63 @@ def _effective_batch_size(chain, config: dict):
     if isinstance(bs, int) and not isinstance(bs, bool):
         return bs, "config['batch_size']"
     return None, None
+
+
+def _assert_shard_composes(chain) -> None:
+    """Check the downstream shard is exactly the one the sampler compensates.
+
+    The sampler emits every batch ``num_replicas`` times because
+    ``BatchSamplerShard`` keeps ``batches[process_index::num_processes]``,
+    turning the pair into an identity. That trade only holds if the wrapper
+    is there and is striding by the same N. If it is absent, every batch is
+    handed out N times for real; if N disagrees, the stream is silently
+    resampled. Both are invisible in the loss, so both raise.
+
+    Single-process runs are unaffected: accelerate still wraps, but at N=1
+    the repeat and the stride are each an identity, and a missing wrapper is
+    equally harmless -- so the check only bites above one rank.
+    """
+    ours = next(
+        (
+            s
+            for s in chain
+            if isinstance(s, MemoryVLAEpisodeStreamBatchSampler)
+        ),
+        None,
+    )
+    if ours is None or ours._emit_repeat <= 1:
+        return
+
+    outer = [s for s in chain if type(s).__name__ == "BatchSamplerShard"]
+    names = [type(s).__name__ for s in chain]
+    if len(outer) != 1:
+        raise RuntimeError(
+            "MemoryVLAEpisodeStreamBatchSampler emits every batch {}x so that "
+            "accelerate's BatchSamplerShard can stride it back to 1x, but the "
+            "post-prepare() chain is {} -- {} BatchSamplerShard in it. "
+            "Without exactly one, training would see every batch {} times "
+            "over, with no error and a normal-looking loss.".format(
+                ours._emit_repeat,
+                names,
+                "no" if not outer else "{} of them".format(len(outer)),
+                ours._emit_repeat,
+            )
+        )
+
+    shard = outer[0]
+    n = getattr(shard, "num_processes", None)
+    if n != ours._emit_repeat or getattr(shard, "split_batches", False):
+        raise RuntimeError(
+            "MemoryVLAEpisodeStreamBatchSampler sharded for {} replicas and "
+            "emits each batch that many times, but the BatchSamplerShard "
+            "above it has num_processes={!r}, split_batches={!r}. The two "
+            "must be the same plain stride or the episode stream is resampled "
+            "without a word.".format(
+                ours._emit_repeat,
+                n,
+                getattr(shard, "split_batches", None),
+            )
+        )
 
 
 def assert_episode_stream_wired(config: dict, dataloader) -> None:
@@ -312,6 +446,8 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
                 [type(s).__name__ for s in chain] or "no sampler at all",
             )
         )
+
+    _assert_shard_composes(chain)
 
     # The sampler is wired. That still leaves configurations in which memory
     # is impossible by construction, and `group` is where they live: it calls

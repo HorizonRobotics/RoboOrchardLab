@@ -60,7 +60,12 @@ class HostSampler:
 
 
 def episode_sampler(batch_size=4):
-    """An instance without __init__, which would scan a real dataset."""
+    """An instance without __init__, which would scan a real dataset.
+
+    ``_emit_repeat`` is left to the class default of 1 -- single process --
+    which keeps every test in this file about the wiring checks rather than
+    the shard composition; test_sampler_ddp.py covers that.
+    """
     s = object.__new__(MemoryVLAEpisodeStreamBatchSampler)
     s.batch_size = batch_size
     return s
