@@ -1,0 +1,31 @@
+{
+    "job_name": "kun01wu_robodojo_eval_mvla_smoke",
+    "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-holobrain-robodojo-eval-mvla-smoke",
+    "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-tf5102-robodojo-v0.5",
+    "input_bucket": "robot_lab,robot_lab2",
+    "output_bucket": "robot_lab,robot_lab2",
+    "num_workers": 1,
+    "gpu_per_worker": 2,
+    "wall_time": 480,
+    "cmd": [
+        "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+        "/usr/bin/python3 robodojo_eval.py \\",
+        "  --policy_source \"${WORKING_PATH}/holobrain_robodojo_policy\" \\",
+        "  --model_dir '/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/holobrain_v10_mvla_randominit_smoke/package/' \\",
+        "  --model_processor robodojo_arx_x5a_processor \\",
+        "  --env_config arx_x5 \\",
+        "  --eval_num 5 \\",
+        "  --processes_per_gpu 1 \\",
+        "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \\",
+        "  --tasks swap_T,match_and_pick_from_conveyor,cover_blocks,press_by_number"
+    ],
+    "to_upload": [
+        "robo_orchard_lab",
+        "projects/holobrain_internal/common/holobrain_robodojo_policy",
+        "projects/holobrain_internal/common/robodojo_eval.py"
+    ],
+    "job_password": "1227",
+    "queue_name": "project-5090-robot-lab-bcloud-bj",
+    "project_id": "horizon-labs"
+}
