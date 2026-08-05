@@ -130,12 +130,19 @@ class MemoryVLAMemory(nn.Module):
         self.episode_id_key = episode_id_key
         self.timestep_key = timestep_key
         self.dataloader_type = dataloader_type
+        # kept because the guards below reason about how far memory can
+        # possibly reach, and that is min(group_size, batch_size) under
+        # `group` and capped by mem_length in either mode
+        self.group_size = group_size
+        self.mem_length = mem_length
         # guardrail state; plain attributes, so nothing enters state_dict
         self._episode_check_done = False
         self._identity_check_done = False
         self._bank_liveness_checked = False
         self._train_forwards = 0
         self._max_bank_len_seen = 0
+        self._batch_sizes_seen: set[int] = set()
+        self._distinct_in_batch_seen: set[int] = set()
 
         bank_kwargs = dict(
             dataloader_type=dataloader_type,
@@ -273,25 +280,45 @@ class MemoryVLAMemory(nn.Module):
         # after the banks have written, not before: `group` clears at the top
         # of process_batch (memory_bank.py:361), so sampling on entry reads
         # the previous batch's residue.
-        self._check_bank_liveness()
+        self._check_bank_liveness(episode_ids, batch_size)
 
         return feature_maps, text_dict
 
     # -- guardrails --------------------------------------------------------
+    def _group_span(self, batch_size: int) -> int:
+        """How many samples ``group`` memory can reach inside one call.
+
+        ``group`` clears the bank at the top of every training call and clears
+        the previous group every ``group_size`` samples, and with
+        episode-ordered batches that previous group is the same episode -- so
+        the reach is ``min(group_size, batch_size)``. At 1 nothing can ever be
+        retrieved, whatever the batch looks like.
+        """
+        return min(self.group_size, batch_size)
+
     def _check_episode_stream(self, episode_ids, batch_size) -> None:
-        """Log the first batch's episode spread; raise if all-distinct.
+        """Log the first batch's episode spread; raise if memory is impossible.
 
         Once per run, not per batch: a warning on every batch is a warning
         nobody reads. Training only -- at inference, batches legitimately span
         many episodes.
 
-        Applies in every bank mode. It used to return early unless
-        ``dataloader_type`` was ``"stream"``, which silenced it in the one
-        configuration that needed it most. The criterion here is a property of
-        the batch that arrived, not of a config key: one sample per episode
-        means no sample can ever read history, whatever the bank mode is
-        called. A legitimate ``group`` layout puts ``group_size`` frames of an
-        episode side by side, so it never trips this.
+        Two independent reasons to stop, in this order:
+
+        1. the configuration cannot hold memory at all (``group`` with
+           ``min(group_size, batch_size) == 1``).
+           ``assert_episode_stream_wired`` decides the same thing at
+           assembly time, before any data is loaded;
+           this is the backstop for entry points that never call it -- it is
+           called from exactly one place in ``train.py``, and a second training
+           entry point exists.
+        2. the batch that arrived cannot support memory: one sample per
+           episode means no sample can ever read history, whatever the bank
+           mode is called. This check used to return early unless
+           ``dataloader_type`` was ``"stream"``, which silenced it in the one
+           configuration that needed it most. A legitimate ``group`` layout
+           puts ``group_size`` frames of an episode side by side, so it never
+           trips this.
         """
         if self._episode_check_done or not self.training:
             return
@@ -299,11 +326,48 @@ class MemoryVLAMemory(nn.Module):
         distinct = len(set(episode_ids))
         logger.info(
             "MemoryVLAMemory[%s]: first training batch holds %d distinct "
-            "episode(s) across %d samples.",
+            "episode(s) across %d samples (group_size=%d, mem_length=%d).",
             self.dataloader_type,
             distinct,
             batch_size,
+            self.group_size,
+            self.mem_length,
         )
+        group_span = self._group_span(batch_size)
+        if self.dataloader_type == "group" and group_span <= 1:
+            raise RuntimeError(
+                "memoryvla is on with dataloader_type='group', but this "
+                "configuration cannot hold any memory at all. `group` clears "
+                "the bank at the top of every training call and again every "
+                "group_size samples within the batch, so its memory reaches "
+                "min(group_size, batch_size) = min({}, {}) = {} sample(s). At "
+                "1, no sample ever has a predecessor to read: every retrieval "
+                "finds an empty history, every fusion reduces to an exact "
+                "identity, and 7.47M parameters receive no gradient while the "
+                "loss looks perfectly normal.\n"
+                "Observed on the first training batch: batch_size={}, "
+                "distinct episodes in it={}, group_size={}, mem_length={}.\n"
+                "Two ways out, both effective here:\n"
+                "  * dataloader_type='stream' -- it carries the bank across "
+                "calls, so batch_size=1 is a perfectly good configuration "
+                "there.\n"
+                "  * keep 'group' but use batch_size >= 2 AND group_size >= 2."
+                "\n"
+                "The episode sampler is NOT the problem here; changing "
+                "episode_stream_sampler will not affect this. If this run "
+                "reached a forward at all, the assembly-time check that "
+                "rejects the same thing before training starts "
+                "(assert_episode_stream_wired) was never called on this "
+                "path.".format(
+                    self.group_size,
+                    batch_size,
+                    group_span,
+                    batch_size,
+                    distinct,
+                    self.group_size,
+                    self.mem_length,
+                )
+            )
         if batch_size > 1 and distinct == batch_size:
             raise RuntimeError(
                 "memoryvla is on (dataloader_type={!r}) but the first "
@@ -317,14 +381,14 @@ class MemoryVLAMemory(nn.Module):
                 )
             )
 
-    def _check_bank_liveness(self) -> None:
+    def _check_bank_liveness(self, episode_ids, batch_size) -> None:
         """Raise if, after K training forwards, no bank ever held >1 entry.
 
         The consumer-side counterpart to ``assert_episode_stream_wired``. That
-        one asks whether the right sampler got wired; this one asks whether
-        the batches actually arriving carry episode history -- the property
-        this module needs, and the only thing that decides whether it computes
-        anything at all.
+        one asks whether the right sampler got wired and whether the
+        configuration could hold memory at all; this one asks whether the
+        batches actually arriving carry episode history -- something neither
+        the config nor the sampler's identity can answer.
 
         Why bank length and not the identity probe: the probe only arms once
         history exists, and "history never exists" is precisely the failure
@@ -332,14 +396,30 @@ class MemoryVLAMemory(nn.Module):
         episode, every bank one entry long, every fusion an exact identity --
         and no probe ever armed to say so.
 
-        Why it reads no config key: a guard written against key names only
-        covers the combinations someone thought of. Bank length is the
-        consequence, so this covers every combination, including
-        ``dataloader_type`` values that do not exist yet, and any code path
-        that never calls the assembly-time check at all.
+        What K is for, and what it is not for. K is a *time* gate: nothing is
+        decided before the K-th forward, so a run shorter than K gets nothing
+        from this check. That was the whole of P1-C -- `group` at batch 1 is a
+        configuration in which memory is impossible, and a 4-step smoke run
+        sailed through it in silence. Configurations whose failure is decidable
+        without running are now rejected before training starts, by the
+        assembly-time check and by ``_check_episode_stream`` on the first
+        forward. What is left for K is the class that genuinely cannot be
+        decided statically: batches that are supposed to be episode-contiguous
+        and are not. K must be >= 2 (at batch 1 in `stream` a healthy bank only
+        reaches 2 on the second forward) and is 8 for margin -- an episode of a
+        single frame, or a run of very short episodes, can delay growth past 2.
+
+        This raise deliberately does not assert which of two causes it is
+        looking at, because bank length cannot tell them apart: "the batches
+        are broken" and "this configuration cannot hold memory" produce the
+        same observation. The previous version asserted the first and
+        recommended episode_stream_sampler=True -- which, in the configuration
+        that actually reached it, was already True.
         """
         if self._bank_liveness_checked or not self.training:
             return
+        self._batch_sizes_seen.add(batch_size)
+        self._distinct_in_batch_seen.add(len(set(episode_ids)))
         for bank in (self.per_mem_bank, self.cog_mem_bank):
             if bank is None:
                 continue
@@ -352,26 +432,66 @@ class MemoryVLAMemory(nn.Module):
         self._bank_liveness_checked = True
         logger.info(
             "MemoryVLAMemory bank liveness after %d training forwards: "
-            "longest episode history seen = %d.",
+            "longest episode history seen = %d (batch sizes seen %s, distinct "
+            "episodes per batch seen %s).",
             self._train_forwards,
             self._max_bank_len_seen,
+            sorted(self._batch_sizes_seen),
+            sorted(self._distinct_in_batch_seen),
         )
-        if self._max_bank_len_seen <= 1:
-            raise RuntimeError(
-                "MemoryVLAMemory ran {} training forwards and no episode's "
-                "memory ever grew past a single entry "
-                "(dataloader_type={!r}). The batches reaching this module are "
-                "not episode-contiguous, so every retrieval finds an empty "
-                "history and every fusion reduces to an exact identity: the "
-                "module is switched on, holds 7.47M parameters, receives no "
-                "gradient, and computes nothing. The loss stays normal and "
-                "nothing else raises -- which is the entire reason this check "
-                "exists. Both bank modes need episode-ordered batches "
-                "(`stream` carries memory across batches, `group` only within "
-                "one), so the fix is memoryvla.episode_stream_sampler=True. "
-                "Turning it off is how this state is reached, never how it is "
-                "left.".format(self._train_forwards, self.dataloader_type)
+        if self._max_bank_len_seen > 1:
+            return
+        if self.mem_length <= 1:
+            # Not a failure, and raising here would be a false positive: with
+            # mem_length=1 consolidation trims the bank back to one entry after
+            # every write, so the length can never exceed 1 -- while that one
+            # entry is a real merged history and IS retrieved. Bank length is
+            # simply blind in this configuration, so say so instead of ruling.
+            logger.warning(
+                "MemoryVLAMemory: no bank exceeded 1 entry in %d training "
+                "forwards, but mem_length=%d caps bank length at 1, so this "
+                "criterion cannot tell a working bank from a dead one here "
+                "and is standing down rather than failing the run. Memory may "
+                "well be working: a single consolidated entry is still a real "
+                "history and is still retrieved. Use mem_length >= 2 to get "
+                "this guard back.",
+                self._train_forwards,
+                self.mem_length,
             )
+            return
+        raise RuntimeError(
+            "MemoryVLAMemory ran {} training forwards and no episode's memory "
+            "ever grew past a single entry, so every retrieval found an empty "
+            "history, every fusion reduced to an exact identity, 7.47M "
+            "parameters received no gradient, and the loss stayed normal. "
+            "Nothing else raises in this state, which is the entire reason "
+            "this check exists.\n"
+            "Observed: dataloader_type={!r}, group_size={}, mem_length={}, "
+            "batch sizes seen={}, distinct episodes per batch seen={}, "
+            "longest bank={}.\n"
+            "Two different things produce this and they need different fixes. "
+            "Bank length cannot tell them apart, so both are listed rather "
+            "than one being asserted:\n"
+            "  (a) the batches are not episode-contiguous. If "
+            "memoryvla.episode_stream_sampler is off, turn it on -- every "
+            "bank mode needs episode-ordered batches. If it is already on, "
+            "then MemoryVLAEpisodeStreamBatchSampler's episode spans do not "
+            "match this dataset: _episode_spans (sampler.py) assumes one "
+            "episode's frames are contiguous in the global index.\n"
+            "  (b) the configuration cannot hold memory at all -- under "
+            "dataloader_type='group' that is min(group_size, batch_size) == "
+            "1. assert_episode_stream_wired rejects that before training "
+            "starts, so reaching here that way means it was never called "
+            "on this path.".format(
+                self._train_forwards,
+                self.dataloader_type,
+                self.group_size,
+                self.mem_length,
+                sorted(self._batch_sizes_seen),
+                sorted(self._distinct_in_batch_seen),
+                self._max_bank_len_seen,
+            )
+        )
 
     def _history_will_be_read(self, episode_ids) -> bool:
         """Would at least one sample in this batch retrieve real history?

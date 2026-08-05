@@ -212,6 +212,32 @@ def _sampler_chain(dataloader) -> list:
     return chain
 
 
+def _effective_batch_size(chain, config: dict):
+    """How many samples the memory module will be handed per call.
+
+    Read off the sampler that produces the batches, not off the config key:
+    ``prepare()`` may re-wrap, and the object is what runs. By the time this
+    is called the episode sampler is guaranteed to be in the chain -- the
+    check above raises otherwise -- so it is the first preference. The
+    fallbacks exist so that a future wrapper cannot quietly turn this check
+    into a no-op; if all of them miss, the caller says so out loud rather
+    than skipping in silence.
+
+    Returns (batch_size, where_it_came_from), or (None, None).
+    """
+    for pref in (True, False):
+        for s in chain:
+            if pref and not isinstance(s, MemoryVLAEpisodeStreamBatchSampler):
+                continue
+            bs = getattr(s, "batch_size", None)
+            if isinstance(bs, int) and not isinstance(bs, bool):
+                return bs, "{}.batch_size".format(type(s).__name__)
+    bs = config.get("batch_size")
+    if isinstance(bs, int) and not isinstance(bs, bool):
+        return bs, "config['batch_size']"
+    return None, None
+
+
 def assert_episode_stream_wired(config: dict, dataloader) -> None:
     """Raise unless episode-ordered batches are what the trainer will iterate.
 
@@ -232,6 +258,13 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
     sampler chain covers every combination of keys, including ones nobody has
     invented yet.
 
+    A second, independent question is asked once the chain is satisfied: can
+    this configuration hold memory at all? Under ``group`` the answer is no
+    when ``min(group_size, batch_size) == 1``, and that is decidable from the
+    config plus the batch size, with no forward required. It used to be left
+    to the consumer-side watchdog, which needs K forwards before it can rule
+    -- so any run shorter than K passed silently while degenerating.
+
     Call after the trainer exists, so the check sees the post-``prepare()``
     dataloader rather than the one that was handed in.
     """
@@ -241,6 +274,7 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
 
     stream_sampler = mv.get("episode_stream_sampler", False)
     dl_type = mv.get("dataloader_type", "stream")
+    group_size = mv.get("group_size", 16)
 
     if config.get("dataset_sample_weights"):
         raise RuntimeError(
@@ -278,3 +312,65 @@ def assert_episode_stream_wired(config: dict, dataloader) -> None:
                 [type(s).__name__ for s in chain] or "no sampler at all",
             )
         )
+
+    # The sampler is wired. That still leaves configurations in which memory
+    # is impossible by construction, and `group` is where they live: it calls
+    # bank.clear() at the top of every training call (memory_bank.py:361) and
+    # clears the previous group every `group_size` samples (memory_bank.py:374;
+    # with episode-ordered batches that previous group is the SAME episode).
+    # So memory reaches exactly min(group_size, batch_size) samples, and at 1
+    # no sample ever has a predecessor to read from.
+    #
+    # Decided here rather than left to the consumer-side watchdog because it is
+    # decidable here: it follows from two config values and the batch size,
+    # with no forward required. The watchdog needs K forwards before it can
+    # rule, so a run shorter than K -- 4 to 8 steps, which is this project's
+    # own smoke length -- got no protection at all. A consequence check is a
+    # backstop for what cannot be decided statically, not the only line.
+    if dl_type == "group":
+        batch_size, bs_source = _effective_batch_size(chain, config)
+        if batch_size is None:
+            logger.warning(
+                "MemoryVLAMemory: could not read an effective batch size from "
+                "the sampler chain %s or from config['batch_size'], so the "
+                "`group` memory-span check is being skipped. It is the check "
+                "that rejects min(group_size, batch_size) == 1, under which "
+                "the memory degenerates to an exact identity. The "
+                "consumer-side check in wrapper.py still covers this on the "
+                "first training forward.",
+                [type(s).__name__ for s in chain],
+            )
+        elif min(group_size, batch_size) <= 1:
+            raise RuntimeError(
+                "memoryvla.enable=True with dataloader_type='group', but this "
+                "configuration cannot hold any memory at all. `group` clears "
+                "the bank at the top of every training call and again every "
+                "group_size samples within the batch, so its memory reaches "
+                "min(group_size, batch_size) = min({}, {}) = {} sample(s). At "
+                "1, no sample ever has a predecessor to read: every retrieval "
+                "finds an empty history, every fusion reduces to an exact "
+                "identity, and 7.47M parameters receive no gradient while the "
+                "loss looks perfectly normal.\n"
+                "Observed: dataloader_type='group', group_size={}, "
+                "batch_size={} (read from {}), episode_stream_sampler={!r}.\n"
+                "Two ways out, both effective here:\n"
+                "  * dataloader_type='stream' -- it carries the bank across "
+                "calls, so batch_size=1 is a perfectly good configuration "
+                "there; this is also the episode-level memory the paper "
+                "describes.\n"
+                "  * keep 'group' but use batch_size >= 2 AND group_size >= 2 "
+                "-- memory then spans min(group_size, batch_size) frames "
+                "inside each batch, and nothing beyond it.\n"
+                "The episode sampler is NOT the problem here: it is wired, it "
+                "is in the chain, and the batches it produces are "
+                "episode-contiguous. Changing episode_stream_sampler will not "
+                "affect this.".format(
+                    group_size,
+                    batch_size,
+                    min(group_size, batch_size),
+                    group_size,
+                    batch_size,
+                    bs_source,
+                    stream_sampler,
+                )
+            )
