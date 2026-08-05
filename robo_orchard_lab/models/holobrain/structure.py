@@ -223,6 +223,24 @@ class HoloBrain_Qwen2_5_VL(ModelMixin):  # noqa: N801
             except FileExistsError:
                 pass
 
+    def reset(self) -> None:
+        """Drop per-episode inference state. Called at each episode start.
+
+        Deployment policies already forward a reset to the model they hold --
+        ``holobrain_robodojo_policy/deploy_policy.py`` does
+        ``getattr(target, "reset", None)`` and calls it if callable. Until this
+        method existed that getattr returned None, so the call did nothing and
+        ``MemoryVLAMemory`` carried one episode's history into the next with no
+        error and no log line: the score was the only symptom.
+
+        Kept generic rather than naming memoryvla, so any future submodule with
+        episode-scoped state is reset by the same path.
+        """
+        for module in self.children():
+            reset = getattr(module, "reset", None)
+            if callable(reset):
+                reset()
+
     def forward(self, inputs):
         if self.data_preprocessor is not None:
             device = next(self.parameters()).device

@@ -160,6 +160,17 @@ class MemoryVLAMemory(nn.Module):
 
         # eval-time episode tracking; training-time clearing is the banks' own
         self._last_episode_ids: Optional[tuple] = None
+        #: Episode identity at inference. Training keys the bank by the
+        #: dataset's ``uuid``; the deployed input has no such field
+        #: (``MultiArmManipulationInput`` does not carry one and the processor
+        #: never adds one), so at inference the episode boundary is whatever
+        #: ``reset()`` says it is. Bumping this counter there gives the banks a
+        #: key with the same two properties uuid has: constant within an
+        #: episode, distinct across episodes.
+        self._eval_episode = 0
+        self._eval_forwards = 0
+        self._eval_history_reads = 0
+        self._last_timestep_seen: Optional[int] = None
 
     # -- state -----------------------------------------------------------
     def reset(self) -> None:
@@ -168,11 +179,108 @@ class MemoryVLAMemory(nn.Module):
         The banks only manage episodes while ``self.training`` is set
         (memory_vla.py:267), so nothing clears them at inference time unless
         the caller does it.
+
+        This is also where an inference episode *ends*, which makes it the
+        only place a consumer-side check can run at inference: the three
+        training-time guards all return early when ``self.training`` is unset,
+        so before this an evaluation run had no guard of any kind. A run whose
+        memory never retrieved anything looks exactly like a healthy one from
+        the outside -- the same failure P0-1 was about, on the one path that
+        was still uncovered.
         """
+        self._report_eval_episode()
         for bank in (self.per_mem_bank, self.cog_mem_bank):
             if bank is not None:
                 bank.reset()
         self._last_episode_ids = None
+        self._eval_episode += 1
+        self._eval_forwards = 0
+        self._eval_history_reads = 0
+        self._last_timestep_seen = None
+
+    def _report_eval_episode(self) -> None:
+        """Say whether the episode that just ended used its memory at all."""
+        if self._eval_forwards == 0:
+            return
+        if self._eval_history_reads == 0:
+            logger.warning(
+                "MemoryVLAMemory: inference episode %d ran %d forward(s) and "
+                "never once retrieved history, so every fusion in it reduced "
+                "to an identity and the memory contributed nothing. Either "
+                "the episode was one frame long, or `%s` is not advancing "
+                "across calls, or reset() is being called more often than "
+                "once per episode. memory_stats() carries the counters.",
+                self._eval_episode,
+                self._eval_forwards,
+                self.timestep_key,
+            )
+        else:
+            logger.info(
+                "MemoryVLAMemory: inference episode %d ended after %d "
+                "forward(s), %d of which retrieved history.",
+                self._eval_episode,
+                self._eval_forwards,
+                self._eval_history_reads,
+            )
+
+    def memory_stats(self) -> dict:
+        """Counters an eval harness can assert on. Cheap, no side effects."""
+        return {
+            "eval_episode": self._eval_episode,
+            "eval_forwards": self._eval_forwards,
+            "eval_history_reads": self._eval_history_reads,
+            "bank_lengths": {
+                name: sorted(len(v) for v in bank.bank.values())
+                for name, bank in (
+                    ("per_mem_bank", self.per_mem_bank),
+                    ("cog_mem_bank", self.cog_mem_bank),
+                )
+                if bank is not None and hasattr(bank, "bank")
+            },
+        }
+
+    def _check_eval_episode_boundary(self, timesteps: Optional[list]) -> None:
+        """Raise if a new inference episode started without ``reset()``.
+
+        At inference the episode identity comes from ``reset()``, so a caller
+        that never calls it hands every episode the same key and the bank
+        retrieves across episode boundaries -- reading one task's history
+        while acting in the next. Nothing downstream notices: the shapes are
+        right, the loss is not computed, and the only symptom is a score.
+
+        ``step_index`` is what makes this decidable rather than a matter of
+        trust. It counts frames within an episode, so it only ever goes
+        backwards when a new episode has begun; if that happens with no
+        ``reset()`` in between, the caller is not doing what this module
+        needs. Raising is the point -- a warning here would be read after the
+        evaluation had already produced numbers.
+        """
+        if timesteps is None:
+            return
+        t = min(timesteps)
+        prev = self._last_timestep_seen
+        if prev is not None and t < prev:
+            raise RuntimeError(
+                "MemoryVLAMemory: `{}` went backwards at inference ({} -> {}) "
+                "with no reset() in between, so a new episode began while the "
+                "memory bank still held the previous episode's history. Every "
+                "retrieval from here on reads across an episode boundary.\n"
+                "The evaluation loop must call reset() on the policy at each "
+                "episode start; HoloBrain's model-level reset() forwards to "
+                "this module. If your loop does call it, then the object it "
+                "resets is not the model being run -- check that the policy "
+                "resets `self.model`/`self.pipeline` and not a copy.\n"
+                "Observed: eval_episode={}, forwards in it={}, of which "
+                "retrieved history={}.".format(
+                    self.timestep_key,
+                    prev,
+                    t,
+                    self._eval_episode,
+                    self._eval_forwards,
+                    self._eval_history_reads,
+                )
+            )
+        self._last_timestep_seen = t
 
     def _autoreset_for_eval(self, episode_ids: Sequence[Any]) -> None:
         """Drop episodes that are no longer in play, during inference only."""
@@ -189,11 +297,22 @@ class MemoryVLAMemory(nn.Module):
     def _episode_ids(self, inputs: dict, batch_size: int) -> list:
         ids = inputs.get(self.episode_id_key)
         if ids is None:
+            if not self.training:
+                # The deployed input genuinely has no episode id, and telling
+                # the reader to edit a dataset config -- which is what this
+                # used to say on both paths -- is an instruction that cannot
+                # be carried out at inference: there is no dataset. At
+                # inference the episode boundary is defined by reset(), so the
+                # counter it bumps is the identity. Constant within an
+                # episode, distinct across episodes: the two properties uuid
+                # supplies during training.
+                return [f"eval-episode-{self._eval_episode}"] * batch_size
             raise KeyError(
                 f"MemoryVLAMemory needs `{self.episode_id_key}` in the batch "
-                "to key its memory by episode, but the batch does not carry "
-                "it. Add it to the ItemSelection whitelist in the dataset "
-                "config."
+                "to key its memory by episode, but the training batch does "
+                "not carry it. Add it to the ItemSelection whitelist in the "
+                "dataset config. (At inference this is not an error: the "
+                "episode identity comes from reset() instead.)"
             )
         if torch.is_tensor(ids):
             ids = ids.tolist()
@@ -221,6 +340,13 @@ class MemoryVLAMemory(nn.Module):
         # tensor or leaves a list. Accept both.
         if torch.is_tensor(ts):
             ts = ts.tolist()
+        # At inference there is no collate at all: deploy_policy calls
+        # `self.model(self.processor.pre_process(data))` directly, and
+        # pre_process sets step_index to a scalar (processor.py:158). A scalar
+        # is not iterable, so the comprehension below used to raise TypeError
+        # on the first evaluation forward.
+        if not isinstance(ts, (list, tuple)):
+            ts = [ts] * batch_size
         ts = [int(x) for x in ts]
         if len(ts) != batch_size:
             raise ValueError(
@@ -237,7 +363,11 @@ class MemoryVLAMemory(nn.Module):
         episode_ids = self._episode_ids(inputs, batch_size)
         timesteps = self._timesteps(inputs, batch_size)
         if not self.training:
+            self._check_eval_episode_boundary(timesteps)
             self._autoreset_for_eval(episode_ids)
+            self._eval_forwards += 1
+            if self._history_will_be_read(episode_ids):
+                self._eval_history_reads += 1
 
         self._check_episode_stream(episode_ids, batch_size)
         probe = (
