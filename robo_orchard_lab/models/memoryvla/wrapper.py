@@ -61,12 +61,6 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryVLAMemory(nn.Module):
-    #: Training forwards to watch before ruling on bank liveness. Must be >= 2:
-    #: at batch_size 1 in `stream` mode a bank only reaches 2 on the second
-    #: forward, so 1 would fail a healthy run. 8 leaves margin and still stops
-    #: long before a real training run has spent anything.
-    BANK_LIVENESS_FORWARDS = 8
-
     """Perceptual + cognitive memory over HoloBrain's VLM features.
 
     Args:
@@ -92,6 +86,18 @@ class MemoryVLAMemory(nn.Module):
             ``uuid`` is globally unique here, so it needs no disambiguation.
         timestep_key: batch key holding the frame index within the episode.
     """
+
+    #: Training forwards to watch before ruling on bank liveness. Must be >= 2:
+    #: at batch_size 1 in `stream` mode a bank only reaches 2 on the second
+    #: forward, so 1 would fail a healthy run. 8 leaves margin and still stops
+    #: long before a real training run has spent anything.
+    #:
+    #: Placed after the docstring, not before it: an assignment ahead of the
+    #: string demotes the string to a plain expression statement and leaves
+    #: __doc__ as None, which autoapi then renders as an empty class page. ruff
+    #: ignores D101 here and does not flag string expressions as B018, so no
+    #: gate catches it -- only reading the source does.
+    BANK_LIVENESS_FORWARDS = 8
 
     def __init__(
         self,
