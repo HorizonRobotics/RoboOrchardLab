@@ -57,6 +57,61 @@ Use this guideline when designing, implementing, reviewing, or testing:
   changes, inspect the actual tensors received by the underlying Hugging Face
   module instead of relying only on wrapper-level outputs.
 
+## DeepSpeed ZeRO-3 Model Weight Loading
+
+- Detect whether ZeRO-3 manages a constructed model from the parameter state
+  that affects loading, such as DeepSpeed's `ds_id` parameter protocol. Do not
+  route ordinary model loading from Accelerate or Transformers process-global
+  flags alone; those flags can be active before every model in the process has
+  the same parameter representation.
+- Load ordinary exported model weights into ZeRO-3 parameters through a
+  repository-owned, layerwise gather path. Big Model Inference helpers such as
+  `load_checkpoint_and_dispatch` own meta-device and `device_map` dispatch;
+  they are not a ZeRO-3 runtime parameter loader and must not be used as one.
+- Keep DeepSpeed optional at the package boundary. Detection and module import
+  must work without importing DeepSpeed; import it lazily only after a model
+  with ZeRO-3 managed parameters actually enters the specialized load path.
+- All ranks must traverse the same module and gather sequence. For models that
+  mix ZeRO-3 parameters with ordinary parameters or buffers, copy the local
+  layer state on every rank and use `modifier_rank=0` to synchronize and
+  repartition the gathered ZeRO parameters. The rank-zero copy gate is
+  relative to each parameter's ZeRO data-parallel process group, not the
+  process-global rank.
+- The loader assumes that every rank has already constructed the same model
+  topology and that the selected artifact is the intended generation. A
+  caller must pass one unambiguous single-file or indexed layout; mixed
+  layouts, duplicate shard keys, missing index shards, and unreferenced
+  sibling weight files are rejected rather than guessed.
+- Preserve the model-weight formats produced by the shared save surfaces:
+  support a single safetensors file and an indexed safetensors shard directory.
+  The public ``state_dict()`` key set is the ZeRO-3 checkpoint contract, so
+  intentional public omissions remain omitted, and every public key must map
+  directly to a persistent parameter or buffer owner. Artifact tensors must
+  have the exact logical target shape (``ds_shape`` for a partitioned
+  parameter) before any rank enters a gather or copy. The loader restores only
+  persistent aliases represented by the same ``Parameter``
+  or buffer object in the target model. Non-persistent buffers are not
+  state-dict keys and are never synthesized. It does not invoke a custom
+  ``load_state_dict`` method, support registered load-state hooks, interpret
+  safetensors metadata, or consume repository alias sidecars. `strict=True`
+  reports missing and unexpected keys against that public key set;
+  `strict=False` returns them without inventing values from untrusted metadata.
+  Ordinary meta-device parameters and buffers are rejected; meta-device
+  materialization remains the responsibility of the dedicated dispatch path.
+- This loading MR does not define a writer or publication transaction. It does
+  not promise crash-safe replacement, staging cleanup, Accelerate offloaded
+  writer support, sidecar generation, or recovery of aliases represented only
+  by distinct objects/shared storage.
+- Reject `device_map` for ZeRO-3 model-weight loading. Let DeepSpeed own final
+  parameter placement and do not call `model.to(...)` after the gathered load.
+  A submitter should not disable `zero3_init_flag` merely to make a generic
+  loader see full parameter shapes; fix the model-weight loading boundary
+  instead.
+- Validate the import-without-DeepSpeed path, single-file tied weights,
+  indexed shards, strict missing/unexpected keys, automatic loader routing,
+  and placement rejection with focused tests. Use a real multi-rank DeepSpeed
+  job as the integration gate for collective ordering and repartitioning.
+
 ## `hf://`-Compatible Path Handling
 
 - Centralize `hf://` normalization and download behavior in a shared helper

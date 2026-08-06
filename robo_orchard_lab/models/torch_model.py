@@ -32,6 +32,10 @@ from safetensors.torch import (
 )
 from typing_extensions import Self, deprecated
 
+from robo_orchard_lab.models._deepspeed import (
+    _has_zero3_partitioned_parameters,
+    _load_model_weights_into_zero3_model,
+)
 from robo_orchard_lab.utils.huggingface import (
     _has_model_save_artifact,
     _should_write_like_accelerate_save,
@@ -400,14 +404,19 @@ class TorchModelMixin(
                 A device map to specify how to distribute the model's
                 layers across multiple devices. This parameter is only used
                 when `load_impl` is "accelerate". `device` and `device_map`
-                cannot be both specified. Defaults to None.
+                cannot be both specified. Device maps are not supported when
+                the model was initialized under DeepSpeed ZeRO-3. Defaults to
+                None.
             strict (bool, optional): Whether to strictly enforce that the keys
                 in `state_dict` match the keys returned by this module's
-                `state_dict()` function. Passed to `model.load_state_dict()`.
+                `state_dict()` function. The ZeRO-3 path uses that public key
+                set directly and does not invoke custom load-state hooks.
                 Defaults to True.
             model_prefix (str, optional): The prefix for the configuration
-                and state dictionary files. For example, if "model", files
-                will be sought as "model.config.json" and "model.safetensors".
+                and state dictionary files. For example, if "model", the
+                ZeRO-3 path seeks "model.config.json" and either
+                "model.safetensors" or "model.safetensors.index.json".
+                An ambiguous pair is rejected.
                 Defaults to "model".
             load_impl (Literal["native", "accelerate"], optional): The
                 implementation to use for loading the model weights:
@@ -419,6 +428,13 @@ class TorchModelMixin(
                     advanced features like device mapping and offloading.
 
                 Defaults to "accelerate".
+
+                A model initialized under DeepSpeed ZeRO-3 is automatically
+                routed to the ZeRO-aware safetensors loader regardless of this
+                value. In that case, `device` may only be CPU or None and final
+                parameter placement is managed by DeepSpeed. This path only
+                loads the selected artifact; alias metadata/sidecars and
+                publication behavior are outside its contract.
             overwrite_cfg_class_type (bool, optional): If True, overwrites the
                 `cfg.class_type` loaded from the configuration file with
                 `cls`, even if they differ. This is useful when you want to
@@ -507,14 +523,19 @@ class TorchModelMixin(
                 A device map to specify how to distribute the model's
                 layers across multiple devices. This parameter is only used
                 when `load_impl` is "accelerate". `device` and `device_map`
-                cannot be both specified. Defaults to None.
+                cannot be both specified. Device maps are not supported when
+                the model was initialized under DeepSpeed ZeRO-3. Defaults to
+                None.
             strict (bool, optional): Whether to strictly enforce that the keys
                 in `state_dict` match the keys returned by this module's
-                `state_dict()` function. Passed to `model.load_state_dict()`.
+                `state_dict()` function. The ZeRO-3 path uses that public key
+                set directly and does not invoke custom load-state hooks.
                 Defaults to True.
             model_prefix (str, optional): The prefix for the configuration
-                and weights files. For example, if prefix is "model", files
-                will be sought as "model.config.json" and "model.safetensors".
+                and weights files. For example, if prefix is "model", the
+                ZeRO-3 path seeks "model.config.json" and either
+                "model.safetensors" or "model.safetensors.index.json".
+                An ambiguous pair is rejected.
                 Defaults to "model".
             load_impl (Literal["native", "accelerate"], optional): The
                 implementation to use for loading the model weights:
@@ -527,7 +548,72 @@ class TorchModelMixin(
 
                 Defaults to "accelerate".
 
+                A model initialized under DeepSpeed ZeRO-3 is automatically
+                routed to the ZeRO-aware safetensors loader regardless of this
+                value. In that case, `device` may only be CPU or None and final
+                parameter placement is managed by DeepSpeed. This path only
+                loads the selected artifact; alias metadata/sidecars and
+                publication behavior are outside its contract.
+
         """  # noqa: E501
+
+        if load_impl not in ("native", "accelerate"):
+            raise ValueError(
+                f"Invalid load_impl: {load_impl}, "
+                f"expected 'native' or 'accelerate'."
+            )
+
+        if _has_zero3_partitioned_parameters(self):
+            if device_map is not None:
+                raise ValueError(
+                    "device_map is not supported for a DeepSpeed ZeRO-3 "
+                    "initialized model. Parameter placement is managed by "
+                    "DeepSpeed."
+                )
+            if device is not None and torch.device(device).type != "cpu":
+                raise ValueError(
+                    "Only a CPU device or None is supported while loading "
+                    "weights into a DeepSpeed ZeRO-3 initialized model. "
+                    "Final parameter placement is managed by DeepSpeed."
+                )
+            model_weights_path = os.path.join(
+                directory, f"{model_prefix}.safetensors"
+            )
+            indexed_weights_path = os.path.join(
+                directory, f"{model_prefix}.safetensors.index.json"
+            )
+            available_weight_paths = [
+                path
+                for path in (model_weights_path, indexed_weights_path)
+                if os.path.exists(path)
+            ]
+            if len(available_weight_paths) > 1:
+                raise ValueError(
+                    "Ambiguous ZeRO-3 model weights: both "
+                    f"{model_weights_path} and {indexed_weights_path} exist."
+                )
+            if not available_weight_paths:
+                raise FileNotFoundError(
+                    "No ZeRO-3 safetensors weights found for model prefix "
+                    f"{model_prefix!r} under {directory}."
+                )
+            model_weights_path = available_weight_paths[0]
+            missing, unexpected = _load_model_weights_into_zero3_model(
+                self,
+                model_weights_path=model_weights_path,
+                strict=strict,
+            )
+            if missing:
+                logger.warning(
+                    "Some weights are missing when loading state_dict from "
+                    f"{model_weights_path}: {missing}"
+                )
+            if unexpected:
+                logger.warning(
+                    "Some unexpected weights are found when loading "
+                    f"state_dict from {model_weights_path}: {unexpected}"
+                )
+            return
 
         if load_impl == "native":
             if device_map is not None:
@@ -569,11 +655,6 @@ class TorchModelMixin(
                     self, directory, strict=strict, device_map=device_map
                 )
 
-        else:
-            raise ValueError(
-                f"Invalid load_impl: {load_impl}, "
-                f"expected 'native' or 'accelerate'."
-            )
         # safe to call this because for accelerate, either device or
         # device_map can be None.
         if device is not None:

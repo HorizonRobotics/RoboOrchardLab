@@ -294,6 +294,74 @@ class TestModelMixin:
         with pytest.raises(FileNotFoundError):
             ModelMixin.load_model(non_existent_path)
 
+    def test_zero3_load_weights_uses_specialized_loader(
+        self, temp_dir, mocker
+    ):
+        model = SimpleModel(SimpleModelCfg())
+        weight = model.layer1.weight
+        weight.ds_id = 0  # pyright: ignore[reportAttributeAccessIssue]
+        weights_path = os.path.join(temp_dir, "model.safetensors")
+        with open(weights_path, "wb"):
+            pass
+        load_weights = mocker.patch(
+            "robo_orchard_lab.models.torch_model."
+            "_load_model_weights_into_zero3_model",
+            return_value=([], []),
+        )
+        move_model = mocker.patch.object(model, "to")
+
+        model.load_weights(temp_dir, device="cpu")
+
+        load_weights.assert_called_once_with(
+            model,
+            model_weights_path=weights_path,
+            strict=True,
+        )
+        move_model.assert_not_called()
+
+    def test_zero3_load_weights_rejects_missing_artifact(self, temp_dir):
+        model = SimpleModel(SimpleModelCfg())
+        model.layer1.weight.ds_id = 0  # pyright: ignore[reportAttributeAccessIssue]
+
+        with pytest.raises(FileNotFoundError, match="No ZeRO-3 safetensors"):
+            model.load_weights(temp_dir, device="cpu")
+
+    def test_zero3_load_weights_rejects_single_and_indexed_artifacts(
+        self, temp_dir
+    ):
+        model = SimpleModel(SimpleModelCfg())
+        model.layer1.weight.ds_id = 0  # pyright: ignore[reportAttributeAccessIssue]
+        with open(os.path.join(temp_dir, "model.safetensors"), "wb"):
+            pass
+        with open(
+            os.path.join(temp_dir, "model.safetensors.index.json"), "w"
+        ) as file:
+            file.write("{}")
+
+        with pytest.raises(ValueError, match="Ambiguous ZeRO-3"):
+            model.load_weights(temp_dir, device="cpu")
+
+    @pytest.mark.parametrize(
+        ("device", "device_map", "message"),
+        [
+            (None, "auto", "device_map is not supported"),
+            ("cuda:0", None, "Only a CPU device or None"),
+        ],
+    )
+    def test_zero3_load_weights_rejects_external_placement(
+        self, temp_dir, device, device_map, message
+    ):
+        model = SimpleModel(SimpleModelCfg())
+        weight = model.layer1.weight
+        weight.ds_id = 0  # pyright: ignore[reportAttributeAccessIssue]
+
+        with pytest.raises(ValueError, match=message):
+            model.load_weights(
+                temp_dir,
+                device=device,
+                device_map=device_map,
+            )
+
     def test_accelerator_register_all_hooks_registers_local_main_node(self):
         cfg = SimpleModelCfg()
         model = SimpleModel(cfg)
