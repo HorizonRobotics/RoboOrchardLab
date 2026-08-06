@@ -47,8 +47,20 @@ class StatsMonitor(PipelineHooks):
     """Log trainer progress, speed, remaining time, and learning rates.
 
     Step-level statistics are emitted after committed optimizer steps. When a
-    committed optimizer step covers multiple micro steps, sample throughput is
-    scaled by the committed optimizer window size.
+    committed optimizer step covers multiple micro steps, sample throughput
+    is scaled by the committed optimizer window size. Logging boundaries
+    publish these metrics through the accelerator's configured experiment
+    trackers at every ``step_log_freq`` committed steps:
+
+    * ``Performance/samples_per_second``: smoothed throughput in samples/sec
+      across all processes.
+    * ``Performance/step_time_seconds``: smoothed committed-step duration in
+      seconds.
+    * ``Performance/estimated_remaining_seconds``: estimated remaining time
+      in seconds, only when a maximum step/epoch and enough epoch-length data
+      are available.
+    * ``LR/group{idx}``: the optimizer learning rate for parameter group
+      ``idx``, only when an optimizer is present.
     """
 
     def __init__(self, cfg: StatsMonitorConfig):
@@ -346,16 +358,23 @@ class StatsMonitor(PipelineHooks):
             msg += f"Average Step Time: {avg_step_time:.2f} sec.\t"
             msg += f"Estimated Remaining Time: {remaining_time_str}.\t"
 
+            metrics = {
+                "Performance/samples_per_second": speed,
+                "Performance/step_time_seconds": avg_step_time,
+            }
+            if remaining_time is not None:
+                metrics["Performance/estimated_remaining_seconds"] = (
+                    remaining_time
+                )
+
             if args.optimizer is not None:
                 for idx, param in enumerate(args.optimizer.param_groups):
                     msg += "Learning Rate Group {}: {:.5e}.\t".format(
                         idx, param["lr"]
                     )
-                    args.accelerator.log(
-                        {f"LR/group{idx}": param["lr"]},
-                        step=args.global_step_id,
-                    )
+                    metrics[f"LR/group{idx}"] = param["lr"]
 
+            args.accelerator.log(metrics, step=args.global_step_id)
             logger.info(msg)
 
     def _on_epoch_begin(self, args: PipelineHookArgs) -> None:

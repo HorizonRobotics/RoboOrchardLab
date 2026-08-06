@@ -69,7 +69,7 @@ step_io_processor_type = ModelIOProcessor | EnvelopeIOProcessor
 
 
 class LossNotProvidedError(Exception):
-    """Raised when backward is requested but no loss is returned."""
+    """Raised when backward is requested but no backward loss is returned."""
 
     pass
 
@@ -93,8 +93,8 @@ class BatchStepProcessorMixin(ABC):
     ) -> None:
         """Execute the batch processing pipeline.
 
-        The processed outputs and reduced backward loss, if any, are stored in
-        ``on_batch_hook_args`` for downstream hooks and loop logic.
+        The processed outputs are stored in ``on_batch_hook_args`` for
+        downstream hooks and loop logic.
 
         Args:
             pipeline_hooks (PipelineHooks): Hook container used to wrap the
@@ -102,7 +102,7 @@ class BatchStepProcessorMixin(ABC):
             on_batch_hook_args (PipelineHookArgs): Workspace for the current
                 batch. Before the call it should at least contain
                 ``accelerator`` and ``batch``. After the call it contains
-                ``model_outputs`` and ``reduced_backward_loss``.
+                ``model_outputs``.
             model (Callable): The model function or callable.
         """
         pass
@@ -116,7 +116,7 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
     1. Optionally pre-process the raw batch with ``io_processor``.
     2. Execute the model forward pass via :meth:`forward`.
     3. Optionally post-process the raw model outputs.
-    4. Publish outputs and reduced loss into hook arguments.
+    4. Publish outputs into hook arguments.
     5. Run backward when ``need_backward`` is enabled.
 
     The public ``io_processor`` slot still accepts legacy
@@ -129,6 +129,11 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
     prepares distributed runtime objects.
 
     Subclasses typically only need to implement :meth:`forward`.
+
+    :meth:`forward` returns two independent values: model outputs published to
+    pipeline hooks, and an optional backward loss passed only to
+    ``accelerator.backward``. Hooks such as ``LossTracker`` inspect loss
+    entries in the model outputs; they do not inspect the backward loss.
     """
 
     def __init__(
@@ -142,8 +147,9 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
 
         Args:
             need_backward (bool, optional): Whether backward computation is
-                needed. When True, :meth:`forward` must return a loss tensor.
-                Default is True.
+                needed. When True, the second value returned by
+                :meth:`forward` must be a backward-loss tensor. Default is
+                True.
             io_processor (step_io_processor_type | None, optional):
                 Optional model I/O processor used to pre-process
                 batches before the forward pass and optionally post-process
@@ -208,7 +214,7 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
         Args:
             forward_fn (forward_fn_type): Callable implementing the forward
                 step. It must accept ``(model, batch)`` and return
-                ``(outputs, loss)``.
+                ``(model_outputs, backward_loss)``.
             need_backward (bool, optional): Whether backward computation is
                 needed. Default is True.
             io_processor (step_io_processor_type | None, optional):
@@ -238,9 +244,8 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
         """Define the forward pass logic for the model.
 
         This method handles the execution of the forward pass on the prepared
-        model-facing batch and computes the outputs of the model. It also
-        optionally computes a loss tensor when the step requires backward
-        propagation.
+        model-facing batch and returns hook-visible model outputs separately
+        from the tensor used for backward propagation.
 
         Args:
             model (Callable): The model to be used for inference or training.
@@ -255,11 +260,13 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 :meth:`forward`.
 
         Returns:
-            tuple: A pair of the model output and an optional reduced loss
-                tensor. The first element is usually a dict or a custom
-                ``ModelOutput`` value and may provide ``loss_keys`` when
-                multiple loss terms are present. The second element may be None
-                for forward-only steps such as pure inference.
+            tuple: A pair of ``(model_outputs, backward_loss)``. The first
+                element is published to pipeline hooks and is the only source
+                inspected by ``LossTracker``. It is usually a dict or custom
+                ``ModelOutput`` and may provide ``loss_keys`` when multiple
+                tracked losses are present. The second element is passed only
+                to ``accelerator.backward`` when ``need_backward`` is true and
+                may be None for forward-only steps.
 
         Notes:
             - In most cases, the accelerator already ensures that the model
@@ -268,9 +275,12 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             - If additional operations or modules are introduced here, it is
               the implementation's responsibility to keep them on the correct
               device.
-            - The returned loss tensor should already be reduced, for example
-              by taking a mean over the batch, so it can be used directly for
-              backward propagation.
+            - The returned backward loss should already be reduced, for
+              example by taking a mean over the batch, so it can be used
+              directly for backward propagation.
+            - A loss that should be tracked or logged must be included in the
+              first ``model_outputs`` value. Returning it only as the backward
+              loss does not expose it to ``LossTracker``.
             - This method does not handle backpropagation; it focuses solely
               on the forward computation.
             - Any input transformation should already be handled by the data
@@ -289,8 +299,10 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
         This method wires the processor into the hook lifecycle. It optionally
         pre-processes the raw batch, runs the ``on_model_forward`` hook scope
         around :meth:`forward`, optionally runs the ``on_model_backward`` hook
-        scope, reduces the detached backward loss across processes when
-        needed, and writes the final outputs back into ``on_batch_hook_args``.
+        scope, and writes the final outputs back into ``on_batch_hook_args``.
+        The second value returned by :meth:`forward` is passed directly to
+        ``accelerator.backward`` and is not published to hooks. Loss logging
+        hooks aggregate loss entries from the first, model-output value.
 
         Args:
             pipeline_hooks (PipelineHooks): Hook container used to wrap forward
@@ -298,12 +310,12 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
             on_batch_hook_args (PipelineHookArgs): Workspace for the current
                 batch. Before the call it should at least provide
                 ``accelerator`` and ``batch``. After the call it stores
-                ``model_outputs`` and ``reduced_backward_loss``.
+                ``model_outputs``.
             model (Callable): The model function or callable.
 
         Raises:
             LossNotProvidedError: If ``need_backward`` is True but
-                :meth:`forward` returns ``loss=None``.
+                :meth:`forward` returns ``backward_loss=None``.
         """
         batch = on_batch_hook_args.batch
 
@@ -322,7 +334,10 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
         ) as on_forward_hook_args:
             accelerator = on_forward_hook_args.accelerator
             self.accelerator = accelerator
-            raw_outputs, loss = self.forward(model=model, batch=model_input)
+            raw_outputs, backward_loss = self.forward(
+                model=model,
+                batch=model_input,
+            )
             if (
                 self.resolved_envelope_processor is not None
                 and self.apply_post_process
@@ -337,9 +352,8 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
 
             on_forward_hook_args.model_outputs = outputs
 
-        reduced_backward_loss: torch.Tensor | None = None
         if self.need_backward:
-            if loss is None:
+            if backward_loss is None:
                 raise LossNotProvidedError()
 
             with pipeline_hooks.begin(
@@ -347,20 +361,12 @@ class SimpleStepProcessor(BatchStepProcessorMixin):
                 arg=on_batch_hook_args.copy_with_updates(
                     batch=model_input,
                     model_outputs=outputs,
-                    reduced_backward_loss=reduced_backward_loss,
                 ),
             ) as on_backward_hook_args:
                 accelerator = on_backward_hook_args.accelerator
-                accelerator.backward(loss)
-                reduced_backward_loss = accelerator.reduce(
-                    loss.detach(), reduction="mean"
-                )
-                on_backward_hook_args.reduced_backward_loss = (
-                    reduced_backward_loss
-                )
+                accelerator.backward(backward_loss)
 
         on_batch_hook_args.model_outputs = outputs
-        on_batch_hook_args.reduced_backward_loss = reduced_backward_loss
 
 
 class StepProcessorFromCallable(SimpleStepProcessor):
@@ -415,7 +421,8 @@ class StepProcessorFromCallable(SimpleStepProcessor):
                 :class:`PipelineEnvelope`.
 
         Returns:
-            Tuple[Any, Optional[torch.Tensor]]: The output tuple returned by
+            Tuple[Any, Optional[torch.Tensor]]: The
+                ``(model_outputs, backward_loss)`` pair returned by
                 ``forward_fn``.
         """
         return self._forward_fn(model, batch)

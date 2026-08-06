@@ -14,9 +14,11 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from robo_orchard_lab.pipeline.hooks.mixin import (
     HookContext,
@@ -67,3 +69,35 @@ def test_pipeline_hooks_supports_optimizer_step_context_channel():
         args.is_optimizer_step_committed = True
 
     assert events == [("before", False), ("after", True)]
+
+
+def test_pipeline_hook_args_retires_backward_loss_access_after_construction():
+    """Legacy construction works while retired loss reads fail closed."""
+
+    args = PipelineHookArgs(
+        accelerator=MagicMock(),
+        reduced_backward_loss=torch.tensor(3.0),
+    )
+
+    copied = args.copy_with_updates(global_step_id=2)
+
+    assert copied.global_step_id == 2
+    with pytest.raises(RuntimeError, match="model_outputs"):
+        _ = args.reduced_backward_loss
+    with pytest.raises(RuntimeError, match="model_outputs"):
+        _ = args.reduce_loss
+
+
+def test_pipeline_hook_args_supports_standard_dataclass_replace():
+    """Retired constructor compatibility must not break dataclass copying."""
+
+    args = PipelineHookArgs(
+        accelerator=MagicMock(),
+        global_step_id=1,
+        reduced_backward_loss=torch.tensor(3.0),
+    )
+
+    copied = replace(args, global_step_id=2)
+
+    assert copied.global_step_id == 2
+    assert copied.accelerator is args.accelerator

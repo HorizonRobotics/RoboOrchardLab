@@ -221,9 +221,12 @@ hooks = []
 # Core concepts of the hook System
 # ------------------------------------------------------------------------
 #
-# * :py:class:`~robo_orchard_lab.pipeline.hooks.mixin.PipelineHookArgs`: A dataclass holding all relevant information (accelerator,
-#   epoch/step IDs, batch data, model outputs, loss, etc.) passed to each hook.
-#   This ensures hooks have a standardized, type-safe context.
+# * :py:class:`~robo_orchard_lab.pipeline.hooks.mixin.PipelineHookArgs`: A dataclass holding the hook-visible context
+#   (accelerator, epoch/step IDs, batch data, and model outputs). Hooks read
+#   losses only when the model explicitly publishes them in ``model_outputs``;
+#   the backward tensor is never a hook value. The deprecated
+#   ``reduced_backward_loss`` constructor input and ``reduce_loss`` alias are
+#   retained only to fail with a clear migration error when read.
 #
 # * :py:class:`~robo_orchard_lab.pipeline.hooks.mixin.PipelineHooksConfig`: The entire :py:class:`~robo_orchard_lab.pipeline.hooks.mixin.PipelineHooks` setup,
 #   including which individual hooks are active and their parameters, can often be defined via Pydantic configurations.
@@ -257,6 +260,32 @@ hooks = []
 # (as shown in the "(Advanced) Creating Your First Custom Hook" section) for more
 # specialized requirements.
 #
+
+# %%
+# LossTracker: Aggregate model-output losses
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# :py:class:`~robo_orchard_lab.pipeline.hooks.loss_tracker.LossTracker` reads
+# loss entries from ``model_outputs`` after each micro-step. It keeps one local
+# detached sum and count per key, then performs a single packed distributed
+# reduction only when a committed optimizer step reaches ``step_log_freq``.
+# Therefore ``accumulate_grad_steps=1`` remains numerically compatible with the
+# old per-update reduction, while multi-micro-step accumulation and failed
+# optimizer steps use the explicit committed-boundary semantics.
+#
+# The first update after each logging-window reset defines the complete loss-key
+# set. Every later update in that window must provide the same keys on every
+# rank; the tracker does not synchronize key presence or infer missing values.
+# A committed logging boundary, an uncommitted boundary, or an exception resets
+# the window, so the next window may use a different complete key set. The
+# separate backward-loss return value is never read by this hook. A custom
+# ``update`` override must call ``super().update`` to contribute to the
+# canonical aggregation.
+
+# For a model whose ``model_outputs`` is a loss dictionary, enable the tracker
+# with ``LossTrackerConfig(step_log_freq=64)`` and append that config to
+# ``hooks``. The ResNet example below returns a tensor, so it intentionally
+# does not register this dictionary-loss hook.
+
 
 # %%
 # MetricTracker: Track on performance
@@ -322,8 +351,13 @@ hooks.append(metric_tracker)
 # StatsMonitor: Logging Training Vitals
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 #
-# :py:class:`~robo_orchard_lab.pipeline.hooks.stats.StatsMonitor` monitors and logs statistics like learning rate, training speed (samples/sec), estimated time remaining, etc.
-# Its ``step_log_freq`` controls how often this information is printed or logged in committed optimizer-step units.
+# :py:class:`~robo_orchard_lab.pipeline.hooks.stats.StatsMonitor` publishes
+# ``Performance/samples_per_second`` (samples/sec),
+# ``Performance/step_time_seconds`` (seconds), and, when the remaining time can
+# be estimated, ``Performance/estimated_remaining_seconds`` (seconds). When an
+# optimizer is available it also publishes ``LR/group{idx}`` for each parameter
+# group. ``step_log_freq`` controls the committed optimizer-step cadence for
+# these metrics.
 #
 
 from robo_orchard_lab.pipeline.hooks import StatsMonitorConfig

@@ -87,7 +87,6 @@ def mock_hook_args(mock_accelerator, mock_dataloader):
         max_epoch=10,
         optimizer=cast(Any, optimizer),
         model_outputs=None,
-        reduced_backward_loss=torch.tensor(0.0),
     )
 
 
@@ -394,6 +393,15 @@ def test_on_step_end_scales_speed_by_optimizer_step_size(mocker):
 
     log_msg = mock_logger.info.call_args.args[0]
     assert "Training Speed: 512.00" in log_msg
+    accelerator.log.assert_called_once_with(
+        {
+            "Performance/samples_per_second": 512.0,
+            "Performance/step_time_seconds": 0.5,
+            "Performance/estimated_remaining_seconds": 0.5,
+            "LR/group0": 0.01,
+        },
+        step=1,
+    )
 
 
 def test_on_epoch_end(mocker, mock_hook_args):

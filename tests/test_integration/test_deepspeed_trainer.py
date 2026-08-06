@@ -275,9 +275,12 @@ def test_hook_based_trainer_deepspeed_observer_smoke(
     assert result["engine_gradient_clipping"] == pytest.approx(0.2)
     expected_lrs = [0.001, 0.002, 0.003, 0.004, 0.005]
     assert result["engine_lrs"] == pytest.approx(expected_lrs)
-    assert result["logged_lrs"]["2"] == pytest.approx(
-        {f"LR/group{idx}": lr for idx, lr in enumerate(expected_lrs)}
-    )
+    expected_logged_lrs = {
+        f"LR/group{idx}": lr for idx, lr in enumerate(expected_lrs)
+    }
+    assert {
+        key: result["logged_lrs"]["2"][key] for key in expected_logged_lrs
+    } == pytest.approx(expected_logged_lrs)
 
 
 def test_single_process_distributed_env_assigns_retry_ports(

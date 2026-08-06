@@ -14,7 +14,6 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 from __future__ import annotations
-import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
@@ -22,6 +21,7 @@ from typing import (
     Callable,
     Iterable,
     Literal,
+    NoReturn,
     Optional,
     Protocol,
     Type,
@@ -97,7 +97,7 @@ class MicroStepProgressState:
     """Number of micro steps used by the last committed optimizer step."""
 
 
-@dataclass
+@dataclass(init=False)
 class PipelineHookArgs:
     """Mutable event context passed through pipeline hook scopes.
 
@@ -105,6 +105,14 @@ class PipelineHookArgs:
     the current progress snapshot. ``step_id`` and ``global_step_id`` are
     committed optimizer-step counters; hooks that need dataloader-batch
     progress should read ``micro_step`` when it is provided by a trainer loop.
+
+    ``reduced_backward_loss`` remains an accepted constructor argument only
+    for source compatibility; this is not behavioral compatibility. The
+    trainer never publishes a backward loss through hook arguments, so every
+    read of that name or its retired ``reduce_loss`` alias raises a migration
+    error, including after a compatible construction call. Hooks must instead
+    consume loss entries explicitly published in ``model_outputs``. That
+    supported contract does not expose the tensor used for backward.
     """
 
     accelerator: Accelerator
@@ -143,32 +151,68 @@ class PipelineHookArgs:
     is already failing. The original exception is re-raised by the context
     manager.
     """
-    reduced_backward_loss: Optional[torch.Tensor] = None
-    """The detached backward loss reduced across processes, if applicable.
 
-    When the batch processor returns a loss for backward computation, this
-    field stores the detached loss after backward has run and after the value
-    is reduced across distributed processes. This value is distinct from
-    model-output loss entries, which may include auxiliary or diagnostic
-    losses.
-    """
+    def __init__(
+        self,
+        accelerator: Accelerator,
+        epoch_id: int = 0,
+        step_id: int = 0,
+        global_step_id: int = 0,
+        micro_step: Optional[MicroStepProgressState] = None,
+        is_optimizer_step_boundary: bool = True,
+        is_optimizer_step_committed: bool = False,
+        max_epoch: Optional[int] = None,
+        max_step: Optional[int] = None,
+        start_epoch: int = 0,
+        start_step: int = 0,
+        dataloader: Optional[Iterable] = None,
+        model: Optional[torch.nn.Module] = None,
+        optimizer: Optional[AcceleratedOptimizer] = None,
+        lr_scheduler: Optional[AcceleratedScheduler] = None,
+        batch: Optional[Any] = None,
+        model_outputs: Optional[ModelOutput] = None,
+        exception: BaseException | None = None,
+        reduced_backward_loss: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Construct hook arguments while discarding retired loss input.
 
-    @property
-    def reduce_loss(self) -> Optional[torch.Tensor]:
-        """Deprecated alias for :attr:`reduced_backward_loss`.
-
-        Returns:
-            Optional[torch.Tensor]: The detached reduced backward loss, if it
-            was computed for the current micro step.
+        ``reduced_backward_loss`` remains accepted for source compatibility,
+        but is intentionally never stored. The explicit constructor keeps the
+        retired name separate from the dataclass field set, so standard
+        ``dataclasses.replace`` continues to copy unrelated fields normally.
         """
 
-        warnings.warn(
-            "PipelineHookArgs.reduce_loss is deprecated and read-only; "
-            "use PipelineHookArgs.reduced_backward_loss instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.reduced_backward_loss
+        del reduced_backward_loss
+        self.accelerator = accelerator
+        self.epoch_id = epoch_id
+        self.step_id = step_id
+        self.global_step_id = global_step_id
+        self.micro_step = micro_step
+        self.is_optimizer_step_boundary = is_optimizer_step_boundary
+        self.is_optimizer_step_committed = is_optimizer_step_committed
+        self.max_epoch = max_epoch
+        self.max_step = max_step
+        self.start_epoch = start_epoch
+        self.start_step = start_step
+        self.dataloader = dataloader
+        self.model = model
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.batch = batch
+        self.model_outputs = model_outputs
+        self.exception = exception
+
+    @property
+    def reduced_backward_loss(self) -> NoReturn:
+        """Raise for the retired constructor-only loss input."""
+
+        _raise_unavailable_backward_loss_access()
+
+    @property
+    def reduce_loss(self) -> NoReturn:
+        """Raise for the retired ``reduce_loss`` compatibility alias."""
+
+        _raise_unavailable_backward_loss_access()
 
     def copy_with_updates(self, **kwargs) -> PipelineHookArgs:
         """Create a copy of the current instance with updated attributes.
@@ -193,6 +237,15 @@ class PipelineHookArgs:
             else:
                 raise AttributeError(f"{key} is not a valid attribute")
         return instance
+
+
+def _raise_unavailable_backward_loss_access() -> NoReturn:
+    """Explain how legacy hooks must migrate from retired loss fields."""
+
+    raise RuntimeError(
+        "PipelineHookArgs backward-loss fields are unavailable. "
+        "Read hook-visible losses from PipelineHookArgs.model_outputs instead."
+    )
 
 
 PipelineHookChanelType: TypeAlias = Literal[

@@ -59,7 +59,7 @@ This detailed flow for a micro-batch proceeds as follows:
 * **hook: on_batch_begin**: Triggered before any processing of the current micro-batch.
 * **hook: on_model_forward_begin**: Called immediately before the model's forward pass.
 * **model forward**: The Batch Processor executes the model's forward pass using the current micro-batch, typically computing outputs and loss.
-* **hook: on_model_forward_end**: Called immediately after the forward pass. Model outputs and loss are usually available in ``PipelineHookArgs`` at this point, making it suitable for metric updates.
+* **hook: on_model_forward_end**: Called immediately after the forward pass. Model outputs are available in ``PipelineHookArgs`` at this point. A model may explicitly publish loss entries in those outputs, which makes the event suitable for metric updates.
 * *(Conditional Backward Pass - see "Training and Evaluation Modes" below)*
 * **hook: on_model_backward_begin**: Called just before initiating the backward pass (gradient computation).
 * **model backward**: The Batch Processor executes the backward pass (e.g., ``accelerator.backward(loss)``).
@@ -82,8 +82,35 @@ Role of ``PipelineHookArgs``
 --------------------------------------------------------
 At every hook trigger point (i.e., within the ``on_enter`` and ``on_exit`` methods of a ``HookContext`` registered to a channel),
 an instance of ``PipelineHookArgs`` is passed. This object provides rich contextual information about the current state of the pipeline,
-including epoch/step IDs, the current micro-batch data, model outputs, computed loss, and references to the ``accelerator``, ``optimizer``, etc.
+including epoch/step IDs, the current micro-batch data, model outputs, and references to the ``accelerator``, ``optimizer``, etc.
 This allows hooks to make informed decisions and perform relevant actions.
+
+**Backward-loss migration.** ``PipelineHookArgs`` does not publish the tensor passed to backward. The
+deprecated ``reduced_backward_loss`` constructor input remains only so old
+hook factories can construct the context; its value is discarded. Reading
+either ``reduced_backward_loss`` or the retired ``reduce_loss`` alias raises
+``RuntimeError`` even after compatible construction. This is deliberately a
+fail-closed migration, not a loss-value compatibility layer. A hook that
+needs a reportable loss must read a loss entry that the model explicitly
+places in ``model_outputs``. That entry is the supported hook contract; it is
+not assumed to be the tensor used for backward.
+
+**Loss aggregation.** ``LossTracker`` accumulates detached local sum/count
+pairs from every micro-step and performs one packed ``sum`` reduction only at
+the committed optimizer-step logging boundary. With
+``accumulate_grad_steps=1`` this is numerically equivalent to the former
+per-update mean reduction; the delayed boundary is intentional so multi-step
+accumulation and uncommitted optimizer steps are handled correctly. A logging
+window infers its complete loss-key set from the first update. Every later
+update in that window must publish exactly the same set on every rank; the
+tracker does not synchronize key presence or fill missing keys. A committed
+logging boundary, an uncommitted boundary, or an exception clears the window,
+so the next window may establish a different key set. The old two-argument
+``LossTracker.update(accelerator, model_outputs)`` call shape remains accepted,
+but the accelerator is ignored and the retired mutable cache fields are not a
+supported extension point. A custom ``update`` override must delegate to
+``super().update`` to contribute to the canonical aggregation; arbitrary
+override-owned state is not reconstructed.
 
 Training and Evaluation Modes
 ----------------------------------------------------------

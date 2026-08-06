@@ -647,9 +647,6 @@ class HookBasedTrainer:
                 on_step_hook_args.model_outputs = (
                     on_batch_hook_args.model_outputs
                 )
-                on_step_hook_args.reduced_backward_loss = (
-                    on_batch_hook_args.reduced_backward_loss
-                )
             self.trainer_progress_state.commit_micro_step(current_micro_step)
             self.trainer_progress_state.sync_pipeline_hook_arg(
                 on_step_hook_args
