@@ -17,6 +17,7 @@
         "  --eval_num 25 \\",
         "  --processes_per_gpu 2 \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --eval_result_dir /horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/kun01wu_robodojo_eval_100k \\",
         "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711"
     ],
     "to_upload": [

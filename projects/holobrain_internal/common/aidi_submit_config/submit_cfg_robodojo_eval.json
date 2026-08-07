@@ -16,6 +16,7 @@
         "  --model_processor robodojo_arx_x5a_processor \\",
         "  --env_config arx_x5 \\",
         "  --eval_num 50 \\",
+        "  --eval_result_dir /horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/eval_robodojo_holobrain \\",
         "  --processes_per_gpu 2"
     ],
     "to_upload": [

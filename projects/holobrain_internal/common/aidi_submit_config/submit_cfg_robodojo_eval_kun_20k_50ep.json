@@ -18,6 +18,7 @@
         "  --tasks 'fasten_screws,plug_in_charger,insert_tubes,pour_balls_into_vase,play_Xylophone,deposit_coin,insert_key,build_tower,put_bottles_into_dustbin,fill_pen_holder,classify_objects,play_tic_tac_toe,fill_egg_holder,organize_table,make_kong,play_stacking_toy,cover_blocks,match_and_pick_from_conveyor,swap_blocks,swap_T,press_by_number,imitate_sorting_sequence,align_blocks,general_pickup,stack_blocks_by_language,solve_equation,classify_objects_by_language,pick_from_conveyor_by_image,store_tools_in_toolbox,pour_by_language' \\",
         "  --processes_per_gpu 2 \\",
         "  --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \\",
+        "  --eval_result_dir /horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/kun01wu_robodojo_eval_20k_50ep \\",
         "  --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711"
     ],
     "to_upload": [
