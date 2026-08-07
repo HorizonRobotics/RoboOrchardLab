@@ -350,6 +350,18 @@ class HoloBrainRoboDojoPolicy:
         self.processor = processor
         self.model = model
         self.pipeline = pipeline
+        # The policy server has no logging setup of its own -- train.py has
+        # log_basic_config, this process has nothing -- so the root logger
+        # sits at WARNING and every logger.info in the model is discarded.
+        # That silently disables all the eval-side instrumentation, which is
+        # the only place it was ever meant to run. Only configure if nobody
+        # else has, so a caller that set logging up keeps its own format.
+        if not logging.getLogger().handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s %(levelname)s %(name)s | %(message)s",
+            )
+
         self._obs: dict[str, Any] | None = None
         self._batch_obs: dict[int, dict[str, Any]] = {}
         # How many observations this episode has produced. `deploy.py`
@@ -614,7 +626,23 @@ class HoloBrainRoboDojoPolicy:
             for env_idx in env_idx_list
         ]
 
+    def memory_stats(self) -> dict[str, Any]:
+        """Counters from the episode-scoped memory, or {} without one.
+
+        A pull-based path on purpose: a log line can be swallowed by a
+        logging level nobody set, a return value cannot.
+        """
+        target = self.model
+        if target is None and self.pipeline is not None:
+            target = getattr(self.pipeline, "model", None)
+        memory = getattr(target, "memoryvla", None)
+        stats = getattr(memory, "memory_stats", None)
+        out = stats() if callable(stats) else {}
+        out["env_step"] = self._env_step
+        return out
+
     def reset(self) -> None:
+        logger.info("policy reset: %s", self.memory_stats())
         self._obs = None
         self._batch_obs.clear()
         self._env_step = 0

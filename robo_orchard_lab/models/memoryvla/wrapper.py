@@ -39,6 +39,7 @@ break that contract, so it stays available and verified rather than wired.
 
 from __future__ import annotations
 
+import atexit
 import logging
 from typing import Any, Optional, Sequence
 
@@ -160,6 +161,11 @@ class MemoryVLAMemory(nn.Module):
 
         # eval-time episode tracking; training-time clearing is the banks' own
         self._last_episode_ids: Optional[tuple] = None
+
+        # The last episode of a run has no reset() after it, so without this
+        # its counters are never reported and a single-episode run says
+        # nothing at all.
+        atexit.register(self._report_eval_episode)
         #: Episode identity at inference. Training keys the bank by the
         #: dataset's ``uuid``; the deployed input has no such field
         #: (``MultiArmManipulationInput`` does not carry one and the processor
