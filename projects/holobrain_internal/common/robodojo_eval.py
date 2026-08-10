@@ -191,6 +191,18 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--env_config", default="arx_x5")
     parser.add_argument(
+        "--run_tag",
+        default="",
+        help=(
+            "Suffix for every run id, and so for every result path. "
+            "Empty by default, which keeps the AIDI result layout and "
+            "the resume manifest key byte-identical to before. Local "
+            "runs should pass something unique: they all funnel into "
+            "one result root, so without a tag each run overwrites the "
+            "previous run's _result.json and videos in place."
+        ),
+    )
+    parser.add_argument(
         "--eval_result_dir",
         type=Path,
         default=Path("/job_data/robodojo_eval_results"),
@@ -293,6 +305,119 @@ def _prepare_env_config(
     return output_path
 
 
+def _same_path(left: object, right: object) -> bool:
+    return os.path.normpath(str(left)) == os.path.normpath(str(right))
+
+
+PATH_OVERRIDE_PROBE = """
+import json
+from env.global_configs import ASSETS_PATH, ENV_CONFIG_PATH
+
+try:
+    from src.eval_client.eval_env import EVAL_RESULT_DIR
+except ImportError:
+    # A checkout that predates the indirection has no such symbol; it joins
+    # the literal instead. Report that as a value so the caller prints the
+    # mismatch, which names the fix, rather than an ImportError traceback.
+    EVAL_RESULT_DIR = "<hardcoded eval_result>"
+
+print("ROBODOJO_PREFLIGHT " + json.dumps({
+    "ROBODOJO_ASSETS_DIR": ASSETS_PATH,
+    "ROBODOJO_ENV_CONFIG_DIR": ENV_CONFIG_PATH,
+    "ROBODOJO_EVAL_RESULT_DIR": EVAL_RESULT_DIR,
+}))
+"""
+
+
+def _check_path_overrides(
+    *,
+    conda_root: Path,
+    robodojo_root: Path,
+    env: dict[str, str],
+    expected: dict[str, Path],
+) -> None:
+    """Fail before Isaac Sim starts if RoboDojo ignores our path overrides.
+
+    This script steers RoboDojo entirely through three environment variables.
+    A checkout that predates them accepts every flag and then quietly uses its
+    own baked-in paths. Only one of the three failures is audible, and it is
+    audible far too late:
+
+      ROBODOJO_ENV_CONFIG_DIR  the camera-calibration patch written by
+          _prepare_env_config is never read, so an env config with
+          `intrinsic_matrix: false` reaches the sim unmodified and every
+          episode dies mid-run on `camera ... is missing intrinsic_matrix`
+      ROBODOJO_ASSETS_DIR      --assets_dir is ignored, silently
+      ROBODOJO_EVAL_RESULT_DIR results land in <robodojo_root>/eval_result,
+          so _log_task_result finds nothing under --eval_result_dir and
+          reports every task as failed -- indistinguishable from a model
+          that scored zero
+
+    A static grep would be cheaper and would also be a guess. Probe the real
+    thing instead: import the real modules in the same conda env, cwd and
+    PYTHONPATH the workers get, and compare what they actually resolve to.
+    Costs a few seconds against an eval measured in hours.
+    """
+    command = [
+        str(conda_root / "bin/conda"),
+        "run",
+        "-n",
+        EVAL_ENV_NAME,
+        "python",
+        "-c",
+        PATH_OVERRIDE_PROBE,
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=robodojo_root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    marker = "ROBODOJO_PREFLIGHT "
+    payload = next(
+        (
+            line[len(marker) :]
+            for line in completed.stdout.splitlines()
+            if line.startswith(marker)
+        ),
+        None,
+    )
+    if payload is None:
+        # The workers are about to run this exact import, so a probe that
+        # cannot even load the modules is a failure worth stopping on rather
+        # than a reason to wave the run through.
+        raise RuntimeError(
+            "RoboDojo path-override preflight could not run in "
+            f"{robodojo_root} (exit {completed.returncode}).\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+
+    actual = json.loads(payload)
+    mismatches = [
+        f"  {name}: asked for {wanted}, RoboDojo resolved {actual.get(name)!r}"
+        for name, wanted in expected.items()
+        if not _same_path(actual.get(name), wanted)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "The RoboDojo at "
+            f"{robodojo_root} ignores this script's path overrides:\n"
+            + "\n".join(mismatches)
+            + "\n\nIt is missing the env-var indirections in "
+            "env/global_configs.py and src/eval_client/{main,eval_env}.py. "
+            "Port them from the AIDI image (/opt/robodojo), or the run will "
+            "read the wrong env config and write results where nobody looks."
+        )
+    logger.info("Path-override preflight OK for %s", robodojo_root)
+
+
+def _worker_run_id(seed: int, worker_id: int, run_tag: str) -> str:
+    base = f"aidi_seed_{seed}_worker_{worker_id}"
+    return f"{base}_{run_tag}" if run_tag else base
+
+
 def _available_gpu_ids() -> list[str]:
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible_devices is not None:
@@ -393,6 +518,7 @@ def _run_worker(
     gpu_id: str,
     task_names: list[str],
     env_config: str,
+    run_tag: str,
     conda_root: Path,
     policy_dir: Path,
     policy_env: Path,
@@ -402,7 +528,7 @@ def _run_worker(
     eval_num: int,
     env: dict[str, str],
 ) -> list[TaskRunResult]:
-    worker_run_id = f"aidi_seed_{seed}_worker_{worker_id}"
+    worker_run_id = _worker_run_id(seed, worker_id, run_tag)
     log_dir = output_dir / worker_run_id / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -715,6 +841,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.robodojo_root / "env_cfg" / name,
             args.env_config_dir / name,
         )
+    _check_path_overrides(
+        conda_root=args.conda_root,
+        robodojo_root=args.robodojo_root,
+        env=env,
+        expected={
+            "ROBODOJO_ASSETS_DIR": args.assets_dir,
+            "ROBODOJO_ENV_CONFIG_DIR": args.env_config_dir,
+            "ROBODOJO_EVAL_RESULT_DIR": args.eval_result_dir,
+        },
+    )
 
     task_names = _resolve_task_names(args)
     gpu_ids = _available_gpu_ids()
@@ -726,7 +862,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     for worker_id, (gpu_id, worker_tasks) in enumerate(
         _allocate_tasks(task_names, gpu_ids, args.processes_per_gpu)
     ):
-        worker_run_id = f"aidi_seed_{args.seed}_worker_{worker_id}"
+        worker_run_id = _worker_run_id(args.seed, worker_id, args.run_tag)
         for task_name in worker_tasks:
             run_id = f"{worker_run_id}_{task_name}"
             result_paths[task_name] = _task_result_path(
@@ -768,6 +904,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 gpu_id=gpu_id,
                 task_names=worker_tasks,
                 env_config=args.env_config,
+                run_tag=args.run_tag,
                 conda_root=args.conda_root,
                 policy_dir=policy_dir,
                 policy_env=args.policy_env,

@@ -42,9 +42,15 @@
 # reading it from there makes scene setup take minutes -- long enough that the
 # websocket keepalive fires mid-load and the run enters a reconnect loop
 # (measured: 16 scene loads and 11 keepalive timeouts in 17 minutes, zero
-# episodes). Changing --assets_dir alone does not fix it, because USD/MDL
-# resolve their own references through whatever the Assets symlink points at.
-# So the symlink itself is repointed at a JFS mirror:
+# episodes). Until 2026-08-07 --assets_dir did not fix it either, for a
+# duller reason than the USD/MDL story that used to be written here: this
+# checkout had no reader for ROBODOJO_ASSETS_DIR at all, nor for
+# ROBODOJO_ENV_CONFIG_DIR or ROBODOJO_EVAL_RESULT_DIR, while the AIDI image
+# honoured all three. Those three indirections have since been ported back
+# into the RoboDojo repo and robodojo_eval.py now probes for them before
+# Isaac Sim starts. The symlink below stays anyway: it costs nothing, and
+# whether USD/MDL internal references also follow ASSETS_PATH has not been
+# retested. It points at a JFS mirror:
 #     /jfs-public/users/kun01.wu/xiaomi_robodojo/Assets_local
 # verified against the bucket original with tree_verify.py
 # (RESULT EQUIVALENT, 13,014 files hashed, 41,270,836,679 bytes). The original
@@ -54,11 +60,22 @@
 # r4_gear.sh carries the same note, for the same reason, from the same bite.
 set -eo pipefail
 
-GPU=${1:?gpu index}
+GPU=${1:?gpu index, or a comma list like 4,5}
 MODEL_DIR=${2:?deploy package dir}
 PROCESSOR=${3:?processor name, e.g. robodojo_arx_x5a_processor}
 TASKS=${4:-swap_T}
-EVAL_NUM=${EVAL_NUM:-1}
+# Leave EVAL_NUM alone for a scoring run. summarize_result.py leaves the
+# whole cell blank when a task has fewer than its native episode count
+# (50 for a standalone task), so a short run is not a small score -- it is
+# no score. 50 is what robodojo_eval.py calls STANDALONE_EPISODES.
+EVAL_NUM=${EVAL_NUM:-50}
+PROCS_PER_GPU=${PROCS_PER_GPU:-1}
+# arx_x5 ships intrinsic_matrix/extrinsic_matrix false and robodojo_eval.py
+# patches them true into --env_config_dir. That patch was read on the
+# cluster and ignored here until the port above, which is why local arx_x5
+# runs died on `camera ... is missing intrinsic_matrix` while the identical
+# AIDI config was fine. Both honour it now; arx_x5_holobrain still works and
+# is the only config that ever did locally.
 ENV_CONFIG=${ENV_CONFIG:-arx_x5}
 VALID_ACTION_STEP=${VALID_ACTION_STEP:-}
 
@@ -66,11 +83,23 @@ REPO=${REPO:-$HOME/git_repo/robo_orchard_lab}
 RD_ROOT=${RD_ROOT:-$HOME/git_repo/RoboDojo}
 COMMON=$REPO/projects/holobrain_internal/common
 
-source "$REPO/robo_orchard_lab_env.sh" >/dev/null
-[ -n "$ROL_JFS" ] || { echo "ROL_JFS empty -- env not sourced"; exit 1; }
-OUT=$ROL_JFS/port/memoryvla/local_eval
-RUN=$OUT/run_$(date +%Y%m%d_%H%M%S)
-mkdir -p "$RUN" "$OUT/kit" "$OUT/pyshim"
+# The benchmark owns the eval landing, so its env is the one that counts.
+# Both self-checks: env_selfcheck watches where caches land, bench_selfcheck
+# watches where products land and whether that layer supports the writes the
+# evaluator actually makes. They do not cover the same failures.
+source "$RD_ROOT/robodojo_env.sh" >/dev/null
+[ -n "$BENCH_LIVE" ] || { echo "BENCH_LIVE empty -- robodojo_env.sh not sourced"; exit 1; }
+env_selfcheck   || { echo "env_selfcheck FAILED";   exit 1; }
+bench_selfcheck || { echo "bench_selfcheck FAILED"; exit 1; }
+
+RUN_TAG=${RUN_TAG:-run_$(date +%Y%m%d_%H%M%S)}
+# Scratch is benchmark runtime state, so it lives under the benchmark tmp,
+# not under the model project.
+OUT=$TMPDIR
+[ -n "$OUT" ] || { echo "TMPDIR empty -- env not sourced"; exit 1; }
+RUN=$OUT/localeval/$RUN_TAG
+mkdir -p "$RUN" "$OUT/localeval/kit/$RUN_TAG" "$OUT/localeval/pyshim"
+OUT=$OUT/localeval
 
 # (5) one pure-python file, copied not installed
 if [ ! -f "$OUT/pyshim/msgpack_numpy.py" ]; then
@@ -105,14 +134,15 @@ ARGS=(
   --robodojo_root "$RD_ROOT"                       # (1)
   --conda_root "$HOME/miniconda3"                  # (2)
   --policy_env holobrain_internal                  # (3)
-  --kit_root "$OUT/kit"                            # (4)
-  --assets_dir "$RD_ROOT/Assets"
+  --kit_root "$OUT/kit/$RUN_TAG"                            # (4)
+  --assets_dir "$ROBODOJO_ASSETS_DIR"
   --env_config_dir "$RUN/envcfg"
-  --eval_result_dir "$RUN/results"
+  --eval_result_dir "$BENCH_LIVE"
+  --run_tag "$RUN_TAG"
   --vlm_ckpt_dir "$(readlink -f "$COMMON/ckpt")"
   --urdf_dir "$(readlink -f "$COMMON/urdf")"
   --eval_num "$EVAL_NUM"
-  --processes_per_gpu 1
+  --processes_per_gpu "$PROCS_PER_GPU"
   --env_config "$ENV_CONFIG"
   --tasks "$TASKS"
 )
