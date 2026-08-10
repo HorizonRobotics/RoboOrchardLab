@@ -56,7 +56,7 @@
 | 官方口径汇总 | `docs/robodojo_pipeline/results/{20k,100k}/benchmark_summary_seed_0.json` |
 | 逐 run-config 明细 | `docs/robodojo_pipeline/results/{20k,100k}/runconfig_details_seed_0.json` |
 | 全量备份（含 54 个原始 `_result.json`） | `/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-eval-final/{20k,100k}/` |
-| 集群原始产物（含失败录像） | 各 job PFS，`aidictl job logs list/cat <job> output/robodojo_eval_results/...` |
+| 集群原始产物（含失败录像） | **已归档到 bucket**（2026-08-10）：`benchmarks/robodojo/eval_runs/robodojo-holobrain-{20k,100k}_seed0_pfs-*/` —— 17,632 文件 / 33 GiB，含 165 个 success。**`aidictl job logs` 取不回来**：它认的 token 属于 `kun01.wu`（不在 `horizon-labs` OU），而 job 属于 `kun01.wu-labs`；改走 REST `/job/get` 取 `job_status.output_url`，那个 PFS HTTP 端点无需认证 |
 
 ---
 
@@ -148,12 +148,24 @@ python aggregate_robodojo_results.py \
 按投入产出排序：
 
 1. **查随机化场景为何完全失效**（最高价值）——这是当前最大短板，且不是"训练不够"能解释的。
-   建议先看 `_random` 变体的失败录像（各 job PFS 里有 `episode_*_fail.mp4`）。
+   `_random` 变体的失败录像**已经在 bucket 上了**（2026-08-10 归档，不必再碰 PFS，
+   也不受 job 留存期影响）：`benchmarks/robodojo/eval_runs/robodojo-holobrain-{20k,100k}_seed0_pfs-*/`
+   下的 `results/{20k,100k}-gen/<task>_random/...`，12 个任务 × 25 ep × 3 机位 × 2 ckpt。
 2. **拿同事自己的 HoloBrain checkpoint 跑同一套 eval 做对照** —— 判断 ~1% 的绝对水平
    是后训练数据/步数问题还是 pipeline 问题。同事 cfg 指向
    `holobrain_v10_robodojo_10wstep/checkpoint_20`。
-3. **Open 维度零信号的定位** —— 8 个语言/符号任务 SR 全 0、score 近 0，
-   可能是 instruction 通路没接上，值得单独查一个任务的输入。
+3. ~~**Open 维度零信号的定位**~~ —— ✅ **2026-08-10 已查明，不用再查了。**
+   原因比「instruction 通路没接上」平凡得多：**那 8 个任务根本没有训练数据。**
+   训练 LMDB（`/horizon-bucket/robot_lab2/datasets/robodojo_lmdb/`）下是 34 个任务
+   + 1 个 `dlc`，而评测要 42 个；差的 8 个**恰好等于 Open 维度的全部成员**
+   （`align_blocks` `general_pickup` `stack_blocks_by_language` `solve_equation`
+   `classify_objects_by_language` `pick_from_conveyor_by_image`
+   `store_tools_in_toolbox` `pour_by_language`）。其余四个维度 12+8+8+6=34 全覆盖。
+   ⇒ **Open 的成绩是零样本口径**，要它非零得先有数据，不是调通路。
+   判据（两条独立，都不用读代码）：`ls` 那个 LMDB 目录，与
+   `benchmark_summary_seed_0.json` 的 `task_metrics` 键集合做差集。
+   ⚠️ `dlc` 是个独立任务包（key 形如 `dlc_arx_x5_episode_*`），**不是** Open 任务的
+   容器 —— 别因为名字像「DLC 扩展包」就以为它补齐了缺口。
 4. **多 seed**（seed1/seed2）—— 当前单 seed，单任务 SR 分辨率只有 1/50 = 2%。
    但在 ~1% 的量级上，多 seed 的边际价值低于上面三项。
 

@@ -58,11 +58,40 @@
 | 官方口径汇总（本文数字的来源） | `docs/robodojo_pipeline/results/{20k,100k}/benchmark_summary_seed_0.json` |
 | 逐 run-config 明细（SR/score/episode/来源 job） | `docs/robodojo_pipeline/results/{20k,100k}/runconfig_details_seed_0.json` |
 | 全量备份（含 54 个原始 `_result.json`） | `/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/eval_results/robodojo-holobrain-eval-final/{20k,100k}/` |
-| 集群原始产物（含失败录像 mp4） | 各 job PFS，`aidictl job logs list/cat <job_id> output/robodojo_eval_results/...` |
+| 集群原始产物（含失败录像 mp4） | **已归档到 bucket**（2026-08-10）：`benchmarks/robodojo/eval_runs/robodojo-holobrain-{20k,100k}_seed0_pfs-*/` —— 17,632 文件 / 33 GiB，含 165 个 `_success.mp4`，逐文件 md5 已校验。原始位置在各 job PFS，但 **`aidictl job logs` 取不回来**，见下方注 |
 
 汇总由 `projects/holobrain_internal/scripts/aggregate_robodojo_results.py` 合并两个 job 的
 per-run-config `_result.json` 后，调用 `robodojo_eval._write_benchmark_summary` 产出——
 统计口径与 in-repo evaluator 完全一致（已用 sanity job 做过 `diff` 校验）。
+
+> ### 注：为什么 `aidictl job logs` 取不回集群产物（2026-08-10）
+>
+> `aidictl job logs list <job>` 会报
+> `API 错误 (code=10001045) ... {"code": 10001101, "msg": "user: kun01.wu is not in the ou: horizon-labs"}`。
+> **这是认证问题，不是产物不存在** —— 本机有两份 token 分属两个账户：
+>
+> | 文件 | 谁在用 | 服务端解析出的身份 |
+> |---|---|---|
+> | `~/.aidi/config.yaml` | `aidictl` | `kun01.wu` ← 不在 `horizon-labs` OU |
+> | `~/.aidisdk/config.yaml` | python SDK / REST | `kun01.wu-labs` ← job 的真实 owner |
+>
+> `~/.aidi/config.yaml` 里的 `uname: kun01.wu-labs` 是摆设，服务端只认 token。
+>
+> 可用的取回路径（6 个 job 全部取回，实测）：REST 拿 `output_url`，再走 PFS 的
+> HTTP 目录列表下载 —— **那个端点不需要认证**。
+>
+> ```
+> GET http://computing.aidi.hobot.cc/infra/api/v1alpha/computing-apiserver/job/get?job_id=<job_id>
+>     Authorization: <~/.aidisdk/config.yaml 里的 token>
+>   -> data.job_status.output_url
+> ```
+>
+> 两个爬 PFS 列表时会踩的坑：`requests` 会把已有的百分号转义改大小写
+> （`%3d` → `%3D`），拿 href 原文做前缀匹配会对名字含 `=` 的目录
+> （`0_ckpt_name=holobrain,action_type=joint`）**静默返回空**，比较前两边都要
+> `unquote`；`curl -O` 按远端 basename 落盘，而 episode 文件名在各 run-config
+> 目录间**重复**，实测 160 个 URL 只落 150 个文件，必须保留目录结构。
+
 
 ---
 
@@ -242,7 +271,12 @@ score > 0 的任务数 **19 → 26**，且 score 提升最大的几个任务：
 
 8 个 Open 任务（语言指令、图像指定目标、符号推理）在两个 checkpoint 上 SR 全为 0，
 score 也几乎全为 0（100k 只有 `stack_blocks_by_language` 0.4、
-`classify_objects_by_language` 0.2）。RoboDojo-only 后训练没有带来任何开放指令能力。
+`classify_objects_by_language` 0.2）。
+
+**原因已查明（2026-08-10）：这 8 个任务没有训练数据。** 训练用的 LMDB 只有 34 个
+任务，评测要 42 个，差的 8 个恰好就是 Open 维度的全部成员。所以这里**不是**
+「后训练没带来开放指令能力」这种能力判断，而是**零样本**——模型压根没见过这些任务。
+详见 [STATUS.md](STATUS.md) §8.3。
 
 ### 6.3 Memory 维度接近全零
 
