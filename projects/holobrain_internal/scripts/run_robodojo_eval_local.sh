@@ -78,6 +78,14 @@ PROCS_PER_GPU=${PROCS_PER_GPU:-1}
 # is the only config that ever did locally.
 ENV_CONFIG=${ENV_CONFIG:-arx_x5}
 VALID_ACTION_STEP=${VALID_ACTION_STEP:-}
+# Layout set, not just an RNG draw: SeedManager.init_eval builds
+# Eval_Layout/<bench>/<env_cfg>/<seed>/ and enumerates <task>_<n>.json
+# there, so seed 1 is 55 different cover_blocks scenes. Unset means the
+# flag is not passed and robodojo_eval.py's own default (0) stands.
+# Coverage is not uniform across seeds -- seed 1 has cover_blocks,
+# match_and_pick_from_conveyor and imitate_sorting_sequence but no
+# swap_blocks/swap_T/press_by_number, and seed 2 is empty.
+SEED=${SEED:-}
 
 REPO=${REPO:-$HOME/git_repo/robo_orchard_lab}
 RD_ROOT=${RD_ROOT:-$HOME/git_repo/RoboDojo}
@@ -150,7 +158,10 @@ ARGS=(
 if [ -n "$VALID_ACTION_STEP" ]; then
   ARGS+=(--valid_action_step "$VALID_ACTION_STEP")
 fi
+if [ -n "$SEED" ]; then
+  ARGS+=(--seed "$SEED")
+fi
 
 echo "run dir: $RUN"
-echo "gpu $GPU | tasks $TASKS | eval_num $EVAL_NUM | vas ${VALID_ACTION_STEP:-default}"
+echo "gpu $GPU | tasks $TASKS | eval_num $EVAL_NUM | vas ${VALID_ACTION_STEP:-default} | seed ${SEED:-default}"
 python3 robodojo_eval.py "${ARGS[@]}" 2>&1 | tee "$RUN/run.log"
