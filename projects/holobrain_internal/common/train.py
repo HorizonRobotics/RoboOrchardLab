@@ -128,10 +128,20 @@ def main(args, accelerator):
                 MemoryVLAEpisodeStreamBatchSampler,
             )
 
+            # Frame stride: at inference the bank takes one entry per
+            # forward, i.e. one per valid_action_step env frames, so at the
+            # deployed VAS=32 an episode writes ~25 entries and ToMe-merges ~9
+            # times. Sampling every frame here writes ~544 and merges ~528 --
+            # one to two orders of magnitude of extra blurring, on the side the
+            # VAS sweep showed is worse (32 > 16 > 8, and the conditional
+            # "having started to uncover, does it finish" goes 100% -> 13% ->
+            # 0%). Setting this to the deployed VAS makes the two match.
+            frame_stride = int(memoryvla_cfg.get("stream_frame_stride", 1))
             batch_sampler = MemoryVLAEpisodeStreamBatchSampler(
                 train_dataset,
                 config["batch_size"],
                 drop_last=True,
+                frame_stride=frame_stride,
             )
         else:
             batch_sampler = DistributedBatchFlagSampler(

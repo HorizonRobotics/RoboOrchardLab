@@ -57,6 +57,14 @@ config = dict(
         consolidate_type="tome",
         update_fused=False,
         episode_stream_sampler=True,
+        # 1 = every frame, which is what training did through the VAS sweep.
+        # Set to the deployed valid_action_step (32) to make the bank's write
+        # stride the same in training as at inference; see the comment at the
+        # sampler construction in train.py. Anything >1 also switches the
+        # sampler to partial batches, because a full batch then spans
+        # batch_size * stride frames and four of the six RoboDojo memory tasks
+        # have median episodes shorter than 16 * 32.
+        stream_frame_stride=1,
     ),
     checkpoint="./ckpt/HoloBrain_v0.0_Qwen/model.safetensors",
 )

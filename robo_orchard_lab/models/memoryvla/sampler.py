@@ -160,8 +160,11 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
         num_replicas: Optional[int] = None,
         rank: Optional[int] = None,
         allow_partial_episode_batches: bool = False,
+        frame_stride: int = 1,
     ):
         super().__init__(data_source)
+        if frame_stride < 1:
+            raise ValueError(f"frame_stride must be >= 1, got {frame_stride}")
         if num_replicas is None or rank is None:
             import torch.distributed as dist
 
@@ -173,7 +176,16 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
 
         self.data_source = data_source
         self.batch_size = batch_size
-        self.drop_last = drop_last and not allow_partial_episode_batches
+        self.frame_stride = frame_stride
+        # A strided stream must keep its short episodes. At stride 32 a full
+        # batch spans 512 frames and four of the six RoboDojo memory tasks have
+        # median episodes shorter than that, so dropping partial batches would
+        # drop those tasks entirely rather than trim a tail.
+        self.drop_last = (
+            drop_last
+            and not allow_partial_episode_batches
+            and frame_stride == 1
+        )
         self.seed = seed
         self.num_replicas = num_replicas
         self.rank = rank
@@ -195,12 +207,19 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
         # batch back out; see the class docstring.
         self._emit_repeat = num_replicas
         logger.info(
-            "MemoryVLAEpisodeStreamBatchSampler: %d episodes total, %d on "
+            "MemoryVLAEpisodeStreamBatchSampler: frame_stride=%d, "
+            "%d episodes total, %d on "
             "rank %d/%d, %d batches of %d (own shard yields %d, truncated to "
             "the per-rank minimum so DDP cannot deadlock at an epoch "
             "boundary; each emitted %dx for BatchSamplerShard to undo)",
-            len(spans), len(self.spans), rank, num_replicas,
-            self._num_batches, batch_size, self._num_batches_local,
+            frame_stride,
+            len(spans),
+            len(self.spans),
+            rank,
+            num_replicas,
+            self._num_batches,
+            batch_size,
+            self._num_batches_local,
             self._emit_repeat,
         )
         if not self.spans:
@@ -217,9 +236,12 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
                 "totals are %s. Either use fewer ranks or accept the loss; it "
                 "falls on a different set of episodes each epoch because the "
                 "episode order is reshuffled.",
-                dropped, self._num_batches_local,
+                dropped,
+                self._num_batches_local,
                 100.0 * dropped / self._num_batches_local,
-                len(spans), num_replicas, per_rank,
+                len(spans),
+                num_replicas,
+                per_rank,
             )
         if self._num_batches == 0:
             raise ValueError(
@@ -230,10 +252,21 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
                 "shortest episode.".format(batch_size, per_rank, num_replicas)
             )
 
+    def _strided_len(self, n: int) -> int:
+        """How many samples an n-frame episode contributes at this stride.
+
+        The phase is drawn in [0, stride), so an episode can yield either
+        ceil(n / stride) or that minus one depending on the draw. The smaller
+        value is used so the per-rank batch totals -- which every rank must
+        agree on without a collective -- do not depend on the phase.
+        """
+        return n // self.frame_stride if self.frame_stride > 1 else n
+
     def _batches_in(self, n: int) -> int:
+        samples = self._strided_len(n)
         if self.drop_last:
-            return n // self.batch_size
-        return (n + self.batch_size - 1) // self.batch_size
+            return samples // self.batch_size
+        return (samples + self.batch_size - 1) // self.batch_size
 
     def set_epoch(self, epoch: int) -> None:
         self._epoch = epoch
@@ -250,9 +283,30 @@ class MemoryVLAEpisodeStreamBatchSampler(Sampler[list[int]]):
         emitted = 0
         for j in order:
             start, end = self.spans[j]
-            # forward in time within the episode -- never shuffled
-            for b in range(start, end, self.batch_size):
-                batch = list(range(b, min(b + self.batch_size, end)))
+            # Fresh phase per episode per epoch: with a fixed phase only
+            # frames at offsets 0 mod stride would ever be drawn, which at
+            # stride 32 is 1/32 of the data and invisible in the loss.
+            phase = (
+                int(rng.integers(self.frame_stride))
+                if self.frame_stride > 1
+                else 0
+            )
+            # Forward in time within the episode -- never shuffled. Walked
+            # back from the last frame so the truncation below eats the head
+            # rather than the tail: the score is a six-stage sequence whose
+            # 1.00 happens in the final frames, and withholding those from
+            # training every epoch would be the one bias worth avoiding.
+            n_samples = self._strided_len(end - start)
+            last = end - 1 - phase
+            stream = list(
+                range(
+                    last,
+                    last - n_samples * self.frame_stride,
+                    -self.frame_stride,
+                )
+            )[::-1]
+            for i in range(0, len(stream), self.batch_size):
+                batch = stream[i : i + self.batch_size]
                 if len(batch) < self.batch_size and self.drop_last:
                     continue
                 if emitted >= self._num_batches:
