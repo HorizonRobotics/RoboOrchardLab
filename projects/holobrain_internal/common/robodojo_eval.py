@@ -114,6 +114,53 @@ class TaskRunResult:
     return_code: int
 
 
+def _audit_episode_videos(result: "TaskRunResult", episode_count: int) -> None:
+    """Warn when finished episodes have no video, instead of leaving it silent.
+
+    Videos are named episode_<index>_<cam>_<tag>.mp4 with the same `index` the
+    `details` map is keyed by (eval_env.py:798, :820), so the set of indices
+    with videos should equal the set of episodes. Locally it does not: the
+    first episode's videos are absent while every later one is present, and the
+    same code on AIDI leaves all of them.
+
+    The count is what matters, not the cause. An eval whose success
+    videos are the evidence should not be able to lose one without
+    saying so -- 9 successes with 8 success videos looks exactly like
+    an off-by-one in the naming, and reading it that way costs more
+    than this check does.
+    """
+    run_dir = result.result_path.parent
+    try:
+        indices = {
+            name.split("_")[1]
+            for name in os.listdir(run_dir)
+            if name.startswith("episode_") and name.endswith(".mp4")
+        }
+    except OSError as error:
+        logger.warning("Could not audit videos in %s: %s", run_dir, error)
+        return
+    if not indices:
+        logger.warning(
+            "Task %s: %d episodes but no videos at all in %s",
+            result.task_name,
+            episode_count,
+            run_dir,
+        )
+        return
+    missing = episode_count - len(indices)
+    if missing > 0:
+        expected = {f"{i:07d}" for i in range(episode_count)}
+        logger.warning(
+            "Task %s: %d episodes but only %d have videos (missing %s). The "
+            "scores are unaffected -- _result.json is written per episode -- "
+            "but that many episodes have no footage to review.",
+            result.task_name,
+            episode_count,
+            len(indices),
+            ", ".join(sorted(expected - indices)[:5]) or "unknown",
+        )
+
+
 def _log_task_result(result: TaskRunResult) -> None:
     if not result.result_path.is_file():
         logger.error(
@@ -128,6 +175,8 @@ def _log_task_result(result: TaskRunResult) -> None:
         payload = json.loads(result.result_path.read_text(encoding="utf-8"))
         success_rate = float(payload["success_rate"])
         eval_time = payload.get("eval_time", "unknown")
+        if isinstance(eval_time, int) and eval_time > 0:
+            _audit_episode_videos(result, eval_time)
     except (
         OSError,
         json.JSONDecodeError,
@@ -327,6 +376,85 @@ print("ROBODOJO_PREFLIGHT " + json.dumps({
     "ROBODOJO_EVAL_RESULT_DIR": EVAL_RESULT_DIR,
 }))
 """
+
+
+PROBE_NAME = ".robodojo_rename_probe"
+
+
+def _check_eval_result_dir_writable(eval_result_dir: Path) -> None:
+    """Fail before Isaac Sim starts if the landing cannot rename.
+
+    Two writes in the evaluation client are renames, not creates:
+
+      eval_env.py:935  os.replace(env<N>_<cam>.tmp.mp4, episode_...mp4)
+          every video is written under a temporary name and finalised
+      eval_env.py:710  os.replace(tmp, manifest_path)
+          the resume manifest, so a restarted run knows what it finished
+
+    The bucket mounts accept create, append, seek-write and truncate but
+    reject rename, so pointing --eval_result_dir at one loses the videos and
+    the manifest while _result.json -- an ordinary create -- lands as usual.
+    The run then reports a complete success-rate table with no videos behind
+    it, and nothing in the log says so. Nine AIDI configs are written that way.
+
+    Probe with the operation itself rather than by matching the path against a
+    list of mount prefixes: capability is per-mount and has been observed to
+    differ between the dev box and an AIDI pod for the same bucket, so a
+    prefix test would be a guess that happens to be right today.
+
+    Every cleanup here is guarded. A filesystem that refuses rename usually
+    refuses unlink too, and an unguarded cleanup raises PermissionError from
+    the handler, replacing the message that names the fix with one that does
+    not -- which is what the first version of this function did.
+    """
+    eval_result_dir.mkdir(parents=True, exist_ok=True)
+    probe = eval_result_dir / (PROBE_NAME + ".tmp")
+    target = eval_result_dir / (PROBE_NAME + ".final")
+
+    def _discard(path: Path) -> bool:
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+
+    try:
+        probe.write_bytes(b"probe")
+    except OSError as error:
+        raise RuntimeError(
+            f"--eval_result_dir {eval_result_dir} is not writable: {error}"
+        ) from error
+
+    try:
+        os.replace(probe, target)
+    except OSError as error:
+        leaked = (
+            ""
+            if _discard(probe)
+            else (
+                f"\nA {probe.name} marker was left behind; "
+                "this landing cannot unlink either. It is inert."
+            )
+        )
+        raise RuntimeError(
+            f"--eval_result_dir {eval_result_dir} does not support rename "
+            f"({type(error).__name__}: {error}).\n"
+            "Videos and the resume manifest are finalised with os.replace "
+            "(eval_client/eval_env.py:935 and :710), so this run would report "
+            "a full success-rate table with no videos behind it.\n"
+            "Point --eval_result_dir at a filesystem that renames -- JFS "
+            "locally, /job_data in an AIDI pod -- and copy the products to "
+            "the bucket afterwards with cp." + leaked
+        ) from error
+
+    if not _discard(target):
+        logger.warning(
+            "Landing renames but cannot unlink; %s remains. Harmless, but the "
+            "evaluation never deletes its own output either, so nothing else "
+            "depends on it.",
+            target,
+        )
+    logger.info("Eval-result landing supports rename: %s", eval_result_dir)
 
 
 def _check_path_overrides(
@@ -851,6 +979,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "ROBODOJO_EVAL_RESULT_DIR": args.eval_result_dir,
         },
     )
+    _check_eval_result_dir_writable(args.eval_result_dir)
 
     task_names = _resolve_task_names(args)
     gpu_ids = _available_gpu_ids()
