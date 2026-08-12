@@ -24,6 +24,22 @@ decisions, review feedback, debugging outcomes, implementation corrections,
 validation choices, and git workflow lessons instead of only inspecting the
 latest design note or code diff.
 
+For those long-running tasks, a structured capture pass is required before
+filtering candidates by destination. Record a candidate or explicit `none` for:
+
+- design decisions, ownership boundaries, and rejected alternatives
+- implementation corrections and architecture convergence
+- review findings, validation, profiles, remote jobs, and failure recovery
+- human review gates, agent delegation, monitoring, and handoff workflow
+- Git, commit, push, branch, and dirty-worktree boundaries
+- documentation synchronization, scratch notes, and retirement
+- instruction/reference/template/skill/memory asset types
+- skill trigger, execution-step, reviewer-role, validation, and report impact
+- task-local details that should not become durable guidance
+
+The capture may remain in the active plan or report; it does not need to become
+a standalone tracked artifact.
+
 When distillation is triggered as a workflow gate before commit, human review
 handoff, or scratch-design retirement, still evaluate the whole current
 conversation rather than only the final diff, latest document, or last review

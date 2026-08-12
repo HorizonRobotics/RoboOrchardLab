@@ -11,6 +11,27 @@ description: Load these instructions when planning complex repository work, vali
 - Prefer source files over `build/`; use `build/` only for debugging generated output.
 - If workflow files disagree, report the mismatch instead of guessing.
 
+## Scoped Worktree Baseline
+
+- Before implementing a non-mechanical or planned change, turn the approved
+  scope into exact existing and new target paths. Capture the staged,
+  unstaged, and untracked baseline for those paths; a repository-wide dirty
+  summary is not a substitute for this check.
+- If a target path already has changes, inspect the relevant diff and tell the
+  user before editing. Call it a *pre-existing change*, not a user change:
+  its author cannot be inferred reliably from status alone.
+- Block for direction when a pre-existing change overlaps the intended hunk or
+  prevents safe scope isolation. When it is demonstrably non-overlapping,
+  record that it is excluded and leave it untouched; do not flood the user
+  with unrelated worktree dirt.
+- Repeat the scoped check before handing work to review or staging it. Stage
+  only the approved paths, even when unrelated staged or unstaged changes are
+  present. If an approved target path also contains excluded staged or
+  unstaged hunks, do not use path-level `git commit --only`; isolate the
+  index/worktree so it contains only approved content, verify the resulting
+  commit tree, then verify the cached and uncached diffs separately after
+  returning to the shared worktree.
+
 ## Documentation Builds
 
 - Prefer `make doc` for a full documentation build.
@@ -49,6 +70,9 @@ description: Load these instructions when planning complex repository work, vali
   findings may move at different speeds during active iteration, but before
   handing work back they must all describe the same current implementation,
   status, validation evidence, and remaining risk.
+- At each human-review handoff, identify the current planned review gate and
+  the number of planned gates remaining. Report issue-triggered extra review
+  rounds as conditional instead of presenting them as fixed planned gates.
 - Before committing, handing work back for human review, or retiring a scratch
   design after non-trivial work, run a distillation triage over the whole
   current conversation. Report candidate lessons with recommendations first,
@@ -100,6 +124,17 @@ description: Load these instructions when planning complex repository work, vali
   `__all__` root-surface minimality.
 - Prefer deleting, merging, or downgrading compatibility-only code before
   adding another abstraction to explain it.
+- For non-trivial implementation, run an explicit convergence pass after
+  correctness findings are closed and before human review. Inventory added or
+  materially changed public surfaces, helpers or wrappers, compatibility
+  branches, validation or fallback paths, and test scaffolding. For each group,
+  delete or merge it, or record its exact caller, compatibility commitment, or
+  distinct owner/failure boundary; compare direct/no-new-helper and
+  single-flow alternatives.
+- If convergence changes executable code, rerun relevant validation, repeat
+  the inventory, and complete a final correctness regression scan. Record the
+  resulting convergence evidence in the active plan or human-review handoff;
+  a one-pass helper scan is not a passed convergence gate.
 
 ## External CI Diagnosis
 

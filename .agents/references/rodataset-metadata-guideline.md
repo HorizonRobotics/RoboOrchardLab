@@ -1,7 +1,8 @@
 # RODataset Metadata Guideline
 
 Use this reference when adding or reviewing RODataset metadata schema,
-metadata persistence, metadata parsing, or metadata export behavior.
+metadata persistence, metadata parsing or export behavior, or merged-dataset
+`Episode.dataset_begin_index` frame-index contracts.
 
 ## Dataset Packaging Path Contract
 
@@ -54,6 +55,23 @@ metadata persistence, metadata parsing, or metadata export behavior.
   model error text to distinguish bad canonical data from legacy data.
 - New writer paths should construct the Pydantic schema model and dump through
   its public JSON helper, rather than hand-writing tagged dictionaries.
+
+## Merged Dataset Frame-Index Contract
+
+- `Episode.dataset_begin_index` is a dataset-global frame-row offset in the
+  target RODataset. It is not local to a source dataset, batch, shard, or merge
+  chunk.
+- When appending source datasets, offset every copied **non-negative** episode
+  begin index by the cumulative target frame count that existed before that
+  source was appended. Preserve the unknown-index sentinel `-1` unchanged;
+  do not persist source-local non-negative values directly even when each
+  source is internally valid.
+- Regression tests for merge code must cross at least one non-empty source or
+  batching boundary. Assert both the first non-negative episode after the
+  boundary and its corresponding frame-row range, and assert that a `-1`
+  sentinel after the boundary remains unchanged, so a reset to zero or an
+  accidental sentinel offset cannot pass through single-source or
+  first-chunk-only fixtures.
 
 ## Field Ownership
 

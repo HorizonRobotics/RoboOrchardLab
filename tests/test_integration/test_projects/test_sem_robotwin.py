@@ -18,6 +18,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -53,18 +54,17 @@ def test_sem_robotwin(PROJECT_ROOT: str, ROBO_ORCHARD_TEST_WORKSPACE: str):
     kwargs = json.dumps(kwargs)
     os.chdir(project_dir)
     with tempfile.TemporaryDirectory() as workspace_root:
-        cmd = (
-            " ".join(
-                [
-                    "python3",
-                    "train.py",
-                    f"--workspace {workspace_root}",
-                    "--config config_sem_robotwin.py",
-                    f"--kwargs '{kwargs}'",
-                ]
-            ),
-        )
-        ret_code = subprocess.check_call(cmd, shell=True)
+        cmd = [
+            sys.executable,
+            "train.py",
+            "--workspace",
+            workspace_root,
+            "--config",
+            "config_sem_robotwin.py",
+            "--kwargs",
+            kwargs,
+        ]
+        ret_code = subprocess.check_call(cmd)
 
         # Check if the script ran successfully
         assert ret_code == 0, f"Script failed with return code: {ret_code}"

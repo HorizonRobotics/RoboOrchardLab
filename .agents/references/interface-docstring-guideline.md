@@ -1,7 +1,8 @@
 # Interface Docstring Guideline
 
 Use this reference for key public classes, key public functions, boundary
-helpers, and resource-owning or stateful interfaces in this repository.
+helpers, key module variables, class attributes, instance attributes, and
+resource-owning or stateful interfaces in this repository.
 
 ## Applicability
 
@@ -13,6 +14,8 @@ signature alone, especially for:
 - file, process, network, model, device, or persistence boundaries
 - public dataset, model, env, pipeline, and policy entrypoints
 - helper functions with non-obvious contracts
+- module variables or attributes with non-obvious lifecycle, ownership,
+  source-of-truth, default, or operational effects
 
 ## Goal
 
@@ -70,13 +73,34 @@ Choose only the topics that materially affect safe use:
 - Resource-owning or stateful classes usually need lifecycle/state language.
 - Public wrapper or adapter classes should make the ownership boundary clear.
 
+## Variables And Attributes
+
+Document key module variables, class attributes, and instance attributes when
+their lifecycle, source, ownership, default, or operational effect is not
+obvious from the assignment alone.
+
+- Follow PEP 258 for attribute docstrings: place a string literal immediately
+  after the simple assignment at module scope, class scope, or inside
+  `__init__`.
+- Put the attribute docstring below the assignment instead of using a
+  preceding `#` comment when IDE and documentation-tool association with the
+  variable matters.
+- Keep ordinary comments for implementation rationale that belongs to the
+  surrounding control flow rather than to one variable's contract.
+- State process or object lifetime, source-of-truth, environment-read timing,
+  resource impact, or fallback behavior when those semantics affect safe
+  maintenance.
+- Do not mechanically add attribute docstrings to self-explanatory local
+  variables.
+
 ## Structured Data Fields
 
 For public contract dataclasses, config objects, protocol payloads, and event
 payloads, document fields whose meaning is not obvious from the type
 signature.
 
-- Prefer attribute docstrings placed immediately below the field when member
+- Follow the immediate-below placement rule from
+  [Variables And Attributes](#variables-and-attributes) when member
   discoverability in IDEs matters.
 - Document fields that affect lifecycle, retry behavior, scheduler state,
   ownership, failure semantics, compatibility, or aggregation.

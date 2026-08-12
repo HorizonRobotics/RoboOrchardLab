@@ -66,6 +66,9 @@ dimension:
 3. contracts, compatibility, and caller-facing behavior
 4. architecture boundaries, ownership, dependency direction, abstraction
    minimality, and evolvability when architecture review is applicable
+5. defensive complexity, including repeated validation, readback, payload
+   scans, retries, fallbacks, or cleanup without a distinct trust boundary,
+   while preserving cheap fail-fast checks and ownership safety
 
 Each candidate should include its location, category, concrete impact,
 evidence, and confidence. The reviewer should exhaust the scope for
@@ -81,6 +84,11 @@ section so report ownership remains clear.
 - Validate every candidate locally before reporting it. Reject issues whose
   cited rule is out of scope, whose impact is speculative, or whose evidence
   does not survive current call-site inspection.
+- Cross-check every candidate against accepted user or product decisions and
+  explicitly stated constraints. If a suggestion conflicts with one, do not
+  apply it mechanically: reject the finding, explicitly reopen the decision,
+  or preserve the constraint while removing unnecessary implementation
+  surface.
 - Keep the reviewer that found an issue responsible for verifying the fix and
   resolving its own round's finding ledger.
 - Once the current round's findings are resolved, close that reviewer and

@@ -114,9 +114,11 @@ description: Load these instructions when creating, updating, or validating test
 - When full-test targets change into `build/test`, set an explicit checkout
   import path such as `PYTHONPATH="$PWD"` so validation does not import an
   installed or sibling checkout by accident.
-- When validating with an alternate dependency environment, prefer explicit
-  interpreter entrypoints such as `RUN="<env>/bin/python -m"` or
-  `<env>/bin/python -m pytest` over relying on console scripts that may come
-  from another environment.
+- `RUN` is a command prefix for the repository test targets, for example
+  `RUN="uv run"`; those targets supply their own `python3` or `pytest`
+  command. Do not set `RUN` to an interpreter invocation such as
+  `"<env>/bin/python -m"`, because the target would append another command.
+  For direct interpreter validation, invoke `<env>/bin/python -m pytest`
+  explicitly rather than relying on a console script from another environment.
 - Run `ruff check` on modified test files.
 - If the local pytest environment requires temporary flags or environment variables to run successfully, document the exact command used and why it was needed.

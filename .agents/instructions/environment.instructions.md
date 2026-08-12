@@ -41,6 +41,12 @@ description: Load these instructions when tasks depend on the active Python envi
   .` command before changing code or treating it as an external dependency.
   Use `make install-editable` only after aligning `PIP` to that same
   environment, for example through `.env`.
+- In a fresh linked worktree, pytest collection may fail with
+  `ModuleNotFoundError: No module named 'robo_orchard_lab.version'` because
+  the generated `robo_orchard_lab/version.py` file is ignored. Run
+  `make version` and then `python setup.py --version` from that worktree to
+  generate the local version module before treating the failure as a code
+  issue.
 
 ## Runtime and Reporting
 
@@ -61,3 +67,10 @@ description: Load these instructions when tasks depend on the active Python envi
 - Do not escalate for code reading, CPU-only validation, or steps that do not require GPU.
 - If validation is blocked by the environment, state what ran, what was unavailable, and the remaining risk.
 - If GPU-dependent validation is rerun with escalated permissions, report what failed in the sandbox, what was rerun outside it, and any remaining risk.
+- Pytest plugins and multiprocessing data-loading paths may open local Unix
+  sockets before test collection or during worker IPC. A sandbox
+  `PermissionError` from a plugin such as `pytest_rerunfailures` or from
+  PyTorch `multiprocessing.resource_sharer` is an environment-routing signal,
+  not evidence of a product regression. Rerun the same narrow command in an
+  allowed host context and report both the sandbox failure point and the
+  outside-sandbox result before changing code.

@@ -20,6 +20,17 @@ description: Load these instructions when working with git history, commit messa
 - If the grouping is ambiguous or the worktree contains changes that may be
   unrelated to the current task, ask the user before choosing a commit split.
 - Do not silently bundle unrelated changes into a single commit.
+- Before committing, inspect `git diff --cached --stat` and
+  `git diff --cached --name-status`. Treat the index as concurrent shared
+  state in shared-worktree workflows, and repeat this check immediately before
+  the commit. Unstage only paths that the current workflow staged by mistake;
+  preserve pre-existing or concurrently staged work. Use
+  `git commit --only ... -- <paths>` only when each target path has no excluded
+  hunks in either `HEAD → index` or `index → worktree`. If a target path mixes
+  approved and excluded changes, use an isolated index or worktree that
+  contains only the approved content; do not mutate the shared index to make
+  that commit. Verify the resulting commit tree, then verify the cached and
+  uncached diffs after returning to the shared worktree.
 - Do not require local checkpoint commits to be squashed unless explicitly instructed.
 - Do not force-add ignored scratch files or temporary design notes such as
   `.agents/scratch/**` unless the user explicitly asks for a versioned
@@ -47,11 +58,40 @@ description: Load these instructions when working with git history, commit messa
 - Branch from the latest remote target branch, not a stale local copy.
 - If continuing an existing in-scope branch is clearly intended, stay on it; otherwise create a fresh task branch.
 - Do not append unrelated work to an existing feature branch or open review by default.
+- Before integrating a dependent or stacked feature branch, record the leaf
+  branch, its immediate integration target, and any later upstream target as
+  separate steps. Merge and validate the leaf against its immediate target
+  first; do not skip directly to a later target or clean up the leaf based only
+  on the final branch plan. After each step, verify scoped content containment
+  before proceeding upward or retiring the branch and worktree.
 - Before the first push, before opening or updating a review, and after the target branch moves materially, fetch the latest remote target branch again.
 - If the task branch has not been pushed or shared yet, prefer rebasing it onto the latest remote target branch.
 - If the task branch has already been pushed or shared, do not rewrite history silently. Ask before force-pushing, and otherwise prefer merging the latest remote target branch into the task branch to keep published history stable.
+- Before merging into a dirty worktree, compare the incoming path set with the
+  staged, unstaged, and untracked sets. Never let unrelated staged content
+  enter the merge commit. If temporary isolation is necessary, stash only the
+  explicit tracked paths being preserved, verify the stash base and path set,
+  merge, restore with `git stash pop --index`, and re-audit all three sets.
+  Do not broadly stash shared or unrelated untracked content.
+- After restoring or replaying overlapping local changes, do not treat the
+  absence of textual conflicts, successful patch application, or a successful
+  `git stash pop` as proof that the combined behavior is correct. Compare the
+  incoming diff, the preserved local diff, and the accepted behavior contracts,
+  then run focused tests that distinguish the old and new semantics.
+- Report merge readiness separately for committed-branch mergeability,
+  dirty-checkout integration safety, and publishability, including submodule
+  commit reachability when applicable.
+- Before pushing a branch with existing local commits, inspect the commits that
+  will be published, for example with `git log --oneline @{upstream}..HEAD`
+  when an upstream exists. Report unexpected or unrelated commits before
+  pushing, especially after creating a narrow cleanup commit on a dirty
+  long-lived branch.
 - After merge, remove the remote source branch, refresh the local target branch, and then delete the local source branch when safe.
 - Before deleting an archive, backup, or pre-reset local branch, compare its content against the branch you plan to keep using `git diff`, tree equality, or equivalent content-level checks; do not rely only on `git cherry` or ancestry.
+- After a squash merge, do not use commit ancestry alone to decide whether a
+  source branch is covered by the target. Compare tree content or scoped diffs
+  against the refreshed target branch before final coverage checks, worktree
+  removal, or local source-branch deletion.
 - Do not force-delete a local source branch if it may still contain local-only work or if the user asked to keep it.
 
 ## Merge Requests and Pull Requests
@@ -61,6 +101,11 @@ description: Load these instructions when working with git history, commit messa
 - For GitLab merge requests targeting `master`, keep the title compatible with
   `scm/qac/check_mr_title.py`: `<type>(<scope>): <Description>` with an
   uppercase first letter in the description.
+- Write MR and PR titles and descriptions from the actual branch diff and
+  reviewer-visible behavior, not from temporary execution plans, split-plan
+  bookkeeping, or local follow-up context. If a branch is created as a final
+  sync or cleanup step, still name and describe the concrete code, docs, or
+  workflow changes it contains.
 - Keep the description concise and preserve the multiline section structure used in commit bodies.
 - Use the review title as the first line of the final squash commit message unless told otherwise, and mirror the final squash body in the review description unless told otherwise.
 - Prefer explicit `none` / `not applicable` markers over ambiguous omissions.

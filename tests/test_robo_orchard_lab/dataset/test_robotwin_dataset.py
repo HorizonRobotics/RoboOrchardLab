@@ -16,6 +16,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -36,39 +37,44 @@ def test_robotwin_lmdb_data_packer(
         "robotwin/v2.0/origin_data",
     )
     os.chdir(PROJECT_ROOT)
+    packer_path = "robo_orchard_lab/dataset/robotwin/robotwin_packer.py"
     with tempfile.TemporaryDirectory() as workspace_root:
-        cmd = (
-            " ".join(
-                [
-                    "python3",
-                    "robo_orchard_lab/dataset/robotwin/robotwin_packer.py",
-                    f"--input_path {test_data_path}",
-                    f"--output_path {workspace_root}",
-                    "--task_names blocks_stack_three",
-                    "--embodiment aloha-agilex-1",
-                    "--robotwin_aug m1_b1_l1_h0.03_c0",
-                    "--camera_name D435",
-                ]
-            ),
+        ret_code = subprocess.check_call(
+            [
+                sys.executable,
+                packer_path,
+                "--input_path",
+                test_data_path,
+                "--output_path",
+                workspace_root,
+                "--task_names",
+                "blocks_stack_three",
+                "--embodiment",
+                "aloha-agilex-1",
+                "--robotwin_aug",
+                "m1_b1_l1_h0.03_c0",
+                "--camera_name",
+                "D435",
+            ]
         )
-        ret_code = subprocess.check_call(cmd, shell=True)
 
         # Check if the script ran successfully
         assert ret_code == 0, f"Script failed with return code: {ret_code}"
 
-        cmd = (
-            " ".join(
-                [
-                    "python3",
-                    "robo_orchard_lab/dataset/robotwin/robotwin_packer.py",
-                    f"--input_path {test_data_path_v2}",
-                    f"--output_path {workspace_root}",
-                    "--task_names place_empty_cup",
-                    "--config_name base_setting",
-                ]
-            ),
+        ret_code = subprocess.check_call(
+            [
+                sys.executable,
+                packer_path,
+                "--input_path",
+                test_data_path_v2,
+                "--output_path",
+                workspace_root,
+                "--task_names",
+                "place_empty_cup",
+                "--config_name",
+                "base_setting",
+            ]
         )
-        ret_code = subprocess.check_call(cmd, shell=True)
 
         # Check if the script ran successfully
         assert ret_code == 0, f"Script failed with return code: {ret_code}"

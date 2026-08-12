@@ -72,6 +72,13 @@ boundaries, and the main execution path understandable.
 - Treat a long or indirect call chain as an architecture smell when it hides
   ownership or forces readers to chase thin forwarding layers before reaching
   the object that owns the behavior.
+- Introduce a class when it expresses a meaningful object role: identity or
+  state transitions, invariants, resource lifecycle, bound dependencies or
+  configuration, or a real behavioral protocol or polymorphic extension seam.
+  A class may be stateless when its type participates meaningfully in
+  substitution, composition, dispatch, or a framework contract. Prefer module
+  functions or callables when the class only namespaces helpers or anticipates
+  hypothetical extension.
 - Before large refactors, separate stable semantics, compatibility
   boundaries, and internal implementation details. Write and test the stable
   semantics; explicitly choose which compatibility surfaces remain; avoid
@@ -99,6 +106,28 @@ boundaries, and the main execution path understandable.
   contract is truly shared.
 - If multiple callers still have to remember local policy after adopting a
   shared helper, that policy likely still belongs in the local layer.
+
+## Defensive Complexity
+
+- Do not assume that more guards automatically make a system safer. For each
+  repeated validation, readback, payload scan, retry, fallback, or cleanup
+  path, identify the distinct failure it detects, the trust boundary it owns,
+  and its runtime and maintenance cost.
+- Keep cheap fail-fast validation before expensive construction or processing
+  when caller inputs, configs, or metadata can reject invalid work without
+  consuming the payload or mutating published state.
+- Avoid revalidating trusted lower-owner output at payload-scale cost when the
+  producer contract and consumer validity handling already enforce the same
+  invariant. Retain proportionate header, metadata, or shape checks when they
+  protect the publication boundary without rescanning the payload.
+- Retain defenses around untrusted or externally mutable inputs,
+  cross-process competition, owner-only cleanup, atomic publication, and
+  irreversible overwrite when lower-layer guarantees do not cover those
+  risks.
+- A test that can monkeypatch a trusted owner into violating its contract does
+  not by itself justify production revalidation. Require a plausible fault
+  path or a distinct trust boundary whose failure impact warrants the added
+  cost.
 
 ## Contract Design
 
@@ -210,6 +239,9 @@ by an upstream framework.
   boundary plumbing?
 - Does each abstraction remove real complexity instead of turning policy into
   callbacks, indirection, or parameter plumbing?
+- Does each repeated guard, readback, payload scan, retry, fallback, or cleanup
+  path protect a distinct trust boundary at proportionate cost, while cheap
+  fail-fast checks remain ahead of expensive work?
 - How many named concepts, wrappers, adapters, views, and dispatch flags must
   a reader understand to follow the main path, and which of them can be
   merged or deleted?
@@ -217,6 +249,9 @@ by an upstream framework.
   downgraded to compatibility-only?
 - What is the one-method / no-new-class alternative, and which proposed
   fields, DTOs, adapters, factories, registries, or snapshots can be deleted?
+- If a class became module functions or a callable, what concrete capability
+  would be lost? Helper grouping, easier mocking, or unspecified future
+  extensibility are not sufficient answers by themselves.
 - Are stable cross-layer contracts explicit rather than half-dynamic?
 - Is dependency direction one-way, and is the source of truth for shared
   semantics unique?

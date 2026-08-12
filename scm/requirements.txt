@@ -55,6 +55,7 @@ packaging>=25.0
 twine>=6.1.0
 requests-toolbelt>=1.0.0
 setuptools>=77.0.3,<80.0.0
+protobuf>=5.26.1,<6.0dev
 
 # numpy
 numpy<2

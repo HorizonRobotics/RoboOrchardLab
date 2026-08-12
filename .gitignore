@@ -60,6 +60,7 @@ rosbag2*
 *.bin
 
 ## tmp & debug
+.tmp/
 dummy/
 dummy*
 

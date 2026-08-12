@@ -56,9 +56,13 @@ For feature implementations, also check whether the change introduced:
 - two public APIs expressing the same concept without a compatibility reason
 - tests that assert implementation details instead of behavior contracts
 - legacy or compatibility logic in the canonical execution path
+- repeated validation, readback, payload scans, retries, fallbacks, or cleanup
+  that do not protect a distinct trust boundary or failure mode
 
 Prefer concrete deletion, merge, or downgrade suggestions before proposing new
-abstractions.
+abstractions. Do not remove cheap fail-fast checks that reject invalid work
+before expensive processing, or ownership defenses that protect untrusted,
+mutable, concurrent, or irreversibly published state.
 
 ## Confidence Scoring
 

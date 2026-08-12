@@ -85,13 +85,13 @@ doc-clean:
 	make -C docs clean
 
 test:
-	make -C tests RUN="$(RUN)"
+	$(MAKE) -C tests RUN="$(RUN)"
 
 test_ut:
-	make -C tests test_ut RUN="$(RUN)"
+	$(MAKE) -C tests test_ut RUN="$(RUN)"
 
 test_it:
-	make -C tests test_it RUN="$(RUN)"
+	$(MAKE) -C tests test_it RUN="$(RUN)"
 
 show-args:
 	@echo "PIP_ARGS: $(PIP_ARGS)"

@@ -40,6 +40,31 @@ scope, schema, storage format, API surface, lifecycle, compatibility,
 migration, fallback behavior, validation strength, and what belongs in the
 first version versus a later TODO.
 
+When referring to a decision in the design or a status update, pair its ID
+with a short title and status instead of using a bare label such as `D1`.
+When the user accepts only an initial phase, rewrite the result as an explicit
+accepted phase plus a deferred stricter gate and trigger; do not leave an
+ambiguous `partial` decision behind.
+
+## Interactive Design Convergence
+
+When a design evolves through repeated user feedback, treat the conversation
+as a controlled convergence loop rather than a transcript:
+
+1. Start from current repository facts and keep the active scratch design as
+   the canonical design state.
+2. Maintain a compact constraint and decision ledger. For each material input,
+   record whether it is a repository fact, user constraint, research evidence,
+   or agent recommendation; its status; and which contracts it affects.
+3. Normalize ambiguous terms and research questions before gathering evidence.
+   Keep observed ecosystem facts separate from the capacity, policy, or
+   compatibility choice the design makes.
+4. After each accepted or deferred decision, update the canonical sections and
+   recompute dependent invariants, mappings, dimensions, compatibility, and
+   test boundaries. Do not only append a decision-history entry.
+5. Re-run the minimality and completeness checks after material decisions,
+   then apply the review and readiness gates below.
+
 ## Design Judgment
 
 - Treat repository guidance as the default constraint. If implementation facts
@@ -80,6 +105,29 @@ first version versus a later TODO.
   such as remote execution, retries, worker replacement, or compatibility
   wrappers intentional.
 - Update or discard stale design conclusions after implementation feedback.
+
+## Concurrent And Randomized Flows
+
+For designs involving workers, ranks, shards, randomized selection, batching,
+or queues:
+
+- Establish physical ownership and operation order before reasoning about
+  random generators. Sketch the applicable flow from partitioning and
+  ownership through worker-local randomization or transformation, consumption,
+  and batching or finalization.
+- Diagnose duplicate or missing work from candidate-set overlap first.
+  Disjoint candidate sets do not require a shared permutation for coverage
+  correctness, although statistical independence may remain a separate
+  requirement. Coordinate seeds or permutations only after that distinction
+  is explicit.
+- Separate global invariants from local responsibilities. State exact global
+  totals and disjointness guarantees, the local allocation rule, deterministic
+  tie-breaking, and behavior for empty, tiny, or uneven partitions. Include a
+  compact conservation argument or worked edge case when rounding is involved.
+- Derive validation from topology and boundary crossings rather than code
+  branches. Cover the applicable worker or rank counts, partition shapes,
+  randomized and ordered modes, batching or drop behavior, view/config
+  propagation, and early-exit or cleanup paths.
 
 ## Free Structure
 
@@ -131,7 +179,10 @@ list. Delete irrelevant prompts and reorganize freely.
 - Data and schema: for converters, datasets, serializers, or migrations, show
   source-to-target mapping, excluded fields, units, timestamps, encoding,
   validation ownership, and any first-version assumptions such as single
-  stream, single source of truth, or unsupported optional metadata.
+  stream, single source of truth, or unsupported optional metadata. For
+  fixed-width tensor or binary layouts, also state each field's logical shape,
+  maximum reserved capacity, serialized offsets, padding and mask semantics,
+  and capacity-change compatibility.
 - Compatibility: do not write only "keep compatibility"; say which old
   surface is kept, wrapped, deprecated, rejected, or removed.
 - Code scope: for implementation-ready designs, list the expected code/test

@@ -17,6 +17,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -36,17 +37,18 @@ def test_resnet50_imagenet(PROJECT_ROOT: str):
     # Run the training script with the specified parameters
     with tempfile.TemporaryDirectory() as workspace_root:
         ret_code = subprocess.check_call(
-            " ".join(
-                [
-                    "python3",
-                    f"{example_file_path}",
-                    "--dataset.pipeline_test True ",
-                    "--dataset.dummy_train_imgs 8192 ",
-                    "--max_epoch 2",
-                    f"--workspace_root {workspace_root}",
-                ]
-            ),
-            shell=True,
+            [
+                sys.executable,
+                example_file_path,
+                "--dataset.pipeline_test",
+                "True",
+                "--dataset.dummy_train_imgs",
+                "8192",
+                "--max_epoch",
+                "2",
+                "--workspace_root",
+                workspace_root,
+            ],
         )
 
         # Check if the script ran successfully
