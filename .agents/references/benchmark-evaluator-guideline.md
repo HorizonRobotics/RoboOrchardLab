@@ -105,6 +105,54 @@ copied through to a lower layer. If so, configure the lower layer directly
 unless the backend applies an independent default, validation, or per-call
 override.
 
+## Domain Offset Frontiers
+
+For benchmarks whose reset may replace a requested seed or offset with an
+accepted runtime value, keep offset advancement in the domain driver.
+
+- Let the user-facing domain config own the initial offset. Initialize an
+  independent frontier for every task so one task's reset fallback does not
+  consume another task's scene sequence.
+- A fresh prepare requests the task's current frontier. Advance it only after
+  reset succeeds, using the accepted offset returned in reset info rather than
+  the requested offset. Use a monotonic update such as
+  `max(current_frontier, accepted_offset + 1)` when prepared rollouts can
+  overlap.
+- A prepare failure before successful reset must not advance the frontier.
+  A retry of the same logical episode should reuse its pinned successful-reset
+  context instead of consuming a new offset.
+- Preserve both requested and accepted offsets in attempt metadata and logs.
+  This makes fallback convergence and repeated first-frame scenes observable
+  without changing generic backend contracts.
+
+## Policy Materialization And Worker Capacity
+
+- Treat policy materialization and execution-device placement as separate
+  lifecycle decisions. When a single-node benchmark can safely share one
+  preloaded policy and measurement shows that repeated filesystem loads are
+  material, preload once on CPU and let each worker move its local runtime to
+  the device assigned by the backend.
+- Validate CPU residency before a preloaded policy crosses a remote-worker or
+  actor boundary. Do not place a shared driver-owned policy on CUDA and then
+  rely on serialization, actor construction, or fractional-GPU scheduling to
+  repair device ownership.
+- Reuse worker-local policy and simulator resources across compatible
+  episodes or tasks instead of reconstructing them per attempt. Keep reset and
+  reconfiguration semantics explicit so resource reuse does not become hidden
+  episode-state reuse.
+- Do not derive safe worker capacity from the scheduler's fractional GPU value
+  alone. Capacity planning must include model memory, simulator/renderer
+  resources, host RSS, CPU threads or processes, video encoding, and other
+  worker-local resources.
+- Profile the complete evaluator stack before placing multiple heavyweight
+  evaluators on one GPU. A configuration that fits model weights in VRAM can
+  still fail or lose throughput because of renderer, host-memory, or thread
+  pressure.
+- Treat CPU preloading as topology-dependent rather than a universal default.
+  Multi-node object distribution, serialization size, startup latency, and
+  storage locality must be measured before reusing the same strategy outside
+  the validated topology.
+
 ## Scheduler Ownership
 
 For remote or threaded benchmark backends:

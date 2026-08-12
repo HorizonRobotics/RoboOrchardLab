@@ -19,6 +19,7 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -39,6 +40,7 @@ pytestmark = pytest.mark.sim_env
 def _write_curobo_assets(
     tmp_path: Path,
     *,
+    root_link: str = "footprint",
     base_link: str = "fl_base_link",
     xyz: tuple[float, float, float] = (0.2305, 0.297, 0.782),
     rpy: tuple[float, float, float] = (0.0, 0.0, 0.02),
@@ -49,10 +51,10 @@ def _write_curobo_assets(
     urdf_path.write_text(
         f"""
 <robot name="fake">
-  <link name="footprint"/>
+  <link name="{root_link}"/>
   <link name="{base_link}"/>
   <joint name="{base_link}_joint" type="fixed">
-    <parent link="footprint"/>
+    <parent link="{root_link}"/>
     <child link="{base_link}"/>
     <origin xyz="{" ".join(str(v) for v in xyz)}"
             rpy="{" ".join(str(v) for v in rpy)}"/>
@@ -200,6 +202,67 @@ def test_parse_entity_to_base_uses_urdf_fixed_axis_rpy(
         entity_to_base.entity_to_base_rotation_mat,
         _urdf_fixed_axis_rpy_matrix(*rpy),
     )
+
+
+def test_parse_entity_to_base_accepts_non_footprint_urdf_root(
+    tmp_path: Path,
+) -> None:
+    yml_path = _write_curobo_assets(
+        tmp_path,
+        root_link="world",
+        base_link="base_link",
+        xyz=(0.0, 0.0, 0.0),
+        rpy=(0.0, 0.0, 0.0),
+        frame_bias=(0.0, 0.0, 0.0),
+    )
+
+    entity_to_base = _parse_entity_to_base_from_curobo_yml(str(yml_path))
+
+    np.testing.assert_allclose(
+        entity_to_base.entity_to_base_xyz,
+        np.zeros(3),
+    )
+
+
+def test_parse_entity_to_base_rejects_multiple_urdf_roots(
+    tmp_path: Path,
+) -> None:
+    yml_path = _write_curobo_assets(tmp_path)
+    urdf_path = tmp_path / "robot.urdf"
+    urdf_path.write_text(
+        urdf_path.read_text(encoding="utf-8").replace(
+            "</robot>",
+            '  <link name="orphan"/>\n</robot>',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exactly one root link"):
+        _parse_entity_to_base_from_curobo_yml(str(yml_path))
+
+
+def test_parse_entity_to_base_rejects_non_direct_root_joint(
+    tmp_path: Path,
+) -> None:
+    yml_path = _write_curobo_assets(tmp_path)
+    urdf_path = tmp_path / "robot.urdf"
+    urdf_text = urdf_path.read_text(encoding="utf-8")
+    urdf_text = urdf_text.replace(
+        '  <link name="fl_base_link"/>',
+        """  <link name="intermediate"/>
+  <link name="fl_base_link"/>
+  <joint name="intermediate_joint" type="fixed">
+    <parent link="footprint"/>
+    <child link="intermediate"/>
+  </joint>""",
+    ).replace(
+        '<parent link="footprint"/>\n    <child link="fl_base_link"/>',
+        '<parent link="intermediate"/>\n    <child link="fl_base_link"/>',
+    )
+    urdf_path.write_text(urdf_text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="connect directly from root"):
+        _parse_entity_to_base_from_curobo_yml(str(yml_path))
 
 
 def test_parse_entity_to_base_rejects_frame_bias_mismatch(
@@ -352,50 +415,85 @@ def test_setup_demo_guard_allows_worker_mode_after_patch_install_fallback(
     assert setup_events == ["setup:3"]
 
 
-def test_setup_demo_with_runtime_guard_rejects_worker_mode_and_cleans_up(
+def test_setup_guard_uses_spawn_context_for_heterogeneous_assets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawn_context = object()
+    robot_module = SimpleNamespace(mp=object())
+    get_context = MagicMock(return_value=spawn_context)
+    monkeypatch.setattr(
+        curobo_base_patch.importlib,
+        "import_module",
+        lambda name: robot_module,
+    )
+    monkeypatch.setattr(
+        curobo_base_patch.torch.multiprocessing,
+        "get_context",
+        get_context,
+    )
+    setup_demo = MagicMock()
+    task = SimpleNamespace(setup_demo=setup_demo)
+
+    setup_robotwin_demo_with_runtime_guards(
+        SimpleNamespace(
+            action_type="qpos",
+            patch_curobo_base_transform=False,
+        ),
+        task,
+        {
+            "left_robot_file": "/assets/piper",
+            "right_robot_file": "/assets/franka-panda",
+        },
+    )
+
+    get_context.assert_called_once_with("spawn")
+    assert robot_module.mp is spawn_context
+    setup_demo.assert_called_once_with(
+        left_robot_file="/assets/piper",
+        right_robot_file="/assets/franka-panda",
+    )
+
+
+def test_setup_guard_keeps_robotwin_context_for_homogeneous_assets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_context = MagicMock()
+    monkeypatch.setattr(
+        curobo_base_patch.torch.multiprocessing,
+        "get_context",
+        get_context,
+    )
+    setup_demo = MagicMock()
+
+    setup_robotwin_demo_with_runtime_guards(
+        SimpleNamespace(
+            action_type="qpos",
+            patch_curobo_base_transform=False,
+        ),
+        SimpleNamespace(setup_demo=setup_demo),
+        {
+            "left_robot_file": "/assets/piper",
+            "right_robot_file": "/assets/piper",
+        },
+    )
+
+    get_context.assert_not_called()
+    setup_demo.assert_called_once()
+
+
+def test_setup_guard_rejects_worker_mode_without_owning_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    cleanup_events: list[str] = []
+    setup_events: list[str] = []
     monkeypatch.setattr(
         curobo_base_patch,
         "_PATCH_INSTALLED_IN_PROCESS",
         True,
     )
 
-    class _FakeConn:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def close(self) -> None:
-            cleanup_events.append(f"close:{self.name}")
-
-    class _FakeProc:
-        def __init__(self, name: str, *, alive: bool) -> None:
-            self.name = name
-            self.alive = alive
-
-        def is_alive(self) -> bool:
-            return self.alive
-
-        def terminate(self) -> None:
-            cleanup_events.append(f"terminate:{self.name}")
-            self.alive = False
-
-        def join(self, timeout: float | None = None) -> None:
-            cleanup_events.append(f"join:{self.name}:{timeout}")
-
     task = SimpleNamespace(
-        setup_demo=lambda seed: cleanup_events.append(f"setup:{seed}"),
-        close_env=lambda clear_cache: cleanup_events.append(
-            f"close_env:{clear_cache}"
-        ),
-        robot=SimpleNamespace(
-            communication_flag=True,
-            left_conn=_FakeConn("left"),
-            right_conn=_FakeConn("right"),
-            left_proc=_FakeProc("left", alive=True),
-            right_proc=_FakeProc("right", alive=False),
-        ),
+        setup_demo=lambda seed: setup_events.append(f"setup:{seed}"),
+        robot=SimpleNamespace(communication_flag=True),
     )
 
     with pytest.raises(
@@ -411,15 +509,7 @@ def test_setup_demo_with_runtime_guard_rejects_worker_mode_and_cleans_up(
             {"seed": 3},
         )
 
-    assert cleanup_events == [
-        "setup:3",
-        "close_env:True",
-        "close:left",
-        "close:right",
-        "terminate:left",
-        "join:left:2.0",
-        "join:right:2.0",
-    ]
+    assert setup_events == ["setup:3"]
 
 
 def test_install_patch_updates_new_planners_and_keeps_old_instance_fallback(
@@ -436,8 +526,6 @@ def test_install_patch_updates_new_planners_and_keeps_old_instance_fallback(
     )
 
     class _FakeCuroboPlanner:
-        _robo_orchard_original_frame_bias: list[float]
-
         def __init__(self, yml_path: str) -> None:
             self.yml_path = yml_path
             self.frame_bias = [-0.5, 0.0, 0.0]
@@ -501,11 +589,6 @@ def test_install_patch_updates_new_planners_and_keeps_old_instance_fallback(
 
     new_planner = _FakeCuroboPlanner(str(yml_path))
     assert new_planner.frame_bias == [0.0, 0.0, 0.0]
-    assert new_planner._robo_orchard_original_frame_bias == [
-        -0.5,
-        0.0,
-        0.0,
-    ]
 
     result = new_planner.plan_path(target_pose)
     assert new_planner.yml_path == str(yml_path)

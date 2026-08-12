@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -39,9 +40,19 @@ from robo_orchard_lab.policy.evaluator.metric_contracts import (
 
 
 @pytest.fixture(autouse=True)
-def _fake_robotwin_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(rb, "config_robotwin_path", lambda: "/tmp/robotwin")
-    monkeypatch.setattr(rb.os.path, "exists", lambda path: True)
+def _fake_robotwin_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    robotwin_root = tmp_path / "robotwin"
+    task_config_dir = robotwin_root / "task_config"
+    task_config_dir.mkdir(parents=True)
+    for preset in ("demo_clean", "demo_randomized"):
+        (task_config_dir / f"{preset}.yml").write_text("{}\n")
+    monkeypatch.setattr(
+        "robo_orchard_lab.envs.robotwin.env.config_robotwin_path",
+        lambda: str(robotwin_root),
+    )
 
 
 def _cfg(
@@ -50,6 +61,7 @@ def _cfg(
     episode_num: int = 1,
     max_retries: int = 3,
     start_seed: int = 0,
+    offset_seed: int = 0,
     backend: (
         rb.RoboTwinLocalBenchmarkBackendCfg
         | rb.RoboTwinRemoteBenchmarkBackendCfg
@@ -59,6 +71,7 @@ def _cfg(
     fail_fast: bool = False,
     log_progress: bool = True,
     progress_log_every_n_episodes: int | None = None,
+    config_type: str = "demo_clean",
 ) -> rb.RoboTwinBenchmarkEvaluatorCfg:
     kwargs: dict[str, Any] = {}
     if backend is not None:
@@ -70,9 +83,11 @@ def _cfg(
         episode_num=episode_num,
         max_retries=max_retries,
         start_seed=start_seed,
+        offset_seed=offset_seed,
         artifact_root_dir=artifact_root_dir,
         fail_fast=fail_fast,
         log_progress=log_progress,
+        config_type=config_type,
         **kwargs,
     )
 
@@ -206,6 +221,105 @@ def test_backend_config_round_trip_preserves_concrete_type() -> None:
     }
 
 
+def test_config_type_selects_official_preset() -> None:
+    driver = rb.RoboTwinBenchmarkDriver(_cfg(config_type="demo_randomized"))
+
+    [job] = driver.get_ready_jobs(max_jobs=1)
+    request = driver.make_attempt_request(job)
+
+    assert request.env_cfg.task_config_path.endswith(
+        "/task_config/demo_randomized.yml"
+    )
+    task_config_id = request.metadata["task_config_id"]
+    assert isinstance(task_config_id, str)
+    assert task_config_id.startswith("demo_randomized-")
+    assert len(task_config_id) == len("demo_randomized-") + 12
+    assert request.metadata["config_type"] == "demo_randomized"
+
+
+def test_custom_task_config_is_pinned_and_identified(
+    tmp_path: Path,
+) -> None:
+    task_config_path = tmp_path / "custom.yml"
+    task_config_path.write_text("embodiment: [aloha-agilex]\n")
+    driver = rb.RoboTwinBenchmarkDriver(
+        _cfg(
+            task_names=["task_a", "task_b"],
+            config_type=str(task_config_path),
+            artifact_root_dir="/artifacts",
+        )
+    )
+    task_config_path.unlink()
+
+    jobs = driver.get_ready_jobs(max_jobs=2)
+    requests = [driver.make_attempt_request(job) for job in jobs]
+
+    task_config_ids = {
+        request.metadata["task_config_id"] for request in requests
+    }
+    assert len(task_config_ids) == 1
+    [task_config_id] = task_config_ids
+    assert task_config_id.startswith("custom-")
+    assert len(task_config_id) == len("custom-") + 12
+    assert all(
+        request.episode.metadata
+        == {
+            "task_name": request.episode.group_key,
+            "task_config_id": task_config_id,
+            "config_type": str(task_config_path),
+        }
+        for request in requests
+    )
+    assert all(
+        request.env_reset_input["video_dir"]
+        == f"/artifacts/{request.episode.group_key}/{task_config_id}"
+        for request in requests
+    )
+    assert requests[0].env_cfg.content_equal(
+        requests[1].env_cfg.replace(task_name="task_a")
+    )
+    restored_env_cfg = type(requests[0].env_cfg).model_validate(
+        requests[0].env_cfg.model_dump(mode="json")
+    )
+    assert restored_env_cfg.content_equal(requests[0].env_cfg)
+
+    driver.on_terminal_event(
+        BenchmarkPrepareFailedEvent(
+            request=requests[0],
+            error_type="ResetError",
+            error_message="retry after source deletion",
+        )
+    )
+    [retry_job] = driver.get_ready_jobs(max_jobs=1)
+    retry_request = driver.make_attempt_request(retry_job)
+    assert retry_request.metadata["task_config_id"] == task_config_id
+    assert retry_request.env_cfg.content_equal(requests[0].env_cfg)
+
+    assert driver.result().metadata["task_config_id"] == task_config_id
+    assert driver.result().metadata["config_type"] == str(task_config_path)
+
+
+def test_custom_task_config_identity_depends_only_on_content(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first.yml"
+    second_path = tmp_path / "second.yml"
+    different_path = tmp_path / "different.yml"
+    first_path.write_text("embodiment: [aloha-agilex]\n")
+    second_path.write_bytes(first_path.read_bytes())
+    different_path.write_text("embodiment: [piper, piper, 0.5]\n")
+
+    def task_config_id(path: Path) -> str:
+        driver = rb.RoboTwinBenchmarkDriver(_cfg(config_type=str(path)))
+        [job] = driver.get_ready_jobs(max_jobs=1)
+        return cast(
+            str, driver.make_attempt_request(job).metadata["task_config_id"]
+        )
+
+    assert task_config_id(first_path) == task_config_id(second_path)
+    assert task_config_id(first_path) != task_config_id(different_path)
+
+
 def test_evaluator_config_call_constructs_evaluator_from_config() -> None:
     cfg = _cfg(episode_num=3, max_retries=2)
 
@@ -219,8 +333,11 @@ def test_evaluator_config_call_constructs_evaluator_from_config() -> None:
 
 
 def test_make_attempt_request_allocates_offset_and_env_cfg() -> None:
+    """Use the configured starting offset in the first reset request."""
+
     cfg = _cfg(
         start_seed=42,
+        offset_seed=5,
         artifact_root_dir="/artifacts",
     )
     driver = rb.RoboTwinBenchmarkDriver(cfg)
@@ -228,23 +345,49 @@ def test_make_attempt_request_allocates_offset_and_env_cfg() -> None:
     [job] = driver.get_ready_jobs(max_jobs=1)
     request = driver.make_attempt_request(job)
 
-    assert request.metadata["attempted_offset_seed"] == 0
+    assert request.metadata["attempted_offset_seed"] == 5
     assert request.metadata["reset_context_pinned"] is False
     assert request.env_reset_input == {
-        "offset_seed": 0,
+        "offset_seed": 5,
         "task_name": "task_a",
         "episode_id": 0,
         "clear_cache": True,
         "return_obs": True,
-        "video_dir": "/artifacts/task_a/demo_clean",
+        "video_dir": (
+            f"/artifacts/task_a/{request.metadata['task_config_id']}"
+        ),
     }
     assert request.env_cfg.task_name == "task_a"
     assert request.env_cfg.seed == 42
-    assert request.env_cfg.task_config_path == (
-        "/tmp/robotwin/task_config/demo_clean.yml"
+    assert request.env_cfg.task_config_path.endswith(
+        "/task_config/demo_clean.yml"
     )
+    task_config_id = request.metadata["task_config_id"]
+    assert isinstance(task_config_id, str)
+    assert task_config_id.startswith("demo_clean-")
+    assert len(task_config_id) == len("demo_clean-") + 12
+    assert request.metadata["config_type"] == "demo_clean"
+    assert request.episode.episode_key == "task_a/episode-0"
     assert request.env_cfg.format_datatypes is True
     assert request.env_cfg.action_type == "qpos"
+
+
+def test_configured_offset_seed_initializes_each_task_frontier() -> None:
+    """Start every task's independent offset frontier at the config value."""
+
+    cfg = _cfg(
+        task_names=["task_a", "task_b"],
+        offset_seed=7,
+    )
+    driver = rb.RoboTwinBenchmarkDriver(cfg)
+
+    jobs = driver.get_ready_jobs(max_jobs=2)
+    requests = [driver.make_attempt_request(job) for job in jobs]
+
+    assert {
+        request.episode.group_key: request.env_reset_input["offset_seed"]
+        for request in requests
+    } == {"task_a": 7, "task_b": 7}
 
 
 def test_prepare_submission_parallelism_respects_task_prepare_slots() -> None:
@@ -539,7 +682,7 @@ def test_prepare_failure_retries_then_records_failure_and_continues() -> None:
     assert retry_request.metadata["reset_context_pinned"] is False
     assert (
         retry_request.env_reset_input["video_dir"]
-        == "/artifacts/task_a/demo_clean"
+        == f"/artifacts/task_a/{retry_request.metadata['task_config_id']}"
     )
 
     driver.on_terminal_event(

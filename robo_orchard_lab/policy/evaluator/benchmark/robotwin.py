@@ -38,7 +38,6 @@ from robo_orchard_lab.envs.robotwin import (
     RoboTwinEnvStepReturn,
 )
 from robo_orchard_lab.envs.robotwin.env import EVAL_INSTRUCTION_NUM
-from robo_orchard_lab.envs.robotwin.workspace import config_robotwin_path
 from robo_orchard_lab.policy.base import PolicyConfig, PolicyMixin
 from robo_orchard_lab.policy.evaluator.base import PolicyEvaluatorConfig
 from robo_orchard_lab.policy.evaluator.benchmark.backend import (
@@ -304,8 +303,8 @@ class SuccessRateMetric(StateSaveLoadMixin):
 @dataclass(slots=True)
 class _RoboTwinTaskState:
     task_name: str
+    next_offset_seed: int
     next_episode_id: int = 0
-    next_offset_seed: int = 0
     prepare_active: bool = False
     retry_queue: deque[BenchmarkPrepareJob] = field(default_factory=deque)
 
@@ -343,8 +342,29 @@ class RoboTwinBenchmarkDriver(BenchmarkDriver):
     def __init__(self, cfg: RoboTwinBenchmarkEvaluatorCfg) -> None:
         self.cfg = cfg
         self._task_order = tuple(cfg.task_names)
+        self._env_cfg_template = RoboTwinEnvCfg(
+            task_name=self._task_order[0],
+            check_expert=True,
+            check_task_init=False,
+            eval_mode=True,
+            max_instruction_num=EVAL_INSTRUCTION_NUM,
+            format_datatypes=cfg.format_datatypes,
+            action_type=cfg.action_type,
+            task_config_path=cfg.config_type,
+            seed=cfg.start_seed,
+        )
+        config_label = (
+            cfg.config_type
+            if cfg.config_type in ("demo_clean", "demo_randomized")
+            else "custom"
+        )
+        digest = self._env_cfg_template._task_config_content_sha256
+        self._task_config_id = f"{config_label}-{digest[:12]}"
         self._task_states = {
-            task_name: _RoboTwinTaskState(task_name=task_name)
+            task_name: _RoboTwinTaskState(
+                task_name=task_name,
+                next_offset_seed=cfg.offset_seed,
+            )
             for task_name in self._task_order
         }
         self._episode_states: dict[str, _RoboTwinEpisodeState] = {}
@@ -520,6 +540,7 @@ class RoboTwinBenchmarkDriver(BenchmarkDriver):
                 "task_names": list(self._task_order),
                 "episode_num": self.cfg.episode_num,
                 "max_retries": self.cfg.max_retries,
+                "task_config_id": self._task_config_id,
                 "config_type": self.cfg.config_type,
                 "start_seed": self.cfg.start_seed,
             },
@@ -553,6 +574,7 @@ class RoboTwinBenchmarkDriver(BenchmarkDriver):
             episode_id=episode_id,
             metadata={
                 "task_name": task_state.task_name,
+                "task_config_id": self._task_config_id,
                 "config_type": self.cfg.config_type,
             },
         )
@@ -570,6 +592,7 @@ class RoboTwinBenchmarkDriver(BenchmarkDriver):
             max_steps=self.cfg.max_steps,
             metadata={
                 "task_name": episode_state.episode.group_key,
+                "task_config_id": self._task_config_id,
                 "config_type": self.cfg.config_type,
             },
         )
@@ -595,27 +618,9 @@ class RoboTwinBenchmarkDriver(BenchmarkDriver):
         )
 
     def _make_env_cfg(self, task_name: str) -> RoboTwinEnvCfg:
-        task_config_path = os.path.join(
-            config_robotwin_path(),
-            "task_config",
-            f"{self.cfg.config_type}.yml",
-        )
-        if not os.path.exists(task_config_path):
-            raise FileNotFoundError(
-                f"Task config file not found: {task_config_path}"
-            )
-
-        return RoboTwinEnvCfg(
-            task_name=task_name,
-            check_expert=True,
-            check_task_init=False,
-            eval_mode=True,
-            max_instruction_num=EVAL_INSTRUCTION_NUM,
-            format_datatypes=self.cfg.format_datatypes,
-            action_type=self.cfg.action_type,
-            task_config_path=task_config_path,
-            seed=self.cfg.start_seed,
-        )
+        env_cfg = copy.deepcopy(self._env_cfg_template)
+        env_cfg.task_name = task_name
+        return env_cfg
 
     def _make_reset_input(
         self,
@@ -628,7 +633,7 @@ class RoboTwinBenchmarkDriver(BenchmarkDriver):
             video_dir = os.path.join(
                 self.cfg.artifact_root_dir,
                 episode.group_key,
-                self.cfg.config_type,
+                self._task_config_id,
             )
 
         return {
@@ -1076,11 +1081,15 @@ class RoboTwinBenchmarkEvaluatorCfg(ClassConfig[RoboTwinBenchmarkEvaluator]):
     max_steps: int = Field(default=1500, gt=0)
     """Rollout step cap passed to each concrete evaluation attempt."""
 
-    config_type: Literal["demo_clean", "demo_randomized"] = "demo_clean"
-    """RoboTwin task config set loaded from ``task_config/<config_type>.yml``.
+    config_type: str = Field(default="demo_clean", min_length=1)
+    """RoboTwin task-config preset or YAML path.
 
-    Use ``"demo_clean"`` for the standard deterministic config set and
-    ``"demo_randomized"`` when evaluating the randomized RoboTwin task config.
+    The historical field name is retained for compatibility. The convenience
+    values ``"demo_clean"`` and ``"demo_randomized"`` select RoboTwin
+    presets; any other string is passed to :class:`RoboTwinEnvCfg` as an
+    explicit YAML path. The driver pins the selected YAML content once for the
+    complete benchmark so retries and remote worker replacement consume
+    identical configuration bytes.
     """
 
     start_seed: int = 0
@@ -1089,6 +1098,14 @@ class RoboTwinBenchmarkEvaluatorCfg(ClassConfig[RoboTwinBenchmarkEvaluator]):
     The env resolves this into RoboTwin's evaluation seed range. The driver
     then advances actual runtime coverage through per-task ``offset_seed``
     values returned by reset.
+    """
+
+    offset_seed: int = Field(default=0, ge=0)
+    """Initial per-task offset from the resolved RoboTwin start seed.
+
+    Every task begins at this offset. After each successful reset, the driver
+    advances that task's independent offset frontier from the actual offset
+    returned by the environment.
     """
 
     format_datatypes: bool = True

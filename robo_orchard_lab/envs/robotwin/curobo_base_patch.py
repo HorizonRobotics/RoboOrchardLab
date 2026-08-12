@@ -26,7 +26,7 @@ This module keeps that transform source-of-truth in the runtime artifacts
 instead of duplicating embodiment-specific constants in RoboOrchard config.
 When `patch_curobo_base_transform=True`, the patch:
 
-- parses the fixed `footprint -> base_link` transform from the Curobo yml and
+- parses the fixed URDF-root-to-`base_link` transform from the Curobo yml and
   URDF during `CuroboPlanner.__init__`
 - validates RoboTwin's legacy `planner.frame_bias` against the parsed
   translation, then zeros it so it cannot be applied a second time
@@ -79,13 +79,9 @@ __all__ = [
 
 logger = LoggerManager().get_child(__name__)
 _PATCH_FLAG = "_robo_orchard_base_transform_patched"
-_PATCH_TRANSFORM_ATTR = "_robo_orchard_entity_T_curobo_base"
-_PATCH_ORIGINAL_FRAME_BIAS_ATTR = "_robo_orchard_original_frame_bias"
-_PATCH_BYPASS_NATIVE_ALOHA_ATTR = "_robo_orchard_bypass_native_aloha"
 _NATIVE_ALOHA_EMBODIMENT_NAME = "aloha-agilex"
 _FRAME_BIAS_ATOL = 1e-6
 _QUAT_NORM_EPS = 1e-9
-_WORKER_JOIN_TIMEOUT_SECONDS = 2.0
 _PATCH_INSTALLED_IN_PROCESS = False
 
 
@@ -93,12 +89,25 @@ class RoboTwinCuroboPatchUnsupportedError(RuntimeError):
     """Raised when the current RoboTwin planner mode cannot be patched."""
 
 
-class _PlannerWithFrameBias(Protocol):
+class _CuroboPatchConfig(Protocol):
+    action_type: str
+    patch_curobo_base_transform: bool
+
+
+class _RobotCommunicationMode(Protocol):
+    communication_flag: bool
+
+
+class _RoboTwinRobotModule(Protocol):
+    mp: object
+
+
+class _PatchedPlannerState(Protocol):
     frame_bias: list[float]
-
-
-class _PlannerWithYmlPath(Protocol):
     yml_path: str
+    _robo_orchard_entity_T_curobo_base: (  # noqa: N815
+        _CuroboBaseTransform | None
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +180,7 @@ class _CuroboBaseTransform:
         )
 
 
-def prepare_robotwin_runtime_for_cfg(cfg: object) -> None:
+def prepare_robotwin_runtime_for_cfg(cfg: _CuroboPatchConfig) -> None:
     """Install the opt-in Curobo base-link patch before task setup.
 
     The patch applies only to end-effector control (`action_type="ee"`) and
@@ -188,9 +197,9 @@ def prepare_robotwin_runtime_for_cfg(cfg: object) -> None:
             after it has already mutated RoboTwin's process-wide planner
             class.
     """
-    if getattr(cfg, "action_type", None) != "ee":
+    if cfg.action_type != "ee":
         return
-    if not bool(getattr(cfg, "patch_curobo_base_transform", False)):
+    if not cfg.patch_curobo_base_transform:
         if _PATCH_INSTALLED_IN_PROCESS:
             raise RuntimeError(
                 "patch_curobo_base_transform=False cannot restore the "
@@ -213,7 +222,7 @@ def prepare_robotwin_runtime_for_cfg(cfg: object) -> None:
 
 
 def setup_robotwin_demo_with_runtime_guards(
-    cfg: object,
+    cfg: _CuroboPatchConfig,
     task: "Base_Task",
     task_config: dict[str, object],
 ) -> None:
@@ -236,16 +245,33 @@ def setup_robotwin_demo_with_runtime_guards(
     Raises:
         RoboTwinCuroboPatchUnsupportedError: If the patch is enabled but the
             created RoboTwin runtime mode is unsupported.
-        Exception: Re-raises any `setup_demo` failure after best-effort
-            cleanup.
+        Exception: Re-raises any `setup_demo` failure. The owning Env is
+            responsible for disposing the partially created runtime.
     """
-    try:
-        task.setup_demo(**task_config)  # type: ignore[attr-defined]
-        if _cfg_needs_curobo_base_transform_patch(cfg):
-            _validate_robotwin_curobo_patch_runtime(task)
-    except Exception:
-        _cleanup_robotwin_task_after_failed_setup(task)
-        raise
+    _configure_heterogeneous_planner_spawn_context(task_config)
+    task.setup_demo(**task_config)  # type: ignore[attr-defined]
+    if _cfg_needs_curobo_base_transform_patch(cfg):
+        _validate_robotwin_curobo_patch_runtime(task)
+
+
+def _configure_heterogeneous_planner_spawn_context(
+    task_config: dict[str, object],
+) -> None:
+    """Use RoboTwin's official CUDA-safe process mode for mixed planners."""
+    left_robot_file = task_config.get("left_robot_file")
+    right_robot_file = task_config.get("right_robot_file")
+    if (
+        not isinstance(left_robot_file, str)
+        or not isinstance(right_robot_file, str)
+        or left_robot_file == right_robot_file
+    ):
+        return
+
+    robot_module = cast(
+        _RoboTwinRobotModule,
+        importlib.import_module("envs.robot.robot"),
+    )
+    robot_module.mp = torch.multiprocessing.get_context("spawn")
 
 
 def _install_robotwin_curobo_base_transform_patch() -> None:
@@ -258,7 +284,7 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
     The implementation patches four planner entry points as one unit:
 
     - `__init__` tries to parse the Curobo yml and URDF, stores the fixed
-      `footprint -> base_link` transform, validates `frame_bias`, and sets
+      URDF-root-to-`base_link` transform, validates `frame_bias`, and sets
       `frame_bias` to zero. If parsing or validation fails, it logs a warning
       and leaves that planner instance on RoboTwin's original behavior.
     - `_trans_from_world_to_base` keeps RoboTwin's original world-to-entity
@@ -296,17 +322,17 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
 
     def patched_init(self: object, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)
-        setattr(self, _PATCH_TRANSFORM_ATTR, None)
-        setattr(self, _PATCH_BYPASS_NATIVE_ALOHA_ATTR, False)
+        planner = cast(_PatchedPlannerState, self)
+        planner._robo_orchard_entity_T_curobo_base = None
         try:
-            yml_path = getattr(self, "yml_path", None)
+            yml_path = planner.yml_path
             if not isinstance(yml_path, str):
                 raise RuntimeError(
                     "Patched RoboTwin CuroboPlanner expected string yml_path."
                 )
             entity_to_base = _parse_entity_to_base_from_curobo_yml(yml_path)
             frame_bias = _float_tensor(
-                getattr(self, "frame_bias", None),
+                planner.frame_bias,
                 expected_size=3,
                 context="planner.frame_bias",
             )
@@ -319,14 +345,8 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
             return
-        setattr(
-            self,
-            _PATCH_ORIGINAL_FRAME_BIAS_ATTR,
-            [float(value) for value in frame_bias],
-        )
-        setattr(self, _PATCH_TRANSFORM_ATTR, entity_to_base)
-        setattr(self, _PATCH_BYPASS_NATIVE_ALOHA_ATTR, True)
-        cast(_PlannerWithFrameBias, self).frame_bias = [0.0, 0.0, 0.0]
+        planner._robo_orchard_entity_T_curobo_base = entity_to_base
+        planner.frame_bias = [0.0, 0.0, 0.0]
 
     def patched_world_to_base(
         self: object,
@@ -338,7 +358,12 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
             base_pose,
             target_pose,
         )
-        entity_to_base = getattr(self, _PATCH_TRANSFORM_ATTR, None)
+        try:
+            entity_to_base = cast(
+                _PatchedPlannerState, self
+            )._robo_orchard_entity_T_curobo_base
+        except AttributeError:
+            entity_to_base = None
         if entity_to_base is None:
             return entity_target_xyz, entity_target_quat
         if not isinstance(entity_to_base, _CuroboBaseTransform):
@@ -385,14 +410,15 @@ def _install_robotwin_curobo_base_transform_patch() -> None:
 def _parse_entity_to_base_from_curobo_yml(
     yml_path: str,
 ) -> _CuroboBaseTransform:
-    """Parse the direct ``footprint -> base_link`` fixed joint from Curobo yml.
+    """Parse the direct URDF-root-to-``base_link`` fixed joint from Curobo yml.
 
     Args:
         yml_path (str): Path to a RoboTwin Curobo yml file.
 
     Returns:
-        _CuroboBaseTransform: The transform from RoboTwin entity frame
-        ``footprint`` to the configured Curobo ``base_link``.
+        _CuroboBaseTransform: The transform from the RoboTwin entity frame,
+        represented by the URDF root link, to the configured Curobo
+        ``base_link``.
 
     Raises:
         ValueError: If the yml/URDF shape is unsupported or inconsistent with
@@ -439,10 +465,15 @@ def _parse_entity_to_base_from_curobo_yml(
 
 def _validate_robotwin_curobo_patch_runtime(task: "Base_Task") -> None:
     """Reject RoboTwin planner runtime modes not covered by this patch."""
-    robot = getattr(task, "robot", None)
-    if robot is None:
+    try:
+        robot = cast(_RobotCommunicationMode, task.robot)
+    except AttributeError:
         return
-    if getattr(robot, "communication_flag", False) is True:
+    try:
+        communication_flag = robot.communication_flag
+    except AttributeError:
+        return
+    if communication_flag is True:
         raise RoboTwinCuroboPatchUnsupportedError(
             "patch_curobo_base_transform does not support RoboTwin "
             "communication_flag=True yet because Curobo planners are created "
@@ -450,34 +481,13 @@ def _validate_robotwin_curobo_patch_runtime(task: "Base_Task") -> None:
         )
 
 
-def _cleanup_robotwin_task_after_failed_setup(task: object) -> None:
-    """Best-effort cleanup for failed RoboTwin setup or post-setup guard."""
-    cleanup_errors: list[BaseException] = []
-
-    close_env = getattr(task, "close_env", None)
-    if callable(close_env):
-        try:
-            close_env(clear_cache=True)
-        except BaseException as exc:
-            cleanup_errors.append(exc)
-
-    robot = getattr(task, "robot", None)
-    if robot is not None:
-        _close_worker_connections(robot, cleanup_errors)
-        _stop_worker_processes(robot, cleanup_errors)
-
-    for exc in cleanup_errors:
-        logger.warning(
-            "Failed while cleaning up RoboTwin task after setup failure.",
-            exc_info=(type(exc), exc, exc.__traceback__),
-        )
-
-
-def _cfg_needs_curobo_base_transform_patch(cfg: object) -> bool:
+def _cfg_needs_curobo_base_transform_patch(
+    cfg: _CuroboPatchConfig,
+) -> bool:
     return (
         _PATCH_INSTALLED_IN_PROCESS
-        and getattr(cfg, "action_type", None) == "ee"
-        and bool(getattr(cfg, "patch_curobo_base_transform", False))
+        and cfg.action_type == "ee"
+        and cfg.patch_curobo_base_transform
     )
 
 
@@ -521,22 +531,29 @@ def _call_without_native_aloha_yml_path_check(
     Returns:
         object: The original planner method's return value.
     """
-    if not bool(getattr(planner, _PATCH_BYPASS_NATIVE_ALOHA_ATTR, False)):
+    typed_planner = cast(_PatchedPlannerState, planner)
+    try:
+        entity_to_base = typed_planner._robo_orchard_entity_T_curobo_base
+    except AttributeError:
+        entity_to_base = None
+    if not isinstance(entity_to_base, _CuroboBaseTransform):
         return method(planner, *args, **kwargs)
 
-    yml_path = getattr(planner, "yml_path", None)
+    try:
+        yml_path = typed_planner.yml_path
+    except AttributeError:
+        yml_path = None
     if (
         not isinstance(yml_path, str)
         or _NATIVE_ALOHA_EMBODIMENT_NAME not in yml_path
     ):
         return method(planner, *args, **kwargs)
 
-    planner_with_yml_path = cast(_PlannerWithYmlPath, planner)
-    planner_with_yml_path.yml_path = _YmlPathWithoutNativeAlohaCheck(yml_path)
+    typed_planner.yml_path = _YmlPathWithoutNativeAlohaCheck(yml_path)
     try:
         return method(planner, *args, **kwargs)
     finally:
-        planner_with_yml_path.yml_path = yml_path
+        typed_planner.yml_path = yml_path
 
 
 def _parse_entity_to_base_from_urdf(
@@ -545,6 +562,25 @@ def _parse_entity_to_base_from_urdf(
     base_link: str,
 ) -> _CuroboBaseTransform:
     root = ET.parse(urdf_path).getroot()
+    link_names = {
+        link.attrib.get("name")
+        for link in root.findall("link")
+        if link.attrib.get("name") is not None
+    }
+    child_link_names = {
+        child.attrib.get("link")
+        for joint in root.findall("joint")
+        if (child := joint.find("child")) is not None
+        and child.attrib.get("link") is not None
+    }
+    root_link_names = link_names - child_link_names
+    if len(root_link_names) != 1:
+        raise ValueError(
+            f"URDF {urdf_path} must have exactly one root link, got "
+            f"{sorted(root_link_names)}."
+        )
+    root_link = next(iter(root_link_names))
+
     matching_joint = None
     for joint in root.findall("joint"):
         child = joint.find("child")
@@ -563,10 +599,10 @@ def _parse_entity_to_base_from_urdf(
         )
     parent = matching_joint.find("parent")
     parent_link = None if parent is None else parent.attrib.get("link")
-    if parent_link != "footprint":
+    if parent_link != root_link:
         raise ValueError(
-            f"URDF joint for {base_link!r} must have parent 'footprint', "
-            f"got {parent_link!r}."
+            f"URDF joint for {base_link!r} must connect directly from root "
+            f"link {root_link!r}, got parent {parent_link!r}."
         )
 
     origin = matching_joint.find("origin")
@@ -611,7 +647,7 @@ def _validate_frame_bias(
     ):
         raise ValueError(
             "Curobo planner.frame_bias is inconsistent with URDF "
-            "footprint->base_link translation: "
+            "root-to-base_link translation: "
             f"expected {list(_tensor_to_numpy(-entity_to_base_xyz))}, "
             f"got {list(_tensor_to_numpy(frame_bias))}."
         )
@@ -698,40 +734,3 @@ def _float_tensor(
 
 def _tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
     return tensor.detach().cpu().numpy()
-
-
-def _close_worker_connections(
-    robot: object,
-    cleanup_errors: list[BaseException],
-) -> None:
-    for conn_name in ("left_conn", "right_conn"):
-        conn = getattr(robot, conn_name, None)
-        if conn is None:
-            continue
-        close = getattr(conn, "close", None)
-        if not callable(close):
-            continue
-        try:
-            close()
-        except BaseException as exc:
-            cleanup_errors.append(exc)
-
-
-def _stop_worker_processes(
-    robot: object,
-    cleanup_errors: list[BaseException],
-) -> None:
-    for proc_name in ("left_proc", "right_proc"):
-        proc = getattr(robot, proc_name, None)
-        if proc is None:
-            continue
-        try:
-            is_alive = getattr(proc, "is_alive", None)
-            terminate = getattr(proc, "terminate", None)
-            join = getattr(proc, "join", None)
-            if callable(is_alive) and is_alive() and callable(terminate):
-                terminate()
-            if callable(join):
-                join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
-        except BaseException as exc:
-            cleanup_errors.append(exc)

@@ -109,6 +109,8 @@ class RobotwinEvalScriptTest(unittest.TestCase):
                 "/tmp/model",
                 "--model_prefix",
                 "checkpoint",
+                "--config_type",
+                "/tmp/custom_robotwin.yml",
                 "--task_names",
                 '["task_a","task_b"]',
                 "--save_video",
@@ -123,6 +125,7 @@ class RobotwinEvalScriptTest(unittest.TestCase):
 
         self.assertEqual(cfg.model_dir, "/tmp/model")
         self.assertEqual(cfg.model_prefix, "checkpoint")
+        self.assertEqual(cfg.config_type, "/tmp/custom_robotwin.yml")
         self.assertEqual(cfg.task_names, ["task_a", "task_b"])
         self.assertTrue(cfg.save_video)
         self.assertEqual(cfg.gpu_ids, [0, 2])

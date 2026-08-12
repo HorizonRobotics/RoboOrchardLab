@@ -93,13 +93,16 @@ class RoboTwinEEF:
 class RoboTwinJointsToEEF:
     """Compute RoboTwin left and right end-effector poses from arm joints.
 
-    The helper accepts one combined dual-arm URDF payload. The cached
-    kinematic chains are URDF-level state. The returned poses are expressed in
-    world frame after a ``world -> robot_base`` transform is composed on top
-    of each arm-local forward kinematics result.
+    The helper accepts either one combined dual-arm URDF payload or separate
+    left/right URDF payloads. The cached kinematic chains are URDF-level state.
+    Returned poses are expressed in world frame after each arm's robot-base
+    transform is composed on top of arm-local forward kinematics.
 
     Args:
         urdf_content (str | bytes): Combined dual-arm URDF content.
+        right_urdf_content (str | bytes | None, optional): Independent right
+            URDF content for a split-articulation runtime. When omitted, both
+            chains are constructed from ``urdf_content``.
         left_eef_name (str, optional): Left end-effector frame name inside the
             URDF. Default is ``"fl_link6"``.
         right_eef_name (str, optional): Right end-effector frame name inside
@@ -110,23 +113,38 @@ class RoboTwinJointsToEEF:
         robot_base_quat (Sequence[float], optional): World-frame quaternion of
             the robot base root frame in ``(w, x, y, z)`` order. Default is
             ``ROBOTWIN_DEFAULT_BASE_QUAT``.
+        right_robot_base_xyz (Sequence[float] | None, optional): Independent
+            split-articulation right base translation. Defaults to
+            ``robot_base_xyz``.
+        right_robot_base_quat (Sequence[float] | None, optional): Independent
+            split-articulation right base quaternion. Defaults to
+            ``robot_base_quat``.
     """
 
     def __init__(
         self,
         *,
         urdf_content: str | bytes,
+        right_urdf_content: str | bytes | None = None,
         left_eef_name: str = "fl_link6",
         right_eef_name: str = "fr_link6",
         robot_base_xyz: Sequence[float] = ROBOTWIN_DEFAULT_BASE_XYZ,
         robot_base_quat: Sequence[float] = ROBOTWIN_DEFAULT_BASE_QUAT,
+        right_robot_base_xyz: Sequence[float] | None = None,
+        right_robot_base_quat: Sequence[float] | None = None,
     ) -> None:
-        robot = KinematicChain.from_content(
+        left_robot = KinematicChain.from_content(
             data=_normalize_urdf_content(urdf_content),
             format="urdf",
         )
-        left_robot = robot
-        right_robot = robot
+        right_robot = (
+            left_robot
+            if right_urdf_content is None
+            else KinematicChain.from_content(
+                data=_normalize_urdf_content(right_urdf_content),
+                format="urdf",
+            )
+        )
 
         self._left_eef_name = left_eef_name
         self._right_eef_name = right_eef_name
@@ -138,12 +156,14 @@ class RoboTwinJointsToEEF:
             device: torch.device,
             dtype: torch.dtype,
             child_frame_id: str,
+            xyz: Sequence[float],
+            quat: Sequence[float],
         ) -> BatchFrameTransform:
             return BatchFrameTransform(
                 xyz=torch.tensor(
                     _validate_vector(
                         "robot_base_xyz",
-                        robot_base_xyz,
+                        xyz,
                         expected_size=3,
                     ),
                     dtype=dtype,
@@ -152,7 +172,7 @@ class RoboTwinJointsToEEF:
                 quat=torch.tensor(
                     _validate_vector(
                         "robot_base_quat",
-                        robot_base_quat,
+                        quat,
                         expected_size=4,
                     ),
                     dtype=dtype,
@@ -167,11 +187,23 @@ class RoboTwinJointsToEEF:
             device=self._left_arm.device,
             dtype=self._left_arm.dtype,
             child_frame_id=left_robot.frame_names[0],
+            xyz=robot_base_xyz,
+            quat=robot_base_quat,
         )
         self._right_robot_base_tf = _build_robot_base_tf(
             device=self._right_arm.device,
             dtype=self._right_arm.dtype,
             child_frame_id=right_robot.frame_names[0],
+            xyz=(
+                robot_base_xyz
+                if right_robot_base_xyz is None
+                else right_robot_base_xyz
+            ),
+            quat=(
+                robot_base_quat
+                if right_robot_base_quat is None
+                else right_robot_base_quat
+            ),
         )
 
     @staticmethod
@@ -206,6 +238,7 @@ class RoboTwinJointsToEEF:
         left_arm_joints: torch.Tensor,
         right_arm_joints: torch.Tensor,
         robot_base_tf: BatchFrameTransform | None = None,
+        right_robot_base_tf: BatchFrameTransform | None = None,
     ) -> RoboTwinEEF:
         """Compute left and right EEF poses in world frame.
 
@@ -215,9 +248,13 @@ class RoboTwinJointsToEEF:
             right_arm_joints (torch.Tensor): Right-arm joint tensor with shape
                 ``(N, D_right)``.
             robot_base_tf (BatchFrameTransform, optional): Runtime
-                ``world -> robot_base`` transform. When omitted, the base pose
-                supplied to the constructor is used. If batched, only the last
-                frame is used as the static-equivalent base pose.
+                ``world -> robot_base`` or ``world -> left_robot_base``
+                transform. When omitted, the base pose supplied to the
+                constructor is used. If batched, only the last frame is used.
+            right_robot_base_tf (BatchFrameTransform, optional): Independent
+                ``world -> right_robot_base`` transform. When omitted, the
+                shared ``robot_base_tf`` argument or constructor fallback is
+                used.
 
         Returns:
             RoboTwinEEF: World-frame left and right end-effector poses.
@@ -243,7 +280,11 @@ class RoboTwinJointsToEEF:
             right_arm_joints
         )[self._right_eef_name]
         right_robot_base_tf = self._runtime_robot_base_tf(
-            robot_base_tf,
+            (
+                robot_base_tf
+                if right_robot_base_tf is None
+                else right_robot_base_tf
+            ),
             fallback_robot_base_tf=self._right_robot_base_tf,
             child_frame_id=self._right_robot_base_tf.child_frame_id,
         )

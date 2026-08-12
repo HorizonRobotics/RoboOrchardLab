@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,35 +19,55 @@ import copy
 import importlib
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Sequence, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Mapping, Sequence, TypeAlias
 
 import gymnasium as gym
 import numpy as np
-import torch
-import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 from robo_orchard_core.utils.config import ClassType
 from robo_orchard_core.utils.logging import LoggerManager
 from typing_extensions import Literal
 
-from robo_orchard_lab.dataset.datatypes import (
-    BatchCameraData,
-    BatchFrameTransform,
-    BatchFrameTransformGraph,
-    BatchJointsState,
-)
+from robo_orchard_lab.dataset.datatypes import BatchFrameTransformGraph
 from robo_orchard_lab.dataset.experimental.mcap.messages import (
     StampedMessage,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Robot,
-    RobotDescriptionFormat,
 )
 from robo_orchard_lab.envs.base import (
     EnvBase,
     EnvBaseCfg,
     EnvStepReturn,
     EnvToMcapProtocol,
+)
+from robo_orchard_lab.envs.robotwin._runtime import (
+    _RoboTwinRuntimeLayout,
+    _transform_joint_vector_to_eef,
+    build_joints_to_eef_transform,
+    build_obs_robots,
+    derive_runtime_layout,
+    dispose_task_runtime,
+    get_joint_state_names,
+    get_robot_base_tf_graph,
+    read_robot_urdfs,
+)
+from robo_orchard_lab.envs.robotwin._task_config import (
+    _RoboTwinTaskConfigSnapshot,
+    build_task_config,
+    extract_serialized_task_config_snapshot,
+    inject_serialized_task_config_snapshot,
+    resolve_task_config_source,
+    task_config_snapshot_restore_context,
 )
 from robo_orchard_lab.envs.robotwin.curobo_base_patch import (
     RoboTwinCuroboPatchUnsupportedError,
@@ -59,14 +79,15 @@ from robo_orchard_lab.envs.robotwin.kinematics import (
     RoboTwinJointsToEEF,
 )
 from robo_orchard_lab.envs.robotwin.obs import (
-    get_joints,
-    get_observation_cams,
+    _build_mcap_observation_messages,
+    _extract_video_frame,
+    _format_observation,
+    _pose_vector_to_tf,
 )
 from robo_orchard_lab.envs.robotwin.workspace import (
     config_robotwin_path,
     in_robotwin_workspace,
 )
-from robo_orchard_lab.envs.sapien import sapien_pose_to_orchard
 from robo_orchard_lab.envs.state import EnvStateScope, StatefulEnvMixin
 from robo_orchard_lab.utils.state import (
     State,
@@ -85,6 +106,12 @@ if TYPE_CHECKING:
         Base_Task,
     )
 
+__all__ = [
+    "RoboTwinEnvStepReturn",
+    "RoboTwinEnv",
+    "RoboTwinEnvCfg",
+]
+
 EVAL_SEED_BASE = 100000
 EVAL_INSTRUCTION_NUM = 100
 _logger_manager = LoggerManager()
@@ -95,15 +122,7 @@ logger = _logger_manager.get_child(__name__)
 
 InstructionType: TypeAlias = Literal["seen", "unseen"]
 RoboTwinObsType: TypeAlias = dict[str, Any] | None
-__all__ = [
-    "RoboTwinEnvStepReturn",
-    "RoboTwinEnv",
-    "RoboTwinEnvCfg",
-]
 
-LEFT_EEF_FROM_JOINT_FRAME_ID = "left_eef_from_joint"
-RIGHT_EEF_FROM_JOINT_FRAME_ID = "right_eef_from_joint"
-COMBINED_DUAL_ARM_OBS_ROBOT_KEY = "left"
 ROBOTWIN_VIDEO_FPS = 10
 ROBOTWIN_VIDEO_PIXEL_FORMAT = VideoPixelFormat.RGB24
 ROBOTWIN_ENV_STATE_SCHEMA_VERSION = 1
@@ -181,7 +200,11 @@ class _RoboTwinPostResetStatePayload(BaseModel):
     task_config: dict[str, Any]
     instructions: RoboTwinEpisodeInstructionsPayload | None = None
     eval_chosen_instruction: str | None = None
-    post_reset_state_available: bool = True
+    post_reset_state_available: bool | None = Field(
+        default=None,
+        exclude=True,
+    )
+    """Deprecated schema-v1 input; availability is derived on restore."""
     episode_finalized: bool = False
 
 
@@ -194,9 +217,9 @@ class RoboTwinEnv(
 
     This class adapts RoboTwin tasks to the ``robo_orchard_core`` env API.
     To use it, RoboTwin must be installed and the ``RoboTwin_PATH``
-    environment variable must point to the RoboTwin package. The current
-    wrapper supports only RoboTwin's combined dual-arm layout with one shared
-    robot base.
+    environment variable must point to the RoboTwin package. The wrapper
+    supports RoboTwin's official combined dual-arm articulation and separate
+    left/right articulation layouts.
 
     Public interface:
 
@@ -208,9 +231,9 @@ class RoboTwinEnv(
     - ``finalize_episode()``: finalize episode-local artifacts without
       closing the reusable RoboTwin runtime.
     - ``unwrapped_env()``: return the underlying RoboTwin ``Base_Task``.
-    - ``get_robot_urdf()``: return the supported combined dual-arm URDF.
-      RoboTwin stores this dual-arm descriptor under the ``"left"`` key by
-      convention; that is a RoboTwin compatibility contract, not an env bug.
+    - ``get_robot_urdf()``: return one compatibility ``"left"`` URDF for a
+      combined articulation, or truthful ``"left"`` / ``"right"`` URDFs for
+      split articulations.
     - ``get_obs_robots()``: return observation-facing robot metadata.
     - ``get_mcap_obs()``: export the latest reset/step observation as typed
       MCAP topic messages without re-sampling RoboTwin.
@@ -243,7 +266,7 @@ class RoboTwinEnv(
     def __init__(self, cfg: RoboTwinEnvCfg):
         self.cfg = cfg
         prepare_robotwin_runtime_for_cfg(self.cfg)
-        self._task = cast("Base_Task", None)
+        self._task: Base_Task | None = None
         self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
         self._offset_seed = 0
         self._instructions: dict[str, object] | None = None
@@ -254,14 +277,116 @@ class RoboTwinEnv(
         self._last_obs_step_index: int | None = None
         self._joints_to_eef_transform: RoboTwinJointsToEEF | None = None
         self._cached_obs_robots: dict[str, Robot] | None = None
+        self._runtime_layout: _RoboTwinRuntimeLayout | None = None
+        self._active_task_config: dict[str, Any] | None = None
+        self._pending_disposal_tasks: list[Base_Task] = []
         self._video_writer = VideoWriter(
             pixel_format=ROBOTWIN_VIDEO_PIXEL_FORMAT,
             fps=ROBOTWIN_VIDEO_FPS,
         )
 
-    def _check_and_update_seed(self):
-        instructions = None
-        task = None
+    def _setup_task(
+        self,
+        *,
+        cfg: RoboTwinEnvCfg,
+        task: Base_Task,
+        task_config: dict[str, Any],
+    ) -> None:
+        """Set up a task, fully disposing partial runtime state on failure."""
+
+        try:
+            setup_robotwin_demo_with_runtime_guards(cfg, task, task_config)
+        except BaseException:
+            self._dispose_task(task, clear_cache=True)
+            raise
+
+    def _dispose_task(
+        self,
+        task: Base_Task | None,
+        *,
+        clear_cache: bool,
+    ) -> bool:
+        """Best-effort full disposal for an owned RoboTwin task runtime.
+
+        RoboTwin's upstream ``close_env`` does not stop heterogeneous planner
+        workers. This Env boundary therefore owns the complete shutdown
+        protocol for setup failures, retries, State candidates, reset, and
+        close. Cleanup failures are logged and never replace the triggering
+        exception.
+        """
+
+        if task is None:
+            return True
+        task_is_active = task is self._task
+        workers_stopped = dispose_task_runtime(
+            task,
+            clear_cache=clear_cache,
+        )
+
+        if workers_stopped:
+            self._forget_pending_disposal(task)
+        else:
+            self._remember_pending_disposal(task)
+
+        if task_is_active:
+            self._clear_active_task_runtime()
+        return workers_stopped
+
+    def _remember_pending_disposal(self, task: Base_Task) -> None:
+        """Retain ownership when a worker could not be confirmed stopped."""
+
+        if all(
+            candidate is not task for candidate in self._pending_disposal_tasks
+        ):
+            self._pending_disposal_tasks.append(task)
+
+    def _forget_pending_disposal(self, task: Base_Task) -> None:
+        """Drop a retained task only after disposal is confirmed complete."""
+
+        self._pending_disposal_tasks = [
+            candidate
+            for candidate in self._pending_disposal_tasks
+            if candidate is not task
+        ]
+
+    def _drain_pending_disposals(self, *, clear_cache: bool) -> None:
+        """Retry previously incomplete task disposal without losing handles."""
+
+        for task in list(self._pending_disposal_tasks):
+            self._dispose_task(task, clear_cache=clear_cache)
+
+    def _clear_active_task_runtime(self) -> None:
+        """Clear Env-owned handles and caches for the active task."""
+
+        self._task = None
+        self._runtime_layout = None
+        self._active_task_config = None
+        self._joints_to_eef_transform = None
+        self._cached_obs_robots = None
+        self._last_obs = None
+        self._last_obs_step_index = None
+
+    def _require_task(self) -> Base_Task:
+        """Return the active RoboTwin task with optionality narrowed."""
+        task = self._task
+        if task is None:
+            raise RuntimeError(
+                "RoboTwinEnv has no active task. Call reset() or "
+                "reset_from_state() first."
+            )
+        return task
+
+    def _check_and_update_seed(
+        self,
+        task_config: dict[str, Any],
+    ) -> tuple[
+        Base_Task,
+        dict[str, object] | None,
+        dict[str, Any],
+    ]:
+        if not self.cfg.check_expert and not self.cfg.check_task_init:
+            return create_task_from_name(self.cfg.task_name), None, task_config
+
         from description.utils.generate_episode_instructions import (  # pyright: ignore[reportMissingImports]
             generate_episode_descriptions,
         )
@@ -273,9 +398,10 @@ class RoboTwinEnv(
                 self.current_seed,
             )
             requested_seed = self.current_seed
-            task, success = self._check_expert_traj()
+            task, episode_info, success = self._check_expert_traj(task_config)
             retry_num = 0
             while not success:
+                self._dispose_task(task, clear_cache=True)
                 retry_num += 1
                 if retry_num >= 50:
                     raise RuntimeError(
@@ -285,7 +411,17 @@ class RoboTwinEnv(
                     )
 
                 failed_seed = self.current_seed
+                self._drain_pending_disposals(clear_cache=True)
+                if self._pending_disposal_tasks:
+                    raise RuntimeError(
+                        "RoboTwin expert retry cannot continue while a "
+                        "planner worker from the failed attempt is still "
+                        "alive."
+                    )
                 self._offset_seed += 1
+                task_config = self.cfg.get_task_config_for_seed(
+                    runtime_seed=self.current_seed
+                )
                 logger.debug(
                     "RoboTwin expert trajectory check failed: "
                     "task=%s seed=%s retry_seed=%s",
@@ -293,7 +429,9 @@ class RoboTwinEnv(
                     failed_seed,
                     self.current_seed,
                 )
-                task, success = self._check_expert_traj()
+                task, episode_info, success = self._check_expert_traj(
+                    task_config
+                )
             if retry_num > 0:
                 logger.info(
                     "RoboTwin expert trajectory resolved after retry: "
@@ -304,36 +442,37 @@ class RoboTwinEnv(
                     retry_num,
                 )
 
-            assert task is not None
+            if task is None or episode_info is None:
+                self._dispose_task(task, clear_cache=True)
+                raise RuntimeError(
+                    "RoboTwin expert trajectory check reported success "
+                    "without a reusable task."
+                )
+        else:
+            logger.debug(
+                "Checking RoboTwin task init: task=%s seed=%s",
+                self.cfg.task_name,
+                self.current_seed,
+            )
+            task, episode_info, _ = self._check_expert_traj(task_config)
+            if task is None or episode_info is None:
+                self._dispose_task(task, clear_cache=True)
+                raise RuntimeError(
+                    f"Failed to create task {self.cfg.task_name} "
+                    f"with seed {self.cfg.seed}. Please try a different "
+                    "seed or check the task configuration."
+                )
+        try:
             instructions = generate_episode_descriptions(
                 self.cfg.task_name,
-                [task.info["info"]],
+                [episode_info],
                 max_descriptions=self.cfg.max_instruction_num,
             )[0]
-        else:
-            if self.cfg.check_task_init:
-                logger.debug(
-                    "Checking RoboTwin task init: task=%s seed=%s",
-                    self.cfg.task_name,
-                    self.current_seed,
-                )
-                task, success = self._check_expert_traj()
-                if task is None:
-                    raise RuntimeError(
-                        f"Failed to create task {self.cfg.task_name} "
-                        f"with seed {self.cfg.seed}. Please try a different "
-                        "seed or check the task configuration."
-                    )
-                instructions = generate_episode_descriptions(
-                    self.cfg.task_name,
-                    [task.info["info"]],
-                    max_descriptions=self.cfg.max_instruction_num,
-                )[0]
-            else:
-                task = self._create_task()
-                instructions = None
+        except BaseException:
+            self._dispose_task(task, clear_cache=True)
+            raise
 
-        return task, instructions
+        return task, instructions, task_config
 
     @property
     def current_seed(self) -> int:
@@ -390,19 +529,20 @@ class RoboTwinEnv(
             )
         if self._task is None:
             raise RuntimeError("RoboTwinEnv has no active task to capture.")
+        if self._active_task_config is None:
+            raise RuntimeError(
+                "RoboTwinEnv has no active setup config to capture."
+            )
 
         state_payload: dict[str, object] = _RoboTwinPostResetStatePayload(
             schema_version=ROBOTWIN_ENV_STATE_SCHEMA_VERSION,
             scope=EnvStateScope.POST_RESET,
             offset_seed=self._offset_seed,
-            task_config=copy.deepcopy(
-                self.cfg.get_task_config_for_seed(self.current_seed)
-            ),
+            task_config=copy.deepcopy(self._active_task_config),
             instructions=copy.deepcopy(self._instructions),
             eval_chosen_instruction=copy.deepcopy(
                 self._eval_chosen_instruction
             ),
-            post_reset_state_available=self._post_reset_state_available,
             episode_finalized=self._episode_finalized,
         ).model_dump(mode="json")
         return State(
@@ -419,13 +559,50 @@ class RoboTwinEnv(
         """Restore a post-reset State and return ``reset(...)`` output."""
 
         payload = self._restore_post_reset_state(state, activate=False)
-        obs = self._format_obs(self._task.get_obs(), step_index=0)
-        info = self._get_info()
+        task = self._require_task()
+        try:
+            obs = self._format_obs(task.get_obs(), step_index=0)
+            info = self._get_info()
+        except BaseException:
+            self._dispose_task(task, clear_cache=True)
+            self._post_reset_state_available = False
+            self._episode_finalized = True
+            raise
         self._last_obs = obs
         self._last_obs_step_index = 0
-        self._post_reset_state_available = payload.post_reset_state_available
+        self._post_reset_state_available = True
         self._episode_finalized = payload.episode_finalized
         return obs, info
+
+    @staticmethod
+    def _validate_post_reset_state_config_consistency(
+        cfg: RoboTwinEnvCfg,
+        payload: _RoboTwinPostResetStatePayload,
+    ) -> None:
+        """Reject a task payload that conflicts with its reconstruction config.
+
+        ``State.config`` owns the task identity and caller-facing reset
+        inputs. The saved lowered task config must therefore preserve the
+        corresponding task name, resolved runtime seed, and episode id before
+        restore creates or replaces any live RoboTwin task.
+        """
+
+        expected_values = {
+            "task_name": cfg.task_name,
+            "seed": cfg.resolve_start_seed(cfg.seed) + payload.offset_seed,
+            "now_ep_num": cfg.episode_id,
+        }
+        for key, expected_value in expected_values.items():
+            actual_value = payload.task_config.get(key)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise ValueError(
+                    "RoboTwin State payload task_config "
+                    f"{key!r} must match State.config: expected "
+                    f"{expected_value!r}, got {actual_value!r}."
+                )
 
     def _restore_post_reset_state(
         self,
@@ -455,123 +632,157 @@ class RoboTwinEnv(
             state2obj(state.state)
         ).model_copy(deep=True)
         cfg = copy.deepcopy(state.config)
+        self._validate_post_reset_state_config_consistency(cfg, payload)
         prepare_robotwin_runtime_for_cfg(cfg)
-
-        task: Base_Task | None = None
-        with in_robotwin_workspace():
-            task = create_task_from_name(cfg.task_name)
-            setup_robotwin_demo_with_runtime_guards(
-                cfg,
-                task,
-                payload.task_config,
+        self._drain_pending_disposals(clear_cache=True)
+        if self._pending_disposal_tasks:
+            raise RuntimeError(
+                "RoboTwinEnv cannot restore State while a planner worker "
+                "from an earlier failed candidate is still alive. Call "
+                "close() again after the worker exits."
             )
-        if task is None:
-            raise RuntimeError("RoboTwin task creation returned None.")
+
+        staged_task: Base_Task | None = None
         try:
-            self._assert_supported_robot_layout(task)
-        except Exception:
-            try:
-                task.close_env(clear_cache=True)
-            except Exception:
-                logger.exception(
-                    "Failed to close staged RoboTwin task after State "
-                    "restore validation failed."
-                )
-            raise
+            with in_robotwin_workspace():
+                if cfg.check_expert or cfg.check_task_init:
+                    staged_task, episode_info, success = (
+                        self._check_expert_traj(
+                            payload.task_config,
+                            cfg=cfg,
+                        )
+                    )
+                    if staged_task is None or episode_info is None:
+                        raise RuntimeError(
+                            "RoboTwin State restore could not replay the "
+                            "saved official play_once precheck."
+                        )
+                    if cfg.check_expert and not success:
+                        raise RuntimeError(
+                            "RoboTwin State restore replayed an expert "
+                            "precheck that no longer succeeds for the saved "
+                            "task config."
+                        )
+                else:
+                    staged_task = create_task_from_name(cfg.task_name)
+                try:
+                    self._setup_task(
+                        cfg=cfg,
+                        task=staged_task,
+                        task_config=payload.task_config,
+                    )
+                except BaseException:
+                    # _setup_task already fully disposes its candidate.
+                    staged_task = None
+                    raise
+            runtime_layout = derive_runtime_layout(staged_task)
 
-        self.close(clear_cache=True)
-        self.cfg = cfg
-        self._resolved_start_seed = self.cfg.resolve_start_seed(self.cfg.seed)
-        self._offset_seed = payload.offset_seed
-        self._instructions = (
-            None
-            if payload.instructions is None
-            else payload.instructions.model_dump(mode="json")
-        )
-        self._eval_chosen_instruction = payload.eval_chosen_instruction
-        self._task = task
-        self._joints_to_eef_transform = None
-        self._cached_obs_robots = None
-        self._last_obs = None
-        self._last_obs_step_index = 0
-        if activate:
-            self._post_reset_state_available = (
-                payload.post_reset_state_available
+            self.close(clear_cache=True)
+            if self._pending_disposal_tasks:
+                raise RuntimeError(
+                    "RoboTwinEnv cannot restore State while a planner worker "
+                    "from the previous runtime is still alive. Call close() "
+                    "again after the worker exits."
+                )
+            self.cfg = cfg
+            self._resolved_start_seed = self.cfg.resolve_start_seed(
+                self.cfg.seed
             )
-            self._episode_finalized = payload.episode_finalized
-        else:
-            self._post_reset_state_available = False
-            self._episode_finalized = True
+            self._offset_seed = payload.offset_seed
+            self._instructions = (
+                None
+                if payload.instructions is None
+                else payload.instructions.model_dump(mode="json")
+            )
+            self._eval_chosen_instruction = payload.eval_chosen_instruction
+            self._task = staged_task
+            self._runtime_layout = runtime_layout
+            self._active_task_config = copy.deepcopy(payload.task_config)
+            self._joints_to_eef_transform = None
+            self._cached_obs_robots = None
+            self._last_obs = None
+            self._last_obs_step_index = 0
+            if activate:
+                self._post_reset_state_available = True
+                self._episode_finalized = payload.episode_finalized
+            else:
+                self._post_reset_state_available = False
+                self._episode_finalized = True
+        except BaseException:
+            self._dispose_task(staged_task, clear_cache=True)
+            raise
+        staged_task = None
         return payload
 
-    def _create_task(self) -> Base_Task:
-        with in_robotwin_workspace():
-            task = create_task_from_name(self.cfg.task_name)
-            task_config = self.cfg.get_task_config_for_seed(
-                runtime_seed=self.current_seed
-            )
-            setup_robotwin_demo_with_runtime_guards(
-                self.cfg,
-                task,
-                task_config,
-            )
-            return task
-
-    def _check_expert_traj(self) -> tuple[Base_Task | None, bool]:
-        """Check whether current config can success if using expert trajectory.
+    def _check_expert_traj(
+        self,
+        task_config: dict[str, Any],
+        *,
+        cfg: RoboTwinEnvCfg | None = None,
+    ) -> tuple[
+        Base_Task | None,
+        object | None,
+        bool,
+    ]:
+        """Run RoboTwin's official ``play_once`` precheck lifecycle.
 
         Returns:
-            tuple[Base_Task | None, bool]: A tuple containing the task and a
-                boolean indicating whether the task was successful.
+            tuple[Base_Task | None, object | None, bool]: The same task Python
+                object initialized by ``play_once()``, a deep-copied
+                episode-info payload, and whether the expert trajectory
+                succeeded. Before a task is returned, its precheck scene is
+                closed with upstream ``close_env()`` exactly as in RoboTwin's
+                official evaluator. Planner workers remain attached so the
+                caller can run the second ``setup_demo`` on that same object.
+                Failed prechecks are fully disposed and return no task.
 
         """
+        effective_cfg = self.cfg if cfg is None else cfg
         with in_robotwin_workspace():
-            task = create_task_from_name(self.cfg.task_name)
-            config = self.cfg.get_task_config_for_seed(
-                runtime_seed=self.current_seed
-            )
+            task = create_task_from_name(effective_cfg.task_name)
+            config = copy.deepcopy(task_config)
             config["render_freq"] = 0
+            setup_completed = False
+            stage = "setup"
             try:
-                setup_robotwin_demo_with_runtime_guards(
-                    self.cfg,
-                    task,
-                    config,
+                self._setup_task(
+                    cfg=effective_cfg,
+                    task=task,
+                    task_config=config,
                 )
+                setup_completed = True
+                stage = "play"
+                episode_info_payload = task.play_once()  # type: ignore
+                stage = "precheck close"
+                task.close_env(clear_cache=False)  # type: ignore
+                stage = "success check"
+                success: bool = bool(
+                    task.plan_success and task.check_success()  # type: ignore
+                )
+                stage = "metadata capture"
+                episode_info = copy.deepcopy(episode_info_payload["info"])
             except RoboTwinCuroboPatchUnsupportedError:
+                if setup_completed:
+                    self._dispose_task(task, clear_cache=True)
                 raise
-            except Exception as e:
+            except Exception as exc:
                 logger.debug(
-                    "RoboTwin expert trajectory check failed while playing "
-                    "task config: task=%s seed=%s error=%s",
-                    self.cfg.task_name,
-                    self.current_seed,
-                    e,
+                    "RoboTwin expert trajectory check failed during %s: "
+                    "task=%s seed=%s error=%s",
+                    stage,
+                    effective_cfg.task_name,
+                    task_config.get("seed"),
+                    exc,
                 )
-                return task, False
-            try:
-                task.play_once()  # type: ignore
-            except RoboTwinCuroboPatchUnsupportedError:
+                if setup_completed:
+                    self._dispose_task(task, clear_cache=True)
+                return None, None, False
+            except BaseException:
+                if setup_completed:
+                    self._dispose_task(task, clear_cache=True)
                 raise
-            except Exception as e:
-                logger.debug(
-                    "RoboTwin expert trajectory check failed while playing "
-                    "task config: task=%s seed=%s error=%s",
-                    self.cfg.task_name,
-                    self.current_seed,
-                    e,
-                )
-                return task, False
-            finally:
-                try:
-                    task.close_env()
-                except Exception:
-                    logger.exception(
-                        "Failed to close RoboTwin task after expert "
-                        "trajectory check."
-                    )
 
-        success: bool = task.plan_success and task.check_success()  # type: ignore
-        return task, success
+        return task, episode_info, success
 
     def step(self, action: list[float] | np.ndarray) -> RoboTwinEnvStepReturn:
         """Take a step in the environment.
@@ -596,8 +807,8 @@ class RoboTwinEnv(
                   `[left_xyz(3), left_quat(4), left_gripper,
                   right_xyz(3), right_quat(4), right_gripper]`,
                   where each quaternion follows RoboTwin's
-                  `[qw, qx, qy, qz]` convention. For the currently supported
-                  combined dual-arm layout this means 16 values in total.
+                  `[qw, qx, qy, qz]` convention. This representation always
+                  contains 16 values for both combined and split layouts.
 
                 The wrapper validates this expected width exactly before
                 forwarding the action to RoboTwin.
@@ -627,6 +838,7 @@ class RoboTwinEnv(
                 "reset_from_state() before advancing the episode."
             )
         next_obs_step_index = last_obs_step_index + 1
+        task = self._require_task()
 
         action_array = np.asarray(action)
         if action_array.ndim != 1:
@@ -637,8 +849,8 @@ class RoboTwinEnv(
 
         if self.cfg.action_type == "qpos":
             expected_action_dim = len(
-                self._task.robot.get_left_arm_jointState()
-            ) + len(self._task.robot.get_right_arm_jointState())
+                task.robot.get_left_arm_jointState()
+            ) + len(task.robot.get_right_arm_jointState())
         elif self.cfg.action_type == "ee":
             expected_action_dim = 16
         else:
@@ -657,7 +869,7 @@ class RoboTwinEnv(
         # the take_action method will do internal check if reach step limit
         # or task is successful. Either case, the task will not take further
         # actions.
-        self._task.take_action(
+        task.take_action(
             action_array,
             action_type=self.cfg.action_type,
         )
@@ -666,10 +878,7 @@ class RoboTwinEnv(
         # when reach step limit, truncated is True
         # Note that step_lim is None for default unlimited steps.
         # It will be set in evaluation mode.
-        if (
-            self._task.step_lim is not None
-            and self._task.take_action_cnt >= self._task.step_lim
-        ):
+        if task.step_lim is not None and task.take_action_cnt >= task.step_lim:
             truncated = True
         else:
             truncated = False
@@ -678,12 +887,12 @@ class RoboTwinEnv(
         # when a task is evaluated as success, the task does not
         # take further actions anymore. We consider the episode
         # is done when the task is successful.
-        if self._task.eval_success:
+        if task.eval_success:
             terminated = True
         else:
             terminated = False
 
-        raw_obs = self._task.get_obs()
+        raw_obs = task.get_obs()
         self._write_video_frame(raw_obs)
         obs = self._format_obs(raw_obs, step_index=next_obs_step_index)
         self._last_obs = obs
@@ -691,7 +900,7 @@ class RoboTwinEnv(
 
         return RoboTwinEnvStepReturn(
             observations=obs,
-            rewards=self._task.eval_success,
+            rewards=task.eval_success,
             terminated=terminated,
             truncated=truncated,
             info=self._get_info(),
@@ -775,108 +984,119 @@ class RoboTwinEnv(
                 f"Got {offset_seed!r}."
             )
 
-        self.close(clear_cache=clear_cache)
-        start_seed = None
-        if seed is not None:
-            start_seed = self.cfg.calculate_seed(seed)
-        if episode_id is not None:
-            self.cfg.episode_id = episode_id
-
-        seed_changes = start_seed is not None and start_seed != self.cfg.seed
+        start_seed = (
+            self.cfg.seed if seed is None else self.cfg.calculate_seed(seed)
+        )
+        seed_changes = start_seed != self.cfg.seed
         if offset_seed is not None:
             next_offset_seed = self._resolve_offset_seed(offset_seed)
         elif seed_changes:
             next_offset_seed = 0
         else:
             next_offset_seed = self._offset_seed
-        offset_seed_changes = next_offset_seed != self._offset_seed
-        task_name_changes = (
-            task_name is not None and task_name != self.cfg.task_name
+        next_task_name = self.cfg.task_name if task_name is None else task_name
+        next_episode_id = (
+            self.cfg.episode_id if episode_id is None else episode_id
         )
-        # check if task is not initialized or seed/task_name changes
-        if (
-            self._task is None
-            or seed_changes
-            or offset_seed_changes
-            or task_name_changes
-        ):
-            # when need to create new env:
-            # * when no existing env
-            # * when seed changes
-            if seed_changes:
-                assert start_seed is not None
-                self.cfg.seed = start_seed
-                self._resolved_start_seed = self.cfg.resolve_start_seed(
-                    self.cfg.seed
-                )
-            self._offset_seed = next_offset_seed
-            if task_name_changes:
-                assert task_name is not None
-                self.cfg.task_name = task_name
-            with in_robotwin_workspace():
-                task, instructions = self._check_and_update_seed()
-            assert task is not None
-            self._task = task
-            self._instructions = instructions
+        next_resolved_start_seed = self.cfg.resolve_start_seed(start_seed)
 
-        with in_robotwin_workspace():
-            task_config = self.cfg.get_task_config_for_seed(
-                runtime_seed=self.current_seed
+        # Validate the prospective config before destructively releasing the
+        # current simulator. The ordinary reset itself remains destructive
+        # once runtime creation starts.
+        prospective_cfg = copy.deepcopy(self.cfg)
+        prospective_cfg.seed = start_seed
+        prospective_cfg.task_name = next_task_name
+        prospective_cfg.episode_id = next_episode_id
+        prospective_runtime_seed = next_resolved_start_seed + next_offset_seed
+        prospective_task_config = prospective_cfg.get_task_config_for_seed(
+            prospective_runtime_seed
+        )
+
+        self.close(clear_cache=clear_cache)
+        if self._pending_disposal_tasks:
+            raise RuntimeError(
+                "RoboTwinEnv cannot reset while a planner worker from the "
+                "previous runtime is still alive. Call close() again after "
+                "the worker exits."
             )
-            setup_robotwin_demo_with_runtime_guards(
-                self.cfg,
-                self._task,
-                task_config,
-            )
-        self._assert_supported_robot_layout()
-        # Reset the FK helper before formatting the first observation so the
-        # returned post-reset EEF edges always reflect the current episode.
-        self._joints_to_eef_transform = None
-        self._cached_obs_robots = None
-
-        self._eval_chosen_instruction = None
-
-        episode_video_path = None
-        if video_dir is not None:
-            episode_video_path = os.path.join(
-                video_dir,
-                f"episode_{self.cfg.episode_id}_seed_{self.current_seed}.mp4",
-            )
-
-        self._stop_video_recording()
-        raw_obs = self._task.get_obs()
-        if episode_video_path is not None:
-            frame = self._extract_video_frame(raw_obs)
-            if frame is None:
-                logger.warning(
-                    "Skip RoboTwin episode video recording because the head "
-                    "camera RGB frame is unavailable."
-                )
-            else:
-                try:
-                    writer = self._get_video_writer()
-                    writer.open(episode_video_path)
-                    writer.write_frame(frame)
-                except VideoBackendUnavailableError:
-                    self._stop_video_recording()
-                    logger.warning(
-                        "Skip RoboTwin episode video recording because "
-                        "ffmpeg is not available in PATH."
-                    )
-                except VideoWriterError:
-                    self._stop_video_recording()
-                    logger.exception(
-                        "Failed to start RoboTwin episode video recording at "
-                        "%s.",
-                        episode_video_path,
-                    )
+        self.cfg.seed = start_seed
+        self.cfg.task_name = next_task_name
+        self.cfg.episode_id = next_episode_id
+        self._resolved_start_seed = next_resolved_start_seed
+        self._offset_seed = next_offset_seed
+        staged_task: Base_Task | None = None
         try:
+            with in_robotwin_workspace():
+                (
+                    staged_task,
+                    instructions,
+                    task_config,
+                ) = self._check_and_update_seed(prospective_task_config)
+            self._task = staged_task
+            task = staged_task
+            staged_task = None
+            self._instructions = instructions
+            with in_robotwin_workspace():
+                self._setup_task(
+                    cfg=self.cfg,
+                    task=task,
+                    task_config=task_config,
+                )
+            self._runtime_layout = derive_runtime_layout(task)
+            self._active_task_config = copy.deepcopy(task_config)
+            # Reset episode-local metadata before formatting the first
+            # observation so every cache reflects this runtime.
+            self._joints_to_eef_transform = None
+            self._cached_obs_robots = None
+            self._eval_chosen_instruction = None
+
+            episode_video_path = None
+            if video_dir is not None:
+                episode_video_path = os.path.join(
+                    video_dir,
+                    f"episode_{self.cfg.episode_id}_seed_"
+                    f"{self.current_seed}.mp4",
+                )
+
+            self._stop_video_recording()
+            raw_obs = task.get_obs()
+            if episode_video_path is not None:
+                frame = _extract_video_frame(raw_obs)
+                if frame is None:
+                    logger.warning(
+                        "Skip RoboTwin episode video recording because the "
+                        "head camera RGB frame is unavailable."
+                    )
+                else:
+                    try:
+                        writer = self._get_video_writer()
+                        writer.open(episode_video_path)
+                        writer.write_frame(frame)
+                    except VideoBackendUnavailableError:
+                        self._stop_video_recording()
+                        logger.warning(
+                            "Skip RoboTwin episode video recording because "
+                            "ffmpeg is not available in PATH."
+                        )
+                    except VideoWriterError:
+                        self._stop_video_recording()
+                        logger.exception(
+                            "Failed to start RoboTwin episode video recording "
+                            "at %s.",
+                            episode_video_path,
+                        )
             obs = (
                 self._format_obs(raw_obs, step_index=0) if return_obs else None
             )
             info = self._get_info()
-        except Exception:
+        except BaseException:
             self._stop_video_recording()
+            cleanup_task = (
+                staged_task if staged_task is not None else self._task
+            )
+            self._dispose_task(cleanup_task, clear_cache=True)
+            self._post_reset_state_available = False
+            self._episode_finalized = True
             raise
         self._last_obs = obs
         self._last_obs_step_index = 0
@@ -960,65 +1180,12 @@ class RoboTwinEnv(
         prefix = topic_prefix.rstrip("/")
         if not prefix:
             raise ValueError("topic_prefix must not be empty.")
-        messages: dict[str, list[StampedMessage[Any]]] = {}
-
-        cameras = obs.get("cameras") or {}
-        for camera_name, camera_streams in cameras.items():
-            for stream_name, camera_data in camera_streams.items():
-                if not isinstance(camera_data, BatchCameraData):
-                    continue
-                topic = f"{prefix}/cameras/{camera_name}/{stream_name}"
-                timestamps = [log_time] * camera_data.batch_size
-                messages[topic] = [
-                    StampedMessage(
-                        data=camera_data.model_copy(
-                            update={"timestamps": timestamps}
-                        ),
-                        log_time=log_time,
-                        pub_time=log_time,
-                    )
-                ]
-
-        joints = obs.get("joints")
-        if isinstance(joints, BatchJointsState):
-            timestamps = [log_time] * joints.batch_size
-            messages[f"{prefix}/joints"] = [
-                StampedMessage(
-                    data=joints.model_copy(update={"timestamps": timestamps}),
-                    log_time=log_time,
-                    pub_time=log_time,
-                )
-            ]
-
-        tf_graph = obs.get("tf")
-        if isinstance(tf_graph, BatchFrameTransformGraph):
-            tf_state = tf_graph.as_state()
-            if tf_state.tf_list:
-                messages[f"{prefix}/tf"] = [
-                    StampedMessage(
-                        data=BatchFrameTransformGraph(
-                            tf_list=[
-                                tf.model_copy(
-                                    update={
-                                        "timestamps": [log_time]
-                                        * tf.batch_size
-                                    }
-                                )
-                                for tf in tf_state.tf_list
-                            ],
-                            bidirectional=tf_state.bidirectional,
-                            static_tf=tf_state.static_tf,
-                        ),
-                        log_time=log_time,
-                        pub_time=log_time,
-                    )
-                ]
-
+        instruction_payload = None
         if (
             self._instructions is not None
             or self._eval_chosen_instruction is not None
         ):
-            instruction = RoboTwinObservationInstructionPayload(
+            instruction_payload = RoboTwinObservationInstructionPayload(
                 instructions=(
                     RoboTwinEpisodeInstructionsPayload()
                     if self._instructions is None
@@ -1030,43 +1197,21 @@ class RoboTwinEnv(
                     else str(self._eval_chosen_instruction)
                 ),
             )
-            messages[f"{prefix}/instruction"] = [
-                StampedMessage(
-                    data=instruction,
-                    log_time=log_time,
-                    pub_time=log_time,
-                )
-            ]
-
-        messages[f"{prefix}/meta"] = [
-            StampedMessage(
-                data=RoboTwinObservationMetaPayload(
-                    task_name=self.cfg.task_name,
-                    action_type=self.cfg.action_type,
-                    episode_id=self.cfg.episode_id,
-                    seed=self.current_seed,
-                    start_seed=self.start_seed,
-                    resolved_start_seed=self.resolved_start_seed,
-                    offset_seed=self.offset_seed,
-                ),
-                log_time=log_time,
-                pub_time=log_time,
-            )
-        ]
-
-        robots = obs.get("robots")
-        if isinstance(robots, dict):
-            for robot_name, robot in robots.items():
-                if isinstance(robot_name, str) and isinstance(robot, Robot):
-                    messages[f"{prefix}/meta/robots/{robot_name}"] = [
-                        StampedMessage(
-                            data=robot,
-                            log_time=log_time,
-                            pub_time=log_time,
-                        )
-                    ]
-
-        return messages
+        return _build_mcap_observation_messages(
+            obs=obs,
+            topic_prefix=prefix,
+            log_time=log_time,
+            instruction_payload=instruction_payload,
+            meta_payload=RoboTwinObservationMetaPayload(
+                task_name=self.cfg.task_name,
+                action_type=self.cfg.action_type,
+                episode_id=self.cfg.episode_id,
+                seed=self.current_seed,
+                start_seed=self.start_seed,
+                resolved_start_seed=self.resolved_start_seed,
+                offset_seed=self.offset_seed,
+            ),
+        )
 
     def get_mcap_action_sidecars(
         self,
@@ -1143,11 +1288,11 @@ class RoboTwinEnv(
             left_child_frame_id = f"{left_child_frame_id}_{frame_id_suffix}"
             right_child_frame_id = f"{right_child_frame_id}_{frame_id_suffix}"
 
-        left_tf = self._pose_vector_to_tf(
+        left_tf = _pose_vector_to_tf(
             action_array[:7],
             child_frame_id=left_child_frame_id,
         )
-        right_tf = self._pose_vector_to_tf(
+        right_tf = _pose_vector_to_tf(
             action_array[8:15],
             child_frame_id=right_child_frame_id,
         )
@@ -1183,65 +1328,26 @@ class RoboTwinEnv(
                 ``right_eef.parent_frame_id`` are both ``"world"``.
 
         """
-        joints_np = np.asarray(joints, dtype=np.float32)
-        if joints_np.ndim == 1:
-            joints_np = joints_np[None, :]
-        if joints_np.ndim != 2 or joints_np.shape[0] != 1:
-            raise ValueError(
-                "Expected joints to have shape (D,) or (1, D), got "
-                f"{tuple(joints_np.shape)}."
-            )
-
-        left_joint_count = len(self._task.robot.left_arm_joints_name)
-        right_joint_count = len(self._task.robot.right_arm_joints_name)
-        total_arm_joint_count = left_joint_count + right_joint_count
-        joint_dim = joints_np.shape[-1]
-        if joint_dim == total_arm_joint_count + 2:
-            left_arm_joints = joints_np[:, :left_joint_count]
-            right_start = left_joint_count + 1
-        elif joint_dim == total_arm_joint_count:
-            left_arm_joints = joints_np[:, :left_joint_count]
-            right_start = left_joint_count
-        else:
-            raise ValueError(
-                "Expected RoboTwin joints to contain left/right arm joints "
-                "with optional gripper values, got shape "
-                f"{tuple(joints_np.shape)}."
-            )
-        right_arm_joints = joints_np[
-            :,
-            right_start : right_start + right_joint_count,
-        ]
-
-        return self._get_joints_to_eef_transform().transform(
-            left_arm_joints=torch.from_numpy(left_arm_joints),
-            right_arm_joints=torch.from_numpy(right_arm_joints),
+        layout = self._require_runtime_layout()
+        return _transform_joint_vector_to_eef(
+            self._get_joints_to_eef_transform(),
+            joints,
+            layout,
         )
 
     def _get_joints_to_eef_transform(self) -> RoboTwinJointsToEEF:
         """Get the cached RoboTwin joint-to-EEF forward-kinematics helper.
 
-        The helper is built lazily from the supported combined dual-arm URDF
-        and the current ``world -> robot_base`` transform, then cached for the
-        rest of the episode.
+        The helper is built lazily from the current combined or split URDFs,
+        runtime EEF names, and absolute robot-base transforms, then cached for
+        the rest of the episode.
         """
         if self._joints_to_eef_transform is not None:
             return self._joints_to_eef_transform
 
-        urdf_map = self.get_robot_urdf()
-        urdf_content = urdf_map["left"]
-
-        robot_base_tf = self._get_tf().get_tf("world", "robot_base")
-        if not isinstance(robot_base_tf, BatchFrameTransform):
-            raise RuntimeError(
-                "Expected supported RoboTwin layouts to expose a single "
-                "world->robot_base BatchFrameTransform."
-            )
-
-        self._joints_to_eef_transform = RoboTwinJointsToEEF(
-            urdf_content=urdf_content,
-            robot_base_xyz=robot_base_tf.xyz[0].tolist(),
-            robot_base_quat=robot_base_tf.quat[0].tolist(),
+        self._joints_to_eef_transform = build_joints_to_eef_transform(
+            self._require_task(),
+            self._require_runtime_layout(),
         )
         return self._joints_to_eef_transform
 
@@ -1253,7 +1359,7 @@ class RoboTwinEnv(
             "offset_seed": self.offset_seed,
             "task": self.cfg.task_name,
         }
-        info.update(self._task.info)
+        info.update(self._require_task().info)
         return info
 
     def _resolve_offset_seed(self, offset_seed: int | None) -> int:
@@ -1268,39 +1374,12 @@ class RoboTwinEnv(
             raise ValueError(f"offset_seed must be >= 0, got {offset_seed}.")
         return offset_seed
 
-    def _assert_supported_robot_layout(
-        self,
-        task: Base_Task | None = None,
-    ) -> None:
-        """Validate that the current RoboTwin robot layout is supported.
-
-        RoboTwinEnv currently supports only the combined dual-arm layout with
-        one shared robot base pose. Unsupported layouts are rejected at the
-        env boundary during ``reset()`` and by robot-structure helper methods.
-        """
-        if task is None:
-            task = self._task
-        if task is None:
-            raise RuntimeError("RoboTwinEnv has no active task to validate.")
-        if task.robot.is_dual_arm is False:
-            raise NotImplementedError(
-                "RoboTwinEnv currently only supports a combined dual-arm "
-                "robot layout. Separate left/right URDF layouts are not "
-                "supported."
-            )
-
-        left_base_tf = sapien_pose_to_orchard(
-            task.robot.left_entity_origion_pose
-        )
-        right_base_tf = sapien_pose_to_orchard(
-            task.robot.right_entity_origion_pose
-        )
-        if left_base_tf != right_base_tf:
-            raise NotImplementedError(
-                "RoboTwinEnv currently only supports a combined dual-arm "
-                "robot with a shared robot base. Separate left/right robot "
-                "base poses are not supported."
-            )
+    def _require_runtime_layout(self) -> _RoboTwinRuntimeLayout:
+        layout = self._runtime_layout
+        if layout is None:
+            layout = derive_runtime_layout(self._require_task())
+            self._runtime_layout = layout
+        return layout
 
     def finalize_episode(self) -> None:
         """Finalize episode-local artifacts without closing the runtime.
@@ -1322,20 +1401,12 @@ class RoboTwinEnv(
         self._last_obs = None
         self._last_obs_step_index = None
         self._stop_video_recording()
-        self._joints_to_eef_transform = None
-        self._cached_obs_robots = None
-        if self._task is not None:
-            self._task.close_env(clear_cache=clear_cache)
-            if self._task.render_freq > 0:
-                self._task.viewer.close()
-
-    def _get_joint_state_names(self: RoboTwinEnv) -> list[str]:
-        ret_names = []
-        ret_names.extend(self._task.robot.left_arm_joints_name)
-        ret_names.append(self._task.robot.left_gripper_name["base"])
-        ret_names.extend(self._task.robot.right_arm_joints_name)
-        ret_names.append(self._task.robot.right_gripper_name["base"])
-        return ret_names
+        self._drain_pending_disposals(clear_cache=clear_cache)
+        task = self._task
+        if task is not None:
+            self._dispose_task(task, clear_cache=clear_cache)
+        else:
+            self._clear_active_task_runtime()
 
     def _get_obs(self) -> dict[str, Any]:
         """Get the current observation from the environment.
@@ -1352,123 +1423,8 @@ class RoboTwinEnv(
                 "RoboTwinEnv._get_obs() requires a successful reset() or "
                 "reset_from_state() first."
             )
-        ret = self._task.get_obs()
+        ret = self._require_task().get_obs()
         return self._format_obs(ret, step_index=step_index)
-
-    @staticmethod
-    def _pose_vector_to_tf(
-        pose_vector: Sequence[float] | np.ndarray,
-        *,
-        child_frame_id: str,
-    ) -> BatchFrameTransform:
-        """Convert a RoboTwin EE pose vector to a world-frame transform.
-
-        Args:
-            pose_vector (Sequence[float] | np.ndarray): RoboTwin EE pose in
-                ``[x, y, z, qw, qx, qy, qz]`` order.
-            child_frame_id (str): Child frame name for the returned transform.
-
-        Returns:
-            BatchFrameTransform: ``world -> child_frame_id`` transform.
-        """
-        pose_np = np.asarray(pose_vector, dtype=np.float32)
-        if pose_np.shape != (7,):
-            raise ValueError(
-                "Expected RoboTwin endpose to contain 7 values "
-                f"(xyz + quaternion), got shape {tuple(pose_np.shape)}."
-            )
-        return BatchFrameTransform(
-            xyz=torch.from_numpy(pose_np[:3]).unsqueeze(0),
-            quat=torch.from_numpy(pose_np[3:]).unsqueeze(0),
-            parent_frame_id="world",
-            child_frame_id=child_frame_id,
-        )
-
-    def _get_endpose_frame_ids(self) -> tuple[str, str]:
-        """Return the frame names reused for RoboTwin raw endpose edges.
-
-        Raw ``ret["endpose"]`` values come from RoboTwin's processed
-        ``get_*_ee_pose()`` helpers. They are world-frame RoboTwin EE
-        control-pose vectors, not unmodified child-link poses or TCP poses.
-        For the currently supported combined dual-arm embodiments these
-        control poses numerically align with the runtime EE child-link frame
-        used by the URDF FK helper, so the env reuses
-        ``self._task.robot.left_ee.child_link`` and
-        ``self._task.robot.right_ee.child_link`` as the child-frame IDs
-        instead of inventing another compatibility-only frame name.
-        """
-        try:
-            return (
-                self._task.robot.left_ee.child_link.get_name(),
-                self._task.robot.right_ee.child_link.get_name(),
-            )
-        except AttributeError as exc:
-            raise RuntimeError(
-                "Failed to infer RoboTwin end-effector frame IDs from the "
-                "runtime robot object."
-            ) from exc
-
-    def _get_eef_tf_edges(
-        self, ret: dict[str, Any]
-    ) -> list[BatchFrameTransform]:
-        """Build extra world-frame EEF edges from RoboTwin observations.
-
-        When ``joint_action["vector"]`` is available, this method adds
-        joint-derived world-frame EEF transforms and renames their child
-        frames to ``left_eef_from_joint`` / ``right_eef_from_joint`` to avoid
-        colliding with RoboTwin's runtime EE frame names. These FK edges come
-        from the supported combined dual-arm URDF and represent the same
-        current RoboTwin EE control-frame convention that the env exposes to
-        callers.
-
-        When raw ``ret["endpose"]`` is available, this method adds another
-        pair of world-frame transforms from RoboTwin's processed
-        ``get_*_ee_pose()`` values and keeps the runtime EE child-link names
-        reported by the RoboTwin robot object. For the currently supported
-        embodiments these raw endpose vectors are expected to numerically
-        match the joint-derived FK edges within tolerance, even though
-        RoboTwin computes them through its own compatibility helper instead of
-        exposing an unmodified runtime link pose. Treat that equality as a
-        supported-layout assumption for the current embodiments, not as a
-        generic guarantee for arbitrary future RoboTwin embodiments.
-        """
-        tf_edges: list[BatchFrameTransform] = []
-
-        joint_action = ret.get("joint_action")
-        if isinstance(joint_action, dict) and "vector" in joint_action:
-            joint_eef = self._joints2ee_pose(joint_action["vector"])
-            tf_edges.extend(
-                [
-                    joint_eef.left_eef.model_copy(
-                        update={"child_frame_id": LEFT_EEF_FROM_JOINT_FRAME_ID}
-                    ),
-                    joint_eef.right_eef.model_copy(
-                        update={
-                            "child_frame_id": RIGHT_EEF_FROM_JOINT_FRAME_ID
-                        }
-                    ),
-                ]
-            )
-
-        endpose = ret.get("endpose")
-        if isinstance(endpose, dict) and endpose:
-            left_endpose_frame_id, right_endpose_frame_id = (
-                self._get_endpose_frame_ids()
-            )
-            tf_edges.extend(
-                [
-                    self._pose_vector_to_tf(
-                        endpose["left_endpose"],
-                        child_frame_id=left_endpose_frame_id,
-                    ),
-                    self._pose_vector_to_tf(
-                        endpose["right_endpose"],
-                        child_frame_id=right_endpose_frame_id,
-                    ),
-                ]
-            )
-
-        return tf_edges
 
     def _format_obs(
         self,
@@ -1478,61 +1434,54 @@ class RoboTwinEnv(
     ) -> dict[str, Any]:
         """Format raw RoboTwin observations into orchard-compatible ones.
 
-        The returned ``ret["tf"]`` graph always includes ``world ->
-        robot_base``. When raw joint targets or RoboTwin end poses are
-        available, it also includes additional world-frame end-effector edges:
+        The returned ``ret["tf"]`` graph includes ``world -> robot_base`` for
+        combined layouts, or two absolute ``world -> *_robot_base`` edges for
+        split layouts. When raw joint targets or RoboTwin end poses are
+        available, it also includes world-frame end-effector edges:
         the joint-derived edges use ``*_eef_from_joint`` child frame IDs,
         while the raw RoboTwin end poses keep the runtime EE frame IDs
         reported by the RoboTwin robot object. The returned observation also
-        includes ``ret["robots"]`` with observation-facing robot metadata
-        derived from the supported combined dual-arm URDF descriptor.
+        includes ``ret["robots"]`` with one combined descriptor or two
+        truthful split descriptors.
         ``ret["step_index"]`` is the episode-local observation step, and
         ``ret["step_timestamp"]`` is its env-owned logical time in seconds.
         """
-        eef_tf_edges = self._get_eef_tf_edges(ret)
-        ret["instructions"] = self.instructions
-        ret["step_index"] = step_index
-        ret["step_timestamp"] = (
-            self.step_index_to_log_time_ns(step_index) / 1_000_000_000.0
+        layout = self._require_runtime_layout()
+        left_control_eef_frame_id = layout.left_control_eef_frame_id
+        right_control_eef_frame_id = layout.right_control_eef_frame_id
+        joint_names = (
+            get_joint_state_names(self._require_task(), layout)
+            if self.cfg.format_datatypes
+            else None
         )
-        if self.cfg.format_datatypes:
-            ret["joints"] = get_joints(
-                ret, joint_names=self._get_joint_state_names()
-            )
-            ret.pop("joint_action", None)
-            ret["cameras"] = get_observation_cams(ret)
-            ret.pop("observation")
-        ret["tf"] = self._get_tf()
-        ret["robots"] = self.get_obs_robots()
-        if eef_tf_edges:
-            ret["tf"].add_tf(eef_tf_edges)
-        return ret
-
-    @staticmethod
-    def _extract_video_frame(raw_obs: dict[str, Any]) -> np.ndarray | None:
-        observation = raw_obs.get("observation")
-        if not isinstance(observation, dict):
-            return None
-        head_camera = observation.get("head_camera")
-        if not isinstance(head_camera, dict):
-            return None
-        frame = head_camera.get("rgb")
-        if frame is None:
-            return None
-
-        frame_np = np.asarray(frame)
-        if frame_np.ndim != 3 or frame_np.shape[2] != 3:
-            return None
-        if frame_np.dtype != np.uint8:
-            frame_np = frame_np.astype(np.uint8)
-        return np.ascontiguousarray(frame_np)
+        joint_action = ret.get("joint_action")
+        joint_eef = (
+            self._joints2ee_pose(joint_action["vector"])
+            if isinstance(joint_action, dict) and "vector" in joint_action
+            else None
+        )
+        return _format_observation(
+            ret,
+            instructions=self.instructions,
+            step_index=step_index,
+            step_timestamp=(
+                self.step_index_to_log_time_ns(step_index) / 1_000_000_000.0
+            ),
+            format_datatypes=self.cfg.format_datatypes,
+            joint_names=joint_names,
+            base_tf_graph=self._get_tf(),
+            robots=self.get_obs_robots(),
+            joint_eef=joint_eef,
+            left_control_eef_frame_id=left_control_eef_frame_id,
+            right_control_eef_frame_id=right_control_eef_frame_id,
+        )
 
     def _write_video_frame(self, raw_obs: dict[str, Any]) -> None:
         writer = self._get_video_writer()
         if writer.is_closed:
             return
 
-        frame = self._extract_video_frame(raw_obs)
+        frame = _extract_video_frame(raw_obs)
         if frame is None:
             return
 
@@ -1582,7 +1531,7 @@ class RoboTwinEnv(
         Returns:
             gym.Space: The action space of the environment.
         """
-        return self._task.action_space
+        return self._require_task().action_space
 
     @property
     def observation_space(self) -> gym.Space:
@@ -1594,90 +1543,54 @@ class RoboTwinEnv(
         Returns:
             gym.Space: The observation space of the environment.
         """
-        return self._task.observation_space
+        return self._require_task().observation_space
 
     def unwrapped_env(self) -> Base_Task:
         """Get the original RoboTwin environment."""
-        return self._task
+        return self._require_task()
 
     def _get_tf(self) -> BatchFrameTransformGraph:
         """Get the frame transforms in the environment.
 
-        For supported RoboTwin layouts this graph contains one static
-        ``world -> robot_base`` edge. ``reset()`` rejects layouts with
-        separate left/right robot bases before any observations are returned.
+        Combined layouts expose ``world -> robot_base``. Split layouts expose
+        independent absolute ``world -> left_robot_base`` and
+        ``world -> right_robot_base`` edges in the same graph.
 
         Returns:
             BatchFrameTransformGraph: The static robot base transform graph.
         """
-        self._assert_supported_robot_layout()
-        left_base_tf = sapien_pose_to_orchard(
-            self._task.robot.left_entity_origion_pose
-        )
-        return BatchFrameTransformGraph(
-            tf_list=[
-                BatchFrameTransform(
-                    xyz=left_base_tf.xyz,
-                    quat=left_base_tf.quat,
-                    timestamps=left_base_tf.timestamps,
-                    parent_frame_id="world",
-                    child_frame_id="robot_base",
-                )
-            ],
-            static_tf=[True],
+        return get_robot_base_tf_graph(
+            self._require_task(),
+            self._require_runtime_layout(),
         )
 
     def get_robot_urdf(self) -> dict[str, bytes]:
-        """Get the supported combined dual-arm URDF content of the robot.
+        """Get URDF content for the initialized RoboTwin runtime layout.
 
         Returns:
-            dict[str, bytes]: A compatibility mapping containing the combined
-                dual-arm URDF content under the ``"left"`` key. RoboTwin
-                itself uses ``"left"`` as the compatibility slot for the
-                shared dual-arm descriptor, so this key name is preserved
-                here intentionally and is not an env-layer bug.
+            dict[str, bytes]: Combined layouts preserve RoboTwin's historical
+                ``{"left": combined_urdf}`` mapping. Split layouts return
+                independent ``"left"`` and ``"right"`` payloads.
         """
-        self._assert_supported_robot_layout()
-
-        assert self._task.robot.left_urdf_path is not None
-        with in_robotwin_workspace():
-            with open(self._task.robot.left_urdf_path, "rb") as f:
-                urdf_content = f.read()
-
-        return {"left": urdf_content}
+        return read_robot_urdfs(
+            self._require_task(),
+            self._require_runtime_layout(),
+        )
 
     def get_obs_robots(self) -> dict[str, Robot]:
         """Return observation-facing robot metadata for the current layout.
 
-        The current RoboTwin env surface exposes a single combined dual-arm
-        robot descriptor under the ``"left"`` key. This key matches
-        RoboTwin's existing ``get_robot_urdf()`` convention for the shared
-        dual-arm URDF and is kept intentionally for consistency, not because
-        the env mistakes the robot for a single-arm ``left`` embodiment.
-        Future layouts may return more than one descriptor, but the public
-        observation contract is already plural.
+        Combined layouts expose one descriptor under RoboTwin's historical
+        ``"left"`` compatibility key. Split layouts expose truthful
+        ``"left"`` and ``"right"`` descriptors with indices 0 and 1.
         """
         if self._cached_obs_robots is not None:
             return self._cached_obs_robots.copy()
 
-        urdf_map = self.get_robot_urdf()
-        urdf_content = urdf_map.get("left")
-        if not isinstance(urdf_content, bytes):
-            raise RuntimeError(
-                "Expected supported RoboTwin layouts to expose a combined "
-                "dual-arm URDF under the 'left' key."
-            )
-
-        robot = Robot(
-            index=0,
-            name=COMBINED_DUAL_ARM_OBS_ROBOT_KEY,
-            content=urdf_content.decode("utf-8"),
-            content_format=RobotDescriptionFormat.URDF,
+        self._cached_obs_robots = build_obs_robots(
+            self.get_robot_urdf(),
+            self._require_runtime_layout(),
         )
-        robot.update_md5()
-        self._cached_obs_robots = {
-            COMBINED_DUAL_ARM_OBS_ROBOT_KEY: robot,
-        }
         return self._cached_obs_robots.copy()
 
 
@@ -1685,6 +1598,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """Configuration for the RoboTwin environment."""
 
     class_type: ClassType[RoboTwinEnv] = RoboTwinEnv
+    _task_config_snapshot: _RoboTwinTaskConfigSnapshot = PrivateAttr()
 
     task_name: str
     """The name of the task to run, e.g., 'place_object_scale'."""
@@ -1792,10 +1706,12 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     """
 
     task_config_path: str | None = None
-    """Path to the task configuration file.
+    """Path or preset name for the RoboTwin task configuration file.
 
-    If not provided, the path will be set to
-    `<RoboTwin_PATH>/task_config/_config_template.yml` for RoboTwin2.0.
+    ``None`` defaults to the ``"demo_clean"`` preset. The preset names
+    ``"demo_clean"`` and ``"demo_randomized"`` resolve to the corresponding
+    file under ``<RoboTwin_PATH>/task_config/``. Any other string is treated
+    as a file path.
 
     Note that we only support RoboTwin2.0 for now.
     """
@@ -1805,7 +1721,7 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
 
     Each item is a `(path, value)` pair where `path` uses `/` to address
     nested dictionary keys, for example `("data_type/rgb", True)`.
-    These overrides are applied after `_update_task_config()` finishes.
+    These overrides are applied after official task-config lowering finishes.
     """
 
     patch_curobo_base_transform: bool = False
@@ -1820,18 +1736,35 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     against the original RoboTwin behavior requires a fresh Python process.
     """
 
-    def __post_init__(self):
-        if self.task_config_path is None:
-            robo_twin_root = config_robotwin_path()
-            self.task_config_path = os.path.join(
-                robo_twin_root, "task_config", "_config_template.yml"
-            )
+    @model_serializer(mode="wrap", return_type=dict, when_used="always")
+    def _serialize_with_task_config_snapshot(
+        self,
+        handler: SerializerFunctionWrapHandler,
+        info: SerializationInfo,
+    ) -> dict[str, Any]:
+        """Carry the private pinned input through config serialization."""
 
-        task_config_path = self.task_config_path
-        if not os.path.exists(task_config_path):
-            raise FileNotFoundError(
-                f"Task configuration file {task_config_path} does not exist."
-            )
+        serialized = super().wrapped_model_ser(handler, info)
+        return inject_serialized_task_config_snapshot(
+            serialized,
+            self._task_config_snapshot,
+        )
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _restore_task_config_snapshot(
+        cls,
+        data: Any,
+        handler: Any,
+    ) -> RoboTwinEnvCfg:
+        """Restore and verify the reserved serialized snapshot envelope."""
+
+        data, snapshot = extract_serialized_task_config_snapshot(data)
+        with task_config_snapshot_restore_context(snapshot):
+            return handler(data)
+
+    def __post_init__(self):
+        self._refresh_task_config_snapshot()
 
         # check that check_expert or check_task_init can not be both True
         if self.check_expert and self.check_task_init:
@@ -1855,6 +1788,54 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
                 f"{EVAL_INSTRUCTION_NUM} for eval_mode."
             )
             self.max_instruction_num = EVAL_INSTRUCTION_NUM
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "task_config_path" and hasattr(
+            self, "_task_config_snapshot"
+        ):
+            raise AttributeError(
+                "RoboTwin task_config_path is pinned after construction; "
+                "use replace(task_config_path=...) instead."
+            )
+        super().__setattr__(name, value)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> RoboTwinEnvCfg:
+        """Copy this config while atomically replacing a task-config source.
+
+        ``Config.replace()`` and ``ClassConfig.create_instance_by_cfg()``
+        reach this Pydantic copy boundary. A changed task-config path must
+        therefore refresh its canonical path and immutable snapshot together.
+        """
+
+        copied = super().model_copy(update=update, deep=deep)
+        if (
+            update is not None
+            and update.get("task_config_path", self.task_config_path)
+            != self.task_config_path
+        ):
+            copied._refresh_task_config_snapshot()
+        return copied
+
+    def _refresh_task_config_snapshot(self) -> None:
+        """Resolve the public path and replace the immutable YAML snapshot."""
+
+        task_config_path, task_config_snapshot = resolve_task_config_source(
+            self.task_config_path,
+            robotwin_root=config_robotwin_path(),
+        )
+        object.__setattr__(self, "task_config_path", task_config_path)
+        object.__setattr__(self, "_task_config_snapshot", task_config_snapshot)
+
+    @property
+    def _task_config_content_sha256(self) -> str:
+        """Return the pinned task-YAML digest for internal identity checks."""
+
+        return self._task_config_snapshot.content_sha256
 
     def calculate_seed(self, seed: int) -> int:
         """Normalize the caller-facing start seed.
@@ -1913,173 +1894,23 @@ class RoboTwinEnvCfg(EnvBaseCfg[RoboTwinEnv]):
     def get_task_config_for_seed(self, runtime_seed: int) -> dict[str, Any]:
         """Return the resolved task configuration for `setup_demo()`.
 
-        The returned config combines the YAML template, derived RoboTwin
-        fields from `_update_task_config()`, and the final
-        `task_config_overrides` patches.
+        The YAML bytes are pinned once when this config is constructed. The
+        returned config parses a fresh mutable mapping from that immutable
+        snapshot, combines official RoboTwin-derived fields, and finally
+        applies `task_config_overrides`.
         """
-        assert self.task_config_path is not None
-        with (
-            open(self.task_config_path, "r", encoding="utf-8") as f,
-        ):
-            task_config = yaml.load(f.read(), Loader=yaml.FullLoader)
-            ret = self._update_task_config(
-                task_config,
-                runtime_seed=runtime_seed,
-            )
-            self._apply_task_config_overrides(ret)
-
-            ret["task_name"] = self.task_name
-            return ret
-
-    def _apply_task_config_overrides(
-        self, task_config: dict[str, Any]
-    ) -> None:
-        """Apply final task-config overrides in place.
-
-        This helper treats each item in `task_config_overrides` as a patch to
-        the fully resolved task-config dictionary returned by
-        `_update_task_config()`.
-
-        Path rules:
-            - Each override is a `(path, value)` pair.
-            - `path` uses `/` as the separator for nested dictionary keys.
-            - Only dictionary traversal is supported; list indices are not.
-            - Every path segment must already exist in `task_config`.
-
-        Guard rails:
-            - Paths that correspond to env-managed fields or fields whose
-              values are derived earlier in `get_task_config()` are rejected.
-            - Invalid paths raise `ValueError`.
-            - Missing intermediate or leaf keys raise `KeyError`.
-
-        Args:
-            task_config (dict[str, Any]): The resolved task config to patch.
-        """
-        reserved_paths = {
-            "task_name",
-            "seed",
-            "now_ep_num",
-            "eval_mode",
-            "is_test",
-            "camera/head_camera_type",
-            "embodiment",
-        }
-        for path, value in self.task_config_overrides or []:
-            if path in reserved_paths:
-                raise ValueError(
-                    f"Task config override path {path!r} is not supported "
-                    "because it affects env-managed or derived fields."
-                )
-
-            keys = path.split("/")
-            if not path or any(key == "" for key in keys):
-                raise ValueError(
-                    f"Invalid task config override path {path!r}."
-                )
-
-            target: Any = task_config
-            for key in keys[:-1]:
-                if not isinstance(target, dict):
-                    raise KeyError(
-                        f"Task config override path {path!r} does not "
-                        f"resolve to a nested dict at {key!r}."
-                    )
-                if key not in target:
-                    raise KeyError(
-                        f"Task config override path {path!r} is missing "
-                        f"segment {key!r}."
-                    )
-                target = target[key]
-
-            if not isinstance(target, dict):
-                raise KeyError(
-                    f"Task config override path {path!r} does not resolve "
-                    "to a dict parent."
-                )
-
-            leaf_key = keys[-1]
-            if leaf_key not in target:
-                raise KeyError(
-                    f"Task config override path {path!r} is missing leaf "
-                    f"key {leaf_key!r}."
-                )
-            target[leaf_key] = value
-
-    def _update_task_config(
-        self,
-        task_args: dict[str, Any],
-        *,
-        runtime_seed: int,
-    ) -> dict[str, Any]:
-        """Update the task configuration.
-
-        The function reads additional configuration files for task arguments
-        such as embodiment and camera settings, and updates the task arguments
-        accordingly. The returned dictionary is used for `setup_demo()`.
-
-        """
-        embodiment_type: list[str] = task_args.get("embodiment")  # type: ignore
-        with open(self.embodiment_config_path, "r", encoding="utf-8") as f:
-            embodiment_types = yaml.load(f.read(), Loader=yaml.FullLoader)
-
-        def get_embodiment_file(embodiment_type: str) -> str:
-            robot_file = embodiment_types[embodiment_type]["file_path"]
-            if robot_file is None:
-                raise ValueError("No embodiment files")
-            return robot_file
-
-        def get_embodiment_config(robot_file):
-            robot_config_file = os.path.join(robot_file, "config.yml")
-            with open(robot_config_file, "r", encoding="utf-8") as f:
-                embodiment_args = yaml.load(f.read(), Loader=yaml.FullLoader)
-            return embodiment_args
-
-        with open(self.camera_config_path, "r", encoding="utf-8") as f:
-            camera_config = yaml.load(f.read(), Loader=yaml.FullLoader)
-
-        head_camera_type = task_args["camera"]["head_camera_type"]
-        task_args["head_camera_h"] = camera_config[head_camera_type]["h"]
-        task_args["head_camera_w"] = camera_config[head_camera_type]["w"]
-
-        if len(embodiment_type) == 1:
-            task_args["left_robot_file"] = get_embodiment_file(
-                embodiment_type[0]
-            )
-            task_args["right_robot_file"] = get_embodiment_file(
-                embodiment_type[0]
-            )
-            task_args["dual_arm_embodied"] = True
-        elif len(embodiment_type) == 3:
-            raise NotImplementedError(
-                "RoboTwinEnv currently only supports a combined dual-arm "
-                "robot layout. Task configs that specify separate left/right "
-                "embodiments are not supported."
-            )
-        else:
-            raise RuntimeError("embodiment items should be 1 or 3")
-
-        task_args["left_embodiment_config"] = get_embodiment_config(
-            task_args["left_robot_file"]
+        return build_task_config(
+            snapshot=self._task_config_snapshot,
+            source=self.task_config_path or "task config snapshot",
+            task_name=self.task_name,
+            runtime_seed=runtime_seed,
+            episode_id=self.episode_id,
+            eval_mode=self.eval_mode,
+            embodiment_config_path=self.embodiment_config_path,
+            camera_config_path=self.camera_config_path,
+            robotwin_root=config_robotwin_path(),
+            task_config_overrides=self.task_config_overrides,
         )
-        task_args["right_embodiment_config"] = get_embodiment_config(
-            task_args["right_robot_file"]
-        )
-        if len(embodiment_type) == 1:
-            embodiment_name = str(embodiment_type[0])
-        else:
-            embodiment_name = (
-                str(embodiment_type[0]) + "+" + str(embodiment_type[1])
-            )
-        task_args["embodiment_name"] = embodiment_name
-
-        # update attributes in self
-
-        task_args["seed"] = runtime_seed
-        task_args["now_ep_num"] = self.episode_id
-        task_args["eval_mode"] = self.eval_mode
-        task_args["is_test"] = self.eval_mode
-
-        return task_args
 
 
 def create_task_from_name(task_name: str) -> Base_Task:

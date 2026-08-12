@@ -58,7 +58,7 @@ class Config(SettingConfig):
     device: str | None = None
     output_path: str = "eval_result/robotwin_eval/eval_result.json"
     mode: Literal["local", "ray"] = "local"
-    config_type: Literal["demo_clean", "demo_randomized"] = "demo_clean"
+    config_type: str = "demo_clean"
     seed: int = 0
     use_action_chunk_size: int = 32
     save_video: bool = False
@@ -88,7 +88,7 @@ def evaluate_tasks_locally(
     task_names: list[str],
     episode_num: int,
     device: str,
-    config_type: Literal["demo_clean", "demo_randomized"] = "demo_clean",
+    config_type: str = "demo_clean",
     seed: int = 0,
     save_video: bool = False,
 ) -> dict:
@@ -114,7 +114,7 @@ def evaluate_tasks_remote(
     device: str,
     gpu_ids: list[int],
     workers_per_gpu: int,
-    config_type: Literal["demo_clean", "demo_randomized"] = "demo_clean",
+    config_type: str = "demo_clean",
     seed: int = 0,
     ray_temp_dir: str | None = None,
     save_video: bool = False,
