@@ -6,7 +6,7 @@
   "output_bucket": "robot_lab,robot_lab2",
   "num_workers": 1,
   "gpu_per_worker": 1,
-  "wall_time": 240,
+  "wall_time": 360,
   "queue_name": "project-5090-robot-lab-bcloud-bj",
   "project_id": "horizon-labs",
   "job_password": "1227",
