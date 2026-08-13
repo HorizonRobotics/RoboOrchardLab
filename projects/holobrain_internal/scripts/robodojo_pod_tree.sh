@@ -41,6 +41,10 @@ dest = pathlib.Path(sys.argv[1])
 # (anchor, replacement, a string that must be present afterwards)
 PATCHES = [
     (
+        # NOT the operative lever -- eval_policy.sh passes --num_envs
+        # explicitly, so this default never wins. Kept because the value does
+        # travel and may have other consumers; see the eval_policy.sh entry
+        # below for the one that decides.
         "src/eval_client/main.py",
         'parser.add_argument("--num_envs", type=int, default=1, '
         'help="Number of environments to spawn.")',
@@ -69,6 +73,9 @@ PATCHES = [
         'ROBODOJO_PHYSX_MONITOR',
     ),
     (
+        # Also NOT the operative lever: main.py ignores the --eval_batch it
+        # receives and calls _eval_batch_from_deploy(), which re-reads
+        # deploy.yml. Kept for the same reason as above.
         "XPolicyLab/utils/setup_env_client.sh",
         'protocol="${protocol_override:-${yaml_protocol}}"',
         'protocol="${protocol_override:-${yaml_protocol}}"\n'
@@ -76,6 +83,30 @@ PATCHES = [
         '# main.py caps num_envs at 1 while eval_batch is false, so a policy\n'
         '# with per-env memory needs this too. Unset leaves the yaml value.\n'
         'eval_batch="${ROBODOJO_EVAL_BATCH:-${eval_batch}}"',
+        'ROBODOJO_EVAL_BATCH',
+    ),
+    (
+        # THE lever for num_envs. eval_policy.sh reads scene.num_envs out of
+        # the sim yaml -- 10 by default -- and passes it explicitly, which is
+        # why E2's first attempt ran single-env with num_envs=10 in the log.
+        "scripts/eval_policy.sh",
+        'num_envs="$(python3 -c "import sys,yaml;print(yaml.safe_load('
+        "open(sys.argv[1])).get('scene',{}).get('num_envs',1))\" "
+        '"$sim_cfg_file")"',
+        'num_envs="$(python3 -c "import sys,yaml;print(yaml.safe_load('
+        "open(sys.argv[1])).get('scene',{}).get('num_envs',1))\" "
+        '"$sim_cfg_file")"\n'
+        'num_envs="${ROBODOJO_NUM_ENVS:-$num_envs}"',
+        'ROBODOJO_NUM_ENVS:-$num_envs',
+    ),
+    (
+        # THE lever for eval_batch, which gates num_envs > 1.
+        "src/eval_client/main.py",
+        '    return bool(deploy_yml.get("eval_batch", False))',
+        '    override = os.environ.get("ROBODOJO_EVAL_BATCH")\n'
+        '    if override is not None and override.strip() != "":\n'
+        '        return override.strip().lower() in ("1", "true", "yes")\n'
+        '    return bool(deploy_yml.get("eval_batch", False))',
         'ROBODOJO_EVAL_BATCH',
     ),
 ]
