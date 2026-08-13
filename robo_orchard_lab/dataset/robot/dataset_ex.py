@@ -476,7 +476,6 @@ class DataLoader(TorchDataLoader):
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
                 max_dataset_concurrency=dataset._max_dataset_concurrency,
                 resample_ratios=dataset._resample_ratios,
-                dataset_names=dataset._dataset_names,
             )
         else:
             raise TypeError(
@@ -1364,12 +1363,19 @@ class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
     `get_dataset_row_num` method to return the number of rows in the dataset
     before sharding.
 
-    This class also include the sharding information, and the `create_dataset`
+    ``name`` optionally provides a stable source identity for consumers such
+    as :class:`DictIterableDataset` summaries. This class also includes the
+    sharding information, and the `create_dataset`
     method will apply the sharding to the created dataset. This is useful when
     we want to create a sharded dataset directly from the configuration.
     """
 
     class_type: ClassType[DatasetType]
+
+    name: str | None = Field(
+        default=None,
+        description="Optional stable name for this dataset item.",
+    )
 
     shard_id: int = Field(
         default=0, description="The ID of the shard to return.", ge=0
@@ -1504,6 +1510,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     row level. Batching is applied once to the complete resampled row stream,
     so ``drop_last`` only affects its final incomplete batch.
 
+    Item names for :meth:`summary` come from :attr:`DatasetItem.name`.
+    Unnamed items use ``item_0``, ``item_1``, and so on.
+
     Args:
         datasets (Iterable[DatasetItem]): An iterable of DatasetItems to create
             the dataset from.
@@ -1529,12 +1538,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             one multiplier per item. Defaults to None, which uses 1.0 for each
             item. Values other than 1.0 require ``shuffle=True``. Ratios are
             fixed at construction time.
-        dataset_names (Iterable[str] | None, optional): Optional names aligned
-            with ``datasets`` and used by :meth:`summary`. Defaults to None,
-            which generates ``item_0``, ``item_1``, and so on.
 
     Raises:
-        TypeError: If ratios are not numeric or names are not strings.
+        TypeError: If ratios are not numeric.
         ValueError: If iterable argument lengths do not match ``datasets``, or
             a ratio is non-finite, not positive, or non-unit while shuffling is
             disabled.
@@ -1552,7 +1558,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
         max_dataset_concurrency: int = 4,
         resample_ratios: float | Iterable[float] | None = None,
-        dataset_names: Iterable[str] | None = None,
     ):
         # try to make this instance compatible with HF Iterable at class-level
         # or instance-level if class-level MRO change fails
@@ -1611,35 +1616,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             raise ValueError(
                 "resample_ratios values other than 1.0 require shuffle=True."
             )
-        if dataset_names is None:
-            name_values = [
-                f"item_{index}" for index in range(len(self.dataset_items))
-            ]
-        else:
-            if isinstance(dataset_names, str):
-                raise TypeError(
-                    "dataset_names must be an iterable of strings, not one "
-                    "string."
-                )
-            try:
-                name_values = list(dataset_names)
-            except TypeError as exc:
-                raise TypeError(
-                    "dataset_names must be an iterable of strings."
-                ) from exc
-            if len(name_values) != len(self.dataset_items):
-                raise ValueError(
-                    "dataset_names must contain one value per dataset item, "
-                    f"but got {len(name_values)} values for "
-                    f"{len(self.dataset_items)} items."
-                )
-            for index, name in enumerate(name_values):
-                if not isinstance(name, str):
-                    raise TypeError(
-                        "dataset_names values must be strings, but value at "
-                        f"index {index} is {type(name).__name__}."
-                    )
-        self._dataset_names = name_values
         self._total_dataset_length: list[int] | None = None
         self._total_indices_length: list[int] | None = None
 
@@ -1701,7 +1677,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             max_dataset_concurrency=self._max_dataset_concurrency,
             shard_kwargs=self.shard_kwargs,
             resample_ratios=self._resample_ratios,
-            dataset_names=self._dataset_names,
         )
 
     def __repr__(self) -> str:
@@ -1797,12 +1772,15 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             f"[{'frame_ratio':>{frame_ratio_width}}] "
             f"[{'length':>{length_width}}]"
         ]
-        for name, scaled_length, base_length in zip(
-            self._dataset_names,
-            scaled_rows,
-            base_rows,
-            strict=True,
+        for index, (item, scaled_length, base_length) in enumerate(
+            zip(
+                self.dataset_items,
+                scaled_rows,
+                base_rows,
+                strict=True,
+            )
         ):
+            name = item.name if item.name is not None else f"item_{index}"
             sample_ratio = (
                 scaled_length / total_scaled_rows
                 if total_scaled_rows > 0

@@ -27,7 +27,13 @@ from typing import Any, Sequence, cast
 import pytest
 import torch
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+)
 from robo_orchard_core.utils.config import ClassType
 
 import robo_orchard_lab.transforms as transforms_pkg
@@ -199,6 +205,40 @@ class DummyTransformConfig(DictTransformConfig[DummyTransformType]):
         default_factory=dict,
         validation_alias=AliasChoices("input_column_mapping", "input_columns"),
     )
+
+
+class WrapperRowTransform(DictRowTransform[dict[str, int]]):
+    """A public row-transform implementation that is not a leaf transform."""
+
+    InitFromConfig: bool = True
+
+    cfg: WrapperRowTransformConfig
+
+    def __init__(self, cfg: WrapperRowTransformConfig) -> None:
+        self.cfg = cfg
+
+    def apply(
+        self, row: dict[str, int]
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        return row, dict(row)
+
+    @property
+    def mapped_input_columns(self) -> list[str]:
+        return ["value"]
+
+    @property
+    def mapped_output_columns(self) -> list[str]:
+        return ["value"]
+
+    def __add__(self, other: DictRowTransform[Any]) -> DictTransformPipeline:
+        return DictTransformPipeline.from_transforms([self, other])
+
+    def _leaf_transforms(self) -> tuple[DictTransform[Any], ...]:
+        return ()
+
+
+class WrapperRowTransformConfig(DictRowTransformConfig[WrapperRowTransform]):
+    class_type: ClassType[WrapperRowTransform] = WrapperRowTransform
 
 
 class StatefulCounterTransformConfig(
@@ -1143,6 +1183,32 @@ class TestDictTransformPipeline:
         assert outer_cfg.transforms[0] is inner_cfg.transforms[0]
         assert outer_cfg.transforms[1] is inner_cfg.transforms[1]
         assert transform({"value": 5}) == {"value": 65}
+
+    def test_nested_pipeline_config_serialized_input_flattens_and_runs(self):
+        inner_cfg = DictTransformPipelineConfig(
+            transforms=[
+                DummyTransformConfig(add_value=10),
+                DummyTransformConfig(add_value=20),
+            ]
+        )
+        outer_cfg = DictTransformPipelineConfig.model_validate(
+            {
+                "transforms": [
+                    inner_cfg.model_dump(mode="json"),
+                    DummyTransformConfig(add_value=30).model_dump(mode="json"),
+                ]
+            }
+        )
+
+        assert len(outer_cfg.transforms) == 3
+        assert outer_cfg()({"value": 5}) == {"value": 65}
+
+    def test_pipeline_config_rejects_nonleaf_row_transform_config(self):
+        wrapper_cfg = WrapperRowTransformConfig()
+
+        assert wrapper_cfg()({"value": 5}) == {"value": 5}
+        with pytest.raises(ValidationError, match="DictTransformConfig"):
+            DictTransformPipelineConfig(transforms=[wrapper_cfg])
 
     def test_pipeline_constructor_respects_config_call_contract(self):
         cfg = KwargOnlyTransformConfig(add_value=10)

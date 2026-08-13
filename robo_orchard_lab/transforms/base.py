@@ -31,12 +31,14 @@ from pydantic import (
     AliasChoices,
     BaseModel,
     Field,
+    field_validator,
 )
 from robo_orchard_core.utils.config import (
     ClassConfig,
     ClassType,
     Config,
     ConfigInstanceOf,
+    load_config_class,
     load_from,
 )
 from typing_extensions import TypeVar
@@ -946,6 +948,38 @@ class DictTransformPipelineConfig(
     transforms: Sequence[ConfigInstanceOf[DictTransformConfig]] = Field(
         min_length=1
     )
+
+    @field_validator("transforms", mode="before")
+    @classmethod
+    def _flatten_nested_pipeline_configs_before_leaf_validation(
+        cls,
+        configs: Any,
+    ) -> Any:
+        """Expand nested pipeline configs before enforcing leaf config type.
+
+        Runtime pipelines execute flattened ``DictTransform`` leaves, while
+        nested canonical and legacy pipeline configs are public composition
+        inputs. Expanding those containers before Core validates each field
+        entry preserves both contracts without accepting arbitrary row-aware
+        configs that cannot execute as leaves.
+        """
+        if not isinstance(configs, Sequence) or isinstance(
+            configs, (str, bytes, bytearray)
+        ):
+            return configs
+
+        flattened_configs: list[Any] = []
+        for config in configs:
+            resolved_config = (
+                load_config_class(config)
+                if isinstance(config, (str, dict))
+                else config
+            )
+            if isinstance(resolved_config, DictTransformPipelineConfig):
+                flattened_configs.extend(resolved_config.transforms)
+            else:
+                flattened_configs.append(config)
+        return flattened_configs
 
     def model_post_init(self, __context: Any) -> None:
         object.__setattr__(

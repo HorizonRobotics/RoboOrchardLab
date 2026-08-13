@@ -967,27 +967,6 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
                 resample_ratios=resample_ratios,
             )
 
-    @pytest.mark.parametrize(
-        "dataset_names,exception",
-        [
-            ([], ValueError),
-            (["only_one"], ValueError),
-            ("one_string", TypeError),
-            (["valid", 1], TypeError),
-        ],
-    )
-    def test_dataset_names_validate_public_contract(
-        self,
-        dummy_dataset_items: list[DatasetItem],
-        dataset_names: Any,
-        exception: type[Exception],
-    ):
-        with pytest.raises(exception):
-            DictIterableDataset(
-                dummy_dataset_items,
-                dataset_names=dataset_names,
-            )
-
     def test_zero_target_items_are_skipped_without_zero_weight_division(self):
         mixed = DictIterableDataset(
             [
@@ -1071,15 +1050,14 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         with pytest.raises(RuntimeError, match="produced no rows"):
             list(dataset)
 
-    def test_resample_metadata_survives_shard_and_dataloader_clone(
-        self,
-        dummy_dataset_items: list[DatasetItem],
-    ):
+    def test_resample_metadata_and_item_names_survive_shard_and_clone(self):
         dataset = DictIterableDataset(
-            dummy_dataset_items,
+            [
+                ArrayDatasetItem(data=list(range(10)), name="first"),
+                ArrayDatasetItem(data=list(range(100, 110)), name="second"),
+            ],
             shuffle=True,
             resample_ratios=[0.5, 2.0],
-            dataset_names=["first", "second"],
         )
 
         sharded = dataset.shard(num_shards=2, index=1)
@@ -1090,20 +1068,25 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         )
 
         assert sharded._resample_ratios == [0.5, 2.0]
-        assert sharded._dataset_names == ["first", "second"]
+        assert [item.name for item in sharded.dataset_items] == [
+            "first",
+            "second",
+        ]
         assert isinstance(dataloader.dataset, DictIterableDataset)
         assert dataloader.dataset._resample_ratios == [0.5, 2.0]
-        assert dataloader.dataset._dataset_names == ["first", "second"]
+        assert [item.name for item in dataloader.dataset.dataset_items] == [
+            "first",
+            "second",
+        ]
 
     def test_summary_reports_resampled_and_real_sharded_ratios(self):
         dataset = DictIterableDataset(
             [
-                ArrayDatasetItem(data=list(range(10))),
-                ArrayDatasetItem(data=list(range(10, 20))),
+                ArrayDatasetItem(data=list(range(10)), name="aaa"),
+                ArrayDatasetItem(data=list(range(10, 20)), name="数\n据"),
             ],
             shuffle=True,
             resample_ratios=[1.0, 3.0],
-            dataset_names=["aaa", "数\n据"],
         )
 
         summary = dataset.summary()
@@ -1744,13 +1727,34 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert dataloader.dataset.batch_loader_kwargs.drop_last is True
         assert len(list(dataloader)) == len(dataloader)
 
-    def test_dataset_item_shard_uses_accelerate_signature(self):
-        item = ArrayDatasetItem(data=list(range(10)))
+    def test_dataset_item_name_is_optional_and_survives_sharding(self):
+        unnamed_item = ArrayDatasetItem(data=[0])
+        item = ArrayDatasetItem(data=list(range(10)), name="source/action")
 
         sharded_item = item.shard(num_shards=3, index=1)
+        restored_item = ArrayDatasetItem.model_validate(item.model_dump())
 
+        assert unnamed_item.name is None
+        assert item.model_dump()["name"] == "source/action"
+        assert restored_item.name == "source/action"
+        assert sharded_item.name == "source/action"
         assert sharded_item.num_shards == 3
         assert sharded_item.shard_id == 1
+
+    def test_dict_iterable_summary_reads_current_dataset_item_names(self):
+        named_item = ArrayDatasetItem(data=[0], name="named")
+        dataset = DictIterableDataset(
+            [
+                named_item,
+                ArrayDatasetItem(data=[1]),
+            ]
+        )
+        named_item.name = "renamed"
+
+        summary = dataset.summary()
+
+        assert "renamed" in summary
+        assert "item_1" in summary
 
     def test_dict_iterable_shard_uses_accelerate_signature(
         self, dummy_dataset_items: list[DatasetItem]
