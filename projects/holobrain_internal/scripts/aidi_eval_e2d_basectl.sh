@@ -42,6 +42,14 @@ WORK="${WORKING_PATH:?WORKING_PATH unset}"
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_base
 TASK=cover_blocks
 EVAL_NUM=8          # >= 2*num_envs, or the reset line carrying the counters never fires
+#
+# Measured by b1 on 2026-08-13: the baseline scores above zero on exactly
+# ONE of cover_blocks' eight layouts (layout 1, 0.05). So the comparison
+# below rests on a single live data point and its verdict is a hint, not
+# a result. Consistent with the base arm's known 1/100 on this task. A
+# stronger control needs either a task the baseline can partially do, or
+# an observable finer than the graded score -- per-env action magnitude
+# would separate "the robot barely moves" from "it moves and is wrong".
 OUT="${E2_OUT:-/job_data/eval_out}"
 RD="${E2_RD:-/job_data/robodojo}"
 LOG="$RUN_DIR/logs/stages.txt"
@@ -101,7 +109,10 @@ import json, sys
 d, n = sys.argv[1], int(sys.argv[2])
 # A baseline package emits no bank_keys at all -- that absence is exactly what
 # the parser must tolerate here and must not tolerate in E2c.
-line = {"eval_episode": 2, "eval_forwards": 25 * n, "env_step": 800}
+# No eval_forwards: that field comes from the memory module, and this
+# script's whole point is a package that has none. Fabricating it made
+# the dry run pass while the real b1 stage FAILed.
+line = {"eval_episode": 2, "env_step": 800}
 open(d + "/eval.log", "w").write(f"INFO policy reset: {line}\n")
 break_it = __import__("os").environ.get("E2_DRYRUN_BREAK") == "1"
 # Only the multi-env stage breaks: b1 has to stay usable as the reference,
@@ -146,8 +157,12 @@ for log in pathlib.Path(out).rglob("*.log"):
             d = ast.literal_eval(line[line.index("{"):])
         except Exception:
             continue
-        if d.get("eval_forwards"):
-            forwards.append(d["eval_forwards"])
+        # Any counter at all. `eval_forwards` comes from the memory
+        # module, so a baseline package emits a reset line carrying only
+        # env_step -- keying off eval_forwards counted zero episodes on a
+        # stage that ran all eight.
+        if d.get("eval_forwards") or d.get("env_step"):
+            forwards.append(d.get("eval_forwards", 0))
         for names in (d.get("bank_keys") or {}).values():
             if names:
                 banks.append(sorted(names))
