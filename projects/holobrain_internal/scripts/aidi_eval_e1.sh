@@ -24,12 +24,31 @@
 set -uo pipefail
 
 RUN_DIR="${1:?usage: aidi_eval_e1.sh <bucket run dir>}"
-WORK="${WORKING_PATH:?WORKING_PATH unset}"
+
+# E1_DRYRUN=1 runs every branch with no GPU, no Isaac Sim and no bucket, so
+# the control flow and the provenance assertions get exercised before a queue
+# slot is spent on them. It was added after a `local` statement referring to
+# its own earlier assignment killed the pod four seconds in -- bash -n is a
+# parse, not a run.
+DRY="${E1_DRYRUN:-0}"
+WORK="${WORKING_PATH:-${PWD}}"
+if [ "$DRY" = "0" ]; then
+    : "${WORKING_PATH:?WORKING_PATH unset}"
+fi
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_mem
+if [ "$DRY" != "0" ]; then
+  # The JFS copy the bucket one was built from -- same bytes, readable here.
+  BASE_PKG=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/100k_memory6_mem
+fi
 TASKS='cover_blocks,match_and_pick_from_conveyor'
-PKGS=/job_data/pkgs
-OUT=/job_data/eval_out
+if [ "$DRY" = "0" ]; then
+  PKGS=/job_data/pkgs
+  OUT=/job_data/eval_out
+else
+  PKGS="$RUN_DIR/dry_pkgs"
+  OUT="$RUN_DIR/dry_out"
+fi
 LOG="$RUN_DIR/logs/stages.txt"
 CAP="$RUN_DIR/logs/pod_capability.txt"
 
@@ -38,18 +57,21 @@ say() { echo "$*" | tee -a "$LOG"; }
 
 # ---------------------------------------------------------------- preflight
 {
-  echo "=== pod $(date -u +%FT%TZ) uid=$(id -u) host=$(hostname) ==="
-  df -h /job_data | tail -1
-  nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
+  echo "=== pod $(date -u +%FT%TZ) uid=$(id -u) host=$(hostname) dry=$DRY ==="
+  df -h /job_data 2>/dev/null | tail -1 || echo "(no /job_data)"
+  nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader \
+    2>/dev/null || echo "(no nvidia-smi)"
 } | tee -a "$CAP"
 
 # A real open(), not `test -f`: on JuiceFS-backed mounts ls/stat succeed while
 # open() returns EACCES, because access control is done per requesting uid.
-/usr/bin/python3 -c "
+if [ "$DRY" = "0" ]; then
+  /usr/bin/python3 -c "
 for p in ('$BASE_PKG/model.config.json',
           '/horizon-bucket/robot_lab2/datasets/assets/robodojo_assets/Eval_Layout/RoboDojo/arx_x5/1/cover_blocks_0.json'):
     open(p, 'rb').read(64); print('OPEN OK', p)
 " | tee -a "$CAP" || { echo "FATAL bucket not readable" | tee -a "$CAP"; exit 90; }
+fi
 
 touch "$OUT/.wtest" && echo JOB_DATA_WRITABLE | tee -a "$CAP" \
   || { echo FATAL_job_data_not_writable | tee -a "$CAP"; exit 90; }
@@ -65,7 +87,12 @@ touch "$OUT/.wtest" && echo JOB_DATA_WRITABLE | tee -a "$CAP" \
 # be a second difference from the baseline, and the point of a pure-config
 # probe is that there is exactly one.
 make_variant() {  # name, python-expr mutating m
-  local name="$1" expr="$2" d="$PKGS/$name" f
+  # Split, not one `local`: `local a="$1" b="$PKGS/$a"` dies under set -u
+  # with `a: unbound variable`, and bash -n does not see it.
+  local name="$1"
+  local expr="$2"
+  local d="$PKGS/$name"
+  local f
   rm -rf "$d"; mkdir -p "$d"
   for f in model.safetensors robodojo_arx_x5a_inference.config.json \
            robodojo_arx_x5a_processor.json urdf ckpt; do
@@ -99,6 +126,21 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
   # empty value selects the fixed (default) numbering.
   export HOLOBRAIN_STEP_INDEX_MODE="$mode"
 
+  if [ "$DRY" != "0" ]; then
+    # Two episodes' worth of the line deploy_policy.reset() prints, with the
+    # env_step this mode should produce: 25 forwards x 32 for the fix, a bare
+    # forward count for the old numbering. bank_len follows mem_length.
+    local dlog="$OUT/dry_worker/logs/cover_blocks.log"
+    mkdir -p "$(dirname "$dlog")"
+    local es=800 bl=16
+    [ "$mode" = "forward" ] && es=25
+    [ "$xbank" = "gt16" ] && bl=25
+    {
+      echo "INFO deploy_policy | policy reset: {'eval_episode': 0, 'eval_forwards': 0, 'eval_history_reads': 0, 'bank_lengths': {'per_mem_bank': [], 'cog_mem_bank': []}, 'env_step': 0}"
+      echo "INFO deploy_policy | policy reset: {'eval_episode': 1, 'eval_forwards': 25, 'eval_history_reads': 24, 'bank_lengths': {'per_mem_bank': [$bl], 'cog_mem_bank': [$bl]}, 'env_step': $es}"
+    } > "$dlog"
+    rc=0
+  else
   /usr/bin/python3 robodojo_eval.py \
     --policy_source "${WORK}/holobrain_robodojo_policy" \
     --model_dir "$pkg" \
@@ -113,6 +155,7 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
     --eval_result_dir "$OUT" \
     --run_tag "$name" \
     --tasks "$TASKS" || rc=$?
+  fi
   RC_ALL=$((RC_ALL + rc))
 
   # Provenance from the products, before archiving. A config file that was
@@ -164,7 +207,9 @@ if xbank != "any":
 print(f"[prov {name}] {'PASS' if ok else 'FAIL'}")
 PY
 
-  cp -r "$OUT/." "$RUN_DIR/" 2>&1 | tail -3 || true
+  if [ "$DRY" = "0" ]; then
+    cp -r "$OUT/." "$RUN_DIR/" 2>&1 | tail -3 || true
+  fi
   say "### stage $name done rc=$rc $(date -u +%FT%TZ)"
 }
 
