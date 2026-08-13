@@ -384,7 +384,19 @@ class HoloBrainRoboDojoPolicy:
         #
         # So advance by however many actions the previous forward dispatched.
         # Exact except in the last partial chunk of an episode ending early.
-        self._env_step = 0
+        #
+        # Per env, not a single scalar. The plan argued a scalar was right
+        # because every env advances in lockstep within a round -- true, and
+        # still the wrong conclusion, because this counter is bumped once per
+        # *env* per round, not once per round. Measured: num_envs=2 reported
+        # env_step=1600 for an 800-frame episode. A scalar therefore made
+        # step_index wrong by a factor of num_envs, which is the same defect
+        # class as the 32x one it was introduced to fix.
+        self._env_step: dict[int | None, int] = {}
+        # Which env the observation currently held came from. Filled by
+        # update_obs, because over ws that is the only entry point that runs
+        # (see update_obs for why).
+        self._cur_env_idx: int | None = None
         # The 17 evaluation cells measured before 2026-08-13 all ran with the
         # old per-forward numbering; keep it reachable so they can be
         # reproduced. Default is the correct one -- the old is a bug.
@@ -534,7 +546,7 @@ class HoloBrainRoboDojoPolicy:
         return getattr(target, "memoryvla", None) is not None
 
     def _run_holobrain(
-        self, data: MultiArmManipulationInput, env_idx: int = 0
+        self, data: MultiArmManipulationInput, env_idx: int | None = None
     ) -> Any:
         with torch.inference_mode():
             if self.pipeline is not None:
@@ -568,8 +580,25 @@ class HoloBrainRoboDojoPolicy:
                 # switched on (config_robodojo_dataset.py:288-293), so this
                 # key is itself the switch and a baseline package is
                 # untouched.
+                if env_idx is None:
+                    raise RuntimeError(
+                        "The memory keys its history per env, but this "
+                        "observation carried no `env_idx`, so there is "
+                        "nothing to key it by. Refusing to guess: the "
+                        "previous code defaulted to 0, which silently maps "
+                        "every env onto one bank -- shapes stay right, "
+                        "nothing raises, and only the success rate reflects "
+                        "it. RoboDojo stamps env_idx in "
+                        "eval_env.get_obs_batch (eval_env.py:285) on both "
+                        "the single-env and batch paths; another harness "
+                        "must do the same."
+                    )
                 model_input["step_index"] = [
-                    max(0, self._env_step - self._step_index_stride)
+                    max(
+                        0,
+                        self._env_step.get(env_idx, 0)
+                        - self._step_index_stride,
+                    )
                 ]
                 # Same gate as step_index above: that key is itself the
                 # memory switch, so a baseline package gets neither. Without
@@ -587,7 +616,7 @@ class HoloBrainRoboDojoPolicy:
         return f"eval-env{env_idx}-ep{self._reset_count}"
 
     def predict_actions(
-        self, obs: dict[str, Any], env_idx: int = 0
+        self, obs: dict[str, Any], env_idx: int | None = None
     ) -> np.ndarray:
         output = self._run_holobrain(
             self.data_preprocess(obs), env_idx=env_idx
@@ -621,21 +650,57 @@ class HoloBrainRoboDojoPolicy:
         )
         return actions
 
+    @staticmethod
+    def _obs_env_idx(obs: dict[str, Any]) -> int | None:
+        """Which env this observation came from, or None if it does not say.
+
+        Never falls back to a positional index. Position within a batch is
+        not identity: over ws the batch is split into one INFER per
+        observation, so every list this side ever sees has length 1 and the
+        position is always 0.
+        """
+        value = obs.get("env_idx")
+        return None if value is None else int(value)
+
     def update_obs(self, obs: dict[str, Any]) -> None:
+        """The per-env entry point -- including when num_envs > 1.
+
+        update_obs_batch below is unreachable over the websocket transport:
+        model_client.py:81-83 stores the batch client-side and returns, then
+        get_action_batch (:85-101) sends one INFER per observation, and
+        model_server._handle_infer binds update_obs + get_action, never the
+        batch pair. So this method runs once per env per round, which is why
+        the frame counter has to be per env, and why the env identity has to
+        be recovered here rather than from a batch argument.
+        """
         self._obs = obs
-        self._env_step += self._step_index_stride
+        self._cur_env_idx = self._obs_env_idx(obs)
+        self._advance(self._cur_env_idx)
 
     def update_obs_batch(self, obs_list: list[dict[str, Any]]) -> None:
-        self._batch_obs = {
-            int(obs.get("env_idx", index)): obs
-            for index, obs in enumerate(obs_list)
-        }
-        self._env_step += self._step_index_stride
+        """Kept for transports that really do hand over a batch.
+
+        Not reached over ws -- see update_obs. Each observation carries its
+        own env_idx, so a missing one is an error rather than a position.
+        """
+        self._batch_obs = {}
+        for obs in obs_list:
+            env_idx = self._obs_env_idx(obs)
+            self._batch_obs[env_idx] = obs
+            self._advance(env_idx)
+
+    def _advance(self, env_idx: int | None) -> None:
+        """One forward's worth of frames, for this env alone."""
+        self._env_step[env_idx] = (
+            self._env_step.get(env_idx, 0) + self._step_index_stride
+        )
 
     def get_action(self) -> list[dict[str, np.ndarray]]:
         if self._obs is None:
             raise RuntimeError("update_obs must be called before get_action.")
-        return action_chunk_to_dicts(self.predict_actions(self._obs))
+        return action_chunk_to_dicts(
+            self.predict_actions(self._obs, self._cur_env_idx)
+        )
 
     def get_action_batch(
         self,
@@ -676,14 +741,24 @@ class HoloBrainRoboDojoPolicy:
         memory = getattr(target, "memoryvla", None)
         stats = getattr(memory, "memory_stats", None)
         out = stats() if callable(stats) else {}
-        out["env_step"] = self._env_step
+        # Scalar max first, so the provenance parsers of E1/E2 keep working
+        # unchanged; the per-env map is the new observable. Both are needed:
+        # the max alone cannot show the counters are separate, and a run
+        # where they are not is exactly what this is watching for.
+        out["env_step"] = max(self._env_step.values(), default=0)
+        out["env_step_by_env"] = {
+            str(k): v for k, v in sorted(
+                self._env_step.items(), key=lambda kv: (kv[0] is None, kv[0])
+            )
+        }
         return out
 
     def reset(self) -> None:
         logger.info("policy reset: %s", self.memory_stats())
         self._obs = None
         self._batch_obs.clear()
-        self._env_step = 0
+        self._env_step.clear()
+        self._cur_env_idx = None
         self._reset_count += 1
         target = self.pipeline if self.pipeline is not None else self.model
         reset = getattr(target, "reset", None)

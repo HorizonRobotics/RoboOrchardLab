@@ -237,13 +237,29 @@ class MemoryVLAMemory(nn.Module):
             "eval_history_reads": self._eval_history_reads,
             "bank_lengths": {
                 name: sorted(len(v) for v in bank.bank.values())
-                for name, bank in (
-                    ("per_mem_bank", self.per_mem_bank),
-                    ("cog_mem_bank", self.cog_mem_bank),
-                )
-                if bank is not None and hasattr(bank, "bank")
+                for name, bank in self._named_banks()
+            },
+            # The keys themselves. bank_lengths already gives the key
+            # COUNT -- it has one entry per key, which is what E2's assertion
+            # counted -- but not key IDENTITY: two envs correctly separated
+            # and one env plus a stale episode that was never cleared both
+            # read as [16, 16]. Episode ids are short strings, so naming them
+            # costs nothing and turns an inference into a reading.
+            "bank_keys": {
+                name: sorted(str(k) for k in bank.bank)
+                for name, bank in self._named_banks()
             },
         }
+
+    def _named_banks(self):
+        return [
+            (name, bank)
+            for name, bank in (
+                ("per_mem_bank", self.per_mem_bank),
+                ("cog_mem_bank", self.cog_mem_bank),
+            )
+            if bank is not None and hasattr(bank, "bank")
+        ]
 
     def _check_eval_episode_boundary(self, timesteps: Optional[list]) -> None:
         """Raise if a new inference episode started without ``reset()``.
