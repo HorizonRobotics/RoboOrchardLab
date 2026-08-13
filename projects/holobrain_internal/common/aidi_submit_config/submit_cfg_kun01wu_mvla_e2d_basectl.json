@@ -1,0 +1,27 @@
+{
+  "job_name": "kun01wu_mvla_e2d_basectl",
+  "workspace_folder": "/jfs-public/users/kun01.wu/robo_orchard_lab/aidi_workspace/submit-kun01wu_mvla_e2d_basectl",
+  "docker_image": "docker.hobot.cc/imagesys/robotlab-mani:ubuntu2204-gcc11.4-cu128-nccl2277-torch280-erdma-tf5102-robodojo-v0.5",
+  "input_bucket": "robot_lab,robot_lab2",
+  "output_bucket": "robot_lab,robot_lab2",
+  "num_workers": 1,
+  "gpu_per_worker": 1,
+  "wall_time": 240,
+  "queue_name": "project-5090-robot-lab-bcloud-bj",
+  "project_id": "horizon-labs",
+  "job_password": "1227",
+  "execute": true,
+  "to_upload": [
+    "robo_orchard_lab",
+    "projects/holobrain_internal/common/holobrain_robodojo_policy",
+    "projects/holobrain_internal/common/robodojo_eval.py",
+    "projects/holobrain_internal/scripts/aidi_eval_e2d_basectl.sh",
+    "projects/holobrain_internal/scripts/robodojo_pod_tree.sh"
+  ],
+  "cmd": [
+    "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
+    "export XDG_CACHE_HOME=/tmp/c TRITON_CACHE_DIR=/tmp/c/triton TORCHINDUCTOR_CACHE_DIR=/tmp/c/inductor TORCH_HOME=/tmp/c/torch HF_HOME=/tmp/c/hf MPLCONFIGDIR=/tmp/c/mpl WANDB_DIR=/tmp/c/wandb TMPDIR=/tmp/c/tmp",
+    "mkdir -p /tmp/c/triton /tmp/c/inductor /tmp/c/torch /tmp/c/hf /tmp/c/mpl /tmp/c/wandb /tmp/c/tmp",
+    "bash aidi_eval_e2d_basectl.sh /horizon-bucket/robot_lab/users/kun01.wu/benchmarks/robodojo/eval_runs/robodojo-holobrain_mvla-e2d_basectl-20260813-1600-01"
+  ]
+}
