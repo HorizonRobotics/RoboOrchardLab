@@ -27,33 +27,51 @@ WORK="${WORKING_PATH:?WORKING_PATH unset}"
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_mem
 TASK=cover_blocks
-EVAL_NUM=4
-OUT=/job_data/eval_out
-RD=/job_data/robodojo
+# >= 2*max(num_envs). With eval_num == num_envs there is exactly one
+# batch, and the `policy reset` line that carries every counter this
+# script asserts on is only emitted when the NEXT batch begins -- which
+# is why E2b's n4 stage reported episodes_seen=0 and asserted nothing.
+EVAL_NUM=8
+# /job_data only exists on a pod; $E2_OUT lets the dry run write somewhere
+# real, without which no stage can reach a PASS and the dry run cannot
+# tell a broken script from a broken assertion.
+OUT="${E2_OUT:-/job_data/eval_out}"
+RD="${E2_RD:-/job_data/robodojo}"
 LOG="$RUN_DIR/logs/stages.txt"
 CAP="$RUN_DIR/logs/pod_capability.txt"
+
+# E2_DRYRUN=1 runs the whole control flow with no GPU, no sim, no bucket.
+# Ship-on-`bash -n` cost E1 a pod and an hour of queue; a parse is not a run.
+DRY="${E2_DRYRUN:-0}"
 
 mkdir -p "$RUN_DIR/logs" "$OUT"
 say() { echo "$*" | tee -a "$LOG"; }
 
 {
   echo "=== pod $(date -u +%FT%TZ) uid=$(id -u) host=$(hostname) ==="
-  nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
+  nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader \
+    2>/dev/null || echo "(no nvidia-smi)"
 } | tee -a "$CAP"
 
+if [ "$DRY" = "1" ]; then
+  say "### DRY RUN -- skipping package open, tree patch and eval"
+else
 /usr/bin/python3 -c "
 open('$BASE_PKG/model.config.json', 'rb').read(64); print('OPEN OK pkg')
 " | tee -a "$CAP" || { echo "FATAL pkg unreadable" | tee -a "$CAP"; exit 90; }
+fi
 
 # The image's RoboDojo caps num_envs at 1 and never forwards --num_envs, so it
 # has to be patched. Exits 91 if an anchor moved -- running unpatched here would
 # silently give num_envs=1 for every stage and look like a clean negative.
+if [ "$DRY" != "1" ]; then
 say "### patching RoboDojo tree $(date -u +%FT%TZ)"
 bash "${WORK}/robodojo_pod_tree.sh" "$RD" 2>&1 | tee -a "$LOG"
 rc=${PIPESTATUS[0]}
 [ "$rc" = "0" ] || { say "FATAL robodojo_pod_tree.sh rc=$rc -- refusing to run unpatched"; exit "$rc"; }
 grep -q ROBODOJO_NUM_ENVS "$RD/src/eval_client/main.py" \
   || { say "FATAL patch assertion failed after a clean rc"; exit 91; }
+fi
 
 RC_ALL=0
 
@@ -70,7 +88,32 @@ run_stage() {  # name, num_envs
   nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 5 \
     > "$vram" 2>/dev/null &
   local sampler=$!
+  [ -s "$vram" ] || echo 12000 > "$vram"
 
+  if [ "$DRY" = "1" ]; then
+    # A reset line shaped exactly like the real one, so the parser below is
+    # exercised on this run rather than merely syntax-checked.
+    mkdir -p "$OUT/w0"
+    /usr/bin/python3 - "$OUT/w0/eval.log" "$n" <<'FAKE'
+import json, sys
+path, n = sys.argv[1], int(sys.argv[2])
+# E2_DRYRUN_BREAK=1 emits the E2b defect -- every env on one key -- so the
+# negative control for "a FAIL reaches the exit code" is end to end rather
+# than argued. An assertion never seen to fail is not an assertion.
+import os
+if os.environ.get("E2_DRYRUN_BREAK") == "1":
+    n = 1
+keys = [f"eval-env{i}-ep1" for i in range(n)]
+d = {"eval_episode": 2, "eval_forwards": 25 * n, "eval_history_reads": 24 * n,
+     "bank_lengths": {"per_mem_bank": [16] * n, "cog_mem_bank": [16] * n},
+     "bank_keys": {"per_mem_bank": keys, "cog_mem_bank": keys},
+     "env_step": 800,
+     "env_step_by_env": {str(i): 800 for i in range(n)}}
+open(path, "w").write(f"INFO policy reset: {d}\n")
+json.dump({"details": {"l0": {"layout_id": "l0", "score": 0}}},
+          open(path.replace("eval.log", "_result.json"), "w"))
+FAKE
+  else
   /usr/bin/python3 robodojo_eval.py \
     --policy_source "${WORK}/holobrain_robodojo_policy" \
     --model_dir "$BASE_PKG" \
@@ -87,6 +130,7 @@ run_stage() {  # name, num_envs
     --eval_result_dir "$OUT" \
     --run_tag "$name" \
     --tasks "$TASK" || rc=$?
+  fi
   RC_ALL=$((RC_ALL + rc))
 
   kill "$sampler" 2>/dev/null || true
@@ -96,7 +140,7 @@ import ast, json, pathlib, sys
 out, name, n, vram, run_dir = sys.argv[1:6]
 n = int(n)
 
-keys, reads, forwards = set(), [], []
+key_sets, reads, forwards, env_steps = [], [], [], []
 for log in pathlib.Path(out).rglob("*.log"):
     for line in log.read_text(errors="replace").splitlines():
         if "policy reset" not in line or "{" not in line:
@@ -108,12 +152,16 @@ for log in pathlib.Path(out).rglob("*.log"):
         if d.get("eval_forwards"):
             forwards.append(d["eval_forwards"])
             reads.append(d.get("eval_history_reads", 0))
-        # bank_lengths is {bank_name: [len, ...]} -- one entry per live key, so
-        # its length is how many episodes the bank is holding at once. That is
-        # the only place separate-banks shows up as an observable.
-        for lens in (d.get("bank_lengths") or {}).values():
-            if lens:
-                keys.add(len(lens))
+        # bank_keys names the live episode keys. bank_lengths gives their
+        # count but not their identity, so it cannot tell 4 separated envs
+        # from 1 env plus 3 stale episodes.
+        for names in (d.get("bank_keys") or {}).values():
+            if names:
+                key_sets.append(sorted(names))
+        # Per env, so a counter that scales with num_envs is visible directly.
+        # E2b saw the scalar at 1600 for an 800-frame episode.
+        if d.get("env_step_by_env"):
+            env_steps.append(d["env_step_by_env"])
 
 peak = 0
 try:
@@ -127,9 +175,12 @@ for f in pathlib.Path(out).rglob("_result.json"):
     for k, v in (d.get("details") or {}).items():
         scores[str(v.get("layout_id", k))] = v.get("score")
 
-print(f"[prov {name}] num_envs={n} concurrent_bank_keys={sorted(keys) or None} "
+widest = max(key_sets, key=len) if key_sets else []
+worst_step = max((max(m.values()) for m in env_steps if m), default=None)
+print(f"[prov {name}] num_envs={n} widest_bank_keys={widest} "
       f"peak_vram={peak}MiB episodes_seen={len(forwards)} "
-      f"min_history_reads={min(reads) if reads else None}")
+      f"min_history_reads={min(reads) if reads else None} "
+      f"max_per_env_step={worst_step}")
 print(f"[prov {name}] scores={json.dumps(scores, sort_keys=True)}")
 
 ref = pathlib.Path(run_dir) / "logs" / "scores_ref.json"
@@ -138,15 +189,27 @@ if not forwards:
     print(f"[prov {name}] FAIL no episode reported")
     ok = False
 if n > 1:
-    if not keys or max(keys) < n:
-        print(f"[prov {name}] FAIL banks never held {n} episodes at once "
-              f"(saw {sorted(keys) or None}) -- the envs shared one bank, or "
-              "num_envs never actually reached the sim")
+    import re
+    envs_seen = {int(m.group(1))
+                 for k in widest
+                 for m in [re.match(r"eval-env(\d+)-ep", str(k))] if m}
+    if envs_seen != set(range(n)):
+        print(f"[prov {name}] FAIL banks never held one episode per env at "
+              f"once. Widest key set was {widest} -> envs {sorted(envs_seen)},"
+              f" expected {sorted(range(n))}. Either the envs shared a bank, "
+              "or num_envs never reached the sim.")
         ok = False
     if reads and min(reads) == 0:
         print(f"[prov {name}] FAIL an env retrieved history 0 times, so its "
               "memory contributed nothing")
         ok = False
+# An episode is 800 frames at valid_action_step=32, so ~800 per env. A counter
+# bumped per env instead of per round lands at n*800 -- what E2b measured.
+if worst_step is not None and worst_step > 900:
+    print(f"[prov {name}] FAIL per-env step counter reached {worst_step}, "
+          "well past the 800-frame episode -- it is still being scaled by "
+          "num_envs, so step_index is wrong by that factor")
+    ok = False
 if n == 1:
     ref.write_text(json.dumps(scores, sort_keys=True))
     print(f"[prov {name}] wrote reference scores")
@@ -161,7 +224,16 @@ elif ref.exists():
     else:
         print(f"[prov {name}] scores identical to num_envs=1")
 print(f"[prov {name}] {'PASS' if ok else 'FAIL'}")
+# Exit non-zero so a failed assertion reaches rc_sum. Without this the job
+# ends rc=0 with FAIL in the log, and "the job succeeded" means nothing about
+# what it was checking -- which is what E2b actually did.
+sys.exit(0 if ok else 3)
 PY
+  local prov_rc=${PIPESTATUS[0]}
+  if [ "$prov_rc" != "0" ]; then
+    say "### stage $name ASSERTION FAILED (parser rc=$prov_rc)"
+    RC_ALL=$((RC_ALL + prov_rc))
+  fi
 
   cp -r "$OUT/." "$RUN_DIR/" 2>&1 | tail -3 || true
   say "### stage $name done rc=$rc $(date -u +%FT%TZ)"
