@@ -400,11 +400,29 @@ class HoloBrainRoboDojoPolicy:
         # The 17 evaluation cells measured before 2026-08-13 all ran with the
         # old per-forward numbering; keep it reachable so they can be
         # reproduced. Default is the correct one -- the old is a bug.
-        self._step_index_stride = (
-            1
-            if os.environ.get("HOLOBRAIN_STEP_INDEX_MODE") == "forward"
-            else int(cfg.valid_action_step)
+        # How the predicted chunk reaches the environment.
+        #
+        #   chunk    -- one forward per valid_action_step frames, all of them
+        #               executed open loop. Every cell measured before
+        #               2026-08-13 ran this.
+        #   perstep  -- one forward per frame, only the first action executed.
+        #   ensemble -- perstep, plus ACT temporal ensembling across the
+        #               predictions earlier forwards made for this same frame.
+        #
+        # perstep and ensemble also align the memory with training: at
+        # stream_frame_stride=1 training writes a bank entry every frame, and
+        # so does a per-step forward.
+        self._action_mode, self._te_m, _stride = self._resolve_modes(
+            int(cfg.valid_action_step)
         )
+        # Per env, like everything else that survives across forwards --
+        # sharing one buffer across envs is the defect this file spent
+        # 2026-08-13 removing.
+        self._te_buf: dict[int | None, list] = {}
+        self._act_stats: dict[int | None, dict] = {}
+        self._last_cmd: dict[int | None, Any] = {}
+
+        self._step_index_stride = _stride
 
         if pipeline is None and model is None:
             if cfg.model_dir is None:
@@ -648,7 +666,116 @@ class HoloBrainRoboDojoPolicy:
             0.0,
             1.0,
         )
-        return actions
+        return self._deliver(actions, env_idx)
+
+    @staticmethod
+    def _resolve_modes(valid_action_step: int) -> tuple[str, float, int]:
+        """Read the environment: (action_mode, te_m, step_index_stride).
+
+        Separate from __init__ so it can be exercised without loading a 2.4 GB
+        checkpoint. A test that re-derives this expression instead would be
+        checking its own copy -- the failure mode that let two dead patches
+        ship this week.
+
+        ``te_m`` is ACT's m from w_i = exp(-m*i). NOTE the direction, which
+        reads backwards and which someone will eventually "fix": i = 0 is the
+        OLDEST surviving prediction, so older predictions carry MORE weight
+        and a LARGER m incorporates new observations more slowly. That is what
+        the paper states and what the reference implementation does -- its
+        exp_weights run over the populated entries, which are ordered oldest
+        first. Reversing it is a different algorithm, not a bug fix.
+
+        One forward is one frame under perstep/ensemble, so the step index
+        advances by 1 there -- which is what the pre-fix code did for the
+        wrong reason. HOLOBRAIN_STEP_INDEX_MODE=forward still reproduces the
+        old chunk-mode numbering, for the 17 cells measured under it.
+        """
+        mode = (
+            os.environ.get("HOLOBRAIN_ACTION_MODE", "chunk").strip().lower()
+        )
+        if mode not in ("chunk", "perstep", "ensemble"):
+            raise ValueError(
+                "HOLOBRAIN_ACTION_MODE must be chunk, perstep or ensemble, "
+                f"got {mode!r}"
+            )
+        te_m = float(os.environ.get("HOLOBRAIN_TE_M", "0.01"))
+        stride = (
+            1
+            if (
+                mode != "chunk"
+                or os.environ.get("HOLOBRAIN_STEP_INDEX_MODE") == "forward"
+            )
+            else int(valid_action_step)
+        )
+        return mode, te_m, stride
+
+    def _deliver(self, chunk: np.ndarray, env_idx: int | None) -> np.ndarray:
+        """Turn a full predicted chunk into what the env executes now.
+
+        Returning fewer actions than were predicted is what makes per-step
+        forwarding work without touching RoboDojo: its inner loop breaks once
+        it has executed the last action it was handed.
+        """
+        if self._action_mode == "chunk":
+            out = chunk
+        elif self._action_mode == "perstep":
+            out = chunk[:1].copy()
+        else:
+            out = self._ensemble(chunk, env_idx)
+        self._record_motion(out, env_idx)
+        return out
+
+    def _ensemble(self, chunk: np.ndarray, env_idx: int | None) -> np.ndarray:
+        """ACT temporal ensembling for the frame about to be executed.
+
+        Each past forward at frame ``t0`` predicted the whole window
+        ``t0 .. t0+H-1``; the ones whose window still covers the current frame
+        each contribute their prediction for it.
+        """
+        horizon = int(chunk.shape[0])
+        # _env_step was advanced by update_obs before this forward, so the
+        # frame being acted on is one stride back -- the same expression the
+        # step_index injection uses, and for the same reason.
+        now = max(0, self._env_step.get(env_idx, 0) - self._step_index_stride)
+
+        buf = self._te_buf.setdefault(env_idx, [])
+        buf.append((now, chunk))
+        # Nothing older than the horizon can still cover the current frame.
+        if len(buf) > horizon:
+            del buf[: len(buf) - horizon]
+
+        # Oldest first, which is the order ACT's exponential weights assume.
+        picks = [c[now - t0] for t0, c in buf if 0 <= now - t0 < horizon]
+        if not picks:  # pragma: no cover - buf always holds this forward
+            return chunk[:1].copy()
+        weights = np.exp(
+            -self._te_m * np.arange(len(picks), dtype=np.float32)
+        )
+        weights /= weights.sum()
+        blended = (np.stack(picks, axis=0) * weights[:, None]).sum(axis=0)
+        # A convex combination of clipped actions is still clipped, so the
+        # gripper bounds survive without re-clipping.
+        return np.asarray(blended, dtype=np.float32)[None, :]
+
+    def _record_motion(self, out: np.ndarray, env_idx: int | None) -> None:
+        """How far this env is actually being commanded to move.
+
+        A score of 0.0 cannot distinguish an arm that barely moves from one
+        that moves and is wrong; those are different bugs. This can, and it
+        costs two array subtractions per forward.
+        """
+        st = self._act_stats.setdefault(
+            env_idx, {"path": 0.0, "jump": 0.0, "forwards": 0}
+        )
+        st["forwards"] += 1
+        if out.shape[0] > 1:
+            st["path"] += float(np.abs(np.diff(out, axis=0)).sum())
+        prev = self._last_cmd.get(env_idx)
+        if prev is not None:
+            step = float(np.abs(out[0] - prev).sum())
+            st["path"] += step
+            st["jump"] = max(st["jump"], step)
+        self._last_cmd[env_idx] = out[-1].copy()
 
     @staticmethod
     def _obs_env_idx(obs: dict[str, Any]) -> int | None:
@@ -746,6 +873,21 @@ class HoloBrainRoboDojoPolicy:
         # the max alone cannot show the counters are separate, and a run
         # where they are not is exactly what this is watching for.
         out["env_step"] = max(self._env_step.values(), default=0)
+        out["action_mode"] = self._action_mode
+        out["action_path_by_env"] = {
+            str(k): round(v["path"], 2)
+            for k, v in sorted(
+                self._act_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
+        out["action_jump_by_env"] = {
+            str(k): round(v["jump"], 3)
+            for k, v in sorted(
+                self._act_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
         out["env_step_by_env"] = {
             str(k): v for k, v in sorted(
                 self._env_step.items(), key=lambda kv: (kv[0] is None, kv[0])
@@ -758,6 +900,9 @@ class HoloBrainRoboDojoPolicy:
         self._obs = None
         self._batch_obs.clear()
         self._env_step.clear()
+        self._te_buf.clear()
+        self._act_stats.clear()
+        self._last_cmd.clear()
         self._cur_env_idx = None
         self._reset_count += 1
         target = self.pipeline if self.pipeline is not None else self.model
