@@ -278,6 +278,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eval_num", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--processes_per_gpu", type=int, default=1)
+    parser.add_argument(
+        "--num_envs",
+        type=int,
+        default=None,
+        help=(
+            "Parallel envs inside one Isaac Sim instance. Needs a policy "
+            "whose memory is keyed per env; > 1 also flips eval_batch, since "
+            "main.py forces num_envs to 1 while that is false."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.processes_per_gpu < 1:
         parser.error("--processes_per_gpu must be at least 1")
@@ -946,6 +956,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.valid_action_step is not None:
         env["HOLOBRAIN_VALID_ACTION_STEP"] = str(args.valid_action_step)
         logger.info(f"valid_action_step: {args.valid_action_step}")
+    if args.num_envs is not None:
+        # Both, together: main.py caps num_envs at 1 unless eval_batch is on,
+        # so setting only the first is silently a no-op.
+        env["ROBODOJO_NUM_ENVS"] = str(args.num_envs)
+        env["ROBODOJO_EVAL_BATCH"] = "true" if args.num_envs > 1 else "false"
+        logger.info(f"num_envs: {args.num_envs} (eval_batch follows it)")
     env.update(
         OMNI_KIT_ACCEPT_EULA="YES",
         HOME="/tmp/robodojo-home",

@@ -289,15 +289,24 @@ class MemoryVLAMemory(nn.Module):
         self._last_timestep_seen = t
 
     def _autoreset_for_eval(self, episode_ids: Sequence[Any]) -> None:
-        """Drop episodes that are no longer in play, during inference only."""
-        current = tuple(dict.fromkeys(episode_ids))
-        if self._last_episode_ids is not None:
-            for eid in self._last_episode_ids:
-                if eid not in current:
-                    for bank in (self.per_mem_bank, self.cog_mem_bank):
-                        if bank is not None:
-                            bank.clear_episode(eid)
-        self._last_episode_ids = current
+        """Record which episodes are in play. Never clear one mid-episode.
+
+        This used to drop any id absent from the current batch, which was
+        safe only while there was exactly one id. With ``num_envs > 1`` the
+        eval loop runs one forward per env
+        (``deploy_policy.get_action_batch``), so each forward carries a
+        single id -- and the old rule would have cleared every *other* env's
+        bank on every forward. Silently: the shapes stay right, no error is
+        raised, and only the score reflects it.
+
+        So accumulate instead. An env that finishes early keeps its bank
+        until the next ``reset()``, which drops everything anyway; that holds
+        at most ``num_envs * mem_length`` entries within one episode. Bounded
+        -- and the alternative is cross-env corruption.
+        """
+        seen = dict.fromkeys(self._last_episode_ids or ())
+        seen.update(dict.fromkeys(episode_ids))
+        self._last_episode_ids = tuple(seen)
 
     # -- batch field extraction ------------------------------------------
     def _episode_ids(self, inputs: dict, batch_size: int) -> list:

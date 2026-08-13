@@ -364,6 +364,10 @@ class HoloBrainRoboDojoPolicy:
 
         self._obs: dict[str, Any] | None = None
         self._batch_obs: dict[int, dict[str, Any]] = {}
+        # Bumped by reset(), so an episode key carries the two properties the
+        # dataset's uuid has -- constant within an episode, distinct across
+        # them -- and, with the env index, distinct across envs as well.
+        self._reset_count = 0
         # The env frame index of the observation currently held, used as
         # `step_index` (see _run_holobrain for why the processor's own value
         # cannot be used).
@@ -529,7 +533,9 @@ class HoloBrainRoboDojoPolicy:
             target = getattr(self.pipeline, "model", None)
         return getattr(target, "memoryvla", None) is not None
 
-    def _run_holobrain(self, data: MultiArmManipulationInput) -> Any:
+    def _run_holobrain(
+        self, data: MultiArmManipulationInput, env_idx: int = 0
+    ) -> Any:
         with torch.inference_mode():
             if self.pipeline is not None:
                 if self._has_memory():
@@ -565,11 +571,27 @@ class HoloBrainRoboDojoPolicy:
                 model_input["step_index"] = [
                     max(0, self._env_step - self._step_index_stride)
                 ]
+                # Same gate as step_index above: that key is itself the
+                # memory switch, so a baseline package gets neither. Without
+                # a uuid the memory keys every env's history into one bank.
+                model_input["uuid"] = [self._episode_key(env_idx)]
             model_outputs = self.model(model_input)
             return self.processor.post_process(model_outputs, model_input)
 
-    def predict_actions(self, obs: dict[str, Any]) -> np.ndarray:
-        output = self._run_holobrain(self.data_preprocess(obs))
+    def _episode_key(self, env_idx: int) -> str:
+        """The memory's per-episode, per-env bank key.
+
+        Without this the module falls back to a constant for the whole batch
+        (wrapper.py:303-315), which is one bank shared by every env.
+        """
+        return f"eval-env{env_idx}-ep{self._reset_count}"
+
+    def predict_actions(
+        self, obs: dict[str, Any], env_idx: int = 0
+    ) -> np.ndarray:
+        output = self._run_holobrain(
+            self.data_preprocess(obs), env_idx=env_idx
+        )
         action_value = getattr(output, "action", output)
         actions = _to_numpy(action_value)
         if actions.ndim == 3 and actions.shape[1] == 1:
@@ -626,23 +648,18 @@ class HoloBrainRoboDojoPolicy:
             raise KeyError(
                 f"Missing RoboDojo observations for env indices: {missing}."
             )
-        if len(env_idx_list) > 1 and self._has_memory():
-            raise RuntimeError(
-                "Batched evaluation across {} envs is not supported by a "
-                "model with episode-scoped memory. The loop below runs one "
-                "forward per env, but they share this policy's single "
-                "episode identity, so all {} envs would read and write one "
-                "memory bank -- each acting on the others' history, with no "
-                "error and only the score to show for it. `deploy.yml` sets "
-                "eval_batch: false and main.py:313 forces num_envs to 1 on "
-                "the strength of it; that setting is now a correctness "
-                "requirement, not a throughput choice.".format(
-                    len(env_idx_list), len(env_idx_list)
-                )
-            )
+        # This used to refuse len(env_idx_list) > 1 outright with a memory,
+        # because every env shared one episode identity and so one bank. Each
+        # forward now carries its own key via _episode_key, and
+        # _autoreset_for_eval no longer clears the envs that are not in the
+        # current single-element batch. Both halves are needed: either one
+        # alone still corrupts, and neither raises when it does.
+        #
+        # Still one forward per env rather than a real batch, so only the
+        # simulation parallelises -- about 91% of eval wall-clock.
         return [
             action_chunk_to_dicts(
-                self.predict_actions(self._batch_obs[env_idx])
+                self.predict_actions(self._batch_obs[env_idx], env_idx)
             )
             for env_idx in env_idx_list
         ]
@@ -667,6 +684,7 @@ class HoloBrainRoboDojoPolicy:
         self._obs = None
         self._batch_obs.clear()
         self._env_step = 0
+        self._reset_count += 1
         target = self.pipeline if self.pipeline is not None else self.model
         reset = getattr(target, "reset", None)
         if callable(reset):

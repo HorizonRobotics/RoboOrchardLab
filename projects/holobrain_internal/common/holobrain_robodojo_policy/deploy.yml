@@ -9,11 +9,17 @@ env_cfg_type: arx_x5
 seed: 0
 action_type: joint
 gpu_id: null
-# Required, not merely preferred, for any model with episode-scoped memory:
-# get_action_batch runs one forward per env but they share this policy's
-# single episode identity, so N envs would read and write one memory bank.
-# main.py:313 forces num_envs to 1 while this is false; deploy_policy.py
-# raises if it is ever flipped with a memory-carrying model.
+# Default, no longer a correctness requirement. It used to be: every env
+# shared this policy's single episode identity, so N envs read and wrote one
+# memory bank, and deploy_policy raised rather than let that happen. Each
+# forward now carries its own key (deploy_policy._episode_key) and
+# _autoreset_for_eval no longer clears the envs outside the current
+# single-element batch.
+#
+# Still false here so ordinary runs keep the single-env path.
+# `robodojo_eval.py --num_envs N` sets $ROBODOJO_EVAL_BATCH, which
+# XPolicyLab/utils/setup_env_client.sh prefers over this value -- main.py caps
+# num_envs at 1 while eval_batch is false.
 eval_batch: false
 
 model_dir: null
