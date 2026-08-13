@@ -364,12 +364,31 @@ class HoloBrainRoboDojoPolicy:
 
         self._obs: dict[str, Any] | None = None
         self._batch_obs: dict[int, dict[str, Any]] = {}
-        # How many observations this episode has produced. `deploy.py`
-        # calls update_obs once per env step and get_action once per
-        # `valid_action_step` of them, so counting the former is the exact
-        # env frame index -- including for episodes that end early. See
-        # _run_holobrain for why the processor's own value cannot be used.
+        # The env frame index of the observation currently held, used as
+        # `step_index` (see _run_holobrain for why the processor's own value
+        # cannot be used).
+        #
+        # `deploy.py` does call update_obs once per env step, but the
+        # inner-loop calls never leave the client: model_client.py:60-62
+        # stores the obs and returns, and the ws protocol has no obs-only
+        # message (protocol/messages.py:8-22) -- INFER carries update_obs and
+        # get_action together (ws/model_server.py:230-256). So this method is
+        # reached once per *forward*, and counting calls gave 0..24 for an
+        # 800-frame episode while training fed the dataset's real 0..800.
+        # Measured: every `policy reset` line of a 50-episode cover_blocks run
+        # had env_step == eval_forwards exactly (25 == 25 for 40 of them).
+        #
+        # So advance by however many actions the previous forward dispatched.
+        # Exact except in the last partial chunk of an episode ending early.
         self._env_step = 0
+        # The 17 evaluation cells measured before 2026-08-13 all ran with the
+        # old per-forward numbering; keep it reachable so they can be
+        # reproduced. Default is the correct one -- the old is a bug.
+        self._step_index_stride = (
+            1
+            if os.environ.get("HOLOBRAIN_STEP_INDEX_MODE") == "forward"
+            else int(cfg.valid_action_step)
+        )
 
         if pipeline is None and model is None:
             if cfg.model_dir is None:
@@ -543,7 +562,9 @@ class HoloBrainRoboDojoPolicy:
                 # switched on (config_robodojo_dataset.py:288-293), so this
                 # key is itself the switch and a baseline package is
                 # untouched.
-                model_input["step_index"] = [max(0, self._env_step - 1)]
+                model_input["step_index"] = [
+                    max(0, self._env_step - self._step_index_stride)
+                ]
             model_outputs = self.model(model_input)
             return self.processor.post_process(model_outputs, model_input)
 
@@ -580,14 +601,14 @@ class HoloBrainRoboDojoPolicy:
 
     def update_obs(self, obs: dict[str, Any]) -> None:
         self._obs = obs
-        self._env_step += 1
+        self._env_step += self._step_index_stride
 
     def update_obs_batch(self, obs_list: list[dict[str, Any]]) -> None:
         self._batch_obs = {
             int(obs.get("env_idx", index)): obs
             for index, obs in enumerate(obs_list)
         }
-        self._env_step += 1
+        self._env_step += self._step_index_stride
 
     def get_action(self) -> list[dict[str, np.ndarray]]:
         if self._obs is None:
