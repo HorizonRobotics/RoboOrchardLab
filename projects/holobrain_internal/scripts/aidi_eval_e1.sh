@@ -36,10 +36,21 @@ if [ "$DRY" = "0" ]; then
     : "${WORKING_PATH:?WORKING_PATH unset}"
 fi
 
-BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_mem
+# Which half of the 2x2 this run covers. The stride32 half needs exactly
+# what E1 does -- four cells, each with its own numbering and seed, each
+# asserting on the product that the numbering took effect -- so it selects a
+# package and a stage list rather than forking the driver.
+STAGE_SET="${E1_STAGE_SET:-e1}"
+case "$STAGE_SET" in
+  e1)       PKG_NAME=100k_memory6_mem ;;
+  stride32) PKG_NAME=100k_memory6_mem_stride32 ;;
+  *) echo "FATAL E1_STAGE_SET must be e1 or stride32, got '$STAGE_SET'"; exit 2 ;;
+esac
+
+BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
 if [ "$DRY" != "0" ]; then
   # The JFS copy the bucket one was built from -- same bytes, readable here.
-  BASE_PKG=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/100k_memory6_mem
+  BASE_PKG=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/$PKG_NAME
 fi
 TASKS='cover_blocks,match_and_pick_from_conveyor'
 if [ "$DRY" = "0" ]; then
@@ -109,8 +120,10 @@ print('variant $name ->', {k: m[k] for k in ('mem_length', 'consolidate_type')})
 " | tee -a "$LOG" || { say "FATAL could not build variant $name"; exit 91; }
 }
 
-make_variant a0_mem32 "m['mem_length'] = 32"
-make_variant a1_fifo  "m['consolidate_type'] = 'fifo'"
+if [ "$STAGE_SET" = "e1" ]; then
+  make_variant a0_mem32 "m['mem_length'] = 32"
+  make_variant a1_fifo  "m['consolidate_type'] = 'fifo'"
+fi
 
 # ------------------------------------------------------------------- stages
 RC_ALL=0
@@ -217,10 +230,25 @@ PY
 # kill should not land on them. A0 still precedes A1 -- its bank_lengths is the
 # canary for whether a symlinked package is read at all, and if that fails A1's
 # number means nothing.
-run_stage s1_fix_s0 "$BASE_PKG"      ""      0 fixed   eq16
-run_stage s2_fix_s1 "$BASE_PKG"      ""      1 fixed   eq16
-run_stage a0_mem32  "$PKGS/a0_mem32" forward 0 forward gt16
-run_stage a1_fifo   "$PKGS/a1_fifo"  forward 0 forward eq16
+if [ "$STAGE_SET" = "e1" ]; then
+  run_stage s1_fix_s0 "$BASE_PKG"      ""      0 fixed   eq16
+  run_stage s2_fix_s1 "$BASE_PKG"      ""      1 fixed   eq16
+  run_stage a0_mem32  "$PKGS/a0_mem32" forward 0 forward gt16
+  run_stage a1_fifo   "$PKGS/a1_fifo"  forward 0 forward eq16
+else
+  # The bottom row of the 2x2, on stride32 weights. The fixed numbering is the
+  # MATCHED cell here -- stride32 training writes bank entries 32 frames apart,
+  # which is the spacing chunk-mode inference has always fed the memory. That
+  # is the reverse of the stride1 row, where the old numbering was the matched
+  # one, and it is why the prediction is "the diagonal beats the
+  # anti-diagonal" rather than "the fix helps".
+  #
+  # Matched cells first: a wall_time kill should not land on the deliverable.
+  run_stage t1_fix_s0 "$BASE_PKG" ""      0 fixed   eq16
+  run_stage t2_fix_s1 "$BASE_PKG" ""      1 fixed   eq16
+  run_stage t3_old_s0 "$BASE_PKG" forward 0 forward eq16
+  run_stage t4_old_s1 "$BASE_PKG" forward 1 forward eq16
+fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"
 exit "$RC_ALL"
