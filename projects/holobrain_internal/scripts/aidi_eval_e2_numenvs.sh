@@ -119,8 +119,12 @@ d = {"eval_episode": 2, "eval_forwards": 25 * n, "eval_history_reads": 24 * n,
      "act_gap_by_env": {str(i): 1.5 for i in range(envs)},
      # Non-zero under E2_DRYRUN_BREAK so the MISROUTED branch is
      # exercised locally rather than only in production.
-     "obs_dup_by_env": {str(i): (1 if (break_it and i) else 0)
-                        for i in range(envs)}}
+     "obs_dup_by_env": {str(i): 0 for i in range(envs)},
+     # Under E2_DRYRUN_BREAK the fabricated failure is now the one E7 exists
+     # to detect: another env's images with this env's proprioception.
+     "obs_dup_image_only_by_env": {str(i): (1 if (break_it and i) else 0)
+                                   for i in range(envs)},
+     "obs_dup_state_only_by_env": {str(i): 0 for i in range(envs)}}
 open(path, "w").write(f"INFO policy reset: {d}\n")
 json.dump({"details": {"l0": {"layout_id": "l0", "score": 0}}},
           open(path.replace("eval.log", "_result.json"), "w"))
@@ -154,6 +158,7 @@ n = int(n)
 
 key_sets, reads, forwards, env_steps, motion = [], [], [], [], []
 obs_jump, obs_dup, act_gap = [], [], []
+dup_img, dup_state = [], []
 for log in pathlib.Path(out).rglob("*.log"):
     for line in log.read_text(errors="replace").splitlines():
         if "policy reset" not in line or "{" not in line:
@@ -185,6 +190,8 @@ for log in pathlib.Path(out).rglob("*.log"):
         # than inference.
         for key, sink in (("obs_jump_by_env", obs_jump),
                           ("obs_dup_by_env", obs_dup),
+                          ("obs_dup_image_only_by_env", dup_img),
+                          ("obs_dup_state_only_by_env", dup_state),
                           ("act_gap_by_env", act_gap)):
             if d.get(key):
                 sink.append(d[key])
@@ -238,6 +245,19 @@ if obs_dup:
         print(f"[prov {name}] MISROUTED: an env received an observation "
               "byte-identical to another env's. This is direct evidence, not "
               "an inference from the score.")
+if dup_img:
+    only = _by_env(dup_img, sum)
+    print(f"[prov {name}] obs_dup_IMAGE_only per env = {only}")
+    if any(only.values()):
+        print(f"[prov {name}] MISMATCHED PAIR: an env was shown another "
+              "env's images alongside its own proprioception. A policy that "
+              "conditions mostly on images would aim where the images say -- "
+              "which is what act_gap 12.4 against a clean 0.3-1.1 looks like.")
+if dup_state:
+    # Expected early: every robot resets to the same home pose. Reported so it
+    # cannot be mistaken for the line above.
+    print(f"[prov {name}] obs_dup_state_only per env = "
+          f"{_by_env(dup_state, sum)}  (home-pose collisions; benign)")
 
 ref = pathlib.Path(run_dir) / "logs" / "scores_ref.json"
 ok = True

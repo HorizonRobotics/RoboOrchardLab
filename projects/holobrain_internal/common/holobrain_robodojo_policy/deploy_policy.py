@@ -850,7 +850,8 @@ class HoloBrainRoboDojoPolicy:
         would report a cross-env duplicate on the first frame of every
         episode and the reading would be useless exactly when it matters.
         """
-        parts: list = [hash(np.asarray(js, dtype=np.float64).tobytes())]
+        state_sig = hash(np.asarray(js, dtype=np.float64).tobytes())
+        image_sig = None
         vision = obs.get("vision")
         if isinstance(vision, dict):
             for name in sorted(vision)[:1]:
@@ -859,8 +860,8 @@ class HoloBrainRoboDojoPolicy:
                     arr = np.asarray(cam["color"])
                     # A strided sample: enough to separate two scenes, cheap
                     # enough to run every forward.
-                    parts.append(hash(arr[::16, ::16].tobytes()))
-        return tuple(parts)
+                    image_sig = hash(arr[::16, ::16].tobytes())
+        return state_sig, image_sig
 
     def _record_obs(self, obs: dict[str, Any], env_idx: int | None) -> None:
         """Is this env's observation stream coherent, and is it its own?
@@ -875,7 +876,15 @@ class HoloBrainRoboDojoPolicy:
         except Exception:
             return  # not a RoboDojo observation; nothing to measure
         st = self._obs_stats.setdefault(
-            env_idx, {"jump": 0.0, "jump_max": 0.0, "dup": 0, "n": 0}
+            env_idx,
+            {
+                "jump": 0.0,
+                "jump_max": 0.0,
+                "dup": 0,
+                "dup_image_only": 0,
+                "dup_state_only": 0,
+                "n": 0,
+            },
         )
         st["n"] += 1
         prev = self._last_js.get(env_idx)
@@ -885,12 +894,28 @@ class HoloBrainRoboDojoPolicy:
             st["jump_max"] = max(st["jump_max"], step)
         self._last_js[env_idx] = js
 
-        sig = self._obs_signature(obs, js)
-        # Byte-identical to what another env was most recently handed. Not an
-        # inference -- above zero is direct evidence of misrouting.
-        if any(k != env_idx and v == sig for k, v in self._obs_sig.items()):
-            st["dup"] += 1
-        self._obs_sig[env_idx] = sig
+        state_sig, image_sig = self._obs_signature(obs, js)
+        for other, (o_state, o_image) in self._obs_sig.items():
+            if other == env_idx:
+                continue
+            same_state = o_state == state_sig
+            same_image = image_sig is not None and o_image == image_sig
+            if same_state and same_image:
+                # The whole observation, byte for byte. Direct evidence of
+                # misrouting rather than an inference from the score.
+                st["dup"] += 1
+            elif same_image:
+                # Another env's images with this env's proprioception. A
+                # policy that conditions mostly on images would then predict a
+                # pose far from the joint state it was handed -- which is what
+                # act_gap 12.4 looks like against a clean 0.3-1.1.
+                st["dup_image_only"] += 1
+            elif same_state:
+                # Expected at the start of an episode: every robot resets to
+                # the same home pose. Counted separately so it cannot be
+                # mistaken for the line above.
+                st["dup_state_only"] += 1
+        self._obs_sig[env_idx] = (state_sig, image_sig)
 
     def _advance(self, env_idx: int | None) -> None:
         """One forward's worth of frames, for this env alone."""
@@ -966,6 +991,20 @@ class HoloBrainRoboDojoPolicy:
         }
         out["obs_dup_by_env"] = {
             str(k): v["dup"]
+            for k, v in sorted(
+                self._obs_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
+        out["obs_dup_image_only_by_env"] = {
+            str(k): v["dup_image_only"]
+            for k, v in sorted(
+                self._obs_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
+        out["obs_dup_state_only_by_env"] = {
+            str(k): v["dup_state_only"]
             for k, v in sorted(
                 self._obs_stats.items(),
                 key=lambda kv: (kv[0] is None, kv[0]),

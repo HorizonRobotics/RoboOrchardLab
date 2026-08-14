@@ -112,6 +112,38 @@ check("identical joint state + different scene is NOT a duplicate",
       all(v["dup"] == 0 for v in s._obs_stats.values()),
       str({k: v["dup"] for k, v in s._obs_stats.items()}))
 
+print("    the three duplicate kinds must not be confused with each other:")
+
+
+def dup_counts(first, second):
+    s = stub()
+    s.update_obs(first)
+    s.update_obs(second)
+    st = s._obs_stats[second["env_idx"]]
+    return st["dup"], st["dup_image_only"], st["dup_state_only"]
+
+POSE_A, POSE_B = HOME + 0.5, HOME + 2.5
+
+# Whole observation reused: the misrouting E6 already measured as zero.
+full = dup_counts(obs(0, POSE_A, scene=3),
+                  {**obs(0, POSE_A, scene=3), "env_idx": 1})
+check("identical image AND state -> dup only", full == (1, 0, 0), str(full))
+
+# env1's own robot, env0's cameras. A policy conditioning mostly on images
+# would aim where the images say, far from the joint state it was handed --
+# which is what act_gap 12.4 against a clean 0.3-1.1 looks like.
+img = dup_counts(obs(0, POSE_A, scene=3),
+                 {**obs(1, POSE_B, scene=3)})
+check("same image, different state -> dup_image_only only",
+      img == (0, 1, 0), str(img))
+
+# Both robots at the home pose in different scenes: expected at episode start,
+# and the reason the signature includes images at all.
+stt = dup_counts(obs(0, POSE_A, scene=3),
+                 {**obs(1, POSE_A, scene=9)})
+check("same state, different image -> dup_state_only only",
+      stt == (0, 0, 1), str(stt))
+
 # ================================================== 2. the two failure shapes
 print("--- [2] the readings separate a frozen stream from a spliced one")
 s = stub()
@@ -174,7 +206,8 @@ for env in (0, 1):
     s.update_obs(obs(env, HOME + 0.1 * (env + 1), scene=env + 1))
     s.predict_actions(s._obs, env)
 stats = s.memory_stats()
-for key in ("obs_jump_by_env", "obs_dup_by_env", "act_gap_by_env"):
+for key in ("obs_jump_by_env", "obs_dup_by_env", "act_gap_by_env",
+            "obs_dup_image_only_by_env", "obs_dup_state_only_by_env"):
     check(f"memory_stats carries {key}",
           set(stats.get(key, {})) == {"0", "1"}, str(stats.get(key)))
 s.reset()
