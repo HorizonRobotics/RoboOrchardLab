@@ -167,10 +167,16 @@ if not forwards:
 if modes != {"ensemble"}:
     print(f"[prov ens50] FAIL policy reported mode {sorted(modes) or None}")
     ok = False
-if lo is not None and lo < 600:
-    print(f"[prov ens50] FAIL an episode ran only {lo} forwards -- per-step "
-          "forwarding did not take effect there, so its number is chunk "
-          "mode's wearing an ensemble label")
+# 64, not 600. The first version FAILed a good run on min=538, reading a
+# 538-frame episode -- one that ended early because it succeeded -- as "the
+# mode did not take effect". Chunk mode cannot exceed ceil(801/32) = 26
+# forwards however long the episode, so 64 separates the two conditions
+# without assuming anything about episode length. E3 already had the
+# counter-example: its one success ran 667 frames, not 801.
+if lo is not None and lo < 64:
+    print(f"[prov ens50] FAIL an episode ran only {lo} forwards -- chunk mode "
+          "caps at 26, so this episode was executed open loop and its number "
+          "is chunk mode's wearing an ensemble label")
     ok = False
 if paths and max(paths) <= 0:
     print("[prov ens50] FAIL the arm was never commanded to move")
