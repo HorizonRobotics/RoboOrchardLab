@@ -135,15 +135,13 @@ def policy_stub():
     s = object.__new__(cls)
     s._obs = None
     s._batch_obs = {}
-    s._env_step = {}
-    s._cur_env_idx = None
     s._reset_count = 1
     s.pipeline = None
-    # Through the real resolver, not a copy of its defaults: these checks are
-    # about the chunk-mode behaviour every measured cell used, and a stub that
-    # hard-codes the stride would keep passing after the resolver changed.
+    # Through the real resolver and the real state initialiser, not copies of
+    # them: a stub that lists the fields by hand goes stale the next time one
+    # is added, which it has three times.
     s._action_mode, s._te_m, s._step_index_stride = cls._resolve_modes(32)
-    s._te_buf, s._act_stats, s._last_cmd = {}, {}, {}
+    s._init_runtime_state()
     return s
 
 

@@ -101,8 +101,10 @@ path, n = sys.argv[1], int(sys.argv[2])
 # negative control for "a FAIL reaches the exit code" is end to end rather
 # than argued. An assertion never seen to fail is not an assertion.
 import os
-if os.environ.get("E2_DRYRUN_BREAK") == "1":
-    n = 1
+break_it = os.environ.get("E2_DRYRUN_BREAK") == "1"
+envs = n            # the real env count, kept for the per-env maps below
+if break_it:
+    n = 1           # one bank key: the E2b defect, every env sharing a bank
 keys = [f"eval-env{i}-ep1" for i in range(n)]
 d = {"eval_episode": 2, "eval_forwards": 25 * n, "eval_history_reads": 24 * n,
      "bank_lengths": {"per_mem_bank": [16] * n, "cog_mem_bank": [16] * n},
@@ -112,7 +114,13 @@ d = {"eval_episode": 2, "eval_forwards": 25 * n, "eval_history_reads": 24 * n,
      # Present so the dry run actually exercises the motion reading this
      # re-run exists for. Omitting it is how E2d shipped a parser keyed
      # to a field the real thing never emits.
-     "action_path_by_env": {str(i): 100.0 for i in range(n)}}
+     "action_path_by_env": {str(i): 100.0 for i in range(n)},
+     "obs_jump_by_env": {str(i): 0.12 for i in range(envs)},
+     "act_gap_by_env": {str(i): 1.5 for i in range(envs)},
+     # Non-zero under E2_DRYRUN_BREAK so the MISROUTED branch is
+     # exercised locally rather than only in production.
+     "obs_dup_by_env": {str(i): (1 if (break_it and i) else 0)
+                        for i in range(envs)}}
 open(path, "w").write(f"INFO policy reset: {d}\n")
 json.dump({"details": {"l0": {"layout_id": "l0", "score": 0}}},
           open(path.replace("eval.log", "_result.json"), "w"))
@@ -145,6 +153,7 @@ out, name, n, vram, run_dir = sys.argv[1:6]
 n = int(n)
 
 key_sets, reads, forwards, env_steps, motion = [], [], [], [], []
+obs_jump, obs_dup, act_gap = [], [], []
 for log in pathlib.Path(out).rglob("*.log"):
     for line in log.read_text(errors="replace").splitlines():
         if "policy reset" not in line or "{" not in line:
@@ -171,6 +180,14 @@ for log in pathlib.Path(out).rglob("*.log"):
         # motion can, and in E3 it identified a cause on its own.
         if d.get("action_path_by_env"):
             motion.append(d["action_path_by_env"])
+        # Input side. action_path can only point upstream; these say what is
+        # actually arriving, and obs_dup in particular is evidence rather
+        # than inference.
+        for key, sink in (("obs_jump_by_env", obs_jump),
+                          ("obs_dup_by_env", obs_dup),
+                          ("act_gap_by_env", act_gap)):
+            if d.get(key):
+                sink.append(d[key])
 
 peak = 0
 try:
@@ -198,8 +215,29 @@ if motion:
             per_env.setdefault(k, []).append(v)
     summary = {k: round(sum(v) / len(v), 1) for k, v in sorted(per_env.items())}
     print(f"[prov {name}] action_path per env (mean over episodes) = {summary}")
-    print(f"[prov {name}] reference: E3 chunk mode, num_envs=1, "
-          "cover_blocks = 103.8 (n=1); E4 ensemble = 69.8 (n=49)")
+    print(f"[prov {name}] reference: chunk mode num_envs=1 cover_blocks "
+          "= 93.9 (E5, n=7, range 77.5-106.0)")
+
+def _by_env(rows, agg):
+    per = {}
+    for r in rows:
+        for k, v in r.items():
+            per.setdefault(k, []).append(v)
+    return {k: agg(v) for k, v in sorted(per.items())}
+
+if obs_jump:
+    print(f"[prov {name}] obs_jump per env (mean) = "
+          f"{_by_env(obs_jump, lambda v: round(sum(v) / len(v), 3))}")
+if act_gap:
+    print(f"[prov {name}] act_gap per env (max)   = "
+          f"{_by_env(act_gap, max)}")
+if obs_dup:
+    dups = _by_env(obs_dup, sum)
+    print(f"[prov {name}] obs_dup per env (total) = {dups}")
+    if any(dups.values()):
+        print(f"[prov {name}] MISROUTED: an env received an observation "
+              "byte-identical to another env's. This is direct evidence, not "
+              "an inference from the score.")
 
 ref = pathlib.Path(run_dir) / "logs" / "scores_ref.json"
 ok = True

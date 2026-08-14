@@ -392,11 +392,6 @@ class HoloBrainRoboDojoPolicy:
         # env_step=1600 for an 800-frame episode. A scalar therefore made
         # step_index wrong by a factor of num_envs, which is the same defect
         # class as the 32x one it was introduced to fix.
-        self._env_step: dict[int | None, int] = {}
-        # Which env the observation currently held came from. Filled by
-        # update_obs, because over ws that is the only entry point that runs
-        # (see update_obs for why).
-        self._cur_env_idx: int | None = None
         # The 17 evaluation cells measured before 2026-08-13 all ran with the
         # old per-forward numbering; keep it reachable so they can be
         # reproduced. Default is the correct one -- the old is a bug.
@@ -418,9 +413,7 @@ class HoloBrainRoboDojoPolicy:
         # Per env, like everything else that survives across forwards --
         # sharing one buffer across envs is the defect this file spent
         # 2026-08-13 removing.
-        self._te_buf: dict[int | None, list] = {}
-        self._act_stats: dict[int | None, dict] = {}
-        self._last_cmd: dict[int | None, Any] = {}
+        self._init_runtime_state()
 
         self._step_index_stride = _stride
 
@@ -765,9 +758,15 @@ class HoloBrainRoboDojoPolicy:
         costs two array subtractions per forward.
         """
         st = self._act_stats.setdefault(
-            env_idx, {"path": 0.0, "jump": 0.0, "forwards": 0}
+            env_idx, {"path": 0.0, "jump": 0.0, "gap": 0.0, "forwards": 0}
         )
         st["forwards"] += 1
+        # How far the chunk starts from the pose it was computed from. A chunk
+        # normally begins near the current state; computing it from another
+        # env's observation makes it begin far away.
+        js = self._last_js.get(env_idx)
+        if js is not None:
+            st["gap"] = max(st["gap"], float(np.abs(out[0] - js).sum()))
         if out.shape[0] > 1:
             st["path"] += float(np.abs(np.diff(out, axis=0)).sum())
         prev = self._last_cmd.get(env_idx)
@@ -803,6 +802,7 @@ class HoloBrainRoboDojoPolicy:
         self._obs = obs
         self._cur_env_idx = self._obs_env_idx(obs)
         self._advance(self._cur_env_idx)
+        self._record_obs(obs, self._cur_env_idx)
 
     def update_obs_batch(self, obs_list: list[dict[str, Any]]) -> None:
         """Kept for transports that really do hand over a batch.
@@ -815,6 +815,82 @@ class HoloBrainRoboDojoPolicy:
             env_idx = self._obs_env_idx(obs)
             self._batch_obs[env_idx] = obs
             self._advance(env_idx)
+
+    def _init_runtime_state(self) -> None:
+        """Every per-run, per-env dict, in one place.
+
+        Test stubs cannot call __init__ (it loads a 2.4 GB checkpoint) so they
+        build the object with object.__new__ and fill state in. Listing the
+        fields by hand in each stub went stale three times, once per new
+        reading added; calling this instead means adding state touches one
+        place. reset() uses it too, so "cleared on reset" and "present at
+        construction" cannot drift apart either.
+        """
+        # Per-env memory-bank keys and frame counters.
+        self._env_step: dict[int | None, int] = {}
+        self._cur_env_idx: int | None = None
+        # ACT temporal-ensemble prediction buffers.
+        self._te_buf: dict[int | None, list] = {}
+        # What the policy commands: motion, chunk-boundary jumps, and how far
+        # a chunk starts from the state it was computed from.
+        self._act_stats: dict[int | None, dict] = {}
+        self._last_cmd: dict[int | None, Any] = {}
+        # What each env is FED, as opposed to what the policy does with it.
+        # See _record_obs for why the output-side reading was not enough.
+        self._obs_stats: dict[int | None, dict] = {}
+        self._last_js: dict[int | None, Any] = {}
+        self._obs_sig: dict[int | None, tuple] = {}
+
+    @staticmethod
+    def _obs_signature(obs: dict[str, Any], js) -> tuple:
+        """Cheap identity for an observation.
+
+        Includes image bytes rather than only the joint vector: every robot
+        starts an episode at the same home pose, so a joints-only signature
+        would report a cross-env duplicate on the first frame of every
+        episode and the reading would be useless exactly when it matters.
+        """
+        parts: list = [hash(np.asarray(js, dtype=np.float64).tobytes())]
+        vision = obs.get("vision")
+        if isinstance(vision, dict):
+            for name in sorted(vision)[:1]:
+                cam = vision.get(name)
+                if isinstance(cam, dict) and "color" in cam:
+                    arr = np.asarray(cam["color"])
+                    # A strided sample: enough to separate two scenes, cheap
+                    # enough to run every forward.
+                    parts.append(hash(arr[::16, ::16].tobytes()))
+        return tuple(parts)
+
+    def _record_obs(self, obs: dict[str, Any], env_idx: int | None) -> None:
+        """Is this env's observation stream coherent, and is it its own?
+
+        E5 measured commanded motion per env and found, inside one batch of
+        four, two envs thrashing at 7-9x the single-env reference and two
+        below its minimum. That is an output-side symptom of an input-side
+        fault, and this makes the input directly readable instead.
+        """
+        try:
+            js = robodojo_obs_to_joint_state(obs)
+        except Exception:
+            return  # not a RoboDojo observation; nothing to measure
+        st = self._obs_stats.setdefault(
+            env_idx, {"jump": 0.0, "jump_max": 0.0, "dup": 0, "n": 0}
+        )
+        st["n"] += 1
+        prev = self._last_js.get(env_idx)
+        if prev is not None:
+            step = float(np.abs(js - prev).sum())
+            st["jump"] += step
+            st["jump_max"] = max(st["jump_max"], step)
+        self._last_js[env_idx] = js
+
+        sig = self._obs_signature(obs, js)
+        # Byte-identical to what another env was most recently handed. Not an
+        # inference -- above zero is direct evidence of misrouting.
+        if any(k != env_idx and v == sig for k, v in self._obs_sig.items()):
+            st["dup"] += 1
+        self._obs_sig[env_idx] = sig
 
     def _advance(self, env_idx: int | None) -> None:
         """One forward's worth of frames, for this env alone."""
@@ -881,6 +957,27 @@ class HoloBrainRoboDojoPolicy:
                 key=lambda kv: (kv[0] is None, kv[0]),
             )
         }
+        out["obs_jump_by_env"] = {
+            str(k): round(v["jump"] / max(1, v["n"] - 1), 3)
+            for k, v in sorted(
+                self._obs_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
+        out["obs_dup_by_env"] = {
+            str(k): v["dup"]
+            for k, v in sorted(
+                self._obs_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
+        out["act_gap_by_env"] = {
+            str(k): round(v["gap"], 3)
+            for k, v in sorted(
+                self._act_stats.items(),
+                key=lambda kv: (kv[0] is None, kv[0]),
+            )
+        }
         out["action_jump_by_env"] = {
             str(k): round(v["jump"], 3)
             for k, v in sorted(
@@ -899,11 +996,7 @@ class HoloBrainRoboDojoPolicy:
         logger.info("policy reset: %s", self.memory_stats())
         self._obs = None
         self._batch_obs.clear()
-        self._env_step.clear()
-        self._te_buf.clear()
-        self._act_stats.clear()
-        self._last_cmd.clear()
-        self._cur_env_idx = None
+        self._init_runtime_state()
         self._reset_count += 1
         target = self.pipeline if self.pipeline is not None else self.model
         reset = getattr(target, "reset", None)

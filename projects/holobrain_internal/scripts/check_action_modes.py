@@ -74,12 +74,10 @@ def wired(mode, te_m=None):
     s = object.__new__(cls)
     s._obs = None
     s._batch_obs = {}
-    s._env_step = {}
-    s._cur_env_idx = None
     s._reset_count = 1
     s.pipeline = None
     s._action_mode, s._te_m, s._step_index_stride = m, tm, stride
-    s._te_buf, s._act_stats, s._last_cmd = {}, {}, {}
+    s._init_runtime_state()
     s.processor, s.model = Proc(), fake_model
     s.cfg = types.SimpleNamespace(valid_action_step=HORIZON)
     s.data_preprocess = lambda obs: obs

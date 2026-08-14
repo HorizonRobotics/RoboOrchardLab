@@ -22,6 +22,6 @@
     "export PYTHONPATH=${WORKING_PATH}:$PYTHONPATH",
     "export XDG_CACHE_HOME=/tmp/c TRITON_CACHE_DIR=/tmp/c/triton TORCHINDUCTOR_CACHE_DIR=/tmp/c/inductor TORCH_HOME=/tmp/c/torch HF_HOME=/tmp/c/hf MPLCONFIGDIR=/tmp/c/mpl WANDB_DIR=/tmp/c/wandb TMPDIR=/tmp/c/tmp",
     "mkdir -p /tmp/c/triton /tmp/c/inductor /tmp/c/torch /tmp/c/hf /tmp/c/mpl /tmp/c/wandb /tmp/c/tmp",
-    "bash aidi_eval_e2_numenvs.sh /horizon-bucket/robot_lab/users/kun01.wu/benchmarks/robodojo/eval_runs/robodojo-holobrain_mvla-e5_numenvs_motion-20260814-0230-01"
+    "bash aidi_eval_e2_numenvs.sh /horizon-bucket/robot_lab/users/kun01.wu/benchmarks/robodojo/eval_runs/robodojo-holobrain_mvla-e6_obs_routing-20260814-0400-01"
   ]
 }
