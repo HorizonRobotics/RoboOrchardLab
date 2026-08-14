@@ -108,7 +108,11 @@ d = {"eval_episode": 2, "eval_forwards": 25 * n, "eval_history_reads": 24 * n,
      "bank_lengths": {"per_mem_bank": [16] * n, "cog_mem_bank": [16] * n},
      "bank_keys": {"per_mem_bank": keys, "cog_mem_bank": keys},
      "env_step": 800,
-     "env_step_by_env": {str(i): 800 for i in range(n)}}
+     "env_step_by_env": {str(i): 800 for i in range(n)},
+     # Present so the dry run actually exercises the motion reading this
+     # re-run exists for. Omitting it is how E2d shipped a parser keyed
+     # to a field the real thing never emits.
+     "action_path_by_env": {str(i): 100.0 for i in range(n)}}
 open(path, "w").write(f"INFO policy reset: {d}\n")
 json.dump({"details": {"l0": {"layout_id": "l0", "score": 0}}},
           open(path.replace("eval.log", "_result.json"), "w"))
@@ -140,7 +144,7 @@ import ast, json, pathlib, sys
 out, name, n, vram, run_dir = sys.argv[1:6]
 n = int(n)
 
-key_sets, reads, forwards, env_steps = [], [], [], []
+key_sets, reads, forwards, env_steps, motion = [], [], [], [], []
 for log in pathlib.Path(out).rglob("*.log"):
     for line in log.read_text(errors="replace").splitlines():
         if "policy reset" not in line or "{" not in line:
@@ -162,6 +166,11 @@ for log in pathlib.Path(out).rglob("*.log"):
         # E2b saw the scalar at 1600 for an 800-frame episode.
         if d.get("env_step_by_env"):
             env_steps.append(d["env_step_by_env"])
+        # The reading this re-run exists for. A score of 0.0 cannot separate
+        # "the arm barely moves" from "the arm moves and is wrong"; commanded
+        # motion can, and in E3 it identified a cause on its own.
+        if d.get("action_path_by_env"):
+            motion.append(d["action_path_by_env"])
 
 peak = 0
 try:
@@ -182,6 +191,15 @@ print(f"[prov {name}] num_envs={n} widest_bank_keys={widest} "
       f"min_history_reads={min(reads) if reads else None} "
       f"max_per_env_step={worst_step}")
 print(f"[prov {name}] scores={json.dumps(scores, sort_keys=True)}")
+if motion:
+    per_env = {}
+    for m in motion:
+        for k, v in m.items():
+            per_env.setdefault(k, []).append(v)
+    summary = {k: round(sum(v) / len(v), 1) for k, v in sorted(per_env.items())}
+    print(f"[prov {name}] action_path per env (mean over episodes) = {summary}")
+    print(f"[prov {name}] reference: E3 chunk mode, num_envs=1, "
+          "cover_blocks = 103.8 (n=1); E4 ensemble = 69.8 (n=49)")
 
 ref = pathlib.Path(run_dir) / "logs" / "scores_ref.json"
 ok = True
