@@ -45,7 +45,8 @@ case "$STAGE_SET" in
   e1)       PKG_NAME=100k_memory6_mem ;;
   stride32) PKG_NAME=100k_memory6_mem_stride32 ;;
   ablate2)  PKG_NAME=100k_memory6_mem ;;
-  *) echo "FATAL E1_STAGE_SET must be e1, stride32 or ablate2, got '$STAGE_SET'"; exit 2 ;;
+  fusion)   PKG_NAME=100k_memory6_mem ;;
+  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2 or fusion, got '$STAGE_SET'"; exit 2 ;;
 esac
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
@@ -164,9 +165,14 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
     local es=800 bl=16
     [ "$mode" = "forward" ] && es=25
     [ "$xbank" = "gt16" ] && bl=25
+    # Must carry fusion_mode: without it the parser's fusion branch never runs
+    # locally and PASS says nothing about it. E1_DRYRUN_BREAK=1 fabricates the
+    # failure worth catching -- the switch exported, the gate still in use.
+    local fm="${HOLOBRAIN_FUSION_MODE:-gate}"
+    [ "${E1_DRYRUN_BREAK:-0}" = "1" ] && fm=gate
     {
-      echo "INFO deploy_policy | policy reset: {'eval_episode': 0, 'eval_forwards': 0, 'eval_history_reads': 0, 'bank_lengths': {'per_mem_bank': [], 'cog_mem_bank': []}, 'env_step': 0}"
-      echo "INFO deploy_policy | policy reset: {'eval_episode': 1, 'eval_forwards': 25, 'eval_history_reads': 24, 'bank_lengths': {'per_mem_bank': [$bl], 'cog_mem_bank': [$bl]}, 'env_step': $es}"
+      echo "INFO deploy_policy | policy reset: {'eval_episode': 0, 'eval_forwards': 0, 'eval_history_reads': 0, 'fusion_mode': ['$fm'], 'bank_lengths': {'per_mem_bank': [], 'cog_mem_bank': []}, 'env_step': 0}"
+      echo "INFO deploy_policy | policy reset: {'eval_episode': 1, 'eval_forwards': 25, 'eval_history_reads': 24, 'fusion_mode': ['$fm'], 'bank_lengths': {'per_mem_bank': [$bl], 'cog_mem_bank': [$bl]}, 'env_step': $es}"
     } > "$dlog"
     rc=0
   else
@@ -190,10 +196,11 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
   # Provenance from the products, before archiving. A config file that was
   # edited but never read looks exactly like one that took effect, so assert
   # on what the policy itself reported per episode.
-  /usr/bin/python3 - "$OUT" "$name" "$xstep" "$xbank" <<'PY' | tee -a "$LOG"
+  /usr/bin/python3 - "$OUT" "$name" "$xstep" "$xbank" \
+      "${HOLOBRAIN_FUSION_MODE:-gate}" <<'PY' | tee -a "$LOG"
 import ast, pathlib, sys
-out, name, xstep, xbank = sys.argv[1:5]
-steps, banks = [], []
+out, name, xstep, xbank, xfusion = sys.argv[1:6]
+steps, banks, fusion = [], [], set()
 for log in pathlib.Path(out).rglob("*.log"):
     for line in log.read_text(errors="replace").splitlines():
         if "policy reset" not in line or "{" not in line:
@@ -206,9 +213,11 @@ for log in pathlib.Path(out).rglob("*.log"):
             steps.append(int(d["env_step"]))
         for lens in (d.get("bank_lengths") or {}).values():
             banks.extend(int(x) for x in lens)
+        fusion.update(d.get("fusion_mode") or [])
 print(f"[prov {name}] reset lines={len(steps)} "
       f"env_step max={max(steps) if steps else None} "
-      f"bank_len max={max(banks) if banks else None}")
+      f"bank_len max={max(banks) if banks else None} "
+      f"fusion={sorted(fusion) or None}")
 ok = True
 if not steps:
     print(f"[prov {name}] FAIL no `policy reset` line parsed")
@@ -220,6 +229,12 @@ elif xstep == "fixed" and max(steps) < 256:
 elif xstep == "forward" and max(steps) > 64:
     print(f"[prov {name}] FAIL env_step max {max(steps)} > 64 -- old numbering "
           "was asked for but the fixed one ran")
+    ok = False
+# Only meaningful once the policy has been asked to report it; older
+# packages predate the field and leave it empty, which is not a failure.
+if fusion and set(fusion) != {xfusion}:
+    print(f"[prov {name}] FAIL policy reports fusion={sorted(fusion)}, "
+          f"asked for {xfusion!r} -- the switch was exported but not read")
     ok = False
 if xbank != "any":
     if not banks:
@@ -283,6 +298,15 @@ elif [ "$STAGE_SET" = "ablate2" ]; then
   run_stage u1_fused_s1 "$PKGS/u_fused" forward 1 forward eq16
   run_stage c0_ck19_s0  "$CK19_PKG"     forward 0 forward eq16
   run_stage f0_add_s0   "$PKGS/f_add"   forward 0 forward eq16
+elif [ "$STAGE_SET" = "fusion" ]; then
+  # Drop the learned gate for a plain mean, at run time. The package is the
+  # unmodified base one -- fusion_type stays "gate", so GateFusion is built
+  # and the checkpoint's four gate_fusion_blocks tensors load; only the
+  # forward path changes. Editing the config instead makes those tensors
+  # unexpected keys and structure.load_state_dict raises.
+  export HOLOBRAIN_FUSION_MODE=add
+  run_stage g0_add_s0 "$BASE_PKG" forward 0 forward eq16
+  run_stage g1_add_s1 "$BASE_PKG" forward 1 forward eq16
 fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"

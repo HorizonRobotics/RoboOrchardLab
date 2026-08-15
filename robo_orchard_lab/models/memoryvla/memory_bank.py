@@ -34,6 +34,8 @@ import math
 from typing import Optional
 
 import numpy as np
+import os
+
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
@@ -267,6 +269,32 @@ class CogMemBank(nn.Module):
         if self.fusion_type == "gate":
             self.gate_fusion_blocks = GateFusion(self.token_size)
 
+        # Ablate the fusion at run time, keeping the module built and its
+        # weights loadable. Setting fusion_type="add" in the package config
+        # cannot express this: "add" skips GateFusion, the checkpoint's four
+        # gate_fusion_blocks tensors become unexpected keys, and
+        # structure.load_state_dict asserts on those under strict=True. So the
+        # question "does the learned gate earn its parameters" is unanswerable
+        # from the config alone.
+        #
+        # Read here rather than per forward, so a typo fails at startup
+        # instead of silently leaving the gate in place for a whole cell.
+        self._fusion_mode = (
+            os.environ.get("HOLOBRAIN_FUSION_MODE", "").strip().lower()
+            or self.fusion_type
+        )
+        if self._fusion_mode not in ("gate", "add"):
+            raise ValueError(
+                "HOLOBRAIN_FUSION_MODE must be gate or add, got "
+                f"{self._fusion_mode!r}"
+            )
+        if self._fusion_mode == "gate" and self.fusion_type != "gate":
+            raise ValueError(
+                "HOLOBRAIN_FUSION_MODE=gate needs a package built with "
+                f"fusion_type=gate, but this one is {self.fusion_type!r}: "
+                "there is no gate to use."
+            )
+
         if self.use_timestep_pe:
             self.timestep_encoder = TimestepEmbedder(
                 self.token_size,
@@ -411,10 +439,12 @@ class CogMemBank(nn.Module):
                 # without history: working memory as episode memory
                 retrieved_episode_mem = working_mem  # (1, N, D)
 
-            # 3) memory adaptive fusion
-            if self.fusion_type == "add":
+            # 3) memory adaptive fusion -- self._fusion_mode, not
+            # self.fusion_type, so the run-time ablation can drop the gate
+            # while its weights stay loaded.
+            if self._fusion_mode == "add":
                 fused_feats = (working_mem + retrieved_episode_mem) * 0.5
-            elif self.fusion_type == "gate":
+            elif self._fusion_mode == "gate":
                 fused_feats = self.gate_fusion_blocks(
                     working_mem, retrieved_episode_mem
                 )

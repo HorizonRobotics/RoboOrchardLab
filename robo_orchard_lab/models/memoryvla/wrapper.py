@@ -235,6 +235,12 @@ class MemoryVLAMemory(nn.Module):
             "eval_episode": self._eval_episode,
             "eval_forwards": self._eval_forwards,
             "eval_history_reads": self._eval_history_reads,
+            # What the fusion actually did, not what was requested of it.
+            # HOLOBRAIN_FUSION_MODE can only be trusted once the policy says
+            # it read it.
+            "fusion_mode": sorted(
+                {getattr(b, "_fusion_mode", "?") for _, b in self._named_banks()}
+            ),
             "bank_lengths": {
                 name: sorted(len(v) for v in bank.bank.values())
                 for name, bank in self._named_banks()
