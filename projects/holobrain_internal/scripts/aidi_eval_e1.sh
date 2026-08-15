@@ -44,7 +44,8 @@ STAGE_SET="${E1_STAGE_SET:-e1}"
 case "$STAGE_SET" in
   e1)       PKG_NAME=100k_memory6_mem ;;
   stride32) PKG_NAME=100k_memory6_mem_stride32 ;;
-  *) echo "FATAL E1_STAGE_SET must be e1 or stride32, got '$STAGE_SET'"; exit 2 ;;
+  ablate2)  PKG_NAME=100k_memory6_mem ;;
+  *) echo "FATAL E1_STAGE_SET must be e1, stride32 or ablate2, got '$STAGE_SET'"; exit 2 ;;
 esac
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
@@ -112,17 +113,32 @@ make_variant() {  # name, python-expr mutating m
   /usr/bin/python3 -c "
 import json
 d = json.load(open('$BASE_PKG/model.config.json'))
+base = json.load(open('$BASE_PKG/model.config.json'))['memoryvla']
 m = d['memoryvla']
-assert m['mem_length'] == 16 and m['consolidate_type'] == 'tome', m
+assert base['mem_length'] == 16 and base['consolidate_type'] == 'tome', base
 $expr
 json.dump(d, open('$d/model.config.json', 'w'), indent=2)
-print('variant $name ->', {k: m[k] for k in ('mem_length', 'consolidate_type')})
+# Diff against the base and print exactly what moved. Printing a fixed pair of
+# fields, as this used to, reads identically whether the expression applied or
+# silently did nothing.
+changed = {k: (base.get(k), m[k]) for k in m if base.get(k) != m[k]}
+assert changed, (
+    'variant $name changed nothing -- this stage would measure the baseline '
+    'under another name, which looks legitimate in the results table'
+)
+print('variant $name ->', changed)
 " | tee -a "$LOG" || { say "FATAL could not build variant $name"; exit 91; }
 }
 
 if [ "$STAGE_SET" = "e1" ]; then
   make_variant a0_mem32 "m['mem_length'] = 32"
   make_variant a1_fifo  "m['consolidate_type'] = 'fifo'"
+elif [ "$STAGE_SET" = "ablate2" ]; then
+  # Content, not timing. update_fused decides whether the bank receives the
+  # fused feature or the raw working memory; fusion_type=add drops the learned
+  # gate for a mean.
+  make_variant u_fused "m['update_fused'] = True"
+  make_variant f_add   "m['fusion_type'] = 'add'"
 fi
 
 # ------------------------------------------------------------------- stages
@@ -235,7 +251,7 @@ if [ "$STAGE_SET" = "e1" ]; then
   run_stage s2_fix_s1 "$BASE_PKG"      ""      1 fixed   eq16
   run_stage a0_mem32  "$PKGS/a0_mem32" forward 0 forward gt16
   run_stage a1_fifo   "$PKGS/a1_fifo"  forward 0 forward eq16
-else
+elif [ "$STAGE_SET" = "stride32" ]; then
   # The bottom row of the 2x2, on stride32 weights. The fixed numbering is the
   # MATCHED cell here -- stride32 training writes bank entries 32 frames apart,
   # which is the spacing chunk-mode inference has always fed the memory. That
@@ -248,6 +264,25 @@ else
   run_stage t2_fix_s1 "$BASE_PKG" ""      1 fixed   eq16
   run_stage t3_old_s0 "$BASE_PKG" forward 0 forward eq16
   run_stage t4_old_s1 "$BASE_PKG" forward 1 forward eq16
+elif [ "$STAGE_SET" = "ablate2" ]; then
+  # Old numbering throughout: on stride-1 weights that is the matched cell and
+  # the strongest baseline to detect a change against -- 9/50 at seed 0 and
+  # 14/50 at seed 1, the same cells a0/a1 were measured against.
+  #
+  # Order is by value, because a wall_time kill takes the tail: update_fused
+  # first and with both seeds (one seed cannot separate 9 from 14), then the
+  # 100k checkpoint, then fusion_type=add last -- "add" does not construct
+  # gate_fusion_blocks, so the checkpoint's gate weights become unexpected
+  # keys and the stage may fail loudly. That is informative and must not cost
+  # the others.
+  CK19_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_mem_ck19
+  if [ "$DRY" != "0" ]; then
+    CK19_PKG=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/100k_memory6_mem_ck19
+  fi
+  run_stage u0_fused_s0 "$PKGS/u_fused" forward 0 forward eq16
+  run_stage u1_fused_s1 "$PKGS/u_fused" forward 1 forward eq16
+  run_stage c0_ck19_s0  "$CK19_PKG"     forward 0 forward eq16
+  run_stage f0_add_s0   "$PKGS/f_add"   forward 0 forward eq16
 fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"

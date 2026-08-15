@@ -37,6 +37,7 @@ ROWS="
 15k_conveyor_mem|$B_BCLOUD/2026-08-07/10-38/bcloud-bj-zone1-cb5a332fce15/holobrain_robodojo_mvla_15k_conveyor_mem_ef565d74_9208_11f1_b662_02f34d1460a1/output|6|yes
 15k_conveyor_base|$B_BCLOUD/2026-08-07/10-40/bcloud-bj-zone1-875062c3b100/holobrain_robodojo_mvla_15k_conveyor_base_4722995a_9209_11f1_a630_02f34d1460a1/output|6|no
 100k_memory6_mem|$B_BCLOUD/2026-08-07/10-42/bcloud-bj-zone1-321cccff92d6/holobrain_robodojo_mvla_100k_memory6_mem_9fd584ae_9209_11f1_b677_02f34d1460a1/output|18|yes
+100k_memory6_mem_ck19|$B_BCLOUD/2026-08-07/10-42/bcloud-bj-zone1-321cccff92d6/holobrain_robodojo_mvla_100k_memory6_mem_9fd584ae_9209_11f1_b677_02f34d1460a1/output|19|yes
 100k_memory6_base|$B_BCLOUD/2026-08-07/10-45/bcloud-bj-zone1-db163aa38027/holobrain_robodojo_mvla_100k_memory6_base_f8df9ab2_9209_11f1_bdfb_02f34d1460a1/output|18|no
 100k_memory6_mem_stride32|$B_ACLOUD/2026-08-13/10-36/acloud-ad66079d5082/holobrain_robodojo_mvla_100k_memory6_mem_stride32_h20_a66c8906_96bf_11f1_961c_02f34d1460a1/output|18|yes
 "
