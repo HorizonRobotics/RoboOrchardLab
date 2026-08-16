@@ -329,6 +329,13 @@ def _extract_extrinsic(camera_data: dict[str, Any]) -> tuple[str, Any]:
 class HoloBrainRoboDojoPolicy:
     """Translate RoboDojo observations and HoloBrain joint predictions."""
 
+    # Class-level default so a stub built with object.__new__ has it without
+    # enumerating fields. __init__ overrides it from the environment. This is
+    # configuration, not per-run state, so it does not belong in
+    # _init_runtime_state -- but it broke three check scripts at once the same
+    # way per-run fields used to, and a class default fixes that for good.
+    _deploy_channel: str = "match_training"
+
     def __init__(
         self,
         cfg: HoloBrainRoboDojoPolicyCfg | dict[str, Any],
@@ -417,6 +424,22 @@ class HoloBrainRoboDojoPolicy:
 
         self._step_index_stride = _stride
 
+        # How the camera image reaches the model. "match_training" (the
+        # default) leaves RoboDojo's RGB alone, so the shared preprocessor's
+        # channel_flip produces the BGR the model was trained on.
+        # "legacy_swap" restores the extra swap every cell measured before
+        # 2026-08-16 ran with, so those numbers stay reproducible.
+        self._deploy_channel = (
+            os.environ.get("HOLOBRAIN_DEPLOY_CHANNEL", "match_training")
+            .strip()
+            .lower()
+        )
+        if self._deploy_channel not in ("match_training", "legacy_swap"):
+            raise ValueError(
+                "HOLOBRAIN_DEPLOY_CHANNEL must be match_training or "
+                f"legacy_swap, got {self._deploy_channel!r}"
+            )
+
         if pipeline is None and model is None:
             if cfg.model_dir is None:
                 raise ValueError("model_dir must be provided.")
@@ -493,8 +516,25 @@ class HoloBrainRoboDojoPolicy:
                     f"RoboDojo camera `{camera_name}` color must have shape "
                     f"(H, W, 3), got {color.shape}."
                 )
-            # The deploy transform mirrors cv2-loaded training images (BGR).
-            images[camera_name] = [np.ascontiguousarray(color[..., [2, 1, 0]])]
+            # No swap by default. The old code swapped here on the
+            # premise that cv2-loaded training images are BGR. cv2.imdecode
+            # does return BGR for a normally encoded JPEG, but the RoboDojo
+            # packer encoded RGB arrays through cv2.imencode -- which expects
+            # BGR -- so the stored JPEG already has R and B swapped and
+            # imdecode hands back RGB.
+            #
+            # Measured on two tasks, ch0/ch2 of the mean pixel, training
+            # against eval: cover_blocks 1.55 vs 1.49, conveyor 0.92 vs 0.92.
+            # A swap would have made them reciprocals (0.65 and 1.09).
+            #
+            #   training  decoded RGB -> channel_flip -> BGR -> model
+            #   eval      color RGB   -> [swap] -> BGR -> channel_flip -> RGB
+            #
+            # Two flips is none, so the model was trained on BGR and shown
+            # RGB. Dropping the swap here feeds it BGR, as in training.
+            if self._deploy_channel == "legacy_swap":
+                color = color[..., [2, 1, 0]]
+            images[camera_name] = [np.ascontiguousarray(color)]
 
             if self.cfg.use_depth:
                 if "depth" not in camera_data:
@@ -975,6 +1015,9 @@ class HoloBrainRoboDojoPolicy:
         # where they are not is exactly what this is watching for.
         out["env_step"] = max(self._env_step.values(), default=0)
         out["action_mode"] = self._action_mode
+        # So a run's channel convention is on the record with its scores, and
+        # the parser can assert it rather than trusting an exported variable.
+        out["deploy_channel"] = self._deploy_channel
         out["action_path_by_env"] = {
             str(k): round(v["path"], 2)
             for k, v in sorted(

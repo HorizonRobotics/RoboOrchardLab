@@ -82,9 +82,15 @@ VALID_ACTION_STEP=${VALID_ACTION_STEP:-}
 # Eval_Layout/<bench>/<env_cfg>/<seed>/ and enumerates <task>_<n>.json
 # there, so seed 1 is 55 different cover_blocks scenes. Unset means the
 # flag is not passed and robodojo_eval.py's own default (0) stands.
-# Coverage is not uniform across seeds -- seed 1 has cover_blocks,
-# match_and_pick_from_conveyor and imitate_sorting_sequence but no
-# swap_blocks/swap_T/press_by_number, and seed 2 is empty.
+# Coverage (re-measured 2026-08-16; the Assets were backfilled on 08-12):
+# seeds 0, 1 and 2 ALL carry every one of the six Memory tasks --
+# cover_blocks/swap_blocks/swap_T/match_and_pick_from_conveyor 55 layouts each,
+# press_by_number/imitate_sorting_sequence 65 each. seed 1's file list is
+# byte-for-byte the same set as seed 0; seed 2 is missing 15 files, all in
+# deposit_coin/make_toast/make_toast_random. The older comment here said seed 1
+# lacked swap_blocks/swap_T/press_by_number and seed 2 was empty -- that was the
+# 08-07 state, and believing it costs you the cross-seed replication that
+# already exists (eval_runs/robodojo-mvla-aidi-seed1_vas32-20260811, 700 eps).
 SEED=${SEED:-}
 
 REPO=${REPO:-$HOME/git_repo/robo_orchard_lab}
