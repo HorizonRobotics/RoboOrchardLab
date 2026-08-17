@@ -527,11 +527,23 @@ class HoloBrainRoboDojoPolicy:
             # against eval: cover_blocks 1.55 vs 1.49, conveyor 0.92 vs 0.92.
             # A swap would have made them reciprocals (0.65 and 1.09).
             #
-            #   training  decoded RGB -> channel_flip -> BGR -> model
-            #   eval      color RGB   -> [swap] -> BGR -> channel_flip -> RGB
+            # There are THREE flip sites, not one, and the first write-up
+            # of this counted only the last. Corrected, by parity:
             #
-            # Two flips is none, so the model was trained on BGR and shown
-            # RGB. Dropping the swap here feeds it BGR, as in training.
+            #   training  decoded RGB
+            #             -> dataset img_channel_flip (config_robodojo_dataset
+            #                .py:217, the mode=="training" chain)  -> BGR
+            #             -> data_preprocessor channel_flip        -> RGB
+            #   eval      color RGB
+            #             -> [this swap]                          -> BGR
+            #             -> processor ImageChannelFlip (transforms[3] of the
+            #                packaged robodojo_arx_x5a_processor.json) -> RGB
+            #             -> data_preprocessor channel_flip        -> BGR
+            #
+            # So the model is trained on RGB and legacy eval showed it BGR --
+            # three flips against two. Dropping this one makes eval two as
+            # well. The earlier note claiming the model trains on BGR was
+            # wrong; the parity, and so the fix, happened to be right anyway.
             if self._deploy_channel == "legacy_swap":
                 color = color[..., [2, 1, 0]]
             images[camera_name] = [np.ascontiguousarray(color)]
