@@ -20,10 +20,17 @@ Why this exists rather than a shell one-liner retyped each time:
 3. Fisher by hand invites arithmetic slips in exactly the direction one
    hopes for.
 
-Measured noise floor, for reading the output: one layout has been observed at
-0.05 on one run and 1.00 on another under an identical configuration, so no
-per-layout comparison at small N means anything. Whole cells of 50 have a
-floor around +/-2 successes.
+Measured noise floor, for reading the output. Two things, both from repeats of
+identical configurations:
+
+  Per cell: mem@ckpt18, old numbering, corrected channel, VAS=32, seed 1,
+  cover_blocks read 19/50 on one run and 14/50 on another. Seed 0 reproduced
+  exactly at 8/50 both times, so the spread is not uniform -- but on at least
+  one cell it is 5 in 50, not the 2 quoted before. Treat +/-5 as the floor.
+
+  Per layout: one layout has been observed at 0.05 and at 1.00 under an
+  identical configuration, so no per-layout comparison at small N means
+  anything at all.
 """
 import argparse
 import collections
@@ -113,6 +120,12 @@ def main() -> None:
                 row.append("-".rjust(24))
         print(f"{stage:<{w}}  {seed:>4}  " + "  ".join(row))
 
+    print("Reading note: repeats of an identical cell have differed by 5 in 50")
+    print("(19/50 vs 14/50, mem@ckpt18 seed1 cover_blocks), so treat +/-5 as the")
+    print("floor -- not the +/-2 quoted before. And one layout has been measured")
+    print("at 0.05 and at 1.00 under an identical config, so no small-N")
+    print("per-layout comparison means anything.")
+
     if not baselines:
         return
     print()
@@ -126,9 +139,6 @@ def main() -> None:
             print(f"  {stage:<{w}} seed{seed}  {a}/{n} vs {name} {bw}/{bn}"
                   f"   p={fisher(a, n - a, bw, bn - bw):.3f}")
     print()
-    print("Reading note: the per-cell floor is about +/-2 successes in 50, and")
-    print("one layout has been measured at 0.05 and at 1.00 under an identical")
-    print("configuration -- no small-N per-layout comparison is meaningful.")
 
 
 if __name__ == "__main__":
