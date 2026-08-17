@@ -220,9 +220,17 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
   # on what the policy itself reported per episode.
   /usr/bin/python3 - "$OUT" "$name" "$xstep" "$xbank" \
       "${HOLOBRAIN_FUSION_MODE:-gate}" \
-      "${HOLOBRAIN_DEPLOY_CHANNEL:-match_training}" <<'PY' | tee -a "$LOG"
+      "${HOLOBRAIN_DEPLOY_CHANNEL:-match_training}" "$VAS" <<'PY' | tee -a "$LOG"
 import ast, pathlib, sys
-out, name, xstep, xbank, xfusion, xchan = sys.argv[1:7]
+out, name, xstep, xbank, xfusion, xchan, xvas = sys.argv[1:8]
+vas = int(xvas)
+# The longest Memory task, imitate_sorting_sequence, runs 1600-frame episodes;
+# swap_T runs about 416. Under `forward` env_step counts forwards, so its
+# ceiling is 1600/vas -- 50 at vas=32, 100 at vas=16. Under `fixed` it counts
+# frames and reaches the episode length itself. The two differ by a factor of
+# vas, so gate on that rather than on a constant.
+LONGEST = 1600
+fwd_ceiling = LONGEST // vas
 steps, banks, fusion, chan = [], [], set(), set()
 for log in pathlib.Path(out).rglob("*.log"):
     for line in log.read_text(errors="replace").splitlines():
@@ -247,12 +255,13 @@ ok = True
 if not steps:
     print(f"[prov {name}] FAIL no `policy reset` line parsed")
     ok = False
-elif xstep == "fixed" and max(steps) < 256:
+elif xstep == "fixed" and max(steps) < 2 * fwd_ceiling:
     print(f"[prov {name}] FAIL env_step max {max(steps)} < 256 -- the fix did "
           "NOT take effect, still counting forwards")
     ok = False
-elif xstep == "forward" and max(steps) > 64:
-    print(f"[prov {name}] FAIL env_step max {max(steps)} > 64 -- old numbering "
+elif xstep == "forward" and max(steps) > int(fwd_ceiling * 1.5):
+    print(f"[prov {name}] FAIL env_step max {max(steps)} exceeds "
+          f"{int(fwd_ceiling * 1.5)} (= 1600/{vas} with slack) -- old numbering "
           "was asked for but the fixed one ran")
     ok = False
 # Only meaningful once the policy has been asked to report it; older
