@@ -47,7 +47,9 @@ case "$STAGE_SET" in
   ablate2)  PKG_NAME=100k_memory6_mem ;;
   fusion)   PKG_NAME=100k_memory6_mem ;;
   rgbfix)   PKG_NAME=100k_memory6_mem ;;
-  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion or rgbfix, got '$STAGE_SET'"; exit 2 ;;
+  full6)    PKG_NAME=100k_memory6_mem ;;
+  cmp6)     PKG_NAME=100k_memory6_mem ;;
+  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 or cmp6, got '$STAGE_SET'"; exit 2 ;;
 esac
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
@@ -56,6 +58,14 @@ if [ "$DRY" != "0" ]; then
   BASE_PKG=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/$PKG_NAME
 fi
 TASKS='cover_blocks,match_and_pick_from_conveyor'
+case "$STAGE_SET" in
+  full6|cmp6)
+    # All six Memory tasks. Four of them have not been evaluated since they
+    # read 0/50 under the legacy channel, which is exactly why they are worth
+    # another look now.
+    TASKS='cover_blocks,match_and_pick_from_conveyor,swap_blocks,swap_T,press_by_number,imitate_sorting_sequence'
+    ;;
+esac
 if [ "$DRY" = "0" ]; then
   PKGS=/job_data/pkgs
   OUT=/job_data/eval_out
@@ -326,6 +336,36 @@ elif [ "$STAGE_SET" = "rgbfix" ]; then
   # Compare with 9/50 (seed 0) and 14/50 (seed 1), both legacy_swap.
   run_stage r0_rgb_s0 "$BASE_PKG" forward 0 forward eq16
   run_stage r1_rgb_s1 "$BASE_PKG" forward 1 forward eq16
+elif [ "$STAGE_SET" = "full6" ]; then
+  # The table: both arms, both seeds, six tasks, corrected channel. Old
+  # numbering, which is the matched cell for stride-1 weights and the
+  # strongest baseline.
+  ARM_BASE=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_base
+  if [ "$DRY" != "0" ]; then
+    ARM_BASE=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/100k_memory6_base
+  fi
+  run_stage m0_mem_s0  "$BASE_PKG" forward 0 forward eq16
+  run_stage m1_mem_s1  "$BASE_PKG" forward 1 forward eq16
+  # No memory in the base arm, so bank_lengths is absent rather than wrong.
+  run_stage b0_base_s0 "$ARM_BASE" forward 0 forward any
+  run_stage b1_base_s1 "$ARM_BASE" forward 1 forward any
+elif [ "$STAGE_SET" = "cmp6" ]; then
+  # The configurations that mattered under the legacy channel, re-measured
+  # under the corrected one. Ordered by value: a wall_time kill takes the tail.
+  S32=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/100k_memory6_mem_stride32
+  if [ "$DRY" != "0" ]; then
+    S32=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/100k_memory6_mem_stride32
+  fi
+  run_stage c0_fixnum_s0 "$BASE_PKG" ""      0 fixed   eq16
+  run_stage c1_fixnum_s1 "$BASE_PKG" ""      1 fixed   eq16
+  # stride32 weights: the fixed numbering is THEIR matched cell, the reverse
+  # of the stride1 row.
+  run_stage c2_s32_s0    "$S32"      ""      0 fixed   eq16
+  run_stage c3_s32_s1    "$S32"      ""      1 fixed   eq16
+  # The only ablation that ever moved the score, and it moved it to zero.
+  export HOLOBRAIN_FUSION_MODE=add
+  run_stage c4_add_s0    "$BASE_PKG" forward 0 forward eq16
+  unset HOLOBRAIN_FUSION_MODE
 fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"
