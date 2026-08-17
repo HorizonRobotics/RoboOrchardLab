@@ -50,7 +50,8 @@ case "$STAGE_SET" in
   full6)    PKG_NAME=100k_memory6_mem ;;
   cmp6)     PKG_NAME=100k_memory6_mem ;;
   last6)    PKG_NAME=100k_memory6_mem_ck19 ;;
-  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 cmp6 or last6, got '$STAGE_SET'"; exit 2 ;;
+  vas16)    PKG_NAME=100k_memory6_mem ;;
+  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 cmp6, last6 or vas16, got '$STAGE_SET'"; exit 2 ;;
 esac
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
@@ -59,8 +60,11 @@ if [ "$DRY" != "0" ]; then
   BASE_PKG=/jfs-public/users/kun01.wu/robo_orchard_lab/port/memoryvla/eval_pkgs/$PKG_NAME
 fi
 TASKS='cover_blocks,match_and_pick_from_conveyor'
+# Actions executed per forward. Not just a control-frequency knob: it is also
+# the bank write interval, so reach = mem_length * VAS.
+VAS="${E1_VAS:-32}"
 case "$STAGE_SET" in
-  full6|cmp6|last6)
+  full6|cmp6|last6|vas16)
     # All six Memory tasks. Four of them have not been evaluated since they
     # read 0/50 under the legacy channel, which is exactly why they are worth
     # another look now.
@@ -175,7 +179,11 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
     local dlog="$OUT/dry_worker/logs/cover_blocks.log"
     mkdir -p "$(dirname "$dlog")"
     local es=800 bl=16
-    [ "$mode" = "forward" ] && es=25
+    # Old numbering counts one per forward, and a forward covers VAS frames,
+    # so an 800-frame episode gives 800/VAS -- 25 at VAS=32, 50 at VAS=16.
+    # Hardcoding 25 would fabricate a value the real run cannot produce, which
+    # is how three earlier dry runs passed on branches they never executed.
+    [ "$mode" = "forward" ] && es=$(( 800 / VAS ))
     [ "$xbank" = "gt16" ] && bl=25
     # Must carry fusion_mode: without it the parser's fusion branch never runs
     # locally and PASS says nothing about it. E1_DRYRUN_BREAK=1 fabricates the
@@ -198,7 +206,7 @@ run_stage() {  # name, pkg, step_index_mode, seed, expect_step, expect_bank
     --eval_num 50 \
     --processes_per_gpu 2 \
     --seed "$seed" \
-    --valid_action_step 32 \
+    --valid_action_step "$VAS" \
     --vlm_ckpt_dir /horizon-bucket/robot_lab/users/xuewu.lin/ckpt \
     --urdf_dir /horizon-bucket/robot_lab2/datasets/all_data/urdf/urdf_v20260711 \
     --eval_result_dir "$OUT" \
@@ -380,6 +388,18 @@ elif [ "$STAGE_SET" = "last6" ]; then
   # the ablation reference for both tables stays full6's base@ckpt_18.
   run_stage L0_mem19_s0 "$BASE_PKG" forward 0 forward eq16
   run_stage L1_mem19_s1 "$BASE_PKG" forward 1 forward eq16
+elif [ "$STAGE_SET" = "vas16" ]; then
+  VAS=16
+  # v0/v1: VAS=16 as-is -- half the reach of VAS=32, twice the control rate.
+  # v2/v3: mem_length=32 at VAS=16 -- reach back to 512 frames, control rate
+  #        still doubled. This is the cell that separates the two axes, and
+  #        the first test of mem_length=32 with a bank that actually fills:
+  #        50 forwards per episode instead of 25.
+  make_variant v_mem32 "m['mem_length'] = 32"
+  run_stage v0_vas16_s0    "$BASE_PKG"      forward 0 forward eq16
+  run_stage v1_vas16_s1    "$BASE_PKG"      forward 1 forward eq16
+  run_stage v2_v16m32_s0   "$PKGS/v_mem32"  forward 0 forward gt16
+  run_stage v3_v16m32_s1   "$PKGS/v_mem32"  forward 1 forward gt16
 fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"
