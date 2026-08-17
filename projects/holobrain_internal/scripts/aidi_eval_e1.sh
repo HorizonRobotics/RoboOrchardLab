@@ -51,7 +51,8 @@ case "$STAGE_SET" in
   cmp6)     PKG_NAME=100k_memory6_mem ;;
   last6)    PKG_NAME=100k_memory6_mem_ck19 ;;
   vas16)    PKG_NAME=100k_memory6_mem ;;
-  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 cmp6, last6 or vas16, got '$STAGE_SET'"; exit 2 ;;
+  s32old)   PKG_NAME=100k_memory6_mem_stride32 ;;
+  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 cmp6, last6, vas16 or s32old, got '$STAGE_SET'"; exit 2 ;;
 esac
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
@@ -64,7 +65,7 @@ TASKS='cover_blocks,match_and_pick_from_conveyor'
 # the bank write interval, so reach = mem_length * VAS.
 VAS="${E1_VAS:-32}"
 case "$STAGE_SET" in
-  full6|cmp6|last6|vas16)
+  full6|cmp6|last6|vas16|s32old)
     # All six Memory tasks. Four of them have not been evaluated since they
     # read 0/50 under the legacy channel, which is exactly why they are worth
     # another look now.
@@ -409,6 +410,13 @@ elif [ "$STAGE_SET" = "vas16" ]; then
   run_stage v1_vas16_s1    "$BASE_PKG"      forward 1 forward eq16
   run_stage v2_v16m32_s0   "$PKGS/v_mem32"  forward 0 forward gt16
   run_stage v3_v16m32_s1   "$PKGS/v_mem32"  forward 1 forward gt16
+elif [ "$STAGE_SET" = "s32old" ]; then
+  # The anti-diagonal: stride32 weights with the OLD numbering. cmp6 measured
+  # the diagonal (stride32 x fixed) at 46/50 on seed 0; without this cell the
+  # 2x2 interaction cannot be recomputed under the corrected channel, only the
+  # single cell reported.
+  run_stage o0_s32old_s0 "$BASE_PKG" forward 0 forward eq16
+  run_stage o1_s32old_s1 "$BASE_PKG" forward 1 forward eq16
 fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"
