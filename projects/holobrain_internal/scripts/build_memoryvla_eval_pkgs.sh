@@ -33,6 +33,9 @@ B_ACLOUD=http://cpfs-svcspawner.acloud.hobot.cc/user/homespace/kun01.wu-labs/pla
 # every part of which is in the job's log_url, and the job_id is also recoverable
 # from a pod's hostname (<job_id>-task-N) when the submit tool fails to capture
 # it. Run with ROWS_FILTER=<name> to build a single package.
+# NOTE: no 100k_memory6_base_ck19 row. The base run's checkpoint_19 holds
+# model.config.json and no model.safetensors (404), so its last usable
+# checkpoint is 18 at 95,000 steps. A row here would fail on every build.
 ROWS="
 15k_conveyor_mem|$B_BCLOUD/2026-08-07/10-38/bcloud-bj-zone1-cb5a332fce15/holobrain_robodojo_mvla_15k_conveyor_mem_ef565d74_9208_11f1_b662_02f34d1460a1/output|6|yes
 15k_conveyor_base|$B_BCLOUD/2026-08-07/10-40/bcloud-bj-zone1-875062c3b100/holobrain_robodojo_mvla_15k_conveyor_base_4722995a_9209_11f1_a630_02f34d1460a1/output|6|no

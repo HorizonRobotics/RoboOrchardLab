@@ -49,7 +49,8 @@ case "$STAGE_SET" in
   rgbfix)   PKG_NAME=100k_memory6_mem ;;
   full6)    PKG_NAME=100k_memory6_mem ;;
   cmp6)     PKG_NAME=100k_memory6_mem ;;
-  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 or cmp6, got '$STAGE_SET'"; exit 2 ;;
+  last6)    PKG_NAME=100k_memory6_mem_ck19 ;;
+  *) echo "FATAL E1_STAGE_SET must be e1, stride32, ablate2, fusion, rgbfix, full6 cmp6 or last6, got '$STAGE_SET'"; exit 2 ;;
 esac
 
 BASE_PKG=/horizon-bucket/robot_lab/users/kun01.wu/robo_orchard_lab/ckpts/memoryvla_eval_pkgs/$PKG_NAME
@@ -59,7 +60,7 @@ if [ "$DRY" != "0" ]; then
 fi
 TASKS='cover_blocks,match_and_pick_from_conveyor'
 case "$STAGE_SET" in
-  full6|cmp6)
+  full6|cmp6|last6)
     # All six Memory tasks. Four of them have not been evaluated since they
     # read 0/50 under the legacy channel, which is exactly why they are worth
     # another look now.
@@ -366,6 +367,19 @@ elif [ "$STAGE_SET" = "cmp6" ]; then
   export HOLOBRAIN_FUSION_MODE=add
   run_stage c4_add_s0    "$BASE_PKG" forward 0 forward eq16
   unset HOLOBRAIN_FUSION_MODE
+elif [ "$STAGE_SET" = "last6" ]; then
+  # The last checkpoint (100,000 steps) at full6's spec, so the two tables can
+  # be compared directly. ckpt_20 is byte-identical to ckpt_19 -- the duplicate
+  # end-of-training save -- so this IS the last checkpoint.
+  #
+  # Note what the comparison is: the rate drops 10x at 90,000 and ckpt_18 is
+  # 95,000, so both are inside the annealed tail and this asks whether 5,000
+  # more annealed steps help. The pre-anneal checkpoint was rotated away.
+  # Mem arm only. The base run's checkpoint_19 holds model.config.json and no
+  # model.safetensors (404, measured), so there is no base arm at 100,000 and
+  # the ablation reference for both tables stays full6's base@ckpt_18.
+  run_stage L0_mem19_s0 "$BASE_PKG" forward 0 forward eq16
+  run_stage L1_mem19_s1 "$BASE_PKG" forward 1 forward eq16
 fi
 
 say "ALL STAGES DONE rc_sum=$RC_ALL $(date -u +%FT%TZ)"
