@@ -75,6 +75,20 @@ Additional frame-naming rules for adapters and wrappers:
   instead of hardcoding embodiment-specific external frame names in
   repository-owned adapter code.
 
+RODataset transform lifecycle separation:
+- Keep static/global topology edges and per-frame derived FK in separate
+  RODataset columns. A `tf_world`-style column must document its stable
+  global/root topology and must not silently become a container for dynamic
+  FK merely because both graphs share a root frame.
+- Name an optional dynamic FK column after its source, such as
+  `arm_joints_fk` or `arm_actions_fk`, and state whether it is derived from
+  observed joints, commanded actions, or another source. A consumer may then
+  select, omit, or regenerate it without changing the meaning of the static
+  world/root contract.
+- Do not add or rotate a static root edge solely to make one visualization
+  appear correct. Verify that camera, joint/FK, and action transforms use the
+  same physical root basis before publishing the graph.
+
 Example:
 ```python
 # `T_world2cam` is equivalent to `world_to_cam_mat`.

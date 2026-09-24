@@ -168,12 +168,15 @@ def handle_local_dependency(
             return dep  # do not replace the current package itself
 
         # extract full package name from the dependency str.
-        # the dependency str could be 'robo_orchard_xxx==xxx',
-        # 'robo_orchard_xxx@xxx',  'robo_orchard_xxx',
-        # 'robo_orchard_xxx>xxx', or 'robo_orchard_xxx<xxx'.
-        match = re.match(r"robo_orchard_(\w+)([<>=@].*)?", dep)
-        assert match, f"Invalid dependency format: {dep}"
-        package_name = "robo_orchard_" + match.group(1)
+        # The dependency can include extras and a version or direct-reference
+        # suffix, such as 'robo_orchard_core[robotics]==0.7.0'.
+        match = re.fullmatch(
+            r"(robo_orchard_\w+)(\[[\w,.-]+\])?(?:[<>=!~@].*)?",
+            dep,
+        )
+        if match is None:
+            raise ValueError(f"Invalid local dependency format: {dep}")
+        package_name, extras = match.groups()
         package_full_path = os.path.join(
             base_dir,
             package_name,
@@ -182,8 +185,8 @@ def handle_local_dependency(
             raise FileNotFoundError(
                 f"Local package {package_full_path} does not exist!"
             )
-        # extend the dependenty to 'robo_orchard_xxx @ file://{package_full_path}'
-        ret = f"{package_name}@file://{package_full_path}"
+        # Preserve extras when converting to a local direct reference.
+        ret = f"{package_name}{extras or ''}@file://{package_full_path}"
         return ret
 
     if isinstance(dependencies, list):
@@ -235,7 +238,13 @@ if __name__ == "__main__":
         # new line.
         # "robo_orchard_core==0.4.0",
         # "robo_orchard_core@git+https://github.com/HorizonRobotics/robo_orchard_core.git@a6e0ab724fdafc05246f2bebe012dc7e4f4bc569",
-        "robo_orchard_core==0.6.0",
+        # "robo_orchard_core==0.6.0",
+        # "robo_orchard_core[robotics]==0.7.0",
+        (
+            "robo_orchard_core[robotics]@git+https://github.com/"
+            "HorizonRobotics/robo_orchard_core.git@"
+            "1b6df5bd5659e2deaa679b8354b68f324af3da9c"
+        ),
     ]
     # optional dependencies
     extras_require = {

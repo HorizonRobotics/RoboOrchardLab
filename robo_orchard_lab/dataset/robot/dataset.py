@@ -27,6 +27,7 @@ from typing import (
     Any,
     Callable,
     Iterable,
+    Iterator,
     Literal,
     Mapping,
     Sequence,
@@ -61,6 +62,7 @@ from robo_orchard_lab.dataset.robot.dataset_db_engine import (
 )
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     DatasetItem,
+    DatasetItemGroup,
 )
 from robo_orchard_lab.dataset.robot.db_orm import (
     Episode,
@@ -81,6 +83,7 @@ __all__ = [
     "ROMultiRowDataset",
     "ConcatRODataset",
     "RODatasetItem",
+    "RODatasetItemGroup",
     "_complete_dataset_info",
     "get_row_num_from_dataset_info",
 ]
@@ -1673,7 +1676,13 @@ class RODatasetItem(DatasetItem[RODataset]):
         return kwargs
 
     def get_dataset_row_num(self) -> int:
-        """Get the number of rows in the dataset."""
+        """Return this physical dataset's row count without retaining a reader.
+
+        Prefer the packaged dataset metadata when it contains a count. If it
+        does not, construct and close a reader long enough to obtain ``len``.
+        ``RODatasetItemGroup`` uses this same per-path operation when it
+        aggregates its member count.
+        """
         reader_init_kwargs = self._reader_init_kwargs()
         rows = get_row_num_from_dataset_info(
             dataset_path=self.dataset_path,
@@ -1689,6 +1698,87 @@ class RODatasetItem(DatasetItem[RODataset]):
         dataset = self.class_type(**self._reader_init_kwargs())
         dataset.set_transform(self.transform)
         return dataset
+
+
+class RODatasetItemGroup(DatasetItemGroup):
+    """Expose compatible RODataset roots as one logical mixture input.
+
+    This has the same reader configuration as :class:`RODatasetItem`, except
+    that ``dataset_path`` is an ordered list of physical roots. Use it when
+    those roots should share one ``name``, one resample rule, and one summary
+    leaf in :class:`~.dataset_ex.DictIterableDataset`.
+
+    The group is configuration only. It does not concatenate roots, create a
+    long-lived reader, or batch across roots. At mixture construction each path
+    becomes a fresh unsharded :class:`RODatasetItem`; runtime readers,
+    scheduler entries, worker shards, and final batches remain per-path.
+
+    For example, a more-specific dict rule overrides its parent rule for the
+    logical group name, then applies independently to both physical paths::
+
+        from robo_orchard_lab.dataset.robot.dataset_ex import (
+            DictIterableDataset,
+        )
+
+        bridge = RODatasetItemGroup(
+            name="open_x/bridge",
+            dataset_path=["/datasets/bridge-000", "/datasets/bridge-001"],
+        )
+        mixture = DictIterableDataset(
+            datasets=[bridge],
+            shuffle=True,
+            resample_ratios={"open_x": 0.5, "open_x/bridge": 2.0},
+        )
+
+    Each path targets ``round(its_own_sharded_rows * 2.0)``. ``summary()``
+    shows ``open_x/bridge`` once and aggregates both paths under that logical
+    leaf. This class does not support nested ``DatasetItemGroup`` values.
+    """
+
+    class_type: ClassType[RODataset] = RODataset
+    dataset_path: list[str] = Field(
+        min_length=1,
+        description=(
+            "Ordered physical RODataset roots. Each path becomes one fresh "
+            "physical RODatasetItem under this logical group."
+        ),
+    )
+    storage_options: dict | None = None
+    meta_index2meta: bool = False
+    image_decode_options: RODatasetImageDecodeOptions | None = None
+    transform: Callable | None = None
+    reader_init_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_reader_contract(self) -> Self:
+        """Validate every deferred leaf against the reader constructor.
+
+        This checks configuration signatures only; it does not open a
+        dataset reader or merge the configured paths.
+        """
+
+        for item in self.iter_dataset_items():
+            item._reader_init_kwargs()
+        return self
+
+    def iter_dataset_items(self) -> Iterator[RODatasetItem]:
+        """Yield fresh unsharded physical items in ``dataset_path`` order.
+
+        The generated leaves intentionally have no names or static shards.
+        ``DatasetItemGroup`` owns the logical name and applies its static shard
+        independently to every leaf when the mixture is constructed.
+        """
+
+        for dataset_path in self.dataset_path:
+            yield RODatasetItem(
+                class_type=self.class_type,
+                dataset_path=dataset_path,
+                storage_options=self.storage_options,
+                meta_index2meta=self.meta_index2meta,
+                image_decode_options=self.image_decode_options,
+                transform=self.transform,
+                reader_init_kwargs=self.reader_init_kwargs,
+            )
 
 
 @dataclass(slots=True)

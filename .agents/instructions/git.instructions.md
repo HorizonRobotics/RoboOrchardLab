@@ -31,6 +31,10 @@ description: Load these instructions when working with git history, commit messa
   contains only the approved content; do not mutate the shared index to make
   that commit. Verify the resulting commit tree, then verify the cached and
   uncached diffs after returning to the shared worktree.
+- Treat a failed commit hook that reformats or otherwise edits files as a new
+  worktree state, not as a harmless retry. Inspect both cached and uncached
+  diffs, re-stage only the intended changed paths, rerun formatting and any
+  affected validation, then repeat the immediate pre-commit staged-diff audit.
 - Do not require local checkpoint commits to be squashed unless explicitly instructed.
 - Do not force-add ignored scratch files or temporary design notes such as
   `.agents/scratch/**` unless the user explicitly asks for a versioned
@@ -87,6 +91,11 @@ description: Load these instructions when working with git history, commit messa
   pushing, especially after creating a narrow cleanup commit on a dirty
   long-lived branch.
 - After merge, remove the remote source branch, refresh the local target branch, and then delete the local source branch when safe.
+- When an explicitly requested successor development branch replaces a merged
+  source branch, create it from the refreshed remote target and publish it.
+  If another repository later records this repository as a submodule, it must
+  pin the published child commit rather than treating the branch name as the
+  recorded reference.
 - Before deleting an archive, backup, or pre-reset local branch, compare its content against the branch you plan to keep using `git diff`, tree equality, or equivalent content-level checks; do not rely only on `git cherry` or ancestry.
 - After a squash merge, do not use commit ancestry alone to decide whether a
   source branch is covered by the target. Compare tree content or scoped diffs

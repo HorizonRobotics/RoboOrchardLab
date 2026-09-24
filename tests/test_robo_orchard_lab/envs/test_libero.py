@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -85,6 +86,51 @@ def dummy_libero_eval_env_formatted():
 
 
 class TestLiberoEvalEnv:
+    def test_get_observations_reuses_latest_result(self):
+        env = object.__new__(LiberoEnv)
+        observation = {"robot0_joint_pos": np.zeros(7)}
+        env._last_obs = observation
+
+        assert env.get_observations() is observation
+
+        env._last_obs = None
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env.get_observations()
+
+    def test_get_observations_rejects_cache_after_failed_reset_or_step(self):
+        env = object.__new__(LiberoEnv)
+        env._env = SimpleNamespace(
+            reset=MagicMock(side_effect=RuntimeError("reset failed")),
+            step=MagicMock(side_effect=RuntimeError("step failed")),
+        )
+        env._last_obs = {"stale": True}
+        env._last_obs_step_index = 2
+
+        with pytest.raises(RuntimeError, match="reset failed"):
+            env.reset()
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env.get_observations()
+
+        env._last_obs = {"stale": True}
+        env._convert_action_if_needed = lambda action: action
+        with pytest.raises(RuntimeError, match="step failed"):
+            env.step(np.zeros(7))
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env.get_observations()
+
+    def test_get_observations_rejects_cache_after_close(self):
+        env = object.__new__(LiberoEnv)
+        close = MagicMock()
+        env._env = SimpleNamespace(close=close)
+        env._last_obs = {"stale": True}
+        env._last_obs_step_index = 2
+
+        env.close()
+
+        close.assert_called_once_with()
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env.get_observations()
+
     @pytest.mark.parametrize(
         "model_type",
         [

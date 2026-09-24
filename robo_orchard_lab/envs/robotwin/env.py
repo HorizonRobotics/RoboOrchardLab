@@ -227,6 +227,8 @@ class RoboTwinEnv(
       initial observation.
     - ``step(action)``: execute one RoboTwin action and return
       ``RoboTwinEnvStepReturn``.
+    - ``get_observations()``: return current observations without advancing
+      the task, using the latest result when available.
     - ``close(...)``: close the current RoboTwin task.
     - ``finalize_episode()``: finalize episode-local artifacts without
       closing the reusable RoboTwin runtime.
@@ -869,6 +871,9 @@ class RoboTwinEnv(
         # the take_action method will do internal check if reach step limit
         # or task is successful. Either case, the task will not take further
         # actions.
+        # The native task may advance before a later observation read fails.
+        # Invalidate the previous observation before handing over the action.
+        self._last_obs = None
         task.take_action(
             action_array,
             action_type=self.cfg.action_type,
@@ -897,7 +902,6 @@ class RoboTwinEnv(
         obs = self._format_obs(raw_obs, step_index=next_obs_step_index)
         self._last_obs = obs
         self._last_obs_step_index = next_obs_step_index
-
         return RoboTwinEnvStepReturn(
             observations=obs,
             rewards=task.eval_success,
@@ -1104,6 +1108,20 @@ class RoboTwinEnv(
         self._episode_finalized = False
 
         return obs, info
+
+    def get_observations(self) -> RoboTwinObsType:
+        """Return current observations without advancing the episode.
+
+        Reuse the latest reset or step observation when available. A reset
+        with ``return_obs=False`` leaves no cached observation, so the first
+        call samples and formats the current task state at the reset step.
+
+        Raises:
+            RuntimeError: If reset or reset_from_state has not succeeded.
+        """
+        if self._last_obs is None:
+            self._last_obs = self._get_obs()
+        return self._last_obs
 
     def step_index_to_log_time_ns(self, step_index: int) -> int:
         """Map a RoboTwin rollout step index to MCAP log time.

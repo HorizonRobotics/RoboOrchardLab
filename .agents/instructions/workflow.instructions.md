@@ -78,6 +78,11 @@ description: Load these instructions when planning complex repository work, vali
   current conversation. Report candidate lessons with recommendations first,
   wait for the user's decision before editing durable guidance or memory, and
   record `none` when there is nothing worth preserving.
+- Before that same commit or handoff, inventory `.agents/scratch/` entries
+  created or materially used by the current task. Report `none`, or one
+  disposition per candidate: `keep` with its blocker, `retirement pending`,
+  or `retired`. The inventory is non-destructive: deletion still requires
+  completion evidence, durable distillation, and explicit user confirmation.
 - If a Superpowers workflow is also in use, treat Superpowers as the
   collaboration and process guide, and this repository's design guideline as
   the repo-local content standard. User-specified scratch paths override

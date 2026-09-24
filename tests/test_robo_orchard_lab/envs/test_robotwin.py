@@ -496,6 +496,37 @@ def dummy_env_without_expert_check():
 
 
 class TestRoboTwinEnv:
+    def test_get_observations_reuses_cache_or_samples_after_reset(self):
+        env = _make_uninitialized_env()
+        get_obs = MagicMock(return_value={"raw": True})
+        env._task = SimpleNamespace(get_obs=get_obs)
+        env._format_obs = lambda raw_obs, *, step_index: {
+            **raw_obs,
+            "step_index": step_index,
+        }
+        env._last_obs_step_index = 3
+        cached_obs = {"cached": True}
+        env._last_obs = cached_obs
+
+        assert env.get_observations() is cached_obs
+        get_obs.assert_not_called()
+
+        env._last_obs = None
+        current_obs = env.get_observations()
+
+        assert current_obs == {"raw": True, "step_index": 3}
+        assert env.get_observations() is current_obs
+        assert env._last_obs_step_index == 3
+        get_obs.assert_called_once_with()
+
+    def test_get_observations_requires_reset(self):
+        env = _make_uninitialized_env()
+        env._last_obs = None
+        env._last_obs_step_index = None
+
+        with pytest.raises(RuntimeError, match="successful reset"):
+            env.get_observations()
+
     @pytest.mark.parametrize(
         "model_type",
         [
@@ -1379,22 +1410,30 @@ class TestRoboTwinEnv:
 
         take_action.assert_not_called()
 
-    def test_step_format_failure_keeps_last_observation_step_index(
+    def test_step_obs_failure_invalidates_cache_without_clock_advance(
         self,
     ) -> None:
         env, take_action = _make_step_stub_env(action_type="qpos")
+        env._last_obs = {"step_index": 0}
+        env._task.get_obs = MagicMock(
+            side_effect=[
+                RuntimeError("observation failed"),
+                {"sim_state": "advanced"},
+            ]
+        )
 
-        def _raise_format_error(raw_obs, *, step_index):
-            del raw_obs, step_index
-            raise RuntimeError("format failed")
-
-        env._format_obs = _raise_format_error
-
-        with pytest.raises(RuntimeError, match="format failed"):
+        with pytest.raises(RuntimeError, match="observation failed"):
             env.step([0.0] * 14)
 
         take_action.assert_called_once()
+        assert env._last_obs is None
         assert env._last_obs_step_index == 0
+        assert env.get_observations() == {
+            "sim_state": "advanced",
+            "step_index": 0,
+            "step_timestamp": 0.0,
+        }
+        assert env._task.get_obs.call_count == 2
 
     def test_step_rejects_ee_action_width_mismatch(self):
         env, take_action = _make_step_stub_env(action_type="ee")

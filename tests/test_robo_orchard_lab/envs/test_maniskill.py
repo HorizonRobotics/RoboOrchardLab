@@ -13,6 +13,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 
 try:
@@ -26,6 +29,15 @@ pytestmark = pytest.mark.sim_env
 
 
 class TestManiSkillEnv:
+    def test_get_observations_reads_native_current_state(self):
+        env = object.__new__(ManiSkillEnv)
+        observation = {"agent": {"qpos": 1}}
+        get_obs = MagicMock(return_value=observation)
+        env.env = SimpleNamespace(get_obs=get_obs)
+
+        assert env.get_observations() is observation
+        get_obs.assert_called_once_with()
+
     def test_env_create(self):
         env = ManiSkillEnv(
             ManiSkillEnvCfg(env_id="PickCube-v1", obs_mode="rgbd")

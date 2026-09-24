@@ -17,9 +17,11 @@
 from __future__ import annotations
 import inspect
 import math
+import re
 import unicodedata
 import warnings
 from abc import ABCMeta, abstractmethod
+from dataclasses import dataclass, field
 from functools import partial
 from typing import (
     TYPE_CHECKING,
@@ -42,7 +44,7 @@ from torch.utils.data import (
     Dataset as TorchDataset,
     IterableDataset as TorchIterableDataset,
 )
-from typing_extensions import TypeVar
+from typing_extensions import Self, TypeVar
 
 from robo_orchard_lab.dataset.robot._prefetch import (
     close_iterators_best_effort,
@@ -66,7 +68,9 @@ __all__ = [
     "IterableDatasetMixin",
     "DatasetWithIndices",
     "IterableWithLenDataset",
+    "DatasetItemNode",
     "DatasetItem",
+    "DatasetItemGroup",
     "DictIterableDataset",
 ]
 
@@ -74,6 +78,7 @@ __all__ = [
 DatasetType = TypeVar("DatasetType", bound=TorchDataset)
 _TORCH_DATALOADER_INIT_SIGNATURE = inspect.signature(TorchDataLoader.__init__)
 _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE = 32
+_DATASET_ITEM_NAME_SEGMENT_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*")
 
 
 class ShardConfig(Config):
@@ -469,13 +474,13 @@ class DataLoader(TorchDataLoader):
             )
         elif isinstance(dataset, DictIterableDataset):
             cloned_dataset = DictIterableDataset(
-                datasets=dataset.dataset_items,
+                datasets=dataset.logical_dataset_items,
                 shuffle=aligned_shuffle_config,
                 shard_kwargs=dataset.shard_kwargs,
                 generator=dataset._generator,
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
                 max_dataset_concurrency=dataset._max_dataset_concurrency,
-                resample_ratios=dataset._resample_ratios,
+                resample_ratios=dataset._logical_resample_ratios,
             )
         else:
             raise TypeError(
@@ -1355,26 +1360,27 @@ class IterableWithLenDataset(
         return worker_info is not None and worker_info.num_workers > 1
 
 
-class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
-    """A configuration for creating a dataset.
+class DatasetItemNode(Config, metaclass=ABCMeta):
+    """Shared configuration contract for physical items and logical groups.
 
-    User should inherit this class and implement the `_create_dataset` method
-    to create a dataset from the configuration, and implement the
-    `get_dataset_row_num` method to return the number of rows in the dataset
-    before sharding.
+    Every node has one stable logical name and one static shard assignment.
+    ``get_dataset_row_num`` always reports the physical row count before that
+    assignment; :class:`DictIterableDataset` uses the shared sharded-count
+    rule for ratios, summaries, and worker batch accounting.
 
-    ``name`` optionally provides a stable source identity for consumers such
-    as :class:`DictIterableDataset` summaries. This class also includes the
-    sharding information, and the `create_dataset`
-    method will apply the sharding to the created dataset. This is useful when
-    we want to create a sharded dataset directly from the configuration.
+    A :class:`DatasetItem` is one materializable physical source. A
+    :class:`DatasetItemGroup` instead owns one logical name and expands to
+    several physical sources only when a ``DictIterableDataset`` is built.
+    In particular, a group's name is not copied to its physical members: it
+    identifies the group for named resampling and summary display.
     """
-
-    class_type: ClassType[DatasetType]
 
     name: str | None = Field(
         default=None,
-        description="Optional stable name for this dataset item.",
+        description=(
+            "Optional stable name for this dataset item or group. Dict-valued "
+            "resample_ratios require a lowercase slash-separated leaf path."
+        ),
     )
 
     shard_id: int = Field(
@@ -1393,16 +1399,10 @@ class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
 
     @abstractmethod
     def get_dataset_row_num(self) -> int:
-        """Get the number of rows in the dataset.
-
-        This method should provide a lightweight way to get the
-        number of rows in the dataset. This is important for efficiently
-        calculating the total number of batches when using
-        multiple workers in a DataLoader.
-        """
+        """Return the physical row count before this node's static shard."""
         raise NotImplementedError(
             "get_dataset_row_num must be implemented by subclasses "
-            "of DatasetItem."
+            "of DatasetItemNode."
         )
 
     def get_sharded_row_num(self, shard_config: ShardConfig) -> int:
@@ -1433,47 +1433,18 @@ class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
                 f"Invalid shard strategy: {shard_config.shard_strategy}"
             )
 
-    @abstractmethod
-    def _create_dataset(self) -> DatasetType:
-        """Create a dataset from the dataset item configuration."""
-        raise NotImplementedError(
-            "_create_dataset must be implemented by subclasses of DatasetItem."
-        )
-
-    def create_dataset(
-        self, shard_config: ShardConfig
-    ) -> DatasetWithIndices[DatasetType]:
-        """Create a DatasetWithIndices from the dataset item configuration.
-
-        This method applies the sharding configuration to the dataset by
-        creating a DatasetWithIndices with the appropriate shard of indices.
-
-        """
-        ret = DatasetWithIndices(dataset=self._create_dataset())
-        if self.is_sharded:
-            return ret.shard(
-                num_shards=self.num_shards,
-                index=self.shard_id,
-                **shard_config.to_dict(),
-            )
-        return ret
-
     @property
     def is_sharded(self) -> bool:
         return self.num_shards > 1
 
-    def shard(self, num_shards: int, index: int) -> DatasetItem[DatasetType]:
-        """Shard the dataset item by returning a new DatasetItem.
+    def shard(self, num_shards: int, index: int) -> Self:
+        """Return this node's deterministic child shard configuration.
 
-        The new DatasetItem will have the same configuration as the original
-        one, but with the updated shard_id and num_shards. The new sharding
-        information will be calculated by:
+        The returned node keeps its source configuration but combines the new
+        shard with any existing static shard assignment:
+
         - new_num_shards: self.num_shards * num_shards
         - new_shard_id: self.shard_id * num_shards + index
-
-        Note that the sharding information is always calculated based on the
-        original dataset.
-
         """
         if index >= num_shards:
             raise ValueError(
@@ -1496,26 +1467,301 @@ class DatasetItem(Config, Generic[DatasetType], metaclass=ABCMeta):
         )
 
 
+class DatasetItem(DatasetItemNode, Generic[DatasetType], metaclass=ABCMeta):
+    """Configuration for one independently materialized physical dataset.
+
+    Subclasses provide a raw indexable dataset through `_create_dataset`.
+    ``create_dataset`` wraps that dataset with the current static shard's
+    physical index table. Logical groups intentionally do not inherit this
+    materialization contract.
+    """
+
+    class_type: ClassType[DatasetType]
+
+    @abstractmethod
+    def _create_dataset(self) -> DatasetType:
+        """Create the unsharded physical dataset from this configuration."""
+        raise NotImplementedError(
+            "_create_dataset must be implemented by subclasses of DatasetItem."
+        )
+
+    def create_dataset(
+        self, shard_config: ShardConfig
+    ) -> DatasetWithIndices[DatasetType]:
+        """Materialize this physical item with its configured index shard."""
+        ret = DatasetWithIndices(dataset=self._create_dataset())
+        if self.is_sharded:
+            return ret.shard(
+                num_shards=self.num_shards,
+                index=self.shard_id,
+                **shard_config.to_dict(),
+            )
+        return ret
+
+
+@dataclass(slots=True)
+class _DatasetItemGroupLayout:
+    """Reader-free physical members and their aggregate row count."""
+
+    items: tuple[DatasetItem[Any], ...]
+    total_rows: int
+
+
+class DatasetItemGroup(DatasetItemNode, metaclass=ABCMeta):
+    """Configuration-only group of several physical dataset items.
+
+    Use a group when several sources should share one logical name, resample
+    ratio, and :meth:`DictIterableDataset.summary` leaf, while continuing to
+    be read and scheduled as independent physical :class:`DatasetItem`
+    values. A group never creates a concatenated runtime dataset or a shared
+    reader. ``DictIterableDataset`` expands it to physical leaves before
+    iteration, preserving the established reader lifecycle and worker path.
+
+    The group's resolved ratio is inherited by every member. Each member
+    independently targets ``round(member_sharded_rows * ratio)``; a group
+    therefore has no group-level rounding. Its static shard is likewise
+    applied independently to every member. Dataset-side batches never span
+    members of a group.
+
+    Subclasses implement :meth:`iter_dataset_items` to describe their leaves.
+    The sequence must be fresh and deterministic, and every value must be an
+    unsharded physical :class:`DatasetItem` configuration rather than a reader
+    object. Nested groups are deliberately unsupported in V1.
+    """
+
+    @abstractmethod
+    def iter_dataset_items(self) -> Iterator[DatasetItem[Any]]:
+        """Yield this group's fresh, unsharded physical item configurations.
+
+        The order must be deterministic. Yield physical ``DatasetItem``
+        configurations, not instantiated readers or another
+        ``DatasetItemGroup``. Leaves do not need logical names: the parent
+        group owns the name used for resampling and summary display.
+        """
+        raise NotImplementedError
+
+    def get_dataset_row_num(self) -> int:
+        """Return the sum of all physical member row counts.
+
+        Each call builds and validates the reader-free member configuration
+        layout from the current group fields. A member may perform its own
+        documented metadata fallback; the group does not concatenate or
+        retain runtime datasets.
+        """
+        return self._get_layout().total_rows
+
+    def get_sharded_row_num(self, shard_config: ShardConfig) -> int:
+        """Return the sum of independently sharded physical member rows.
+
+        This is intentionally not equivalent to sharding the aggregate count:
+        every member receives the group's static shard independently.
+        """
+        return sum(
+            item.shard(
+                num_shards=self.num_shards,
+                index=self.shard_id,
+            ).get_sharded_row_num(shard_config)
+            for item in self._get_layout().items
+        )
+
+    def _get_layout(self) -> _DatasetItemGroupLayout:
+        """Build a layout from the current mutable configuration."""
+
+        items = tuple(self.iter_dataset_items())
+        total_rows = 0
+        for item_index, item in enumerate(items):
+            if isinstance(item, DatasetItemGroup):
+                raise TypeError(
+                    "DatasetItemGroup.iter_dataset_items must yield physical "
+                    "DatasetItem leaves, not nested DatasetItemGroup values."
+                )
+            if not isinstance(item, DatasetItem):
+                raise TypeError(
+                    "DatasetItemGroup.iter_dataset_items must yield "
+                    f"DatasetItem values, but item {item_index} is "
+                    f"{type(item).__name__}."
+                )
+            if item.is_sharded:
+                raise ValueError(
+                    "DatasetItemGroup member items must be unsharded because "
+                    "the group shard is applied independently to every member."
+                )
+            row_count = item.get_dataset_row_num()
+            if isinstance(row_count, bool) or not isinstance(row_count, int):
+                raise TypeError(
+                    "DatasetItem.get_dataset_row_num must return an int, but "
+                    f"item {item_index} returned {row_count!r}."
+                )
+            if row_count < 0:
+                raise ValueError(
+                    "DatasetItem.get_dataset_row_num must not return a "
+                    "negative value, but item "
+                    f"{item_index} returned {row_count}."
+                )
+            total_rows += row_count
+
+        return _DatasetItemGroupLayout(
+            items=items,
+            total_rows=total_rows,
+        )
+
+
+def _expand_dataset_item_node(
+    item_node: DatasetItemNode,
+) -> tuple[DatasetItem[Any], ...]:
+    """Expand one logical input node into independently scheduled leaves.
+
+    A physical item remains one leaf. A group applies its static shard to every
+    generated member, but otherwise has no runtime representation.
+    """
+    if isinstance(item_node, DatasetItem):
+        return (item_node,)
+    if isinstance(item_node, DatasetItemGroup):
+        return tuple(
+            item.shard(
+                num_shards=item_node.num_shards,
+                index=item_node.shard_id,
+            )
+            for item in item_node._get_layout().items
+        )
+    raise TypeError(
+        "DictIterableDataset only supports DatasetItem or DatasetItemGroup "
+        f"values, but got {type(item_node).__name__}."
+    )
+
+
 class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     """Mix multiple dataset items with optional per-item resampling.
 
-    This dataset will create a DatasetWithIndices for each DatasetItem, and
-    iterate over the datasets in a weighted round-robin way. Resampling scales
-    each item's sharded row count before scheduling: ratios below one truncate
-    the sample stream, while ratios above one restart it for additional rows.
-    Non-unit ratios require shuffling. In multi-worker loading, every child
-    dataset is physically sharded first and resampled only within that shard.
+    Use this dataset to combine physical ``DatasetItem`` sources and
+    configuration-only ``DatasetItemGroup`` sources. Groups are expanded into
+    their physical members before iteration, so every reader, shard, batch,
+    and scheduler path remains the existing ``DatasetItem`` path. A group
+    nevertheless retains one logical name, ratio, and summary leaf.
+
+    ``resample_ratios`` is a row-count multiplier, not a probability. A group
+    ratio is inherited by every member, and each member independently uses
+    ``round(member_sharded_rows * ratio)``. Thus groups do not introduce a
+    concatenated runtime dataset or group-level rounding.
+
+    ``resample_ratios`` has four construction-time forms:
+
+    - ``None``: every item uses ``1.0``.
+    - One ``float``: apply the same ratio to every item.
+    - An ``Iterable[float]``: provide one ratio per logical input, in
+      ``datasets`` order.
+    - A ``dict[str, float]``: apply ratios by logical item name path prefix.
+
+    Dict keys and item names are lowercase relative paths whose segments match
+    ``[a-z0-9][a-z0-9._-]*``. Matching is by complete path segment: ``"a"``
+    matches ``"a"`` and ``"a/..."``, but not ``"abc"``. The deepest matching
+    key wins, and an item with no matching key uses ``1.0``. In dict mode, every
+    logical input must have a unique leaf name: ``"a"`` cannot coexist with
+    ``"a/b"``. A group's physical members do not need names; its parent name
+    is the one validated and matched.
+    Every dict key must match at least one item, so misspelled rules fail during
+    construction instead of silently doing nothing. Scalar and iterable forms
+    do not require item names.
+
+    For every form, ratios must be finite and strictly positive; any final ratio
+    other than ``1.0`` requires ``shuffle=True``. Ratios are resolved once at
+    construction, so later mutation of an item's name does not alter sampling.
+
+    Examples:
+        Use no explicit ratio when every selected item should contribute its
+        original row count:
+
+        .. code-block:: python
+
+            dataset = DictIterableDataset(datasets=items)
+            # Every item uses 1.0. Names are optional in this form.
+
+        Apply one multiplier to every item, or provide one multiplier in the
+        same order as ``datasets``:
+
+        .. code-block:: python
+
+            uniformly_downsampled = DictIterableDataset(
+                datasets=items,
+                shuffle=True,
+                resample_ratios=0.5,
+            )
+            explicitly_weighted = DictIterableDataset(
+                datasets=[training_items["a/b"], training_items["d/e"]],
+                shuffle=True,
+                resample_ratios=[2.0, 0.5],
+            )
+            # The resolved ratios are [2.0, 0.5], in datasets order.
+
+        Use dict keys to weight a path subtree, then override a more specific
+        leaf or subtree:
+
+        .. code-block:: python
+
+            path_weighted = DictIterableDataset(
+                datasets=[
+                    training_items["a/b"],
+                    training_items["a/c"],
+                    training_items["d/e"],
+                ],
+                shuffle=True,
+                resample_ratios={"a": 0.5, "a/b": 2.0},
+            )
+            # Resolved ratios: [2.0, 0.5, 1.0].
+
+        Group several physical RODataset roots under one logical path without
+        concatenating them. The ratio is resolved from the group's name and
+        then independently applied to each path:
+
+        .. code-block:: python
+
+            from robo_orchard_lab.dataset.robot.dataset import (
+                RODatasetItemGroup,
+            )
+
+            bridge = RODatasetItemGroup(
+                name="open_x/bridge",
+                dataset_path=[
+                    "/datasets/bridge-000",
+                    "/datasets/bridge-001",
+                ],
+            )
+            grouped = DictIterableDataset(
+                datasets=[bridge],
+                shuffle=True,
+                resample_ratios={"open_x": 0.5, "open_x/bridge": 2.0},
+            )
+            # Each physical path targets round(its own sharded row count * 2.0).
+            # summary() keeps one logical "open_x/bridge" leaf.
+
+        Dict paths are a namespace, not arbitrary string prefixes. For
+        example, this configuration is rejected because dataset item names
+        must be leaves of one tree:
+
+        .. code-block:: python
+
+            invalid = DictIterableDataset(
+                datasets=[training_items["a"], training_items["a/b"]],
+                shuffle=True,
+                resample_ratios={"a": 1.0},
+            )
+            # Raises ValueError: "a" is an ancestor of "a/b".
+
+    In multi-worker loading, every child dataset is physically sharded first
+    and resampled only within that shard.
 
     When dataset-side batching is configured, resampling still happens at the
-    row level. Batching is applied once to the complete resampled row stream,
-    so ``drop_last`` only affects its final incomplete batch.
+    row level. Every physical item owns its own batch stream, so a group does
+    not form batches across member boundaries and ``drop_last`` applies to
+    each member's final incomplete batch.
 
-    Item names for :meth:`summary` come from :attr:`DatasetItem.name`.
-    Unnamed items use ``item_0``, ``item_1``, and so on.
+    Item names for :meth:`summary` come from :attr:`DatasetItemNode.name`.
+    Unnamed items use ``(unnamed #0)``, ``(unnamed #1)``, and so on.
 
     Args:
-        datasets (Iterable[DatasetItem]): An iterable of DatasetItems to create
-            the dataset from.
+        datasets (Iterable[DatasetItemNode]): Physical items or logical groups
+            to mix. Ratio iterables have one entry per input here, not one per
+            physical member expanded from a group.
         shuffle (bool | ShuffleConfig, optional): Whether to shuffle the dataset
             indices. If a ShuffleConfig is provided, it will be used to configure
             the shuffling behavior. Defaults to False, which means no shuffling
@@ -1531,38 +1777,51 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             optional configuration for using a batch loader. If provided, the
             dataset will be wrapped with a DataLoader to return batches of
             data. Defaults to None, which means no batch loader will be used.
-        max_dataset_concurrency (int, optional): Maximum number of dataset-item
-            iterators kept active by the weighted scheduler. Defaults to 4.
-        resample_ratios (float | Iterable[float] | None, optional): A finite,
-            positive row-count multiplier applied to every dataset item, or
-            one multiplier per item. Defaults to None, which uses 1.0 for each
-            item. Values other than 1.0 require ``shuffle=True``. Ratios are
-            fixed at construction time.
+        max_dataset_concurrency (int, optional): Maximum number of physical
+            item iterators kept active by the weighted scheduler. One group can
+            expand to several such iterators. Defaults to 4.
+        resample_ratios (float | Iterable[float] | dict | None, optional):
+            Row-count multiplier configuration. Use one of the four forms
+            described above. In dict form, keys are path strings and values are
+            floats. Group members inherit their group's resolved multiplier and
+            round independently. Defaults to None, which uses 1.0 for each
+            logical input.
 
     Raises:
         TypeError: If ratios are not numeric.
-        ValueError: If iterable argument lengths do not match ``datasets``, or
-            a ratio is non-finite, not positive, or non-unit while shuffling is
-            disabled.
+        ValueError: If iterable argument lengths do not match ``datasets``;
+            dict paths are invalid, unmatched, or not unique leaf input names;
+            a group yields an invalid member; or a ratio is non-finite, not
+            positive, or non-unit while shuffling is disabled.
 
     """  # noqa: E501
 
-    dataset_items: list[DatasetItem]
+    logical_dataset_items: list[DatasetItemNode]
+    """Caller-provided items and groups, retained for names and summaries."""
+
+    dataset_items: list[DatasetItem[Any]]
+    """Physical items expanded from :attr:`logical_dataset_items`.
+
+    These are the items used at runtime.
+    """
 
     def __init__(
         self,
-        datasets: Iterable[DatasetItem],
+        datasets: Iterable[DatasetItemNode],
         shuffle: bool | ShuffleConfig = False,
         shard_kwargs: ShardConfig | None = None,
         generator: torch.Generator | np.random.Generator | None = None,
         batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
         max_dataset_concurrency: int = 4,
-        resample_ratios: float | Iterable[float] | None = None,
+        resample_ratios: float
+        | Iterable[float]
+        | dict[str, float]
+        | None = None,
     ):
         # try to make this instance compatible with HF Iterable at class-level
         # or instance-level if class-level MRO change fails
         # _add_hf_iterable_cls(self.__class__, instance=self)
-        self.dataset_items = list(datasets)
+        self.logical_dataset_items = list(datasets)
 
         if generator is None:
             seed = int(torch.empty((), dtype=torch.int64).random_().item())
@@ -1582,39 +1841,66 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         self._batch_loader_kwargs = batch_loader_kwargs
         self._max_dataset_concurrency = max_dataset_concurrency
 
-        if resample_ratios is None:
-            ratio_values: list[Any] = [1.0] * len(self.dataset_items)
-        elif isinstance(resample_ratios, Iterable) and not isinstance(
-            resample_ratios, (str, bytes)
-        ):
-            try:
-                ratio_values = list(resample_ratios)
-            except TypeError as exc:
-                raise TypeError(
-                    "resample_ratios must be a float or an iterable of floats."
-                ) from exc
+        if isinstance(resample_ratios, dict):
+            logical_resample_ratios = _resolve_named_resample_ratios(
+                dataset_items=self.logical_dataset_items,
+                resample_ratios=resample_ratios,
+            )
         else:
-            ratio_values = [resample_ratios] * len(self.dataset_items)
+            if resample_ratios is None:
+                ratio_values: list[Any] = [1.0] * len(
+                    self.logical_dataset_items
+                )
+            elif isinstance(resample_ratios, Iterable) and not isinstance(
+                resample_ratios, (str, bytes)
+            ):
+                try:
+                    ratio_values = list(resample_ratios)
+                except TypeError as exc:
+                    raise TypeError(
+                        "resample_ratios must be a float or an iterable of "
+                        "floats."
+                    ) from exc
+            else:
+                ratio_values = [resample_ratios] * len(
+                    self.logical_dataset_items
+                )
 
-        if len(ratio_values) != len(self.dataset_items):
-            raise ValueError(
-                "resample_ratios must contain one value per dataset item, "
-                f"but got {len(ratio_values)} values for "
-                f"{len(self.dataset_items)} items."
-            )
-        self._resample_ratios = [
-            _normalize_resample_ratio(
-                ratio,
-                name=f"resample_ratios[{index}]",
-            )
-            for index, ratio in enumerate(ratio_values)
-        ]
+            if len(ratio_values) != len(self.logical_dataset_items):
+                raise ValueError(
+                    "resample_ratios must contain one value per dataset item, "
+                    f"but got {len(ratio_values)} values for "
+                    f"{len(self.logical_dataset_items)} items."
+                )
+            logical_resample_ratios = [
+                _normalize_resample_ratio(
+                    ratio,
+                    name=f"resample_ratios[{index}]",
+                )
+                for index, ratio in enumerate(ratio_values)
+            ]
         if (
-            any(ratio != 1.0 for ratio in self._resample_ratios)
+            any(ratio != 1.0 for ratio in logical_resample_ratios)
             and not self._shuffle.shuffle
         ):
             raise ValueError(
                 "resample_ratios values other than 1.0 require shuffle=True."
+            )
+        self._logical_resample_ratios = logical_resample_ratios
+        self.dataset_items = []
+        self._logical_item_indices: list[tuple[int, ...]] = []
+        self._resample_ratios: list[float] = []
+        for logical_item, ratio in zip(
+            self.logical_dataset_items,
+            self._logical_resample_ratios,
+            strict=True,
+        ):
+            start_index = len(self.dataset_items)
+            expanded_items = _expand_dataset_item_node(logical_item)
+            self.dataset_items.extend(expanded_items)
+            self._resample_ratios.extend([ratio] * len(expanded_items))
+            self._logical_item_indices.append(
+                tuple(range(start_index, start_index + len(expanded_items)))
             )
         self._total_dataset_length: list[int] | None = None
         self._total_indices_length: list[int] | None = None
@@ -1664,10 +1950,10 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         return self._shard_kwargs
 
     def shard(self, num_shards: int, index: int) -> DictIterableDataset:
-        """Shard the dataset by sharding each dataset item."""
+        """Shard every logical item before expanding group members."""
         sharded_items = [
             item.shard(num_shards=num_shards, index=index)
-            for item in self.dataset_items
+            for item in self.logical_dataset_items
         ]
         return DictIterableDataset(
             datasets=sharded_items,
@@ -1676,7 +1962,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             batch_loader_kwargs=self.batch_loader_kwargs,
             max_dataset_concurrency=self._max_dataset_concurrency,
             shard_kwargs=self.shard_kwargs,
-            resample_ratios=self._resample_ratios,
+            resample_ratios=self._logical_resample_ratios,
         )
 
     def __repr__(self) -> str:
@@ -1694,7 +1980,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             str: Concise summary of the iterable dataset configuration.
         """
         dataset_items_repr = ",\n    ".join(
-            repr(item) for item in self.dataset_items
+            repr(item) for item in self.logical_dataset_items
         )
         if dataset_items_repr:
             dataset_items_repr = f"[\n    {dataset_items_repr}\n  ]"
@@ -1703,7 +1989,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
 
         return (
             f"{self.__class__.__name__}("
-            f"dataset_items={len(self.dataset_items)}, "
+            f"dataset_items={len(self.logical_dataset_items)}, "
             f"items={dataset_items_repr}, "
             f"shuffle={self._shuffle.shuffle}, "
             f"batch_loader_kwargs={self.batch_loader_kwargs!r}, "
@@ -1711,7 +1997,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         )
 
     def summary(self) -> str:
-        """Return the current shard's row-level dataset mixture summary.
+        """Return a display tree for the current shard's dataset mixture.
 
         ``sample_ratio`` uses resampled row counts, while ``frame_ratio`` and
         ``length`` use the real sharded row counts before resampling. These
@@ -1720,16 +2006,32 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         from the observed batch ratio because each dataset item forms batches
         independently and may drop one final incomplete batch.
 
+        A :class:`DatasetItemGroup` remains one leaf in this table. Its
+        ``length`` and row-level ratios aggregate its physical members, while
+        its ``resample_ratio`` is the one multiplier configured for the group.
+        Because members are rounded independently, the group's resampled count
+        need not equal ``round(group_length * resample_ratio)``.
+
+        Path-like names are shown as a compact tree. Aggregate nodes summarize
+        every descendant but show ``—`` for ``resample_ratio`` because their
+        children can use different multipliers. Leaf rows show the resolved
+        multiplier. The display tree is intentionally tolerant: scalar/list
+        ratio callers and post-construction name changes can therefore expose
+        duplicate, overlapping, missing, or malformed names without making
+        this diagnostic method fail. Dict-form ``resample_ratios`` remains the
+        separate strict construction-time validation boundary.
+
         Returns:
             str: A display-width-aligned table suitable for logs or consoles.
 
         Example:
             ``print(dataset.summary())`` renders a table like::
 
-                                            name sample_ratio [frame_ratio] [length]
-                ├---------------------------aaa:       25.00% [     50.00%] [    10]
-                ├-------------------------数_据:       75.00% [     50.00%] [    10]
-                ├-------------------------total:      100.00% [    100.00%] [    20]
+                name              sample_ratio [frame_ratio] [length] resample_ratio
+                ├─ source               100.00%       100.00%       20              —
+                │  ├─ rgb                25.00%        50.00%       10           ×1.0
+                │  └─ depth              75.00%        50.00%       10           ×3.0
+                └─ total                100.00%       100.00%       20              —
         """  # noqa: E501
 
         def char_width(char: str) -> int:
@@ -1737,50 +2039,59 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 return 0
             return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
 
-        def format_name(name: str, width: int) -> str:
-            sanitized = "".join(
-                "_" if unicodedata.category(char).startswith("C") else char
-                for char in name
-            )
-            kept_reversed: list[str] = []
-            display_width = 0
-            for char in reversed(sanitized):
-                next_width = char_width(char)
-                if display_width + next_width > width:
-                    break
-                kept_reversed.append(char)
-                display_width += next_width
-            visible_name = "".join(reversed(kept_reversed))
-            return "-" * (width - display_width) + visible_name
+        def display_width(value: str) -> int:
+            return sum(char_width(char) for char in value)
+
+        def align_display(
+            value: str,
+            width: int,
+            *,
+            left: bool = False,
+        ) -> str:
+            padding = " " * (width - display_width(value))
+            return value + padding if left else padding + value
 
         _ = self.total_iterator_length
         assert self._total_indices_length is not None
-        scaled_rows = self._total_indices_length
+        scaled_rows = [
+            sum(self._total_indices_length[index] for index in item_indices)
+            for item_indices in self._logical_item_indices
+        ]
         base_rows = [
-            item.get_sharded_row_num(shard_config=self.shard_kwargs)
-            for item in self.dataset_items
+            sum(
+                self.dataset_items[index].get_sharded_row_num(
+                    shard_config=self.shard_kwargs
+                )
+                for index in item_indices
+            )
+            for item_indices in self._logical_item_indices
         ]
         total_scaled_rows = sum(scaled_rows)
         total_base_rows = sum(base_rows)
-        length_width = max(len("length"), len(str(total_base_rows)))
-        name_width = 30
+        summary_root, root_item_labels = _build_path_tree(
+            item.name for item in self.logical_dataset_items
+        )
+        summary_rows = _format_path_tree(summary_root, root_item_labels)
+        summary_rows.append(
+            ("└─ total", tuple(range(len(self.logical_dataset_items))), None)
+        )
+        name_width = max(
+            len("name"),
+            30,
+            *(display_width(label) for label, _, _ in summary_rows),
+        )
         sample_ratio_width = len("sample_ratio")
         frame_ratio_width = len("frame_ratio")
-        lines = [
-            f"{'name':>{name_width + 2}} "
-            f"{'sample_ratio':>{sample_ratio_width}} "
-            f"[{'frame_ratio':>{frame_ratio_width}}] "
-            f"[{'length':>{length_width}}]"
-        ]
-        for index, (item, scaled_length, base_length) in enumerate(
-            zip(
-                self.dataset_items,
-                scaled_rows,
-                base_rows,
-                strict=True,
-            )
-        ):
-            name = item.name if item.name is not None else f"item_{index}"
+        length_width = max(len("length"), len(str(total_base_rows)))
+        resample_ratio_width = len("resample_ratio")
+
+        def format_summary_row(
+            label: str,
+            item_indices: tuple[int, ...],
+            leaf_item_index: int | None,
+        ) -> str:
+            scaled_length = sum(scaled_rows[index] for index in item_indices)
+            base_length = sum(base_rows[index] for index in item_indices)
             sample_ratio = (
                 scaled_length / total_scaled_rows
                 if total_scaled_rows > 0
@@ -1789,21 +2100,27 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             frame_ratio = (
                 base_length / total_base_rows if total_base_rows > 0 else 0.0
             )
-            lines.append(
-                f"├{format_name(name, name_width)}: "
+            resample_ratio = (
+                f"×{self._logical_resample_ratios[leaf_item_index]!r}"
+                if leaf_item_index is not None
+                else "—"
+            )
+            return (
+                f"{align_display(label, name_width, left=True)} "
                 f"{sample_ratio:>{sample_ratio_width}.2%} "
                 f"[{frame_ratio:>{frame_ratio_width}.2%}] "
-                f"[{base_length:>{length_width}}]"
+                f"[{base_length:>{length_width}}] "
+                f"{align_display(resample_ratio, resample_ratio_width)}"
             )
 
-        total_sample_ratio = 1.0 if total_scaled_rows > 0 else 0.0
-        total_frame_ratio = 1.0 if total_base_rows > 0 else 0.0
-        lines.append(
-            f"├{format_name('total', name_width)}: "
-            f"{total_sample_ratio:>{sample_ratio_width}.2%} "
-            f"[{total_frame_ratio:>{frame_ratio_width}.2%}] "
-            f"[{total_base_rows:>{length_width}}]"
-        )
+        lines = [
+            f"{align_display('name', name_width, left=True)} "
+            f"{'sample_ratio':>{sample_ratio_width}} "
+            f"[{'frame_ratio':>{frame_ratio_width}}] "
+            f"[{'length':>{length_width}}] "
+            f"{align_display('resample_ratio', resample_ratio_width)}"
+        ]
+        lines.extend(format_summary_row(*row) for row in summary_rows)
         return "\n".join(lines)
 
     @property
@@ -2000,8 +2317,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         ``IterableWithLenDataset``.
 
         Args:
-            data_item (DatasetItem[Any]): Lazy dataset configuration to
-                materialize for this iterator.
+            data_item (DatasetItem): Lazy physical configuration to materialize
+                for this iterator.
             resample_ratio (float): Validated ratio forwarded to the child
                 iterable.
             expected_rows (int): Logical rows derived from item metadata.
@@ -2094,6 +2411,313 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         if len(weights) > 0:
             weights = weights / weights.sum()
         return weights
+
+
+@dataclass(slots=True)
+class _PathTreeNode:
+    """Store one generic display-path tree node with ordered item indices."""
+
+    children: dict[str, _PathTreeNode] = field(default_factory=dict)
+    item_indices: list[int] = field(default_factory=list)
+    first_item_index: int | None = None
+
+
+def _build_path_tree(
+    item_names: Iterable[str | None],
+) -> tuple[_PathTreeNode, dict[int, str]]:
+    """Build a tolerant display tree for arbitrary slash-separated names."""
+    root = _PathTreeNode()
+    root_item_labels: dict[int, str] = {}
+    for item_index, item_name in enumerate(item_names):
+        if item_name is None:
+            root.item_indices.append(item_index)
+            root_item_labels[item_index] = f"(unnamed #{item_index})"
+            continue
+        if not isinstance(item_name, str):
+            root.item_indices.append(item_index)
+            root_item_labels[item_index] = (
+                f"(invalid name #{item_index}: {type(item_name).__name__})"
+            )
+            continue
+
+        node = root
+        for segment in item_name.split("/"):
+            child = node.children.get(segment)
+            if child is None:
+                child = _PathTreeNode(first_item_index=item_index)
+                node.children[segment] = child
+            node = child
+        node.item_indices.append(item_index)
+    return root, root_item_labels
+
+
+def _format_path_tree(
+    root: _PathTreeNode,
+    root_item_labels: dict[int, str],
+) -> list[tuple[str, tuple[int, ...], int | None]]:
+    """Format a path tree into compact branch labels and item-index groups.
+
+    Each returned tuple contains the tree label, all item indices summarized by
+    that row, and the single leaf item index when the row is a concrete item.
+    The helper preserves source order, compresses path nodes with one child and
+    no direct item, and makes overlapping or duplicate names explicit through
+    ``(self)`` rows. It does not know dataset metrics or resampling semantics.
+    """
+
+    def node_item_indices(node: _PathTreeNode) -> tuple[int, ...]:
+        return tuple(
+            sorted(
+                (
+                    *node.item_indices,
+                    *(
+                        item_index
+                        for child in node.children.values()
+                        for item_index in node_item_indices(child)
+                    ),
+                )
+            )
+        )
+
+    rows: list[tuple[str, tuple[int, ...], int | None]] = []
+
+    def append_leaf(label: str, item_index: int) -> None:
+        rows.append((label, (item_index,), item_index))
+
+    def append_node(
+        node: _PathTreeNode,
+        path_segments: tuple[str, ...],
+        prefix: str,
+        is_last: bool,
+    ) -> None:
+        while not node.item_indices and len(node.children) == 1:
+            segment, node = next(iter(node.children.items()))
+            path_segments = (*path_segments, segment)
+
+        connector = "└─ " if is_last else "├─ "
+        label = (
+            prefix
+            + connector
+            + "/".join(
+                _format_path_segment(segment) for segment in path_segments
+            )
+        )
+        if len(node.item_indices) == 1 and not node.children:
+            append_leaf(label, node.item_indices[0])
+            return
+
+        rows.append((label, node_item_indices(node), None))
+        child_prefix = prefix + ("   " if is_last else "│  ")
+        direct_item_positions = {
+            item_index: position
+            for position, item_index in enumerate(node.item_indices)
+        }
+        child_nodes_by_first_item_index = {
+            child.first_item_index: (segment, child)
+            for segment, child in node.children.items()
+        }
+        entry_indices = sorted(
+            (*direct_item_positions, *child_nodes_by_first_item_index)
+        )
+        for position, item_index in enumerate(entry_indices):
+            child_is_last = position == len(entry_indices) - 1
+            if item_index in direct_item_positions:
+                direct_position = direct_item_positions[item_index]
+                direct_label = (
+                    "(self)"
+                    if len(node.item_indices) == 1
+                    else f"(self #{direct_position})"
+                )
+                append_leaf(
+                    child_prefix
+                    + ("└─ " if child_is_last else "├─ ")
+                    + direct_label,
+                    item_index,
+                )
+                continue
+
+            segment, child = child_nodes_by_first_item_index[item_index]
+            append_node(child, (segment,), child_prefix, child_is_last)
+
+    root_entries = sorted(
+        (*root.item_indices, *root.children.values()),
+        key=lambda entry: (
+            entry if isinstance(entry, int) else entry.first_item_index
+        ),
+    )
+    root_children_by_node_id = {
+        id(child): segment for segment, child in root.children.items()
+    }
+    for entry in root_entries:
+        if isinstance(entry, int):
+            append_leaf(f"├─ {root_item_labels[entry]}", entry)
+            continue
+        append_node(
+            entry,
+            (root_children_by_node_id[id(entry)],),
+            prefix="",
+            is_last=False,
+        )
+    return rows
+
+
+def _format_path_segment(segment: str) -> str:
+    """Render one arbitrary path segment without terminal control effects."""
+    if not segment:
+        return "(empty)"
+
+    escaped_chars: list[str] = []
+    for char in segment:
+        if char == "\\":
+            escaped_chars.append("\\\\")
+            continue
+        if char == "\n":
+            escaped_chars.append("\\n")
+            continue
+        if char == "\r":
+            escaped_chars.append("\\r")
+            continue
+        if char == "\t":
+            escaped_chars.append("\\t")
+            continue
+        if not unicodedata.category(char).startswith("C"):
+            escaped_chars.append(char)
+            continue
+
+        codepoint = ord(char)
+        if codepoint <= 0xFF:
+            escaped_chars.append(f"\\x{codepoint:02x}")
+        elif codepoint <= 0xFFFF:
+            escaped_chars.append(f"\\u{codepoint:04x}")
+        else:
+            escaped_chars.append(f"\\U{codepoint:08x}")
+    return "".join(escaped_chars)
+
+
+@dataclass(slots=True)
+class _ResamplePathNode:
+    """Store one private path-trie node during ratio resolution."""
+
+    children: dict[str, _ResamplePathNode] = field(default_factory=dict)
+    item_index: int | None = None
+    first_item_name: str | None = None
+    resample_ratio: float | None = None
+    rule_name: str | None = None
+
+
+def _resolve_named_resample_ratios(
+    *,
+    dataset_items: list[DatasetItemNode],
+    resample_ratios: dict[str, float],
+) -> list[float]:
+    """Resolve path-prefix rules into the existing per-item ratio sequence.
+
+    The temporary trie validates that dataset item names are unique leaves and
+    propagates the deepest matching rule to each leaf. It is discarded before
+    iteration, so sharding and DataLoader cloning continue to use the resolved
+    list of ratios.
+
+    Args:
+        dataset_items: Items whose names define the leaf set.
+        resample_ratios: Positive row multipliers keyed by logical paths.
+
+    Returns:
+        One normalized ratio per item, in ``dataset_items`` order.
+
+    Raises:
+        TypeError: If a rule ratio is not numeric.
+        ValueError: If a path is invalid, item paths overlap, a rule does not
+            match an item, or a ratio is not finite and positive.
+    """
+    root = _ResamplePathNode()
+    for item_index, item in enumerate(dataset_items):
+        item_name = item.name
+        path_segments = _split_resample_path(
+            item_name,
+            name=f"dataset_items[{item_index}].name",
+        )
+        node = root
+        for segment in path_segments:
+            if node.item_index is not None:
+                raise ValueError(
+                    "Dataset item names must be unique leaf paths, but "
+                    f"{node.first_item_name!r} is an ancestor of "
+                    f"{item_name!r}."
+                )
+            node = node.children.setdefault(segment, _ResamplePathNode())
+            if node.first_item_name is None:
+                node.first_item_name = item_name
+
+        if node.item_index is not None:
+            raise ValueError(
+                "Dataset item names must be unique, but got "
+                f"{item_name!r} more than once."
+            )
+        if node.children:
+            raise ValueError(
+                "Dataset item names must be unique leaf paths, but "
+                f"{item_name!r} is an ancestor of "
+                f"{node.first_item_name!r}."
+            )
+        node.item_index = item_index
+
+    for rule_name, ratio in resample_ratios.items():
+        path_segments = _split_resample_path(
+            rule_name,
+            name="resample_ratios key",
+        )
+        node = root
+        for segment in path_segments:
+            node = node.children.setdefault(segment, _ResamplePathNode())
+        node.resample_ratio = _normalize_resample_ratio(
+            ratio,
+            name=f"resample_ratios[{rule_name!r}]",
+        )
+        node.rule_name = rule_name
+
+    ratio_values = [1.0] * len(dataset_items)
+
+    def resolve_node(
+        node: _ResamplePathNode,
+        inherited_ratio: float | None,
+    ) -> bool:
+        effective_ratio = (
+            node.resample_ratio
+            if node.resample_ratio is not None
+            else inherited_ratio
+        )
+        has_item = node.item_index is not None
+        if node.item_index is not None:
+            ratio_values[node.item_index] = (
+                effective_ratio if effective_ratio is not None else 1.0
+            )
+        for child in node.children.values():
+            has_item = resolve_node(child, effective_ratio) or has_item
+        if node.rule_name is not None and not has_item:
+            raise ValueError(
+                "resample_ratios key does not match any dataset item name: "
+                f"{node.rule_name!r}."
+            )
+        return has_item
+
+    resolve_node(root, inherited_ratio=None)
+    return ratio_values
+
+
+def _split_resample_path(value: Any, *, name: str) -> tuple[str, ...]:
+    """Validate and split one lowercase logical dataset path."""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{name} must be a lowercase slash-separated path, got {value!r}."
+        )
+    path_segments = tuple(value.split("/"))
+    if not value or not all(
+        _DATASET_ITEM_NAME_SEGMENT_PATTERN.fullmatch(segment)
+        for segment in path_segments
+    ):
+        raise ValueError(
+            f"{name} must be a lowercase slash-separated path, got {value!r}."
+        )
+    return path_segments
 
 
 def _normalize_resample_ratio(value: float, *, name: str) -> float:

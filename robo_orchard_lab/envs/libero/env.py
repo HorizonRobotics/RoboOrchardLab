@@ -183,8 +183,8 @@ class LiberoEnv(EnvBase, EnvToMcapProtocol):
     The wrapper normalizes Libero observations into orchard datatypes when
     configured, converts optional orchard target-EEF actions into Libero OSC
     controls, and exposes optional MCAP export methods for the latest
-    reset/step observation. ``get_mcap_obs()`` reads the cached policy-facing
-    observation and does not force another simulator snapshot.
+    reset/step observation. ``get_observations()`` and ``get_mcap_obs()`` read
+    the cached policy-facing observation without another simulator snapshot.
     """
 
     cfg: LiberoEnvCfg
@@ -273,6 +273,8 @@ class LiberoEnv(EnvBase, EnvToMcapProtocol):
         action = self._convert_action_if_needed(action)
         self._last_action = action
 
+        # The native step may advance the simulator before it fails.
+        self._last_obs = None
         _, reward, done, info = self._env.step(action)
         obs = self._get_obs(force_update=True)
         self._last_obs_step_index = (
@@ -402,6 +404,8 @@ class LiberoEnv(EnvBase, EnvToMcapProtocol):
                 reset. Defaults to None.
 
         """
+        self._last_obs = None
+        self._last_obs_step_index = None
         if seed is not None:
             self._env.seed(seed)
         _ = self._env.reset()
@@ -415,6 +419,19 @@ class LiberoEnv(EnvBase, EnvToMcapProtocol):
         obs = self._get_obs(force_update=True)
         self._last_obs_step_index = 0
         return obs, {}
+
+    def get_observations(self) -> LiberoObsType:
+        """Return the latest observation produced by reset or step.
+
+        Raises:
+            RuntimeError: If no successful reset or step has produced one.
+        """
+        if self._last_obs is None:
+            raise RuntimeError(
+                "LiberoEnv.get_observations() requires a successful "
+                "reset() or step() first."
+            )
+        return self._last_obs
 
     def step_index_to_log_time_ns(self, step_index: int) -> int:
         """Map a Libero rollout step index to MCAP log time.
@@ -729,6 +746,8 @@ class LiberoEnv(EnvBase, EnvToMcapProtocol):
         )
 
     def close(self) -> None:
+        self._last_obs = None
+        self._last_obs_step_index = None
         self._env.close()
 
     @property

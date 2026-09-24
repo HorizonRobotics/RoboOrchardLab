@@ -25,7 +25,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.optimizer import AcceleratedOptimizer
 from accelerate.scheduler import AcceleratedScheduler
-from accelerate.utils import DummyOptim, DummyScheduler
+from accelerate.utils.deepspeed import DummyOptim, DummyScheduler
 from robo_orchard_core.utils.config import Config
 from torch.utils.data import DataLoader
 

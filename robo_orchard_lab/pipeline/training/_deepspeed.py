@@ -22,11 +22,8 @@ from typing import Any
 import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import (
-    DistributedType,
-    DummyOptim,
-    DummyScheduler,
-)
+from accelerate.utils import DistributedType
+from accelerate.utils.deepspeed import DummyOptim, DummyScheduler
 
 from robo_orchard_lab.pipeline.hooks.grad_clip import (
     GradientClippingHookConfig,

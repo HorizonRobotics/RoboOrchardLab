@@ -94,7 +94,19 @@ section so report ownership remains clear.
 - Once the current round's findings are resolved, close that reviewer and
   launch one fresh reviewer against the full current effective scope to start
   the next issue-discovery round.
-- Stop the review loop only when a fresh round returns no new must-fix
+- Count only fresh issue-discovery examinations. Fix verification by the
+  reviewer that reported the finding resolves that round's ledger and does
+  not start another round.
+- Cap an ordinary review-convergence loop at three fresh issue-discovery
+  rounds. Stop after round three if it still returns a must-fix finding, is
+  blocked by an unresolved contract, or reveals that the effective scope is
+  expanding rather than converging. Do not start a fourth round without the
+  user's explicit direction.
+- At that stop, report the round-by-round finding ledger, verified repairs,
+  remaining findings, and the contract or scope choice that prevents
+  convergence. Return to a design/scope decision instead of repeatedly
+  patching the same review target.
+- Otherwise, stop the review loop when a fresh round returns no new must-fix
   findings, or when the user explicitly accepts the remaining risk. Do not
   reuse the previous round's reviewer as the issue-discovery reviewer for the
   next round.

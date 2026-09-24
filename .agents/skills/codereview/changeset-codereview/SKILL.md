@@ -32,6 +32,11 @@ To do this:
      working tree diff, patch, or explicit file set.
    - Choose the smallest reasonable diff or file scope that satisfies the
      request.
+   - When the change alters public or observable behavior, derive an interface
+     surface before narrowing the review: applicable CLI help/config, public
+     examples, README/docs, runbooks, packaged Agent Skills, and their
+     install/package resources. Inspect related artifacts for drift even when
+     they have no diff; an explicit file list is not by itself an exclusion.
    - For re-review, default to the full current effective changeset unless the
      user explicitly asks for incremental-only validation.
    - Keep a prior-findings ledger when needed and classify each item as fixed,
@@ -51,6 +56,12 @@ To do this:
    - Any directory-scoped `AGENTS.md` files that apply to modified files
    - Relevant `.agents/instructions/`, `.agents/references/`, or
      `.agents/skills/` files referenced by those `AGENTS.md` files
+   - For a durable documentation claim that depends on externally mutable
+     state, such as a remote job outcome, storage state, or publication status,
+     identify the authoritative source and verify it from fresh live/readback
+     evidence or an inspectable retained snapshot. A local temporary summary
+     alone does not substantiate the claim; if evidence is unavailable, report
+     the claim as unverified rather than confirmed.
 
 4. Summarize the reviewed changeset locally before issue discovery.
 

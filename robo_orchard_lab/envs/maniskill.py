@@ -37,8 +37,8 @@ class ManiSkillEnv(EnvBase[dict[str, Any], torch.Tensor]):
     """The ManiSkill environment base class.
 
     This class is the base class for all ManiSkill environments. It provides
-    the basic functionality for the environment, such as reset, step, render,
-    and close.
+    the basic functionality for the environment, such as reset, step,
+    get_observations, render, and close.
     """
 
     env: BaseEnv
@@ -76,6 +76,14 @@ class ManiSkillEnv(EnvBase[dict[str, Any], torch.Tensor]):
             options["env_idx"] = env_ids
 
         return self.env.reset(seed=seed, options=options)
+
+    def get_observations(self) -> Any:
+        """Read current observations using ManiSkill's configured obs mode.
+
+        The return layout matches ``reset()`` and ``step()`` and may be a
+        tensor or a dictionary depending on the configured observation mode.
+        """
+        return self.env.get_obs()
 
     def close(self):
         return self.env.close()

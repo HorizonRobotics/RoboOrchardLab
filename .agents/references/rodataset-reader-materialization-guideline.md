@@ -69,10 +69,32 @@ or the boundary between stored features and user transforms.
   merely for convenience. It should reject cloning until it has an explicit
   ownership and reconstruction contract for every added resource.
 
+## Logical Dataset Item Groups
+
+- Use `DatasetItemGroup` or `RODatasetItemGroup` only for configuration-level
+  grouping. A group owns one logical name, resample rule, and summary leaf;
+  it is not a concatenated runtime dataset or a shared reader.
+- Expand group members into ordinary unsharded physical `DatasetItem` values
+  before scheduling. Preserve the existing per-member reader lifecycle,
+  `max_dataset_concurrency` boundary, worker path, and batch boundaries.
+- Resolve a group's resample ratio at the logical name, then apply it to every
+  member independently as `round(member_sharded_rows * ratio)`. Do not sum
+  members before rounding or introduce group-level sampling state.
+- Apply a group's static shard independently to every member. Its row count is
+  the sum of member counts obtained through their existing
+  `get_dataset_row_num()` contracts; cache only the derived member layout, not
+  a second row-count source of truth.
+- Keep V1 groups flat: `iter_dataset_items()` yields physical leaves, not
+  nested groups. A path-list `RODatasetItemGroup` must yield fresh physical
+  `RODatasetItem` configurations without opening readers.
+
 ## Validation
 
 - Cover config and JSON round trips, automatic and explicit column selection,
   every supported backend, invalid feature selection, and default-off behavior.
+- For logical groups, cover deferred leaf construction, aggregate row counts,
+  independent ratio rounding and static sharding, per-member batch boundaries,
+  reader cleanup, and one logical summary node rather than member-path output.
 - Exercise scalar, list, slice, `__getitems__`, transform, rename/select/view,
   serialization, and close behavior through the same materialization policy.
 - Use disjoint current and sampled rows in MultiRow tests and assert decoder

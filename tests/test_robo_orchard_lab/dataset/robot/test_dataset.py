@@ -35,6 +35,8 @@ from robo_orchard_lab.dataset.datatypes.geometry import BatchFrameTransform
 from robo_orchard_lab.dataset.robot.dataset import (
     ConcatRODataset,
     RODataset,
+    RODatasetItem,
+    RODatasetItemGroup,
     ROMultiRowDataset,
     get_row_num_from_dataset_info,
 )
@@ -2505,3 +2507,25 @@ def test_packaging_force_overwrite_retires_reserved_workspace(
 
     assert target_path.is_dir()
     assert not Path(paths.workspace_dir).exists()
+
+
+def test_rodataset_item_group_lazily_generates_single_path_items() -> None:
+    group = RODatasetItemGroup(
+        name="training/robotwin",
+        dataset_path=["/datasets/part-a", "/datasets/part-b"],
+        storage_options={"anon": False},
+        meta_index2meta=True,
+        reader_init_kwargs={},
+    )
+
+    items = list(group.iter_dataset_items())
+
+    assert [item.dataset_path for item in items] == [
+        "/datasets/part-a",
+        "/datasets/part-b",
+    ]
+    assert all(isinstance(item, RODatasetItem) for item in items)
+    assert all(item.name is None for item in items)
+    assert all(item.num_shards == 1 and item.shard_id == 0 for item in items)
+    assert all(item.storage_options == {"anon": False} for item in items)
+    assert all(item.meta_index2meta is True for item in items)

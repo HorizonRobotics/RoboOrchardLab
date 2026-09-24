@@ -25,12 +25,8 @@ import pytest
 import torch
 from accelerate import Accelerator
 from accelerate.data_loader import DataLoaderShard
-from accelerate.utils import (
-    DataLoaderConfiguration,
-    DistributedType,
-    DummyOptim,
-    DummyScheduler,
-)
+from accelerate.utils import DataLoaderConfiguration, DistributedType
+from accelerate.utils.deepspeed import DummyOptim, DummyScheduler
 from robo_orchard_core.utils.config import ClassType
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
