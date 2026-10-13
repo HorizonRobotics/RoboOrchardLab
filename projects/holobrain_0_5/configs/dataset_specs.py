@@ -15,29 +15,45 @@
 # permissions and limitations under the License.
 
 
-"""Public HoloBrain 0.5 dataset selections."""
+"""Dataset selections, including Panda Droid's pending LMDB reader."""
 
 import os
 
 DATA_BASE = os.environ.get("HOLOBRAIN_DATA_BASE", "./data")
 __all__ = ["training_datasets"]
-training_datasets = [
-    dict(
-        dataset_type="robotwin",
-        dataset_name=name,
-        setting_type=setting,
-        data_paths=[f"{DATA_BASE}/{path}"],
-    )
-    for name, setting, path in [
-        ("robotwin2_0", "aloha_v2", "robotwin2.0/aloha_agilex_demo_clean"),
-        ("robotwin2_0_ur5_wsg", "ur5_wsg", "robotwin2.0/ur5_wsg_demo_clean"),
+training_datasets = (
+    [
+        dict(
+            dataset_type="robotwin",
+            dataset_name=name,
+            setting_type=setting,
+            data_paths=[f"{DATA_BASE}/{path}"],
+        )
+        for name, setting, path in [
+            ("robotwin2_0", "aloha_v2", "robotwin2.0/aloha_agilex_demo_clean"),
+            (
+                "robotwin2_0_ur5_wsg",
+                "ur5_wsg",
+                "robotwin2.0/ur5_wsg_demo_clean",
+            ),
+        ]
     ]
-] + [
-    dict(
-        dataset_type="libero",
-        dataset_name=f"libero_{suite}",
-        setting_type="libero",
-        data_paths=f"{DATA_BASE}/libero/lmdb_{suite}_abs",
-    )
-    for suite in ["goal", "object", "spatial", "10"]
-]
+    + [
+        dict(
+            dataset_type="libero",
+            dataset_name=f"libero_{suite}",
+            setting_type="libero",
+            data_paths=f"{DATA_BASE}/libero/lmdb_{suite}_abs",
+        )
+        for suite in ["goal", "object", "spatial", "10"]
+    ]
+    + [
+        dict(
+            dataset_type="isaac",
+            dataset_name="panda_droid_rigid",
+            setting_type="panda_droid",
+            # Unsegmented action LMDBs: no Arrow subtask truncation.
+            data_paths=[f"{DATA_BASE}/place_a2b/lmdb_balanced_100"],
+        ),
+    ]
+)

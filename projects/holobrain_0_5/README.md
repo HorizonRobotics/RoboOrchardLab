@@ -138,6 +138,46 @@ used by [robot_specs.py](configs/robot_specs.py); e.g. the ALOHA body expects
 `robotwin/aloha/arx5_description_isaac.pruned.urdf`. Preserve joint order and the
 body/camera calibration corresponding to your demonstrations.
 
+### Panda Droid configuration (reader pending)
+
+The non-default `panda_droid_rigid` selection is registered in
+[dataset_specs.py](configs/dataset_specs.py) with `dataset_type="isaac"` and
+`setting_type="panda_droid"`. Its default LMDB root is
+`$HOLOBRAIN_DATA_BASE/place_a2b/lmdb_balanced_100`; the existing `data_paths`
+mapping can override it with one or several action LMDB roots.
+The LMDB reader is not connected yet: selecting this dataset for training
+raises `NotImplementedError`. This is configuration support, not a runnable
+Panda training or evaluation release.
+
+[config_issac_dataset.py](configs/data_configs/config_issac_dataset.py) defines
+the camera order (`wrist_camera`, `ext1_camera`, `ext2_camera`), 448-by-256 resize,
+joint normalization, observation/master-action sampling and standalone 0.5
+processor. Input dictionaries use decoded BGR images and metric depth; the
+future reader must convert packed millimeter depth to meters. Packed camera
+extrinsics already map from robot-base space, so `T_base2world` is identity.
+No Arrow parser or subtask truncation is used for these unsegmented LMDBs.
+
+The body requires
+`$HOLOBRAIN_URDF_BASE/isaac/panda_droid/franka_droid.pruned.urdf`, seven arm
+joint parameters in order, and TCP link `panda_link7_tcp`. The eighth state
+is normalized gripper closure and is not passed into the URDF joint chain.
+Do not substitute a different URDF/TCP when this resource is missing.
+
+For configuration inspection with PyTorch3D and the pruned URDF available:
+
+```python
+from projects.holobrain_0_5.configs.config_holobrain_0_5 import config
+from projects.holobrain_0_5.configs.data_configs.config_issac_dataset import (
+    build_processors,
+)
+
+processor = build_processors(config, "panda_droid_rigid", "panda_droid")
+```
+
+Default training remains `robotwin2_0`. Panda is not added to the default
+deployment catalog, so existing runs do not acquire an additional URDF
+dependency. Training-time Panda processor export remains a follow-up step.
+
 ## Train
 
 Run commands from the repository root. A single GPU smoke run:

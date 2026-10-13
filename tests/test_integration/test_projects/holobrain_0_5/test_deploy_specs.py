@@ -39,12 +39,11 @@ def test_deploy_entries_carry_no_data_paths():
         assert set(spec) == {"dataset_type", "dataset_name", "setting_type"}
 
 
-def test_every_trainable_setting_is_deployable():
-    """Training suites may share a body; each body needs one processor.
+def test_default_deploy_catalog_preserves_existing_settings():
+    """Default exports do not acquire Panda's additional URDF dependency.
 
-    The four LIBERO suites differ only by ``data_paths``, so they collapse to a
-    single deployed processor. What must hold is that no trainable
-    (type, setting) pair is left without one.
+    Panda's processor is tested independently while its reader/export setup
+    is pending. All existing dataset settings remain in the default catalog.
     """
     trainable = {
         (spec["dataset_type"], spec["setting_type"])
@@ -54,7 +53,13 @@ def test_every_trainable_setting_is_deployable():
         (spec["dataset_type"], spec["setting_type"])
         for spec in deploy_specs.deploy_datasets
     }
-    assert trainable == deployable
+    assert deployable == {
+        ("robotwin", "aloha_v2"),
+        ("robotwin", "ur5_wsg"),
+        ("libero", "libero"),
+    }
+    assert trainable - deployable == {("isaac", "panda_droid")}
+    assert deployable <= trainable
 
 
 def test_one_processor_per_deployed_setting():

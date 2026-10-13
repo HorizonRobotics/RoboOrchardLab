@@ -51,6 +51,10 @@ def _specs(config, mode):
 
 
 def _builder(data_type):
+    if data_type == "isaac":
+        return importlib.import_module(
+            "projects.holobrain_0_5.configs.data_configs.config_issac_dataset"
+        )
     if data_type not in ("robotwin", "libero"):
         raise ValueError(f"Unsupported dataset type: {data_type}")
     return importlib.import_module(
@@ -71,7 +75,11 @@ def _build(config, mode, lazy_init):
 
 
 def build_training_dataset(config, lazy_init=False):
-    """Build selected LMDB datasets, grouped by embodiment for batching."""
+    """Build selected LMDB datasets, grouped by embodiment for batching.
+
+    The Panda Droid selection currently raises NotImplementedError until its
+    LMDB reader is connected; RoboTwin and LIBERO remain available.
+    """
     return _build(config, "training", lazy_init)
 
 

@@ -88,6 +88,29 @@ _ROBOT_SPECS = {
         gripper_indices=[6, 13],
         joint_mask=([True] * 6 + [False]) * 2,
     ),
+    "isaac_panda_droid": dict(
+        urdf=f"{URDF_BASE}/isaac/panda_droid/franka_droid.pruned.urdf",
+        kinematics=dict(
+            arm_joint_id=[list(range(7))],
+            arm_link_keys=[
+                [
+                    "panda_link1",
+                    "panda_link2",
+                    "panda_link3",
+                    "panda_link4",
+                    "panda_link5",
+                    "panda_link6",
+                    "panda_link7",
+                ],
+            ],
+            finger_keys=[["panda_link7_tcp"]],
+        ),
+        num_joint=8,
+        arm_length=1.099,
+        symmetric_groups=[],
+        gripper_indices=[7],
+        joint_mask=[True] * 7 + [False],
+    ),
 }
 
 
