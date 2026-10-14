@@ -53,7 +53,21 @@ training_datasets = (
             dataset_name="panda_droid_rigid",
             setting_type="panda_droid",
             # Unsegmented action LMDBs: no Arrow subtask truncation.
-            data_paths=[f"{DATA_BASE}/place_a2b/lmdb_balanced_100"],
+            data_paths=[
+                f"{DATA_BASE}/place_a2b_000",
+                f"{DATA_BASE}/spatial_pick_000",
+                f"{DATA_BASE}/pick_color_000",
+                f"{DATA_BASE}/stack_cubes_000",
+            ],
+        ),
+        dict(
+            dataset_type="isaac",
+            dataset_name="panda_droid_articulated",
+            setting_type="panda_droid",
+            data_paths=[
+                f"{DATA_BASE}/joint_direction_000",
+                f"{DATA_BASE}/open_drawer_000",
+            ],
         ),
     ]
 )
