@@ -14,9 +14,16 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-"""Panda Droid action configuration; LMDB reader integration is pending."""
+"""Panda Droid action LMDB configuration for HoloBrain 0.5."""
+
+from typing import TYPE_CHECKING
 
 from projects.holobrain_0_5.configs.robot_specs import get_robot_spec
+
+if TYPE_CHECKING:
+    from robo_orchard_lab.dataset.horizon_manipulation.horizon_manipulation_dataset import (  # noqa: E501
+        HorizonManipulationLmdbDataset,
+    )
 
 __all__ = ["build_transforms", "build_processors", "build_datasets"]
 
@@ -235,24 +242,47 @@ def build_datasets(
     setting_type: str,
     mode: str = "training",
     lazy_init: bool = True,
-) -> None:
-    """Report the pending reader instead of opening an incompatible dataset.
+    interval: int | None = None,
+) -> "HorizonManipulationLmdbDataset":
+    """Build an action LMDB reader with the selected Panda transforms.
 
     Args:
         config (dict): Model settings from the dataset factory.
         dataset_name (str): Selection name from dataset_specs.
         data_paths (str | list[str]): Action LMDB root directory or
             directories.
-        setting_type (str): Panda data profile for the future reader.
+        setting_type (str): Panda data profile selecting body/camera order.
         mode (str, optional): Factory mode. Default is training.
-        lazy_init (bool, optional): Future reader initialization flag.
-            Default is True. Neither mode nor lazy_init opens data in phase 1.
+        lazy_init (bool, optional): Defer opening the reader until access.
+            Default is True. Transform construction still requires its URDF.
+        interval (int, optional): Frame sampling stride. Default is None.
+
+    Returns:
+        HorizonManipulationLmdbDataset: Reader with observed history, master
+            action targets and metric-depth preprocessing.
 
     Raises:
-        NotImplementedError: Always; phase 1 only implements transforms and
-            standalone processor construction, not LMDB reading.
+        ValueError: If mode is neither training nor validation.
     """
-    raise NotImplementedError(
-        f"{dataset_name}: Panda Droid LMDB reader integration is pending. "
-        "Only build_transforms and build_processors are available."
+    if mode not in ("training", "validation"):
+        raise ValueError(f"Unsupported dataset mode: {mode}")
+
+    from robo_orchard_lab.dataset.horizon_manipulation.horizon_manipulation_dataset import (  # noqa: E501
+        HorizonManipulationLmdbDataset,
+    )
+
+    return HorizonManipulationLmdbDataset(
+        paths=data_paths,
+        transforms=build_transforms(config, mode, setting_type),
+        interval=interval,
+        lazy_init=lazy_init,
+        dataset_name=dataset_name,
+        task_names=config.get("task_names"),
+        load_image=config.get("load_image", True),
+        load_depth=config.get("load_depth", True),
+        cam_names=dataset_config[setting_type]["cam_names"],
+        load_extrinsic=True,
+        load_calibration=False,
+        depth_scale=1000,
+        reset_step=500,
     )

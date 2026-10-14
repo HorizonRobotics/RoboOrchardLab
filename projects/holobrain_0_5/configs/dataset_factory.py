@@ -75,11 +75,7 @@ def _build(config, mode, lazy_init):
 
 
 def build_training_dataset(config, lazy_init=False):
-    """Build selected LMDB datasets, grouped by embodiment for batching.
-
-    The Panda Droid selection currently raises NotImplementedError until its
-    LMDB reader is connected; RoboTwin and LIBERO remain available.
-    """
+    """Build selected LMDB datasets, grouped by embodiment for batching."""
     return _build(config, "training", lazy_init)
 
 
@@ -88,11 +84,35 @@ def build_validation_dataset(config, lazy_init=False):
     return _build(config, "validation", lazy_init)
 
 
-def build_processors(config):
-    """Build every deployment processor named by ``deploy_specs``."""
-    module = importlib.import_module(config["deploy_specs"])
+def build_processors(config: dict) -> dict:
+    """Build per-run export processors without changing the default catalog.
+
+    ``deploy_datasets``, when provided, replaces the catalog for this run.
+    Entries use the same dataset_type/dataset_name/setting_type fields as
+    deploy_specs. An empty list disables processor export. If absent, load
+    every entry from the configured deploy_specs module as before.
+
+    Args:
+        config (dict): Resolved model config, including deploy_specs and an
+            optional list of deploy_datasets entries.
+
+    Returns:
+        dict: Processor instances keyed by their export dataset_name.
+
+    Raises:
+        TypeError: If deploy_datasets is provided but is not a list.
+    """
+    if "deploy_datasets" in config:
+        specs = config["deploy_datasets"]
+        if not isinstance(specs, list):
+            raise TypeError(
+                "deploy_datasets must be a list of deployment specs"
+            )
+    else:
+        module = importlib.import_module(config["deploy_specs"])
+        specs = module.deploy_datasets
     processors = {}
-    for spec in module.deploy_datasets:
+    for spec in specs:
         spec = spec.copy()
         builder = _builder(spec.pop("dataset_type"))
         processors[spec["dataset_name"]] = builder.build_processors(

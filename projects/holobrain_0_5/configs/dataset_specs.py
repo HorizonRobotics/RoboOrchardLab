@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 
-"""Dataset selections, including Panda Droid's pending LMDB reader."""
+"""Dataset selections for RoboTwin, LIBERO and Panda Droid action LMDBs."""
 
 import os
 
