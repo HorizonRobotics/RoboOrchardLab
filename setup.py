@@ -248,6 +248,20 @@ if __name__ == "__main__":
     ]
     # optional dependencies
     extras_require = {
+        "holobrain_0_5": [
+            "torch>=2.8.0",
+            "transformers==5.10.2",
+            "pytorch3d>=0.7.8",
+            "pytorch-kinematics>=0.7.5",
+            "diffusers",
+            "lmdb",
+            "h5py",
+            "opencv-python",
+            "scipy",
+            "einops>=0.8",
+            "deepspeed",
+            "terminaltables",
+        ],
         "bip3d": [
             "transformers>=4.49.0,<=5.8.0",
             "peft>=0.17.0",
