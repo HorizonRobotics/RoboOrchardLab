@@ -19,8 +19,6 @@
 
 import copy
 import importlib
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -150,23 +148,21 @@ def test_invalid_inline_catalog_fails(specs):
         dataset_factory.build_processors({"deploy_datasets": specs})
 
 
-def test_smoke_overrides_select_only_panda_without_mutating_defaults():
+@pytest.mark.parametrize(
+    "dataset_name", ["panda_droid_rigid", "panda_droid_articulated"]
+)
+def test_panda_training_selection_does_not_mutate_configs(dataset_name):
+    """Resolve an inline Panda selection without local training resources."""
     defaults = copy.deepcopy(config_holobrain_0_5.config)
-    path = Path(config_holobrain_0_5.__file__).with_name(
-        "panda_droid_smoke.json"
+    catalog = copy.deepcopy(dataset_specs.training_datasets)
+    config = dict(
+        config_holobrain_0_5.config, training_datasets=[dataset_name]
     )
-    overrides = json.loads(path.read_text())
-    config = dict(defaults, **overrides)
-    assert config["training_datasets"] == ["panda_droid_rigid"]
-    assert config["deploy_datasets"] == [
-        dict(
-            dataset_type="isaac",
-            dataset_name="panda_droid_rigid",
-            setting_type="panda_droid",
-        )
-    ]
+    original = copy.deepcopy(config)
     (selection,) = dataset_factory._specs(config, "training")
+    assert selection["dataset_name"] == dataset_name
     assert selection["dataset_type"] == "isaac"
     assert selection["setting_type"] == "panda_droid"
-    assert config["batch_size"] == 1 and config["max_step"] == 20
+    assert config == original
     assert config_holobrain_0_5.config == defaults
+    assert dataset_specs.training_datasets == catalog
