@@ -287,12 +287,12 @@ class TestHorizonActionReader:
             dataset_factory,
         )
         from projects.holobrain_0_5.configs.data_configs import (
-            config_issac_dataset,
+            config_isaac_dataset,
         )
 
         # Isolate config assembly; real LMDB decoding is not mocked.
         monkeypatch.setattr(
-            config_issac_dataset, "build_transforms", lambda *args: []
+            config_isaac_dataset, "build_transforms", lambda *args: []
         )
         config = dict(
             copy.deepcopy(config_holobrain_0_5.config),
