@@ -280,8 +280,10 @@ class TestHorizonActionReader:
             )
 
     def test_config_factory_connects_real_reader(
-        self, action_lmdb, monkeypatch
+        self, action_lmdb, monkeypatch, PROJECT_ROOT
     ):
+        # CI runs from build/test; projects is checkout-only, not installed.
+        monkeypatch.syspath_prepend(PROJECT_ROOT)
         from projects.holobrain_0_5.configs import (
             config_holobrain_0_5,
             dataset_factory,
