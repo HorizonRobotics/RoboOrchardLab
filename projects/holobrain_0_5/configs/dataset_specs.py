@@ -50,24 +50,30 @@ training_datasets = (
     + [
         dict(
             dataset_type="isaac",
-            dataset_name="panda_droid_rigid",
+            dataset_name=name,
             setting_type="panda_droid",
             # Unsegmented action LMDBs: no Arrow subtask truncation.
             data_paths=[
-                f"{DATA_BASE}/place_a2b_000",
-                f"{DATA_BASE}/spatial_pick_000",
-                f"{DATA_BASE}/pick_color_000",
-                f"{DATA_BASE}/stack_cubes_000",
+                f"{DATA_BASE}/horizon_isaac/lmdb/{path}" for path in paths
             ],
-        ),
-        dict(
-            dataset_type="isaac",
-            dataset_name="panda_droid_articulated",
-            setting_type="panda_droid",
-            data_paths=[
-                f"{DATA_BASE}/joint_direction_000",
-                f"{DATA_BASE}/open_drawer_000",
-            ],
-        ),
+        )
+        for name, paths in [
+            (
+                "panda_droid_rigid",
+                [
+                    "panda_droid-place_a2b-20261014",
+                    "panda_droid-spatial_pick-20261014",
+                    "panda_droid-pick_color-20261014",
+                    "panda_droid-stack_cubes-20261014",
+                ],
+            ),
+            (
+                "panda_droid_articulated",
+                [
+                    "panda_droid-joint_direction-20261014",
+                    "panda_droid-open_drawer-20261014",
+                ],
+            ),
+        ]
     ]
 )
