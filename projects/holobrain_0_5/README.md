@@ -159,6 +159,23 @@ are not included.
 `task_names` can restrict the run to named tasks. `--kwargs` also accepts a JSON
 file. Use `accelerate launch -m projects.holobrain_0_5.train ...` for multiple GPUs.
 
+For the supplied Panda Droid simulation data, select `panda_droid_rigid`,
+`panda_droid_articulated`, or both. These datasets require an image and depth
+resize of **448 pixels wide by 256 pixels high**. Explicitly set
+`"dst_wh": [448, 256]` in the training configuration; the public default
+`(352, 256)` is not suitable for this data. The two selections share the
+`panda_droid` deployment processor:
+
+```bash
+python -m projects.holobrain_0_5.train --workspace ./outputs/holobrain_0_5_panda \
+  --kwargs '{"training_datasets":["panda_droid_rigid","panda_droid_articulated"],"dst_wh":[448,256]}'
+```
+
+Use `"dst_wh": [448, 256]` for validation and standalone export as well. The
+exported processor and inference configuration retain the resolved size;
+loading an existing export does not use the project default. Within one run,
+this override applies to every selected dataset and every exported processor.
+
 `vlm_pretrain` is resolved in one of two ways. A bare name such as
 `Qwen3.5-2B` is looked up under `HOLOBRAIN_CKPT_BASE` (default `./ckpt`); it is
 not searched for anywhere else, so a missing directory fails with the tried
@@ -184,7 +201,9 @@ that is cut short still leaves a usable export next to its checkpoints; only
 `model.safetensors` waits for the end. Deployment is deliberately decoupled from
 training: every body in `deploy_specs.py` is exported regardless of
 `training_datasets`, which is why `HOLOBRAIN_URDF_BASE` must resolve even for a
-LIBERO-only run.
+LIBERO-only run. It must contain the RoboTwin URDFs and
+`isaac/panda_droid/franka_droid.pruned.urdf`. Panda exports use
+`panda_droid_processor.json` and `panda_droid_inference.config.json`.
 
 By default `ckpt/Qwen3.5-2B` is a symlink to
 the supplied local resource; preserve or replace that link when moving exports.

@@ -54,7 +54,6 @@ dataset_config = dict(
             )
         ),
         arrow_cam_names=["wrist_camera", "ext1_camera", "ext2_camera"],
-        resize_config=dict(dst_wh=(448, 256)),
     ),
 )
 """Panda profile shared with the Isaac Arrow configuration, not a reader."""
@@ -71,7 +70,8 @@ def build_transforms(config: dict, mode: str, setting_type: str) -> list[dict]:
 
     Args:
         config (dict): Model settings including hist_steps, pred_steps and
-            with_depth; load_image/load_depth control training input loading.
+            with_depth; dst_wh overrides the default image size (308, 252).
+            load_image/load_depth control training input loading.
         mode (str): training adds joint noise and loss weights; validation
             omits those; deploy adds a size-one batch dimension.
         setting_type (str): Registered data profile, currently panda_droid.
@@ -146,7 +146,7 @@ def build_transforms(config: dict, mode: str, setting_type: str) -> list[dict]:
         ),
         dict(
             type=Resize,
-            **robot_profile["resize_config"],
+            dst_wh=config.get("dst_wh", (308, 252)),
             strict_image=load_image,
             strict_depth=load_depth,
         ),
@@ -207,7 +207,7 @@ def build_transforms(config: dict, mode: str, setting_type: str) -> list[dict]:
 
 
 def build_processors(config: dict, dataset_name: str, setting_type: str):
-    """Build a standalone Panda processor without changing default exports.
+    """Build the Panda processor registered in the deployment catalog.
 
     Args:
         config (dict): Model settings consumed by build_transforms.

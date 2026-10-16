@@ -61,17 +61,17 @@ training_datasets = (
             (
                 "panda_droid_rigid",
                 [
-                    "panda_droid-place_a2b-20261014",
-                    "panda_droid-spatial_pick-20261014",
-                    "panda_droid-pick_color-20261014",
-                    "panda_droid-stack_cubes-20261014",
+                    "panda_droid-place_a2b-20261013",
+                    "panda_droid-spatial_pick-20261013",
+                    "panda_droid-pick_color-20261013",
+                    "panda_droid-stack_cubes-20261013",
                 ],
             ),
             (
                 "panda_droid_articulated",
                 [
-                    "panda_droid-joint_direction-20261014",
-                    "panda_droid-open_drawer-20261014",
+                    "panda_droid-joint_direction-20261013",
+                    "panda_droid-open_drawer-20261013",
                 ],
             ),
         ]

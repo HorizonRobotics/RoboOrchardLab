@@ -51,11 +51,7 @@ def _specs(config, mode):
 
 
 def _builder(data_type):
-    if data_type == "isaac":
-        return importlib.import_module(
-            "projects.holobrain_0_5.configs.data_configs.config_issac_dataset"
-        )
-    if data_type not in ("robotwin", "libero"):
+    if data_type not in ("robotwin", "libero", "isaac"):
         raise ValueError(f"Unsupported dataset type: {data_type}")
     return importlib.import_module(
         f"projects.holobrain_0_5.configs.data_configs.config_{data_type}_dataset"
@@ -85,34 +81,21 @@ def build_validation_dataset(config, lazy_init=False):
 
 
 def build_processors(config: dict) -> dict:
-    """Build per-run export processors without changing the default catalog.
+    """Build every processor registered in the configured deployment catalog.
 
-    ``deploy_datasets``, when provided, replaces the catalog for this run.
-    Entries use the same dataset_type/dataset_name/setting_type fields as
-    deploy_specs. An empty list disables processor export. If absent, load
-    every entry from the configured deploy_specs module as before.
+    Exports are independent of training and validation dataset selections.
+    Each processor requires the resources configured for its embodiment.
 
     Args:
-        config (dict): Resolved model config, including deploy_specs and an
-            optional list of deploy_datasets entries.
+        config (dict): Resolved model config. deploy_specs names the module
+            containing the deployment catalog.
 
     Returns:
         dict: Processor instances keyed by their export dataset_name.
-
-    Raises:
-        TypeError: If deploy_datasets is provided but is not a list.
     """
-    if "deploy_datasets" in config:
-        specs = config["deploy_datasets"]
-        if not isinstance(specs, list):
-            raise TypeError(
-                "deploy_datasets must be a list of deployment specs"
-            )
-    else:
-        module = importlib.import_module(config["deploy_specs"])
-        specs = module.deploy_datasets
+    module = importlib.import_module(config["deploy_specs"])
     processors = {}
-    for spec in specs:
+    for spec in module.deploy_datasets:
         spec = spec.copy()
         builder = _builder(spec.pop("dataset_type"))
         processors[spec["dataset_name"]] = builder.build_processors(

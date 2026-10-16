@@ -19,8 +19,9 @@
 
 One entry per distinct embodiment: a processor depends only on the body and
 camera layout, not on where data lives. The four LIBERO training suites share
-one ``libero`` setting, so they collapse into a single deployed processor,
-while the two RoboTwin bodies stay separate.
+one ``libero`` setting, and Panda's rigid-object and articulated-object
+selections share one ``panda_droid`` setting. The two RoboTwin bodies stay
+separate.
 """
 
 __all__ = ["deploy_datasets"]
@@ -40,5 +41,10 @@ deploy_datasets = [
         dataset_type="libero",
         dataset_name="libero",
         setting_type="libero",
+    ),
+    dict(
+        dataset_type="isaac",
+        dataset_name="panda_droid",
+        setting_type="panda_droid",
     ),
 ]

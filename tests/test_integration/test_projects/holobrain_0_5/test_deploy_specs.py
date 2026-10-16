@@ -44,12 +44,8 @@ def test_deploy_entries_carry_no_data_paths():
         assert set(spec) == {"dataset_type", "dataset_name", "setting_type"}
 
 
-def test_default_deploy_catalog_preserves_existing_settings():
-    """Default exports do not acquire Panda's additional URDF dependency.
-
-    Panda's processor is selected by explicit per-run overrides. Existing
-    settings remain in the default catalog.
-    """
+def test_every_trainable_setting_is_deployable():
+    """Training selections sharing a body need one deployment processor."""
     trainable = {
         (spec["dataset_type"], spec["setting_type"])
         for spec in dataset_specs.training_datasets
@@ -58,13 +54,7 @@ def test_default_deploy_catalog_preserves_existing_settings():
         (spec["dataset_type"], spec["setting_type"])
         for spec in deploy_specs.deploy_datasets
     }
-    assert deployable == {
-        ("robotwin", "aloha_v2"),
-        ("robotwin", "ur5_wsg"),
-        ("libero", "libero"),
-    }
-    assert trainable - deployable == {("isaac", "panda_droid")}
-    assert deployable <= trainable
+    assert trainable == deployable
 
 
 def test_one_processor_per_deployed_setting():
@@ -85,39 +75,44 @@ def test_libero_deploys_a_single_processor():
     assert [spec["dataset_name"] for spec in libero] == ["libero"]
 
 
-def test_inline_panda_exports_do_not_construct_other_bodies(monkeypatch):
-    """Fake only processor assembly, without model/URDF dependencies."""
-    spec = dict(
-        dataset_type="isaac",
-        dataset_name="panda_droid_rigid",
-        setting_type="panda_droid",
-    )
-    config = dict(config_holobrain_0_5.config, deploy_datasets=[spec])
-    original = copy.deepcopy(config)
-    calls = []
-    processor = object()
-
-    def builder(data_type):
-        assert data_type == "isaac"
-
-        def build(settings, name, setting):
-            calls.append((name, setting))
-            return processor
-
-        return SimpleNamespace(build_processors=build)
-
-    monkeypatch.setattr(dataset_factory, "_builder", builder)
-    # The inline path should not import even an invalid default catalog.
-    config["deploy_specs"] = "unused.missing.module"
-    assert dataset_factory.build_processors(config) == {
-        "panda_droid_rigid": processor
+def test_panda_training_selections_share_one_processor():
+    training = [
+        spec
+        for spec in dataset_specs.training_datasets
+        if spec["dataset_type"] == "isaac"
+    ]
+    deployed = [
+        spec
+        for spec in deploy_specs.deploy_datasets
+        if spec["dataset_type"] == "isaac"
+    ]
+    assert {spec["dataset_name"] for spec in training} == {
+        "panda_droid_rigid",
+        "panda_droid_articulated",
     }
-    assert calls == [("panda_droid_rigid", "panda_droid")]
-    assert config["deploy_datasets"] == original["deploy_datasets"]
-    assert "deploy_datasets" not in config_holobrain_0_5.config
+    assert {spec["setting_type"] for spec in training} == {"panda_droid"}
+    assert deployed == [
+        dict(
+            dataset_type="isaac",
+            dataset_name="panda_droid",
+            setting_type="panda_droid",
+        )
+    ]
 
 
-def test_default_processor_dispatch_is_unchanged(monkeypatch):
+@pytest.mark.parametrize(
+    "dataset_name",
+    ["robotwin2_0", "panda_droid_rigid", "panda_droid_articulated"],
+)
+def test_processor_exports_are_independent_of_training_selection(
+    monkeypatch, dataset_name
+):
+    """Export the full catalog, with only processor construction faked."""
+    config = dict(
+        config_holobrain_0_5.config, training_datasets=[dataset_name]
+    )
+    original = copy.deepcopy(config)
+    catalog = copy.deepcopy(deploy_specs.deploy_datasets)
     calls = []
 
     def builder(data_type):
@@ -128,7 +123,7 @@ def test_default_processor_dispatch_is_unchanged(monkeypatch):
         return SimpleNamespace(build_processors=build)
 
     monkeypatch.setattr(dataset_factory, "_builder", builder)
-    output = dataset_factory.build_processors(config_holobrain_0_5.config)
+    output = dataset_factory.build_processors(config)
     assert calls == [
         (spec["dataset_type"], spec["dataset_name"], spec["setting_type"])
         for spec in deploy_specs.deploy_datasets
@@ -136,16 +131,8 @@ def test_default_processor_dispatch_is_unchanged(monkeypatch):
     assert list(output) == [
         spec["dataset_name"] for spec in deploy_specs.deploy_datasets
     ]
-
-
-def test_empty_inline_catalog_disables_exports():
-    assert dataset_factory.build_processors({"deploy_datasets": []}) == {}
-
-
-@pytest.mark.parametrize("specs", [None, "panda_droid_rigid", {}])
-def test_invalid_inline_catalog_fails(specs):
-    with pytest.raises(TypeError, match="deploy_datasets"):
-        dataset_factory.build_processors({"deploy_datasets": specs})
+    assert config == original
+    assert deploy_specs.deploy_datasets == catalog
 
 
 @pytest.mark.parametrize(
