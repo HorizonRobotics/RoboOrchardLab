@@ -25,6 +25,7 @@ import sys
 import time
 import weakref
 from collections import Counter
+from itertools import combinations, product
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -218,7 +219,8 @@ class TestIterationSources:
         before = generator.get_state().clone()
         global_before = torch.get_rng_state().clone()
 
-        with dataset._iteration_sources() as (make_iter, cursors):
+        with dataset._iteration_sources() as (make_iter, cursors, targets):
+            assert targets == [12]
             iterator = make_iter(0)
             assert iterator is not None
             assert TrackedReader.events == []
@@ -254,7 +256,7 @@ class TestIterationSources:
             lambda: SimpleNamespace(num_workers=2, id=1),
         )
 
-        with dataset._iteration_sources() as (make_iter, cursors):
+        with dataset._iteration_sources() as (make_iter, cursors, targets):
             iterator = make_iter(0)
             if offload:
                 assert cursors is not None and cursors[0].exhausted
@@ -347,12 +349,8 @@ class TestIterationSources:
     ):
         from robo_orchard_lab.dataset.robot import dataset_ex
 
-        choices = iter([0, 1])
-        monkeypatch.setattr(
-            torch,
-            "multinomial",
-            lambda *args, **kwargs: torch.tensor([next(choices, 0)]),
-        )
+        # Two admission draws, then service each resident once.
+        choices = iter([0, 0, 0, 1])
         prefetchers = []
         original_prefetch = dataset_ex.create_prefetch_iterator
 
@@ -373,6 +371,9 @@ class TestIterationSources:
             generator=torch.Generator().manual_seed(17),
             offload_num_batches=64 if offload else None,
             offload_dir=str(tmp_path),
+        )
+        monkeypatch.setattr(
+            dataset, "_sample_dataset_index", lambda _: next(choices, 0)
         )
         iterator = iter(dataset)
         try:
@@ -1142,3 +1143,260 @@ class TestOffloadIdentity:
             == 7
         )
         assert len(list(cache.glob("*/base/*.arrow"))) == 1
+
+
+class TestWeightedAdmission:
+    @pytest.mark.parametrize("batch_size", [1, 4])
+    @pytest.mark.parametrize("capacity", [1, 2, 3])
+    def test_exact_cyclic_row_flow(self, batch_size, capacity, monkeypatch):
+        # Enumerate the complete tiny closed-chain state space. Probabilities
+        # come from the production admission/service paths, not a replay copy.
+        targets = [20, 50, 10]
+        lengths = [6, 9, 1]
+        units = [list(range(length, 0, -batch_size)) for length in lengths]
+        dataset = DictIterableDataset(
+            [TrackedItem(rows=n, source=i) for i, n in enumerate(targets)],
+            shuffle=True,
+            max_dataset_concurrency=capacity,
+            batch_loader_kwargs=BatchLoaderConfig(batch_size=batch_size),
+        )
+        dataset._total_indices_length = targets
+        cursors = {
+            i: _OffloadCursor("", "", n, n) for i, n in enumerate(lengths)
+        }
+        draws = []
+
+        def choose(weights):
+            draws.append(weights.copy())
+            return 0
+
+        monkeypatch.setattr(dataset, "_sample_dataset_index", choose)
+        states = [
+            (group, phase)
+            for group in combinations(range(3), capacity)
+            for phase in product(*(range(len(units[i])) for i in group))
+        ]
+        state_index = {state: i for i, state in enumerate(states)}
+        matrix = np.zeros((len(states), len(states)))
+        stationary = []
+        flow = np.zeros(3)
+        for state_idx, (group, phase) in enumerate(states):
+            remaining = {
+                i: units[i][k] for i, k in zip(group, phase, strict=True)
+            }
+            active = [(i, iter(())) for i in group]
+            service = dataset._prepare_dataset_for_iter(
+                active, [], lambda _: iter(()), targets, remaining, cursors
+            )
+            v = np.array(
+                [targets[i] / min(batch_size, remaining[i]) for i in group]
+            )
+            a = np.array(targets) / np.array(lengths)
+            mass = v.sum() * np.prod(a[list(group)] / v)
+            stationary.append(mass)
+            for pos, i in enumerate(group):
+                unit = min(batch_size, remaining[i])
+                flow[i] += mass * service[pos] * unit
+                if phase[pos] + 1 < len(units[i]):
+                    next_phase = list(phase)
+                    next_phase[pos] += 1
+                    destination = (group, tuple(next_phase))
+                    matrix[state_idx, state_index[destination]] += service[pos]
+                    continue
+                survivors = [j for j in group if j != i]
+                pending = [j for j in range(3) if j not in survivors]
+                survivor_remaining = {j: remaining[j] for j in survivors}
+                draws.clear()
+                dataset._prepare_dataset_for_iter(
+                    [(j, iter(())) for j in survivors],
+                    pending.copy(),
+                    lambda _: iter(()),
+                    targets,
+                    survivor_remaining,
+                    cursors,
+                )
+                assert len(draws) == 1
+                for j, admission in zip(pending, draws[0], strict=True):
+                    new_group = tuple(sorted([*survivors, j]))
+                    phase_by_source = dict(zip(group, phase, strict=True))
+                    phase_by_source[j] = 0
+                    destination = (
+                        new_group,
+                        tuple(phase_by_source[k] for k in new_group),
+                    )
+                    matrix[state_idx, state_index[destination]] += (
+                        service[pos] * admission
+                    )
+        stationary = np.array(stationary)
+        stationary /= stationary.sum()
+        np.testing.assert_allclose(matrix.sum(axis=1), 1, atol=1e-14)
+        np.testing.assert_allclose(stationary @ matrix, stationary, atol=1e-14)
+        np.testing.assert_allclose(
+            flow / flow.sum(), np.array(targets) / sum(targets), atol=1e-14
+        )
+        assert not TrackedReader.events
+
+    @pytest.mark.parametrize("offload", [None, 1, 2])
+    @pytest.mark.parametrize("drop_last", [False, True])
+    @pytest.mark.parametrize("rng", ["torch", "numpy"])
+    def test_full_quotas_and_short_yields(
+        self, offload, drop_last, rng, tmp_path
+    ):
+        targets = [0, 1, 2, 7, 18]
+
+        def run():
+            generator = (
+                torch.Generator().manual_seed(39)
+                if rng == "torch"
+                else np.random.default_rng(39)
+            )
+            dataset = DictIterableDataset(
+                [TrackedItem(rows=n, source=i) for i, n in enumerate(targets)],
+                shuffle=True,
+                generator=generator,
+                max_dataset_concurrency=2,
+                offload_num_batches=offload,
+                offload_dir=str(tmp_path),
+                batch_loader_kwargs=BatchLoaderConfig(
+                    batch_size=4, drop_last=drop_last
+                ),
+            )
+            return flatten(list(dataset))
+
+        first = run()
+        assert first == run()
+        expected = {
+            i: n // 4 * 4 if drop_last else n
+            for i, n in enumerate(targets)
+            if n >= 4 or not drop_last
+        }
+        assert Counter(source for source, _ in first) == Counter(expected)
+        assert TrackedReader.high_water <= 2
+        assert not list(tmp_path.glob("*/iteration-*"))
+
+    @pytest.mark.parametrize("offload", [None, 1])
+    def test_zero_output_still_validates_metadata(self, offload, tmp_path):
+        class BadMetadata(TrackedItem):
+            def get_dataset_row_num(self):
+                return self.rows + 1
+
+        dataset = DictIterableDataset(
+            [BadMetadata(rows=2)],
+            shuffle=True,
+            offload_num_batches=offload,
+            offload_dir=str(tmp_path),
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=8, drop_last=True
+            ),
+        )
+        with pytest.raises(RuntimeError, match="row metadata"):
+            list(dataset)
+        assert TrackedReader.live == 0
+
+    @pytest.mark.parametrize("close_after_last", [False, True])
+    def test_last_yield_does_not_commit_until_resumed(
+        self, close_after_last, tmp_path, monkeypatch
+    ):
+        from contextlib import contextmanager
+
+        dataset = DictIterableDataset(
+            [TrackedItem(rows=2)],
+            shuffle=True,
+            offload_num_batches=2,
+            offload_dir=str(tmp_path),
+        )
+        original = dataset._iteration_sources
+        captured = []
+
+        @contextmanager
+        def capture():
+            with original() as sources:
+                captured.append(sources[1][0])
+                yield sources
+
+        monkeypatch.setattr(dataset, "_iteration_sources", capture)
+        iterator = iter(dataset)
+        next(iterator)
+        next(iterator)
+        assert captured[0].cursor == 0
+        if close_after_last:
+            iterator.close()
+            assert captured[0].cursor == 0
+        else:
+            with pytest.raises(StopIteration):
+                next(iterator)
+            assert captured[0].cursor == 2
+
+    @pytest.mark.parametrize("difference", [-1, 1])
+    def test_segment_output_mismatch_does_not_commit(
+        self, difference, tmp_path, monkeypatch
+    ):
+        original = IterableWithLenDataset._iter_prepared_indices
+
+        def wrong_count(reader, indices, generator):
+            if difference < 0:
+                indices = indices.take(slice(0, len(indices) - 1))
+            yield from original(reader, indices, generator)
+            if difference > 0:
+                yield {"source": 0, "row": 99}
+
+        monkeypatch.setattr(
+            IterableWithLenDataset, "_iter_prepared_indices", wrong_count
+        )
+        cursor = _OffloadCursor(
+            str(tmp_path), str(tmp_path / "plan.arrow"), 4, 2
+        )
+        iterator = cursor.iter_segment(
+            TrackedItem(rows=4),
+            shard_kwargs=ShardConfig(),
+            shuffle=ShuffleConfig(shuffle=False),
+            generator=torch.Generator().manual_seed(1),
+            batch_loader_kwargs=None,
+            resample_ratio=1.0,
+            expected_rows=4,
+        )
+        with pytest.raises(RuntimeError, match="output quota"):
+            list(iterator)
+        assert cursor.cursor == 0
+
+    @pytest.mark.parametrize("rng", ["torch", "numpy"])
+    def test_scheduling_uses_only_explicit_rng(self, rng):
+        generator = (
+            torch.Generator().manual_seed(11)
+            if rng == "torch"
+            else np.random.default_rng(11)
+        )
+        dataset = DictIterableDataset([], shuffle=True, generator=generator)
+        torch_before = torch.get_rng_state().clone()
+        numpy_before = np.random.get_state()
+        weights = np.array([0.1, 0.9], dtype=np.float64)
+        draws = [dataset._sample_dataset_index(weights) for _ in range(50)]
+        assert set(draws) == {0, 1}
+        assert torch.equal(torch.get_rng_state(), torch_before)
+        assert all(
+            np.array_equal(a, b)
+            for a, b in zip(numpy_before, np.random.get_state(), strict=True)
+        )
+
+    @pytest.mark.parametrize("offload", [None, 2])
+    def test_worker_targets_reuse_metadata_counts(
+        self, offload, tmp_path, monkeypatch
+    ):
+        dataset = DictIterableDataset(
+            [TrackedItem(rows=5), TrackedItem(rows=11, source=1)],
+            offload_num_batches=offload,
+            offload_dir=str(tmp_path),
+        )
+        assert dataset.total_iterator_length == 16
+        monkeypatch.setattr(
+            TrackedItem,
+            "get_sharded_row_num",
+            lambda *args, **kwargs: pytest.fail("duplicate metadata count"),
+        )
+        monkeypatch.setattr(
+            torch.utils.data,
+            "get_worker_info",
+            lambda: SimpleNamespace(num_workers=2, id=1),
+        )
+        with dataset._iteration_sources() as (_, _, targets):
+            assert targets == [2, 5]

@@ -1852,8 +1852,13 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             cur_dataset_iters: list[tuple[int, Any]],
             remaining_dataset_indices: list[int],
             make_iter,
+            worker_targets,
+            segment_remaining,
+            offload_cursors,
         ) -> list[float]:
             del remaining_dataset_indices, make_iter
+            del worker_targets, offload_cursors
+            segment_remaining.update({0: 2, 1: 2})
             if not cur_dataset_iters:
                 cur_dataset_iters.extend(
                     [(0, child_iters[0]), (1, child_iters[1])]

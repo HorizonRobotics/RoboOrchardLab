@@ -160,7 +160,22 @@ print(
 # sample-level segment size uses its actual batch size; direct iteration or
 # an external loader without this context counts one sample per unit.
 #
-# ``offload_num_batches=None`` keeps ordinary iteration. When enabled,
+# Shuffled mixing uses each worker's fixed resampled output target T. Pending
+# readers are selected with weight T/B, where B is their next residence's
+# output rows; active sources use T/u, where u is the next yield's row count
+# (one sample or an inner batch, including its short tail). These compensate
+# the two different selection units. Inner ``drop_last`` tails do not count
+# toward output weights; the underlying index plan remains unchanged.
+# A completed reader closes before it becomes eligible again, including for
+# immediate reselection. The concurrency bound still applies. Finite epoch
+# initialization, changing tails and source exhaustion cause prefix variation:
+# the complete epoch retains exact quotas, not IID finite-window proportions.
+# Ordered iteration retains its source order.
+#
+# ``offload_num_batches=None`` keeps ordinary iteration. Its full-source
+# residences naturally give uniform admission (T/B=1); without finite rotation,
+# short-window mixture proportions are not guaranteed.
+# When enabled,
 # ``offload_dir`` optionally selects the cache parent; its default is the
 # system temporary directory. Immutable base indices are reused across local
 # workers and epochs. Private plans are removed after normal exhaustion;

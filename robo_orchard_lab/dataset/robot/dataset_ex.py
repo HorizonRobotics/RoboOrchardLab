@@ -1716,6 +1716,11 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     ``round(member_sharded_rows * ratio)``. Thus groups do not introduce a
     concatenated runtime dataset or group-level rounding.
 
+    Shuffled mixing weights both reader admission and active sample/batch
+    selection by effective worker-local epoch row targets, compensating for
+    each selection's output size. This preserves the bounded reader pool and
+    exact epoch quotas; it does not guarantee IID finite-window proportions.
+
     ``resample_ratios`` has four construction-time forms:
 
     - ``None``: every item uses ``1.0``.
@@ -1933,7 +1938,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             os.fspath(offload_dir) if offload_dir is not None else None
         )
         self._offload_batch_size = 1
-        self._offload_sharded_rows: dict[int, int] = {}
+        self._item_sharded_rows: dict[int, int] = {}
         if self.offload_num_batches is not None:
             self.logical_dataset_items = [
                 _fresh_config(item)
@@ -2354,65 +2359,76 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         return max(self.total_iterator_length, state.num_processes + 1)
 
     def __iter__(self):
-        """Yield the weighted mixture and close all materialized datasets.
+        """Yield a row-weighted mixture and close all materialized datasets.
 
-        At most ``max_dataset_concurrency`` item iterators are active. Shuffled
-        iteration selects among them using resampled row-count weights; ordered
-        iteration drains each item in sequence. With offload enabled, finite
-        exhausted segments requeue their unfinished item. Failed and
-        caller-abandoned streams terminate the iteration and request cleanup.
+        Shuffled iteration uses compensated reader-admission and active-yield
+        weights. Ordered iteration keeps the original source order. A completed
+        segment closes after normal EOF and successful owned cleanup before
+        its unfinished source can re-enter, including immediate reselection;
+        sources need not complete a physical round before entering again.
+        Failure or caller abandonment terminates this iteration without
+        committing the interrupted segment.
 
         Yields:
             Any: One sample or dataset-side batch from an active dataset item.
         """
         cur_dataset_iters: list[tuple[int, Iterator[Any]]] = []
-        dataset_indices = list(
-            IndiceTableSampler(
-                len(self.dataset_items),
-                shuffle=self._shuffle.shuffle,
-                generator=self._generator,
-            )
-        )
+        dataset_indices = list(range(len(self.dataset_items)))
         _ = self.total_iterator_length
         assert self._total_indices_length is not None
-        with self._iteration_sources() as (make_iter, offload_cursors):
-            weights = self._prepare_dataset_for_iter(
-                cur_dataset_iters=cur_dataset_iters,
-                remaining_dataset_indices=dataset_indices,
-                make_iter=make_iter,
-            )
-
+        batch_size = (
+            self.batch_loader_kwargs.batch_size
+            if self.batch_loader_kwargs is not None
+            else 1
+        )
+        segment_remaining: dict[int, int] = {}
+        with self._iteration_sources() as (
+            make_iter,
+            offload_cursors,
+            worker_targets,
+        ):
             primary_exc: BaseException | None = None
             try:
-                while len(cur_dataset_iters) > 0:
-                    if self._shuffle.shuffle:
-                        if isinstance(self._generator, np.random.Generator):
-                            selected_idx = self._generator.choice(
-                                len(cur_dataset_iters),
-                                p=weights,
-                                replace=False,
-                            )
-                        elif isinstance(self._generator, torch.Generator):
-                            selected_idx = int(
-                                torch.multinomial(
-                                    torch.tensor(weights),
-                                    1,
-                                    generator=self._generator,
-                                ).item()
-                            )
-                        else:
-                            raise ValueError(
-                                "Generator must be either a torch.Generator "
-                                "or a numpy.random.Generator."
-                            )
-                    else:
-                        selected_idx = 0
+                weights = self._prepare_dataset_for_iter(
+                    cur_dataset_iters,
+                    dataset_indices,
+                    make_iter,
+                    worker_targets,
+                    segment_remaining,
+                    offload_cursors,
+                )
+                while cur_dataset_iters:
+                    selected_idx = (
+                        self._sample_dataset_index(weights)
+                        if self._shuffle.shuffle
+                        else 0
+                    )
                     item_idx, iter_dataset = cur_dataset_iters[selected_idx]
+                    remaining = segment_remaining[item_idx]
                     try:
                         item = next(iter_dataset)
-                        yield item
-                    except StopIteration:
+                    except StopIteration as exc:
+                        raise RuntimeError(
+                            "Dataset item exhausted before its allocated "
+                            "output rows."
+                        ) from exc
+                    unit_rows = min(batch_size, remaining)
+                    segment_remaining[item_idx] -= unit_rows
+                    yield item
+                    if segment_remaining[item_idx] == 0:
+                        # Resume the owner through EOF/cleanup before requeue.
+                        # Early close after the last yield must not commit.
+                        try:
+                            next(iter_dataset)
+                        except StopIteration:
+                            pass
+                        else:
+                            raise RuntimeError(
+                                "Dataset item exceeded its allocated "
+                                "output rows."
+                            )
                         cur_dataset_iters.pop(selected_idx)
+                        del segment_remaining[item_idx]
                         close_iterators_best_effort([iter_dataset])
                         if (
                             offload_cursors is not None
@@ -2420,9 +2436,22 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                         ):
                             dataset_indices.append(item_idx)
                         weights = self._prepare_dataset_for_iter(
-                            cur_dataset_iters=cur_dataset_iters,
-                            remaining_dataset_indices=dataset_indices,
-                            make_iter=make_iter,
+                            cur_dataset_iters,
+                            dataset_indices,
+                            make_iter,
+                            worker_targets,
+                            segment_remaining,
+                            offload_cursors,
+                        )
+                    elif segment_remaining[item_idx] < batch_size:
+                        # A non-drop short batch is a different selection unit.
+                        weights = self._prepare_dataset_for_iter(
+                            cur_dataset_iters,
+                            dataset_indices,
+                            make_iter,
+                            worker_targets,
+                            segment_remaining,
+                            offload_cursors,
                         )
             except BaseException as exc:
                 primary_exc = exc
@@ -2432,6 +2461,21 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     [iter_dataset for _, iter_dataset in cur_dataset_iters],
                     primary_exc=primary_exc,
                 )
+
+    def _sample_dataset_index(self, weights: np.ndarray) -> int:
+        """Draw a scheduling choice using only this mixture's explicit RNG."""
+        if isinstance(self._generator, np.random.Generator):
+            return int(self._generator.choice(len(weights), p=weights))
+        if isinstance(self._generator, torch.Generator):
+            return int(
+                torch.multinomial(
+                    torch.from_numpy(weights), 1, generator=self._generator
+                ).item()
+            )
+        raise ValueError(
+            "Generator must be either a torch.Generator "
+            "or a numpy.random.Generator."
+        )
 
     def _expand_dataset_item_node(
         self, item_node: DatasetItemNode
@@ -2520,19 +2564,19 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             )
 
     def _get_item_row_num(self, index: int, *, sharded: bool = True) -> int:
-        """Count without retaining selection caches in offloaded configs."""
+        """Reuse fixed scalar counts without retaining offload selections."""
+        if sharded and index in self._item_sharded_rows:
+            return self._item_sharded_rows[index]
         item = self.dataset_items[index]
         if self.offload_num_batches is not None:
-            if sharded and index in self._offload_sharded_rows:
-                return self._offload_sharded_rows[index]
             item = _fresh_config(item)
         rows = (
             item.get_sharded_row_num(shard_config=self.shard_kwargs)
             if sharded
             else item.get_dataset_row_num()
         )
-        if self.offload_num_batches is not None and sharded:
-            self._offload_sharded_rows[index] = rows
+        if sharded:
+            self._item_sharded_rows[index] = rows
         return rows
 
     @contextmanager
@@ -2542,6 +2586,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         tuple[
             Callable[[int], Iterator[Any] | None],
             dict[int, _OffloadCursor] | None,
+            list[int],
         ]
     ]:
         """Bind lazy item creation and own this iteration's private plans.
@@ -2560,13 +2605,22 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         are retained across iterations.
 
         Yields:
-            tuple: The item-index factory and optional per-item cursors used
-                only for explicit continuation checks by the scheduler.
+            tuple: Lazy item factory, optional continuation cursors, and raw
+                worker-local targets shared by cursor and mixture accounting.
         """
         targets = self._total_indices_length
         assert targets is not None
         offload_cursors: dict[int, _OffloadCursor] | None = None
         private_dir: str | None = None
+        worker = torch.utils.data.get_worker_info()
+        worker_targets = [
+            _distribute_rows_to_workers(
+                base_rows=self._get_item_row_num(idx),
+                target_rows=target,
+                num_workers=worker.num_workers if worker else 1,
+            )[worker.id if worker else 0]
+            for idx, target in enumerate(targets)
+        ]
         if self.offload_num_batches is not None:
             # Warm all counts before resident readers fill the active slots.
             _ = self.total_dataset_length
@@ -2589,13 +2643,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             )
             segment_rows = self.offload_num_batches * batch_size
             offload_cursors = {}
-            worker = torch.utils.data.get_worker_info()
-            for idx, target in enumerate(targets):
-                worker_rows = _distribute_rows_to_workers(
-                    base_rows=self._get_item_row_num(idx),
-                    target_rows=target,
-                    num_workers=worker.num_workers if worker else 1,
-                )[worker.id if worker else 0]
+            for idx, worker_rows in enumerate(worker_targets):
                 offload_cursors[idx] = _OffloadCursor(
                     cache_root=cache_root,
                     plan_path=os.path.join(private_dir, f"item-{idx}.arrow"),
@@ -2624,7 +2672,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 expected_rows=targets[index],
             )
 
-        yield make_iter, offload_cursors
+        yield make_iter, offload_cursors, worker_targets
         if private_dir is not None:
             shutil.rmtree(private_dir)
 
@@ -2633,45 +2681,119 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         cur_dataset_iters: list[tuple[int, Iterator[Any]]],
         remaining_dataset_indices: list[int],
         make_iter: Callable[[int], Iterator[Any] | None],
+        worker_targets: list[int],
+        segment_remaining: dict[int, int],
+        offload_cursors: dict[int, _OffloadCursor] | None,
     ) -> np.ndarray:
-        """Fill active iterator slots and return their sampling weights.
+        """Admit lazy residences with target/output-length compensation.
 
-        This method mutates both input lists: zero-target items are discarded,
-        and lazy item/segment iterators fill the concurrency limit. Readers
-        open only when those iterators advance. Returned weights follow
-        ``cur_dataset_iters`` order and use each item's global logical target.
+        ``T`` is the fixed worker-local effective epoch output-row quota after
+        selection (including splits), process/worker sharding and resampling.
+        Inner drop-last excludes its final incomplete batch from ``T``, never
+        from the raw cursor/index plan. ``B`` is the next residence's actual
+        output rows, including tail merging. ``u`` is the next yield's rows:
+        one sample, a full inner batch, or its non-dropped short tail.
 
-        Args:
-            cur_dataset_iters (list[tuple[int, Iterator[Any]]]): Active item
-                indices and their owned iterators.
-            remaining_dataset_indices (list[int]): Pending item indices,
-                consumed from the front.
-            make_iter (Callable): Lazy iterator factory for a physical item
-                index. ``None`` skips an item with no remaining local rows.
+        Admission uses ``T/B`` because one entry produces ``B`` rows; active
+        selection uses ``T/u`` because one service draw produces ``u`` rows.
+        The two divisions compensate different selection units. An unfinished
+        source becomes eligible again only after its previous reader closes;
+        it can then win admission even while other sources remain pending.
 
-        Returns:
-            np.ndarray: Normalized weights for active iterators, or an empty
-                array when no positive-target items remain.
+        In a non-exhausting closed-cycle model with fixed targets, residence
+        lengths and positive yield-size cycles, these paired weights have
+        stationary row shares ``T/sum(T)``. An initially empty pool, finite
+        quotas, exhaustion and changing tails do not satisfy that model, so
+        individual prefixes need not match those shares. Without offload,
+        ``B=T`` gives uniform admission and no short-window mixing guarantee.
+
+        Mutates the active/pending lists and iteration-local output counters.
+        Zero-output streams exhaust normally, preserving initialization checks
+        and cleanup errors. Readers open only when advanced.
         """
         assert self._total_indices_length is not None
+        batch = self.batch_loader_kwargs
+        batch_size = batch.batch_size if batch is not None else 1
+
+        def output_rows(rows: int) -> int:
+            return (
+                rows // batch_size * batch_size
+                if batch is not None and batch.drop_last
+                else rows
+            )
+
+        targets = [output_rows(rows) for rows in worker_targets]
         while (
             len(cur_dataset_iters) < self._max_dataset_concurrency
-            and len(remaining_dataset_indices) > 0
+            and remaining_dataset_indices
         ):
-            idx = remaining_dataset_indices.pop(0)
-            target_rows = self._total_indices_length[idx]
-            if target_rows <= 0:
+            residence_rows = [
+                output_rows(
+                    offload_cursors[idx].next_segment_rows
+                    if offload_cursors is not None
+                    else worker_targets[idx]
+                )
+                for idx in remaining_dataset_indices
+            ]
+            # Zero output has no sampling weight, but must still run the
+            # original lazy initialization/EOF validation before discarding it.
+            if self._shuffle.shuffle and all(residence_rows):
+                admission = np.array(
+                    [
+                        targets[idx] / rows
+                        for idx, rows in zip(
+                            remaining_dataset_indices,
+                            residence_rows,
+                            strict=True,
+                        )
+                    ],
+                    dtype=np.float64,
+                )
+                selected = self._sample_dataset_index(
+                    admission / admission.sum()
+                )
+            else:
+                selected = (
+                    residence_rows.index(0)
+                    if self._shuffle.shuffle and 0 in residence_rows
+                    else 0
+                )
+            idx = remaining_dataset_indices.pop(selected)
+            rows = residence_rows[selected]
+            if self._total_indices_length[idx] <= 0:
                 continue
             dataset_iter = make_iter(idx)
             if dataset_iter is None:
                 continue
+            if rows == 0:
+                try:
+                    try:
+                        next(dataset_iter)
+                    except StopIteration:
+                        pass
+                    else:
+                        raise RuntimeError(
+                            "Zero-output dataset item unexpectedly "
+                            "yielded data."
+                        )
+                except BaseException as exc:
+                    close_iterators_best_effort(
+                        [dataset_iter], primary_exc=exc
+                    )
+                    raise
+                close_iterators_best_effort([dataset_iter])
+                continue
             cur_dataset_iters.append((idx, dataset_iter))
-        weights = [
-            self._total_indices_length[idx] for idx, _ in cur_dataset_iters
-        ]
-        weights = np.array(weights, dtype=np.float32)
-        if len(weights) > 0:
-            weights = weights / weights.sum()
+            segment_remaining[idx] = rows
+        weights = np.array(
+            [
+                targets[idx] / min(batch_size, segment_remaining[idx])
+                for idx, _ in cur_dataset_iters
+            ],
+            dtype=np.float64,
+        )
+        if len(weights):
+            weights /= weights.sum()
         return weights
 
 
@@ -2700,6 +2822,15 @@ class _OffloadCursor:
     def exhausted(self) -> bool:
         """Whether every allocated row has completed successful cleanup."""
         return self.cursor >= self.total_rows
+
+    @property
+    def next_segment_rows(self) -> int:
+        """Predict raw residency rows without opening or advancing."""
+        remaining = self.total_rows - self.cursor
+        rows = min(self.segment_rows, remaining)
+        if remaining - rows < self.segment_rows:
+            rows = remaining
+        return rows
 
     def iter_segment(
         self,
@@ -2782,15 +2913,38 @@ class _OffloadCursor:
                     shuffle=shuffle,
                     batch_loader_kwargs=batch_loader_kwargs,
                 )
-            end = min(self.cursor + self.segment_rows, self.total_rows)
-            if self.total_rows - end < self.segment_rows:
-                end = self.total_rows
+            end = self.cursor + self.next_segment_rows
             plan = IndiceTable(self.plan_path)
             segment = plan.take(slice(self.cursor, end))
             dataset_iter = iterable_dataset._iter_prepared_indices(
                 segment, self.prefetch_generator
             )
-            yield from dataset_iter
+            batch_size = (
+                batch_loader_kwargs.batch_size
+                if batch_loader_kwargs is not None
+                else 1
+            )
+            expected_yields = _get_batch_num(
+                batch_size=batch_size,
+                num_samples=end - self.cursor,
+                drop_last=(
+                    batch_loader_kwargs.drop_last
+                    if batch_loader_kwargs is not None
+                    else False
+                ),
+            )
+            count = 0
+            for item in dataset_iter:
+                count += 1
+                if count > expected_yields:
+                    raise RuntimeError(
+                        "Offload segment exceeded its output quota."
+                    )
+                yield item
+            if count != expected_yields:
+                raise RuntimeError(
+                    "Offload segment exhausted before its output quota."
+                )
         except BaseException as exc:
             primary_exc = exc
             raise
