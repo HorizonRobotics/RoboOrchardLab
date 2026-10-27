@@ -43,6 +43,8 @@ or planning shapes in `templates/`.
   `references/rodataset-reader-materialization-guideline.md`,
   `references/rodataset-repack-guideline.md`, and
   `references/rodataset-upgrade-guideline.md`.
+- Iterable reader residency, cleanup and memory evidence:
+  `references/iterable-dataset-lifecycle-guideline.md`.
 - Experimental MCAP export:
   `references/mcap-guideline.md`.
 - Naming conventions:

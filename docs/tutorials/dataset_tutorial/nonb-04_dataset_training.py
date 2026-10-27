@@ -120,6 +120,69 @@ print(
 # TODO: combine with dataloader
 
 # %%
+# Bounded readers for dataset mixtures
+# ------------------------------------
+# ``DictIterableDataset`` can rotate unfinished sources after a target number
+# of batches. This lets another source enter the active pool while keeping
+# ``max_dataset_concurrency`` readers per DataLoader worker. For example:
+#
+# .. code-block:: python
+#
+#     from robo_orchard_lab.dataset.robot import (
+#         DataLoader as RODataLoader,
+#         DictIterableDataset,
+#         RODatasetItem,
+#     )
+#
+#     mixture = DictIterableDataset(
+#         datasets=[
+#             RODatasetItem(dataset_path="data1", transform=transform),
+#             RODatasetItem(dataset_path="data2", transform=transform),
+#         ],
+#         shuffle=True,
+#         max_dataset_concurrency=1,
+#         offload_num_batches=100,
+#     )
+#     loader = RODataLoader(
+#         mixture,
+#         batch_size=8,
+#         num_workers=4,
+#         use_dataset_side_batching=True,
+#     )
+#
+# Each worker prepares its complete shuffled/resampled index plan before
+# dividing it into finite reader segments. A small remainder merges into the
+# last segment, so 100 batches is a target, not a strict maximum. Existing
+# ``drop_last`` rules apply only to the original final tail.
+#
+# Offload also works with ``shuffle=False`` and with sample-level loading
+# (``use_dataset_side_batching=False``). With this repository's DataLoader,
+# sample-level segment size uses its actual batch size; direct iteration or
+# an external loader without this context counts one sample per unit.
+#
+# ``offload_num_batches=None`` keeps ordinary iteration. When enabled,
+# ``offload_dir`` optionally selects the cache parent; its default is the
+# system temporary directory. Immutable base indices are reused across local
+# workers and epochs. Private plans are removed after normal exhaustion;
+# interrupted iterations retain them for cleanup with the run directory.
+# Keep source data and split files immutable while reusing the cache, or use
+# a new versioned source/cache directory. Enabling rotation changes delivery
+# order and does not provide an exact training-checkpoint resume.
+#
+# With offload enabled, construction snapshots the declared configuration of
+# input items and groups, excluding their runtime private caches. Caller
+# objects stay unchanged; later changes to them do not update the mixture.
+#
+# Custom ``DatasetItem`` subclasses can override ``get_index_cache_key()``
+# to return a stable string describing the reader/source version and complete
+# unsharded row selection, including its order. This method must not create a
+# reader or materialize indices. The default hashes JSON configuration;
+# custom implementations can use another deterministic scheme for opaque
+# configuration values. ``RODatasetItem`` excludes post-read transforms from
+# this key so equivalent selections share their base file. Shuffle plans and
+# consumption cursors remain private to each item and worker.
+
+# %%
 # Part 2: Working with PyTorch DataLoader
 # -----------------------------------------------------
 # Now that our dataset returns a simple ``dict`` of tensors, we can

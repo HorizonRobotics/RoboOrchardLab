@@ -21,12 +21,14 @@ import pickle
 import threading
 import time
 import weakref
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
 import pytest
 import torch
 from accelerate import Accelerator
+from accelerate.data_loader import prepare_data_loader
 from accelerate.utils import DataLoaderConfiguration
 from robo_orchard_core.utils.config import ClassType
 from torch.utils.data import (
@@ -393,7 +395,7 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
             resample_ratio=2.0,
         )
         direct_items = list(
-            direct_dataset._torch_iter(direct_dataset.indice_sampler)
+            direct_dataset._iter_impl(direct_dataset.indice_sampler)
         )
 
         assert prefetch_items == direct_items
@@ -483,6 +485,139 @@ class TestIterableWithLenDataset(TestIterableDatasetMixin):
 
         assert len(batches) == 1
         assert sorted(batches[0].tolist()) == [0, 0, 1, 1]
+
+    @pytest.mark.parametrize("drop_last_batch", [False, True])
+    def test_explicit_batch_iteration(self, drop_last_batch):
+        dataset = IterableWithLenDataset(BatchedArrayDataset(list(range(10))))
+
+        batches = list(dataset.iter(4, drop_last_batch=drop_last_batch))
+
+        expected = [list(range(4)), list(range(4, 8))]
+        if not drop_last_batch:
+            expected.append([8, 9])
+        assert [batch.tolist() for batch in batches] == expected
+        assert dataset.batch_loader_kwargs is None
+
+    def test_explicit_batch_iteration_overrides_only_batch_policy(self):
+        def collate_fn(rows):
+            return {"rows": tuple(rows)}
+
+        config = BatchLoaderConfig(
+            batch_size=7, drop_last=True, collate_fn=collate_fn
+        )
+        dataset = IterableWithLenDataset(
+            ArrayDataset(list(range(10))), batch_loader_kwargs=config
+        )
+
+        assert list(dataset.iter(batch_size=4)) == [
+            {"rows": (0, 1, 2, 3)},
+            {"rows": (4, 5, 6, 7)},
+            {"rows": (8, 9)},
+        ]
+        assert dataset.batch_loader_kwargs is config
+        assert config.batch_size == 7
+        assert config.drop_last is True
+        assert config.collate_fn is collate_fn
+        assert list(dataset) == [{"rows": tuple(range(7))}]
+
+    @pytest.mark.parametrize("generator_kind", ["torch", "numpy"])
+    @pytest.mark.parametrize("resample_ratio", [0.5, 2.5])
+    @pytest.mark.parametrize("drop_last_batch", [False, True])
+    def test_explicit_batch_iteration_preserves_sampling(
+        self, generator_kind, resample_ratio, drop_last_batch
+    ):
+        def collect(explicit):
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(31)
+                generator = (
+                    torch.Generator().manual_seed(17)
+                    if generator_kind == "torch"
+                    else np.random.default_rng(17)
+                )
+                dataset = IterableWithLenDataset(
+                    ArrayDataset(list(range(10))),
+                    shuffle=ShuffleConfig(
+                        shuffle=True, chunk_size=3, prefetch_factor=3
+                    ),
+                    generator=generator,
+                    resample_ratio=resample_ratio,
+                    batch_loader_kwargs=BatchLoaderConfig(
+                        batch_size=7 if explicit else 4,
+                        drop_last=not drop_last_batch
+                        if explicit
+                        else drop_last_batch,
+                    ),
+                )
+                iterator = (
+                    dataset.iter(4, drop_last_batch)
+                    if explicit
+                    else iter(dataset)
+                )
+                batches = [batch.tolist() for batch in iterator]
+                state = (
+                    generator.get_state()
+                    if isinstance(generator, torch.Generator)
+                    else generator.bit_generator.state
+                )
+                return batches, state, torch.get_rng_state()
+
+        actual, actual_rng, actual_global_rng = collect(True)
+        expected, expected_rng, expected_global_rng = collect(False)
+
+        assert actual == expected
+        if generator_kind == "torch":
+            assert torch.equal(actual_rng, expected_rng)
+        else:
+            assert actual_rng == expected_rng
+        assert torch.equal(actual_global_rng, expected_global_rng)
+        rows = round(10 * resample_ratio)
+        if drop_last_batch:
+            rows -= rows % 4
+        assert sum(map(len, actual)) == rows
+
+    @pytest.mark.parametrize("worker_id", [0, 1])
+    @pytest.mark.parametrize("drop_last_batch", [False, True])
+    def test_explicit_batch_iteration_uses_worker_local_rows(
+        self, monkeypatch, worker_id, drop_last_batch
+    ):
+        worker = SimpleNamespace(num_workers=2, id=worker_id)
+        monkeypatch.setattr(
+            torch.utils.data, "get_worker_info", lambda: worker
+        )
+        dataset = IterableWithLenDataset(
+            ArrayDataset(list(range(10))),
+            shuffle=True,
+            generator=torch.Generator().manual_seed(17),
+            resample_ratio=2.5,
+        )
+
+        batches = list(dataset.iter(4, drop_last_batch))
+        rows = [value for batch in batches for value in batch.tolist()]
+
+        assert set(rows) == set(range(worker_id * 5, worker_id * 5 + 5))
+        assert len(rows) == (12 if drop_last_batch or worker_id == 1 else 13)
+
+    @pytest.mark.parametrize(
+        "batch_size,drop_last_batch,error",
+        [
+            (0, False, "batch_size"),
+            (-1, False, "batch_size"),
+            (True, False, "batch_size"),
+            (1.5, False, "batch_size"),
+            ("4", False, "batch_size"),
+            (None, False, "batch_size"),
+            (4, None, "drop_last_batch"),
+            (4, 1, "drop_last_batch"),
+            (4, "False", "drop_last_batch"),
+        ],
+    )
+    def test_explicit_batch_iteration_validates_arguments(
+        self, batch_size, drop_last_batch, error
+    ):
+        dataset = IterableWithLenDataset(ArrayDataset([0, 1]))
+
+        with pytest.raises(ValueError, match=error):
+            list(dataset.iter(batch_size, drop_last_batch))
 
     def test_resample_ratio_survives_views_and_dataloader_clone(
         self,
@@ -1395,19 +1530,54 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert dataset.summary() == "\n".join(
             [
                 "name                           sample_ratio [frame_ratio] "
-                "[length] resample_ratio",
+                "[length] resample_ratio [resampled_length]",
                 "├─ a                                 71.43% [     66.67%] "
-                "[    20]              —",
+                "[    20]              — [              25]",
                 "│  ├─ b                              57.14% [     33.33%] "
-                "[    10]           ×2.0",
+                "[    10]             ×2 [              20]",
                 "│  └─ c                              14.29% [     33.33%] "
-                "[    10]           ×0.5",
+                "[    10]           ×0.5 [               5]",
                 "├─ d/e                               28.57% [     33.33%] "
-                "[    10]           ×1.0",
+                "[    10]             ×1 [              10]",
                 "└─ total                            100.00% [    100.00%] "
-                "[    30]              —",
+                "[    30]              — [              35]",
             ]
         )
+
+    def test_summary_displays_raw_and_resampled_lengths(self):
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(128)), name=name)
+                for name in ("libero", "robotwin", "robodojo", "horizon")
+            ],
+            shuffle=True,
+            resample_ratios={"horizon": 0.1734178109542776},
+        )
+
+        lines = dataset.summary().splitlines()
+
+        assert lines[-1].startswith("└─ total")
+        assert "[   512]" in lines[-1]
+        assert lines[-1].endswith("[             406]")
+        horizon = next(line for line in lines if "horizon" in line)
+        assert "[   128]" in horizon
+        assert horizon.endswith("[              22]")
+        assert "×0.17342" in horizon
+        assert "0.1734178109542776" not in horizon
+        assert dataset.total_iterator_length == 406
+
+    def test_summary_resampled_length_uses_physical_member_rounding(self):
+        dataset = DictIterableDataset(
+            [ArrayDatasetItemGroup(name="group", data_groups=[[0], [1], [2]])],
+            shuffle=True,
+            resample_ratios={"group": 0.5},
+        )
+
+        assert "[     3]" in dataset.summary().splitlines()[-1]
+        assert (
+            dataset.summary().splitlines()[-1].endswith("[               0]")
+        )
+        assert dataset.total_iterator_length == 0
 
     def test_summary_displays_overlapping_and_duplicate_item_names(self):
         dataset = DictIterableDataset(
@@ -1423,19 +1593,19 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert dataset.summary() == "\n".join(
             [
                 "name                           sample_ratio [frame_ratio] "
-                "[length] resample_ratio",
+                "[length] resample_ratio [resampled_length]",
                 "├─ a                                100.00% [    100.00%] "
-                "[    24]              —",
+                "[    24]              — [              28]",
                 "│  ├─ (self)                         28.57% [     33.33%] "
-                "[     8]           ×1.0",
+                "[     8]             ×1 [               8]",
                 "│  └─ b                              71.43% [     66.67%] "
-                "[    16]              —",
+                "[    16]              — [              20]",
                 "│     ├─ (self #0)                   57.14% [     33.33%] "
-                "[     8]           ×2.0",
+                "[     8]             ×2 [              16]",
                 "│     └─ (self #1)                   14.29% [     33.33%] "
-                "[     8]           ×0.5",
+                "[     8]           ×0.5 [               4]",
                 "└─ total                            100.00% [    100.00%] "
-                "[    24]              —",
+                "[    24]              — [              28]",
             ]
         )
 
@@ -1452,19 +1622,19 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert dataset.summary() == "\n".join(
             [
                 "name                           sample_ratio [frame_ratio] "
-                "[length] resample_ratio",
+                "[length] resample_ratio [resampled_length]",
                 "├─ (unnamed #0)                      25.00% [     25.00%] "
-                "[     1]           ×1.0",
+                "[     1]             ×1 [               1]",
                 "├─ root/(empty)                      50.00% [     50.00%] "
-                "[     2]              —",
+                "[     2]              — [               2]",
                 "│  ├─ (self)                         25.00% [     25.00%] "
-                "[     1]           ×1.0",
+                "[     1]             ×1 [               1]",
                 "│  └─ child                          25.00% [     25.00%] "
-                "[     1]           ×1.0",
+                "[     1]             ×1 [               1]",
                 "├─ robot\\narm                        25.00% [     25.00%] "
-                "[     1]           ×1.0",
+                "[     1]             ×1 [               1]",
                 "└─ total                            100.00% [    100.00%] "
-                "[     4]              —",
+                "[     4]              — [               4]",
             ]
         )
 
@@ -1495,7 +1665,7 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert "(unnamed #0)" in summary
         assert summary.count("0.00%") == 4
         assert "[     0]" in summary.splitlines()[-1]
-        assert summary.splitlines()[-1].endswith("—")
+        assert "— [               0]" in summary.splitlines()[-1]
 
     def test_dataloader_item_consistency(
         self, dummy_dataset_items: list[DatasetItem]
@@ -1681,8 +1851,9 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         def fake_prepare_dataset_for_iter(
             cur_dataset_iters: list[tuple[int, Any]],
             remaining_dataset_indices: list[int],
+            make_iter,
         ) -> list[float]:
-            del remaining_dataset_indices
+            del remaining_dataset_indices, make_iter
             if not cur_dataset_iters:
                 cur_dataset_iters.extend(
                     [(0, child_iters[0]), (1, child_iters[1])]
@@ -3588,6 +3759,88 @@ class TestCreatePrefetchIterator:
         assert failure_branch_reached.wait(timeout=1)
         with pytest.raises(RuntimeError, match="producer failed"):
             next(prefetch_iter)
+
+
+class TestPreparedLoaderFailureCleanup:
+    @pytest.mark.parametrize("fail_index", [0, 2])
+    def test_failed_generator_closes_only_its_owned_workers(self, fail_index):
+        """Retained error tracebacks release workers and leave peers active."""
+        values = list(range(8))
+        values[fail_index] = None
+        loaders = [
+            prepare_data_loader(
+                TorchDataLoader(
+                    ArrayDataset(data=data),
+                    batch_size=1,
+                    num_workers=1,
+                    persistent_workers=False,
+                    multiprocessing_context=(
+                        _get_dataloader_multiprocessing_context(1)
+                    ),
+                    generator=torch.Generator().manual_seed(0),
+                ),
+                device=torch.device("cpu"),
+                num_processes=1,
+                process_index=0,
+                put_on_device=True,
+                dispatch_batches=False,
+                split_batches=False,
+                even_batches=False,
+            )
+            for data in (list(range(16)), values)
+        ]
+        peer, failed = loaders
+        gradient_state = peer.gradient_state
+        initial_active_loader = gradient_state.active_dataloader
+        peer_iter, failed_iter = iter(peer), iter(failed)
+        primary_exc = None
+        baseline_pids = {process.pid for process in mp.active_children()}
+        try:
+            assert next(peer_iter).tolist() == [0]
+            peer_pids = {process.pid for process in mp.active_children()}
+            with pytest.raises(TypeError, match="NoneType") as caught:
+                list(failed_iter)
+            primary_exc = caught.value
+            assert failed_iter.gi_frame is None
+            failed_pids = {
+                process.pid for process in mp.active_children()
+            } - peer_pids
+            assert failed_pids
+            # The same iterator code/dataset with a different owner is not
+            # enough to claim the exited generator's retained worker iterator.
+            close_dataloader_resources(
+                SimpleNamespace(dataset=failed.dataset),
+                failed_iter,
+                reason=DataloaderCloseReason.EXCEPTION_ABORT,
+                primary_exc=primary_exc,
+            )
+            assert failed_pids <= {
+                process.pid for process in mp.active_children()
+            }
+            close_dataloader_resources(
+                failed,
+                failed_iter,
+                reason=DataloaderCloseReason.EXCEPTION_ABORT,
+                primary_exc=primary_exc,
+            )
+            assert {
+                process.pid for process in mp.active_children()
+            } == peer_pids
+            assert next(peer_iter).tolist() == [1]
+        finally:
+            close_dataloader_resources(
+                failed,
+                failed_iter,
+                reason=DataloaderCloseReason.EXCEPTION_ABORT,
+                primary_exc=primary_exc,
+            )
+            close_dataloader_resources(
+                peer, peer_iter, reason=DataloaderCloseReason.EARLY_BREAK
+            )
+        assert {
+            process.pid for process in mp.active_children()
+        } == baseline_pids
+        assert gradient_state.active_dataloader is initial_active_loader
 
 
 class TestDataLoaderEarlyBreakCleanup:

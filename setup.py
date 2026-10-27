@@ -225,6 +225,7 @@ if __name__ == "__main__":
         "duckdb-engine>=0.17.0,<0.18.0",
         "duckdb>=1.5.3,<1.6.0",
         "fsspec",
+        "filelock",
         "sortedcontainers",
         "numpydantic",
         "click>=8.1.0,<=8.2.1",

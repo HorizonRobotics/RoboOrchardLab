@@ -68,6 +68,9 @@ Local agent asset index lives in `.agents/README.md`.
   semantics, `RODatasetItem` reader options, or stored-schema versus runtime
   value contracts:
   `.agents/references/rodataset-reader-materialization-guideline.md`
+- `DictIterableDataset` offload, finite reader residency, prefetch teardown,
+  prepared DataLoader worker cleanup, or lifecycle/memory evidence:
+  `.agents/references/iterable-dataset-lifecycle-guideline.md`
 - Experimental MCAP export, `Dict2Mcap`, `Dataset2Mcap`,
   `FoxgloveMcapWriter`, `FoxgloveEncoder`, `StampedMessage` topic maps,
   converter contracts, or Pydantic JSON topics:

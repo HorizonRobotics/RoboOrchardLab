@@ -137,64 +137,107 @@ class BaseLmdbManipulationDataset(Dataset):
             return False
         return True
 
-    def _init_lmdb(self):
-        self.meta_lmdbs = [None for path in self.paths]
-        self.img_lmdbs = [None for path in self.paths]
-        self.depth_lmdbs = [None for path in self.paths]
-        self.idx_lmdbs = [
-            Lmdb(
-                uri=os.path.join(path, "index"),
-                writable=False,
-                encoding_mode=self.encoding_mode,
-            )
-            for path in self.paths
-        ]
+    def close(self) -> None:
+        """Release every opened LMDB wrapper, including partial initialization.
 
-        lmdb_indices = []
-        episode_indices = []
-        num_steps = []
-        task_statistics = {
-            "num_episode": {},
-            "num_steps": {},
-        }
-        current_num_episode = 0
-        for i, idx_lmdb in enumerate(self.idx_lmdbs):
-            for episode_idx in idx_lmdb.keys():
-                if episode_idx == "__len__":
+        Closing is idempotent. Unopened lazy wrappers remain unopened. A later
+        access reinitializes through the normal dataset path; offload readers
+        are normally discarded and recreated from their DatasetItem instead.
+        All wrappers are attempted even when one close fails.
+        """
+        errors: list[BaseException] = []
+        for name in ("idx_lmdbs", "meta_lmdbs", "img_lmdbs", "depth_lmdbs"):
+            wrappers = getattr(self, name, ())
+            for index, wrapper in enumerate(wrappers):
+                if wrapper is None:
                     continue
-                data = BaseIndexData.model_validate(idx_lmdb.get(episode_idx))
+                try:
+                    wrapper.close()
+                except BaseException as exc:
+                    errors.append(exc)
+                else:
+                    wrappers[index] = None
+        self.initialized = False
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise RuntimeError(
+                "Multiple LMDB close errors: "
+                + "; ".join(repr(error) for error in errors)
+            ) from errors[0]
 
-                if (self._check_valid(data)) and (
-                    self.num_episode_ is None
-                    or current_num_episode < self.num_episode_
-                ):
-                    lmdb_indices.append(i)
-                    episode_indices.append(episode_idx)
-                    num_steps.append(data.num_steps)
-                    current_num_episode += 1
+    def _init_lmdb(self):
+        self.close()
+        try:
+            self.meta_lmdbs = [None for path in self.paths]
+            self.img_lmdbs = [None for path in self.paths]
+            self.depth_lmdbs = [None for path in self.paths]
+            self.idx_lmdbs = []
+            for path in self.paths:
+                self.idx_lmdbs.append(
+                    Lmdb(
+                        uri=os.path.join(path, "index"),
+                        writable=False,
+                        encoding_mode=self.encoding_mode,
+                    )
+                )
 
-                    if data.task_name not in task_statistics["num_episode"]:
-                        task_statistics["num_episode"][data.task_name] = 0
-                        task_statistics["num_steps"][data.task_name] = 0
-                    task_statistics["num_episode"][data.task_name] += 1
-                    task_statistics["num_steps"][data.task_name] += (
-                        data.num_steps
+            lmdb_indices = []
+            episode_indices = []
+            num_steps = []
+            task_statistics = {
+                "num_episode": {},
+                "num_steps": {},
+            }
+            current_num_episode = 0
+            for i, idx_lmdb in enumerate(self.idx_lmdbs):
+                for episode_idx in idx_lmdb.keys():
+                    if episode_idx == "__len__":
+                        continue
+                    data = BaseIndexData.model_validate(
+                        idx_lmdb.get(episode_idx)
                     )
 
-        self.lmdb_indices = lmdb_indices
-        self.episode_indices = episode_indices
-        self.num_steps = np.array(num_steps)
-        self.cumsum_steps = np.cumsum(num_steps)
-        self.num_episode = len(num_steps)
-        self.task_statistics = task_statistics
-        self.initialized = True
-        dist_info = get_dist_info()
-        if dist_info.rank == 0:
-            logger.info(
-                f"{self.dataset_name} dataset length: {self.__len__()}, "
-                f"number of episode: {self.num_episode}, "
-                f"task_statistics: {self.task_statistics}"
-            )
+                    if (self._check_valid(data)) and (
+                        self.num_episode_ is None
+                        or current_num_episode < self.num_episode_
+                    ):
+                        lmdb_indices.append(i)
+                        episode_indices.append(episode_idx)
+                        num_steps.append(data.num_steps)
+                        current_num_episode += 1
+
+                        if (
+                            data.task_name
+                            not in task_statistics["num_episode"]
+                        ):
+                            task_statistics["num_episode"][data.task_name] = 0
+                            task_statistics["num_steps"][data.task_name] = 0
+                        task_statistics["num_episode"][data.task_name] += 1
+                        task_statistics["num_steps"][data.task_name] += (
+                            data.num_steps
+                        )
+
+            self.lmdb_indices = lmdb_indices
+            self.episode_indices = episode_indices
+            self.num_steps = np.array(num_steps)
+            self.cumsum_steps = np.cumsum(num_steps)
+            self.num_episode = len(num_steps)
+            self.task_statistics = task_statistics
+            self.initialized = True
+            dist_info = get_dist_info()
+            if dist_info.rank == 0:
+                logger.info(
+                    f"{self.dataset_name} dataset length: {self.__len__()}, "
+                    f"number of episode: {self.num_episode}, "
+                    f"task_statistics: {self.task_statistics}"
+                )
+        except BaseException:
+            try:
+                self.close()
+            except BaseException:
+                logger.exception("LMDB cleanup failed during initialization.")
+            raise
 
     def __len__(self):
         if not self.initialized:

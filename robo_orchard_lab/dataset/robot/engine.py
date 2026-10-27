@@ -21,13 +21,19 @@ see :py:mod:`robo_orchard_lab.dataset.robot.dataset_db_engine`.
 
 """
 
+import hashlib
 import json
 import os
+import shutil
+import stat
 import tempfile
 import warnings
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Generator, Sequence, Type
 
+from filelock import FileLock
+from robo_orchard_core.utils.logging import LoggerManager
 from robo_orchard_core.utils.patches import patch_class_method
 from sqlalchemy import (
     URL,
@@ -41,12 +47,18 @@ from sqlalchemy import (
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase
 
+from robo_orchard_lab.utils.env import (
+    get_robo_orchard_home,
+)
+
 __all__ = [
     "create_engine",
     "create_tables",
     "drop_tables",
     "create_temp_engine",
 ]
+
+logger = LoggerManager().get_child(__name__)
 
 
 def create_tables(
@@ -123,12 +135,27 @@ def create_engine(
         sort_keys=True,
         ensure_ascii=True,
     ),
+    *,
+    _lock_free_read: bool = False,
     **kwargs,
 ) -> Engine:
     """Create a database engine.
 
     This method is a wrapper of :py:func:`sqlalchemy.create_engine` with
     additional support for readonly mode, and default JSON serializer.
+
+    RODataset may pass the internal ``_lock_free_read`` policy for completed
+    files that remain unchanged during reader lifetimes. This function does
+    not read the environment. DuckDB reads a shared atomic
+    local copy under ``ROBO_ORCHARD_HOME/datasets/duckdb_read_cache``;
+    SQLite reads the original using ``mode=ro&immutable=1``. The caller must
+    place the home/cache on a writable local filesystem. The returned URL
+    names the actual file, also on serialization/reopen; reopening that
+    effective URL does not recheck the original DuckDB source. Construct a
+    new engine from the source URL to check its size and mtime again.
+    SQLite immutable reads use the default file-database pool with native
+    cross-thread reuse enabled; callers still own a Session per thread.
+    Writable engines and the default disabled policy retain their behavior.
 
     See :py:func:`sqlalchemy.create_engine` for more details.
 
@@ -139,6 +166,9 @@ def create_engine(
         json_serializer (Callable[[Any], str], optional): The JSON serializer
             for the engine. Defaults to
             `lambda obj: json.dumps(obj, sort_keys=True, ensure_ascii=True).`
+        _lock_free_read (bool, optional): Internal RODataset read policy.
+            Defaults to False; ignored for writable engines. Direct callers
+            do not inherit the environment switch.
         **kwargs: Additional keyword arguments for
             :py:func:`sqlalchemy.create_engine`.
 
@@ -148,6 +178,7 @@ def create_engine(
     """
     if readonly:
         name = url.get_backend_name()
+        lock_free = _lock_free_read
         if name == "sqlite":
             # the following does not work!
             # new_url = url.set(query={"mode": "rodd"})
@@ -156,17 +187,24 @@ def create_engine(
                 raise IOError(f"Database `{url.database}` does not exist.")
             import sqlite3
 
+            sqlite_uri = "file:" + url.database + "?mode=ro"
+            if lock_free and url.database != ":memory:":
+                database_path = os.path.abspath(url.database)
+                url = url.set(database=database_path)
+                sqlite_uri = (
+                    Path(database_path).as_uri() + "?mode=ro&immutable=1"
+                )
+
             def creator():
-                assert url.database is not None
                 return sqlite3.connect(
-                    "file:" + url.database + "?mode=ro", uri=True
+                    sqlite_uri, uri=True, check_same_thread=not lock_free
                 )
 
             # sqlite does not support pool_use_lifo
             if "pool_use_lifo" in kwargs:
                 kwargs.pop("pool_use_lifo")
             return _create_engine(
-                "sqlite:///",
+                url if lock_free else "sqlite:///",
                 creator=creator,
                 json_serializer=json_serializer,
                 **kwargs,
@@ -181,6 +219,8 @@ def create_engine(
                     "`readonly` argument."
                 )
             connect_args["read_only"] = readonly
+            if lock_free and url.database not in (None, "", ":memory:"):
+                url = _get_duckdb_read_cache_url(url)
 
         engine = _create_engine(url, json_serializer=json_serializer, **kwargs)
         return _make_readonly_engine(engine)
@@ -226,3 +266,93 @@ def create_temp_engine(
             os.remove(db_path)
         if os.path.exists(db_file):
             os.remove(db_file)
+
+
+def _get_duckdb_read_cache_url(url: URL) -> URL:
+    """Publish or reuse one complete local copy of a finished DuckDB file.
+
+    The caller selects the readonly policy. Source access here is ordinary
+    stat/read only. A short local FileLock owns freshness checks and atomic
+    publication; SQL connections do not hold it. Existing replica/upgrade
+    files are used directly. Only source mtime is preserved; other file
+    metadata remains local. No source URL or reader lifecycle state is kept.
+
+    Args:
+        url (URL): A file-backed DuckDB URL whose input remains immutable
+            while readers use it. The configured home must be local/writable.
+
+    Returns:
+        URL: The effective local file URL, retaining other URL components.
+
+    Raises:
+        OSError: If stat, copy or publication fails. A failure before replace
+            preserves the previous copy; a later directory fsync failure may
+            leave the complete replacement published but is still surfaced.
+        ValueError: If the source is not a regular file-backed database.
+    """
+    if not url.database or url.database == ":memory:":
+        raise ValueError("A file-backed DuckDB URL is required.")
+    source = Path(os.path.abspath(url.database))
+    datasets_home = Path(get_robo_orchard_home()).absolute() / "datasets"
+    cache_root = datasets_home / "duckdb_read_cache"
+    resolved_source = source.resolve()
+    if any(
+        resolved_source.is_relative_to(root.resolve())
+        for root in (cache_root, datasets_home / "upgrade_cache")
+    ):
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        return url.set(database=str(source))
+
+    source_stat = source.stat()
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise ValueError(f"Database source is not a regular file: {source}")
+    path_hash = hashlib.sha256(os.fsencode(source)).hexdigest()
+    cache_folder = cache_root / path_hash
+    cache_folder.mkdir(parents=True, exist_ok=True)
+    cached = cache_folder / source.name
+    with FileLock(cache_folder / "cache.lock"):
+        source_stat = source.stat()
+        signature = (source_stat.st_size, source_stat.st_mtime_ns)
+        if cached.is_file():
+            cached_stat = cached.stat()
+            if signature == (cached_stat.st_size, cached_stat.st_mtime_ns):
+                return url.set(database=str(cached))
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".copy-", suffix=".tmp", dir=cache_folder
+        )
+        temporary = Path(temp_path)
+        try:
+            with os.fdopen(fd, "wb") as target:
+                with source.open("rb") as original:
+                    shutil.copyfileobj(original, target)
+                target.flush()
+                after = source.stat()
+                target_stat = os.fstat(target.fileno())
+                if (
+                    signature != (after.st_size, after.st_mtime_ns)
+                    or target_stat.st_size != source_stat.st_size
+                ):
+                    raise OSError(
+                        f"Database source changed during copy: {source}"
+                    )
+                os.utime(
+                    temporary,
+                    ns=(target_stat.st_atime_ns, source_stat.st_mtime_ns),
+                )
+                os.fsync(target.fileno())
+            os.replace(temporary, cached)
+            directory_fd = os.open(cache_folder, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except BaseException:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                logger.exception(
+                    "Failed to remove owned cache temp %s", temporary
+                )
+            raise
+    return url.set(database=str(cached))

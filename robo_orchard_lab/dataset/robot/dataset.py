@@ -164,6 +164,12 @@ class RODataset(TorchDataset):
 
 
     Note:
+        Path construction snapshots ``ROBO_ORCHARD_DB_LOCK_FREE_READ`` once.
+        When enabled, completed immutable DuckDB inputs are copied locally
+        and SQLite inputs use immutable reads. Views and pickle restoration
+        retain the resource's selection. Wrapping an already opened engine
+        with :meth:`from_dataset` does not activate or migrate that engine.
+
         The dataset loading process will automatically check the version of the
         meta database, and upgrade it to the latest version if necessary.
         Please call the `RODataset.upgrade_meta(dataset_path)` method to
@@ -219,6 +225,7 @@ class RODataset(TorchDataset):
         ) = None,
     ):
         dataset_path = os.path.expanduser(dataset_path)
+        lock_free_read = self._get_db_lock_free_read_enabled()
 
         from robo_orchard_lab.dataset.robot._hf_dataset import (
             load_from_disk,
@@ -256,7 +263,10 @@ class RODataset(TorchDataset):
             "dataset_format_version", None
         )
         # load db
-        self.db_engine = self._load_db(dataset_path)
+        self._db_resource = _RODatasetDBResource(
+            self._load_db(dataset_path, _lock_free_read=lock_free_read),
+            _lock_free_read=lock_free_read,
+        )
 
         self._transform: Callable[[dict], dict] | None = None
 
@@ -552,9 +562,31 @@ class RODataset(TorchDataset):
 
         self.close()
 
-    def _load_db(self, dataset_path: str) -> Engine:
+    @staticmethod
+    def _get_db_lock_free_read_enabled() -> bool:
+        """Read ``ROBO_ORCHARD_DB_LOCK_FREE_READ`` for a new path reader.
+
+        Unset, empty and ``0`` disable it; ``1`` enables it.
+
+        Raises:
+            ValueError: If the variable has another nonempty value.
+        """
+        value = os.environ.get("ROBO_ORCHARD_DB_LOCK_FREE_READ", "")
+        if value in ("", "0"):
+            return False
+        if value == "1":
+            return True
+        raise ValueError(
+            "ROBO_ORCHARD_DB_LOCK_FREE_READ must be unset, empty, '0' or '1'."
+        )
+
+    def _load_db(
+        self, dataset_path: str, *, _lock_free_read: bool = False
+    ) -> Engine:
         return create_engine(
-            url=_get_dataset_db_url(dataset_path), readonly=True
+            url=_get_dataset_db_url(dataset_path),
+            readonly=True,
+            _lock_free_read=_lock_free_read,
         )
 
     @staticmethod
@@ -1699,6 +1731,14 @@ class RODatasetItem(DatasetItem[RODataset]):
         dataset.set_transform(self.transform)
         return dataset
 
+    def get_index_cache_key(self) -> str:
+        """Reuse base indices across post-read transforms, including callables.
+
+        Transform configuration does not change the original row anchors.
+        All reader/source options remain part of the default key.
+        """
+        return DatasetItem.get_index_cache_key(self.replace(transform=None))
+
 
 class RODatasetItemGroup(DatasetItemGroup):
     """Expose compatible RODataset roots as one logical mixture input.
@@ -1783,10 +1823,11 @@ class RODatasetItemGroup(DatasetItemGroup):
 
 @dataclass(slots=True)
 class _RODatasetDBResource:
-    """Share one terminal metadata-engine lifecycle across dataset views."""
+    """Share a metadata-engine lifecycle and its fixed private read policy."""
 
     engine: Engine
     closed: bool = False
+    _lock_free_read: bool = False
 
     @property
     def active_engine(self) -> Engine:
@@ -1812,12 +1853,20 @@ class _RODatasetDBResource:
 
         if self.closed:
             raise RuntimeError("Cannot pickle a closed RODataset resource.")
-        return {"db_engine_url": self.engine.url}
+        return {
+            "db_engine_url": self.engine.url,
+            "_lock_free_read": self._lock_free_read,
+        }
 
     def __setstate__(self, state: dict) -> None:
         """Recreate a process-local engine for one unpickled resource graph."""
 
-        self.engine = create_engine(state["db_engine_url"], readonly=True)
+        self._lock_free_read = state.get("_lock_free_read", False)
+        self.engine = create_engine(
+            state["db_engine_url"],
+            readonly=True,
+            _lock_free_read=self._lock_free_read,
+        )
         self.closed = False
 
 

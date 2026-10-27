@@ -70,6 +70,8 @@ def create_engine(
         obj, sort_keys=True, ensure_ascii=True
     ),
     auto_upgrade: bool = True,
+    *,
+    _lock_free_read: bool = False,
     **kwargs,
 ):
     """Create a database engine.
@@ -89,6 +91,9 @@ def create_engine(
         auto_upgrade (bool, optional): Whether to automatically upgrade the
             database to the latest version when reading.
             Defaults to True.
+        _lock_free_read (bool, optional): Internal RODataset read policy
+            forwarded to all readonly opens. Defaults to False. This factory
+            never reads the environment to activate the policy.
         **kwargs: Additional keyword arguments for
             :py:func:`sqlalchemy.create_engine`.
 
@@ -100,10 +105,16 @@ def create_engine(
         db_path = extract_db_file_path(url, check_exist=True)
         drivername = url.drivername
         handler = DatasetMetaDBHandler(db_path, drivername)
-        url = handler.get_latest_db_url_for_read()
+        url = handler.get_latest_db_url_for_read(
+            _lock_free_read=_lock_free_read
+        )
 
     return _create_engine(
-        url, readonly=readonly, json_serializer=json_serializer, **kwargs
+        url,
+        readonly=readonly,
+        json_serializer=json_serializer,
+        _lock_free_read=_lock_free_read,
+        **kwargs,
     )
 
 
@@ -171,8 +182,19 @@ class DatasetMetaDBHandler:
         self._db_path = db_path
         self._drivername = drivername
 
-    def get_latest_db_url_for_read(self) -> URL:
-        old_engine = _create_engine(self._db_url, readonly=True)
+    def get_latest_db_url_for_read(
+        self, *, _lock_free_read: bool = False
+    ) -> URL:
+        """Probe/upgrade with the explicit internal readonly policy."""
+        old_engine = _create_engine(
+            self._db_url, readonly=True, _lock_free_read=_lock_free_read
+        )
+        # The common opener may select a local DuckDB replica. Bind the
+        # existing fields before schema probing, hashing and upgrade. The
+        # disabled SQLite creator still uses an empty placeholder URL.
+        if old_engine.url.database:
+            self._db_url = old_engine.url
+            self._db_path = extract_db_file_path(self._db_url)
         upgrade_plan = get_table_update_plan(old_engine)
         if upgrade_plan is None:
             old_engine.dispose()

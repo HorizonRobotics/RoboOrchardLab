@@ -18,6 +18,7 @@ import random
 import string
 
 import numpy as np
+import pyarrow as pa
 import pytest
 import torch
 
@@ -80,6 +81,53 @@ class TestIndiceTable:
         assert sorted(new_list) == old_list
         assert new_list != old_list
         # print(table.table.to_pylist())
+
+    @pytest.mark.parametrize("rows", [0, 7, 65539])
+    def test_streamed_native_plan_round_trip(self, rows, tmp_path):
+        path = str(tmp_path / "plan.arrow")
+        count = IndiceTable.save_index_stream(
+            path, (index % 17 for index in range(rows))
+        )
+        assert count == rows
+        table = IndiceTable(path)
+        assert len(table) == rows
+        assert list(table) == [index % 17 for index in range(rows)]
+
+    @pytest.mark.parametrize("dtype", [pa.int64(), pa.uint64()])
+    @pytest.mark.parametrize("reload", [False, True])
+    def test_save_preserves_arrow_schema(self, dtype, reload, tmp_path):
+        values = (
+            [0, 2**63 + 7, 0] if dtype == pa.uint64() else [-1, 0, 2**63 - 1]
+        )
+        schema = pa.schema(
+            [pa.field("row_ids", dtype, metadata={b"kind": b"anchor"})],
+            metadata={b"source": b"fixture"},
+        )
+        table = IndiceTable(pa.table([values], schema=schema))
+        original = table.table
+        path = str(tmp_path / "indices.arrow")
+        table.save_to_file(path, reload=reload)
+        restored = IndiceTable(path)
+        assert restored.table.schema.equals(schema, check_metadata=True)
+        assert list(restored) == values
+        if reload:
+            assert table.indice_source.startswith("file://")
+        else:
+            assert table.table is original
+        assert table.table.schema.equals(schema, check_metadata=True)
+
+    def test_stream_failure_propagates_and_destination_can_be_reused(
+        self, tmp_path
+    ):
+        def failed_stream():
+            yield 1
+            raise RuntimeError("fixture stream failure")
+
+        path = str(tmp_path / "indices.arrow")
+        with pytest.raises(RuntimeError, match="fixture stream failure"):
+            IndiceTable.save_index_stream(path, failed_stream())
+        assert IndiceTable.save_index_stream(path, iter([2, 1, 2])) == 3
+        assert list(IndiceTable(path)) == [2, 1, 2]
 
 
 class TestChunkedIndiceTable:

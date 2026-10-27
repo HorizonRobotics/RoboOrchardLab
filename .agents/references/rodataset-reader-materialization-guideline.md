@@ -65,6 +65,15 @@ or the boundary between stored features and user transforms.
 - A `ROMultiRowDataset` created with `from_dataset(...)` shares the source
   reader's metadata database lifecycle. Preserve that shared terminal close
   state across views and serialization rules.
+- For runtime read policies selected once at construction, keep the selected
+  policy with the existing resource owner across views, multirow readers,
+  pickle restoration and lazy worker opens. Restoration must not select a new
+  policy from the destination process environment; a constructor-only context
+  cannot stand in for that ownership.
+- Wrapping an external Engine preserves its already-open connection semantics.
+  A reader-owned environment switch must not implicitly activate direct
+  engine, maintenance or writer APIs. Keep lock-free DB mechanics in the
+  [user guide](../../docs/getting_started/lock_free_db_read.rst).
 - A subclass that owns extra resources must not inherit `from_dataset(...)`
   merely for convenience. It should reject cloning until it has an explicit
   ownership and reconstruction contract for every added resource.

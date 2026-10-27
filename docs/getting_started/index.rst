@@ -6,3 +6,4 @@ Getting Started
     :includehidden:
 
     install
+    lock_free_db_read

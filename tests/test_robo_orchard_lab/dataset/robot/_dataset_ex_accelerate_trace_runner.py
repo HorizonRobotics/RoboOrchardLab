@@ -91,6 +91,12 @@ def _parse_args() -> argparse.Namespace:
         help="Shard strategy to apply before accelerate prepares the loader.",
     )
     parser.add_argument(
+        "--offload-num-batches",
+        type=int,
+        default=None,
+        help="Enable finite offload segments in the native-sharding trace.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         required=True,
@@ -168,6 +174,8 @@ def main() -> int:
         ],
         shuffle=True,
         generator=generator,
+        offload_num_batches=args.offload_num_batches,
+        offload_dir=str(args.output_dir / "offload"),
         shard_kwargs=ShardConfig(
             contiguous=True,
             shard_strategy=shard_strategy,
@@ -212,6 +220,7 @@ def main() -> int:
         "prepared_type": type(prepared).__name__,
         "use_dataset_side_batching": use_dataset_side_batching,
         "num_workers": args.num_workers,
+        "offload_num_batches": base_dataset.offload_num_batches,
     }
     output_file = args.output_dir / f"rank_{accelerator.process_index}.json"
     output_file.write_text(json.dumps(payload), encoding="utf-8")

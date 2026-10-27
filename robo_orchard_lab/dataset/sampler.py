@@ -16,7 +16,15 @@
 from __future__ import annotations
 import os
 from abc import ABCMeta, abstractmethod
-from typing import Any, Iterator, Literal, Protocol, runtime_checkable
+from itertools import islice
+from typing import (
+    Any,
+    Iterable,
+    Iterator,
+    Literal,
+    Protocol,
+    runtime_checkable,
+)
 
 import numpy as np
 import pyarrow as pa
@@ -202,18 +210,66 @@ class IndiceTable(TableMixin):
         return IndiceTable(query_table(self.table, key))
 
     def save_to_file(self, filepath: str, reload: bool = False) -> None:
-        """Save the indices to a file in pyarrow format.
+        """Save this table as a native Arrow stream, preserving its schema.
 
-        After saving, the indices can be reloaded from the file by setting
-        `reload` to True. If `reload` is False, the indices will remain in
-        memory and can still be accessed without reading from the file.
+        Existing Arrow batches are written directly, retaining their integer
+        type, field names and metadata. With ``reload=True``, replace this
+        table with a memory-mapped view of the completed file; otherwise the
+        current table stays unchanged.
 
+        Use :meth:`save_index_stream` for an iterable that has not been
+        materialized as a table. Both methods write files readable by
+        ``IndiceTable(filepath)``. The caller owns publication and removal;
+        a failed write may leave an incomplete file.
         """
-        with pa.RecordBatchStreamWriter(filepath, self.table.schema) as writer:
-            for batch in self.table.to_batches():
-                writer.write_batch(batch)
+        self._save_batches_to_file(
+            filepath, self.table.schema, self.table.to_batches()
+        )
         if reload:
             self.table = self._table_from_file(filepath)
+
+    @staticmethod
+    def save_index_stream(filepath: str, indices: Iterable[int]) -> int:
+        """Save a finite index iterable without materializing the full table.
+
+        Consume the iterable once in batches of at most 65536 signed int64
+        indices, preserving order and duplicates. The native Arrow stream
+        has one ``indices`` column, readable by ``IndiceTable(filepath)``.
+        Use :meth:`save_to_file` to preserve an existing table's schema or to
+        reload that table after saving.
+
+        The caller owns publication and removal; an iteration or write failure
+        propagates and may leave an incomplete file that must not be published.
+
+        Args:
+            filepath (str): Destination file, overwritten if it exists.
+            indices (Iterable[int]): Finite indices convertible to int64.
+
+        Returns:
+            int: Number of rows in the successfully completed file.
+        """
+        schema = pa.schema([("indices", pa.int64())])
+        source = (int(index) for index in indices)
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            while buffer := list(islice(source, 65536)):
+                yield pa.record_batch([buffer], schema=schema)
+
+        return IndiceTable._save_batches_to_file(filepath, schema, batches())
+
+    @staticmethod
+    def _save_batches_to_file(
+        filepath: str,
+        schema: pa.Schema,
+        batches: Iterable[pa.RecordBatch],
+    ) -> int:
+        """Write both table and iterable batches through one Arrow boundary."""
+        count = 0
+        with pa.RecordBatchStreamWriter(filepath, schema) as writer:
+            for batch in batches:
+                writer.write_batch(batch)
+                count += batch.num_rows
+        return count
 
     def shuffle(
         self, generator: torch.Generator | np.random.Generator | None = None

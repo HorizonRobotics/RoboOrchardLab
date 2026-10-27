@@ -201,7 +201,9 @@ def close_dataloader_resources(
     Use this from trainer-level code that owns both the dataloader object and
     its active iterator. Besides closing the iterator stack, this ends
     prepared dataloader wrappers and clears persistent-worker owner state when
-    the close reason means workers should not be reused.
+    the close reason means workers should not be reused. Pass the primary
+    loading exception so a failed prepared generator's inner iterator can be
+    recovered from its traceback after the generator frame has exited.
 
     Args:
         dataloader (Any): Original or prepared dataloader owner.
@@ -223,10 +225,37 @@ def close_dataloader_resources(
 
     shutdown_persistent_workers = reason not in _KEEP_PERSISTENT_WORKER_REASONS
     dataloader_owners = list(_iter_dataloader_owners(dataloader))
+    iterators = [dataloader_iter]
+    if (
+        primary_exc is not None
+        and isinstance(dataloader_iter, GeneratorType)
+        and dataloader_iter.gi_frame is None
+    ):
+        # A prepared generator can exit on next(inner) before the owner gets
+        # to close it. Recover only its own wrapper frame and dataset iterator;
+        # unrelated generators/loaders in the traceback stay untouched.
+        traceback = primary_exc.__traceback__
+        while traceback is not None:
+            frame = traceback.tb_frame
+            owner = frame.f_locals.get("self")
+            if frame.f_code is dataloader_iter.gi_code and any(
+                owner is candidate for candidate in dataloader_owners
+            ):
+                for name in ("dataloader_iter", "main_iterator"):
+                    inner = frame.f_locals.get(name)
+                    if isinstance(
+                        inner,
+                        (
+                            _SingleProcessDataLoaderIter,
+                            _MultiProcessingDataLoaderIter,
+                        ),
+                    ) and inner._dataset is getattr(owner, "dataset", None):
+                        iterators.append(inner)
+            traceback = traceback.tb_next
     errors: list[BaseException] = []
     try:
         close_iterators_best_effort(
-            [dataloader_iter],
+            iterators,
             primary_exc=primary_exc,
             shutdown_persistent_workers=shutdown_persistent_workers,
         )

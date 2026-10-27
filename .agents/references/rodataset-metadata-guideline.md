@@ -56,6 +56,18 @@ metadata persistence, metadata parsing or export behavior, or merged-dataset
 - New writer paths should construct the Pydantic schema model and dump through
   its public JSON helper, rather than hand-writing tagged dictionaries.
 
+## Metadata Keys And Row Positions
+
+- A metadata count is not a set of primary keys. Obtain Episode IDs from
+  stored `Episode.index` values or the corresponding query, including when no
+  predicate is supplied; do not manufacture IDs with `range(episode_num)`.
+- Distinguish an Episode primary key from its position in a query result and
+  from frame-row offsets such as `Episode.dataset_begin_index`. Preserve
+  stored identities instead of assuming a zero-based contiguous key range.
+- Filter and association regressions should include nonzero primary-key
+  starts and, when relevant, gaps. Check both the selected identities and
+  their corresponding frame rows.
+
 ## Merged Dataset Frame-Index Contract
 
 - `Episode.dataset_begin_index` is a dataset-global frame-row offset in the

@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Callable
 
 from datasets import Dataset as HFDataset
+from sqlalchemy import select
 
 from robo_orchard_lab.dataset.robot.dataset import RODataset
 from robo_orchard_lab.dataset.robot.dataset_ex import (
@@ -52,7 +53,8 @@ class RODatasetFilter:
         """Get the episode indices that satisfy the filters.
 
         This method combines the episode_filter, task_filter and robot_filter
-        to filter episodes.
+        to filter episodes. Returned IDs are stored primary keys, which need
+        not start at zero.
         """
 
         if (
@@ -60,8 +62,12 @@ class RODatasetFilter:
             and self._task_filter is None
             and self._robot_filter is None
         ):
-            # get the total episode indices without filtering
-            return set(range(dataset.episode_num))
+            return {
+                row[0]
+                for row in dataset.iterate_meta_by_statement(
+                    select(Episode.index)
+                )
+            }
 
         episode_indices = set()
 

@@ -1172,7 +1172,11 @@ class TestDataset:
             "load_from_disk",
             hf_load_from_disk,
         )
-        monkeypatch.setattr(RODataset, "_load_db", lambda self, path: object())
+        monkeypatch.setattr(
+            RODataset,
+            "_load_db",
+            lambda self, path, *, _lock_free_read=False: object(),
+        )
 
         dataset = RODataset(str(dataset_path))
 
@@ -1218,7 +1222,11 @@ class TestDataset:
             "load_from_disk",
             hf_load_from_disk,
         )
-        monkeypatch.setattr(RODataset, "_load_db", lambda self, path: object())
+        monkeypatch.setattr(
+            RODataset,
+            "_load_db",
+            lambda self, path, *, _lock_free_read=False: object(),
+        )
 
         with pytest.warns(
             UserWarning,

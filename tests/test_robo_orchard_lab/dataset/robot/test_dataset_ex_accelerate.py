@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,7 @@ def _run_accelerate_trace_subprocess(
     use_dataset_side_batching: bool,
     num_workers: int = 0,
     shard_strategy: str | None = None,
+    offload_num_batches: int | None = None,
 ) -> list[dict[str, object]]:
     shard_strategy_name = "none" if shard_strategy is None else shard_strategy
     output_dir = tmp_path / (
@@ -109,6 +111,10 @@ def _run_accelerate_trace_subprocess(
         "--output-dir",
         str(output_dir),
     ]
+    if offload_num_batches is not None:
+        command_suffix.extend(
+            ["--offload-num-batches", str(offload_num_batches)]
+        )
     attempted_ports = []
     for port in _accelerate_port_candidates(
         env,
@@ -163,6 +169,38 @@ def _run_accelerate_trace_subprocess(
 
 
 class TestDictIterableDatasetAccelerateLaunch:
+    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
+    def test_offload_native_sharding_preserves_row_ownership(
+        self,
+        tmp_path: Path,
+        PROJECT_ROOT: str,
+        use_dataset_side_batching: bool,
+    ):
+        results = _run_accelerate_trace_subprocess(
+            tmp_path=tmp_path,
+            project_root=PROJECT_ROOT,
+            prepare_mode="wrapped",
+            use_dataset_side_batching=use_dataset_side_batching,
+            num_workers=2,
+            shard_strategy="pad_last",
+            offload_num_batches=1,
+        )
+        assert [result["offload_num_batches"] for result in results] == [1, 1]
+        assert [result["shard_strategy"] for result in results] == [
+            "pad_last",
+            "pad_last",
+        ]
+        rank_rows = [
+            [value for batch in result["value_trace"] for value in batch]
+            for result in results
+        ]
+        assert [len(rows) for rows in rank_rows] == [14, 14]
+        assert Counter(rank_rows[0] + rank_rows[1]) == Counter(
+            list(range(21)) + list(range(100, 105)) + [0, 100]
+        )
+        assert len(list(tmp_path.glob("**/base/*.arrow"))) == 2
+        assert not list(tmp_path.glob("**/iteration-*"))
+
     @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
     def test_raw_prepare_can_diverge_rank_schedule(
         self,
