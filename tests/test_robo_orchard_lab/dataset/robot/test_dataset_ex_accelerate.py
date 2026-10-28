@@ -61,6 +61,7 @@ def _run_accelerate_trace_subprocess(
     num_workers: int = 0,
     shard_strategy: str | None = None,
     offload_num_batches: int | None = None,
+    rng_path: str | None = None,
 ) -> list[dict[str, object]]:
     shard_strategy_name = "none" if shard_strategy is None else shard_strategy
     output_dir = tmp_path / (
@@ -115,14 +116,21 @@ def _run_accelerate_trace_subprocess(
         command_suffix.extend(
             ["--offload-num-batches", str(offload_num_batches)]
         )
+    if rng_path is not None:
+        command_suffix.extend(["--rng-path", rng_path])
     attempted_ports = []
-    for port in _accelerate_port_candidates(
-        env,
-        prepare_mode,
-        use_dataset_side_batching,
-        num_workers,
-        shard_strategy_name,
-    ):
+    ports = (
+        ["0"]
+        if rng_path is not None
+        else _accelerate_port_candidates(
+            env,
+            prepare_mode,
+            use_dataset_side_batching,
+            num_workers,
+            shard_strategy_name,
+        )
+    )
+    for port in ports:
         command = [*command_prefix, port, *command_suffix]
         completed = subprocess.run(
             command,
@@ -270,3 +278,35 @@ class TestDictIterableDatasetAccelerateLaunch:
             == results[1]["total_indices_length"]
         )
         assert results[0]["trace"] == results[1]["trace"]
+
+
+@pytest.mark.parametrize("path", ["native", "fallback", "dispatcher"])
+@pytest.mark.parametrize("batching,workers", [(False, 0), (True, 2)])
+def test_managed_rng_on_actual_prepared_paths(
+    tmp_path, PROJECT_ROOT, path, batching, workers
+):
+    results = _run_accelerate_trace_subprocess(
+        tmp_path,
+        PROJECT_ROOT,
+        "raw",
+        batching,
+        num_workers=workers,
+        rng_path=path,
+    )
+    assert results[0]["prepared_type"] == (
+        "DataLoaderDispatcher" if path == "dispatcher" else "DataLoaderShard"
+    )
+    if path == "fallback":
+        assert all(
+            r["dataset_type"] == "IterableDatasetShard" for r in results
+        )
+    expected = Counter([*range(32), *range(100, 132), *range(200, 232)])
+    for epoch in range(3):
+        assert (
+            Counter(results[0]["epochs"][epoch] + results[1]["epochs"][epoch])
+            == expected
+        )
+    if path != "dispatcher":
+        for result in results:
+            assert result["epochs"][0] == result["epochs"][2]
+            assert result["epochs"][0] != result["epochs"][1]

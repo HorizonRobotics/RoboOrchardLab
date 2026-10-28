@@ -952,6 +952,65 @@ def test_trainer_initialization(dummy_trainer):
     assert dummy_trainer.max_epoch == 1
 
 
+def test_trainer_aligns_managed_loader_to_nonzero_epoch():
+    """Trainer epoch wins over a stale prepared-wrapper iteration."""
+    dataset = DictIterableDataset(
+        [ArrayDatasetItem(data=list(range(8)))], shuffle=True, seed=42
+    )
+    model = SimpleModel()
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=RODataLoader(dataset, batch_size=2),
+        optimizer=optimizer,
+        lr_scheduler=StepLR(optimizer, step_size=1, gamma=0.1),
+        accelerator=Accelerator(
+            step_scheduler_with_optimizer=False,
+            dataloader_config=DataLoaderConfiguration(dispatch_batches=False),
+        ),
+        batch_processor=DummyBatchProcessor(),
+        max_epoch=4,
+    )
+    trainer.trainer_progress_state.epoch_id = 3
+    trainer.dataloader.iteration = 77
+    trainer()
+    assert trainer.trainer_progress_state.epoch_id == 4
+    assert trainer.dataloader.iteration == 4
+
+
+def test_trainer_notifies_unmanaged_dataset_once_per_epoch():
+    """Unmanaged dataset epoch hooks retain Accelerate's original cadence."""
+
+    class CountingDataset(torch.utils.data.IterableDataset):
+        def __init__(self):
+            self.epochs = []
+
+        def set_epoch(self, epoch):
+            self.epochs.append(epoch)
+            torch.rand(1)
+
+        def __iter__(self):
+            yield torch.tensor([0.5, 0.5])
+
+    dataset = CountingDataset()
+    model = SimpleModel()
+    optimizer = SGD(params=model.parameters(), lr=0.01)
+    trainer = HookBasedTrainer(
+        model=model,
+        dataloader=DataLoader(dataset, batch_size=1),
+        optimizer=optimizer,
+        lr_scheduler=StepLR(optimizer, step_size=1, gamma=0.1),
+        accelerator=Accelerator(
+            step_scheduler_with_optimizer=False,
+            dataloader_config=DataLoaderConfiguration(dispatch_batches=False),
+        ),
+        batch_processor=DummyBatchProcessor(),
+        max_epoch=1,
+    )
+    trainer()
+    assert dataset.epochs == [0]
+
+
 def test_hook_based_trainer_supports_scheduler_coupled_accelerator():
     model = SimpleModel()
     dataloader = DataLoader(

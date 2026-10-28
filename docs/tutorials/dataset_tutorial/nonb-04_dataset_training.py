@@ -120,6 +120,53 @@ print(
 # TODO: combine with dataloader
 
 # %%
+# Framework sampling seeds
+# ------------------------
+# ``DictIterableDataset(..., seed=42)``
+# owns a private sampling stream. Its initialization does not draw from the
+# default Torch RNG. Model startup seeding, worker default RNG and user
+# transforms/collators remain separate responsibilities. Prefer ``seed`` for
+# framework-owned sampling and reproducible complete epochs. It is a base seed
+# for dataset sampling, not a model or worker initialization seed.
+#
+# An explicit ``generator`` remains available for callers controlling a
+# stateful sampling stream. Without ``seed``, that stream keeps advancing;
+# ``set_epoch`` records the epoch but does not reseed the Generator or promise
+# same-epoch replay. ``seed`` and ``generator`` cannot be combined.
+#
+# ``HookBasedTrainer`` and ``utils.accelerate.prepare_data_loader`` bind the
+# final prepared dataset's sampling scope automatically. With a combined raw
+# ``accelerator.prepare(loader, model, ...)``, bind after prepare, before
+# iterating:
+#
+# .. code-block:: python
+#
+#     from robo_orchard_lab.utils.accelerate import (
+#         bind_prepared_data_loader_sampling,
+#     )
+#     bind_prepared_data_loader_sampling(accelerator, loader)
+#
+# The binding takes global rank from the existing Accelerator in the parent
+# process before workers start; project builders only supply the training seed.
+#
+# Native shards use rank-specific streams; Accelerate's ``IterableDatasetShard`` fallback uses the same stream
+# on each rank before position-based assignment. Fallback requires matching
+# source/worker configuration and sample order across ranks. Dispatcher retains
+# its existing reading/distribution behavior; binding does not alter its dataset
+# or introduce a dispatcher-specific RNG guarantee.
+#
+# For managed native/fallback sampling, before a new full traversal call
+# ``prepared_loader.set_epoch(epoch)``; ``HookBasedTrainer`` does this
+# automatically. For an unprepared loader, use ``loader.dataset.set_epoch``.
+# Complete traversals replay from that epoch's start, including persistent
+# workers. This is not mid-epoch checkpoint recovery; offload reader rotation
+# never restarts the stream. Dispatcher and unmanaged epoch notifications
+# retain Accelerate's behavior.
+# Loader startup may still consume default RNG, and changing workers, batching
+# or offload settings does not promise the same sample sequence.
+#
+
+# %%
 # Bounded readers for dataset mixtures
 # ------------------------------------
 # ``DictIterableDataset`` can rotate unfinished sources after a target number

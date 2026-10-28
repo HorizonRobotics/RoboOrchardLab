@@ -254,3 +254,172 @@ class TestPrepareDataLoader:
         )
 
         assert dataset.n_shards == 5
+
+
+class _ManagedRngDataset(Dataset):
+    def __init__(self, data: list[int]):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+
+class _ManagedRngItem(DatasetItem[_ManagedRngDataset]):
+    class_type: ClassType[_ManagedRngDataset] = _ManagedRngDataset
+    data: list[int]
+
+    def get_dataset_row_num(self):
+        return len(self.data)
+
+    def _create_dataset(self):
+        return _ManagedRngDataset(self.data)
+
+
+@pytest.mark.parametrize("already_common", [False, True])
+def test_bind_fallback_preserves_caller_epoch_and_generator(already_common):
+    from accelerate.data_loader import DataLoaderShard, IterableDatasetShard
+
+    source = DictIterableDataset(
+        [_ManagedRngItem(data=list(range(24)))], shuffle=True, seed=42
+    )
+    source._sampling_rank = None if already_common else 0
+    expected = list(source)
+    wrapper = IterableDatasetShard(
+        source, batch_size=1, num_processes=2, process_index=0
+    )
+    prepared = DataLoaderShard(wrapper, batch_size=1)
+    accelerator = SimpleNamespace(process_index=0)
+    assert accelerate_utils.bind_prepared_data_loader_sampling(
+        accelerator, prepared
+    )
+    owned = prepared.dataset.dataset
+    assert owned is not source
+    assert owned._sampling_rank is None
+    prepared.set_epoch(3)
+    assert list(source) == expected
+    assert source._sampling_epoch.value == 0
+    assert owned._sampling_epoch.value == 3
+    rows = list(owned)
+    assert accelerate_utils.bind_prepared_data_loader_sampling(
+        accelerator, prepared
+    )
+    assert prepared.dataset.dataset is not owned
+    assert list(prepared.dataset.dataset) == rows
+    assert prepared.dataset.dataset._sampling_epoch.value == 3
+
+
+def test_dispatcher_binding_leaves_shared_source_untouched():
+    from accelerate import Accelerator
+    from accelerate.data_loader import DataLoaderDispatcher
+
+    source = DictIterableDataset(
+        [_ManagedRngItem(data=list(range(24)))], shuffle=True, seed=42
+    )
+    loader = DataLoader(source, batch_size=2)
+    accelerator = Accelerator(
+        dataloader_config=DataLoaderConfiguration(dispatch_batches=True),
+    )
+    prepared = accelerator.prepare_data_loader(loader)
+    assert isinstance(prepared, DataLoaderDispatcher)
+    assert prepared.dataset is source
+    expected = list(source)
+    state = source._generator.get_state().clone()
+    assert (
+        accelerate_utils.bind_prepared_data_loader_sampling(
+            accelerator, prepared
+        )
+        is False
+    )
+    assert prepared.dataset is source
+    assert source._sampling_seed == 42
+    assert source._generator.get_state().equal(state)
+    assert list(source) == expected
+
+
+def test_fallback_owner_can_be_safely_reused_in_native_loader():
+    from accelerate.data_loader import DataLoaderShard, IterableDatasetShard
+
+    from robo_orchard_lab.dataset.robot.dataset_ex import (
+        DataLoader as RODataLoader,
+    )
+
+    source = DictIterableDataset(
+        [_ManagedRngItem(data=list(range(24)))], shuffle=True, seed=42
+    )
+    fallback = DataLoaderShard(
+        IterableDatasetShard(
+            source, batch_size=1, num_processes=2, process_index=0
+        ),
+        batch_size=1,
+    )
+    accelerator = SimpleNamespace(process_index=0)
+    assert accelerate_utils.bind_prepared_data_loader_sampling(
+        accelerator, fallback
+    )
+    common_owner = fallback.dataset.dataset
+    assert common_owner._sampling_rank is None
+
+    loader = RODataLoader(common_owner, batch_size=1)
+    native = DataLoaderShard(loader.dataset, batch_size=1)
+    assert accelerate_utils.bind_prepared_data_loader_sampling(
+        accelerator, native
+    )
+    fresh = DictIterableDataset(
+        [_ManagedRngItem(data=list(range(24)))], shuffle=True, seed=42
+    )
+    assert list(native.dataset) == list(fresh)
+    assert common_owner._sampling_rank is None
+
+    shared_torch_loader = DataLoader(common_owner, batch_size=1)
+    shared_native = DataLoaderShard(shared_torch_loader.dataset, batch_size=1)
+    with pytest.raises(ValueError, match="without a new owner"):
+        accelerate_utils.bind_prepared_data_loader_sampling(
+            accelerator, shared_native
+        )
+    assert common_owner._sampling_rank is None
+
+
+def test_fallback_rebinds_a_preexisting_static_shard_across_ranks():
+    """Static dataset sharding cannot be mistaken for final native mode."""
+    from collections import Counter
+
+    from accelerate import Accelerator
+    from accelerate.data_loader import DataLoaderShard, IterableDatasetShard
+
+    Accelerator()
+    sources = [
+        DictIterableDataset(
+            [_ManagedRngItem(data=list(range(24)))],
+            shuffle=True,
+            seed=42,
+        ).shard(num_shards=2, index=0)
+        for rank in (0, 1)
+    ]
+    expected = list(sources[0])
+    prepared = [
+        DataLoaderShard(
+            IterableDatasetShard(
+                sources[rank],
+                batch_size=1,
+                num_processes=2,
+                process_index=rank,
+            ),
+            batch_size=1,
+        )
+        for rank in (0, 1)
+    ]
+    for rank, loader in enumerate(prepared):
+        assert accelerate_utils.bind_prepared_data_loader_sampling(
+            SimpleNamespace(process_index=rank), loader
+        )
+    rows = [
+        int(value)
+        for loader in prepared
+        for batch in loader
+        for value in batch
+    ]
+    assert Counter(rows) == Counter(expected)
+    assert all(source._sampling_rank == 0 for source in sources)

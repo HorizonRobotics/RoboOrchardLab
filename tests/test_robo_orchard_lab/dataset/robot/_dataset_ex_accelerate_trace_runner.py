@@ -102,6 +102,9 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="Directory where each rank writes its trace JSON.",
     )
+    parser.add_argument(
+        "--rng-path", choices=["native", "fallback", "dispatcher"]
+    )
     return parser.parse_args()
 
 
@@ -150,6 +153,94 @@ def _get_worker_context(num_workers: int):
     return None
 
 
+def _run_managed_rng(args, accelerator):
+    from robo_orchard_lab.dataset.robot._prefetch import (
+        _close_dataloader_owner_resources,
+    )
+    from robo_orchard_lab.utils.accelerate import (
+        bind_prepared_data_loader_sampling,
+        configure_data_loader_for_accelerate,
+    )
+
+    path = args.rng_path
+    if path == "fallback":
+        # Force the upstream low-shard branch, including loader-created clones.
+        # This process is dedicated to one path; production hints stay intact.
+        DictIterableDataset.n_shards = property(lambda self: 1)
+    dataset = DictIterableDataset(
+        [
+            ArrayDatasetItem(data=list(range(start, start + 32)))
+            for start in (0, 100, 200)
+        ],
+        shuffle=True,
+        seed=42,
+        shard_kwargs=ShardConfig(shard_strategy="pad_last"),
+        offload_num_batches=args.offload_num_batches,
+        offload_dir=str(args.output_dir / "offload"),
+    )
+    accelerator.dataloader_config.dispatch_batches = path == "dispatcher"
+    loader = DataLoader(
+        dataset,
+        batch_size=4,
+        num_workers=args.num_workers,
+        persistent_workers=args.num_workers > 0,
+        use_dataset_side_batching=args.use_dataset_side_batching == "1",
+        multiprocessing_context=_get_worker_context(args.num_workers),
+    )
+    if path != "dispatcher":
+        configure_data_loader_for_accelerate(accelerator, loader)
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+    prepared, _, _, _ = accelerator.prepare(
+        loader, model, optimizer, scheduler
+    )
+    source_seed = loader.dataset._sampling_seed
+    source_state = loader.dataset._generator.get_state().clone()
+    rng_state = torch.get_rng_state().clone()
+    bound = bind_prepared_data_loader_sampling(accelerator, prepared)
+    assert bound is (path != "dispatcher")
+    assert loader.dataset._sampling_seed == source_seed
+    assert torch.equal(loader.dataset._generator.get_state(), source_state)
+    assert torch.equal(torch.get_rng_state(), rng_state)
+    owner = (
+        prepared.dataset.dataset if path == "fallback" else prepared.dataset
+    )
+    if path == "fallback":
+        assert owner is not loader.dataset
+    epoch = owner._sampling_epoch.value
+    rank = owner._sampling_rank
+    bind_prepared_data_loader_sampling(accelerator, prepared)
+    new_owner = (
+        prepared.dataset.dataset if path == "fallback" else prepared.dataset
+    )
+    assert new_owner._sampling_epoch.value == epoch
+    assert new_owner._sampling_rank == rank
+    assert torch.equal(torch.get_rng_state(), rng_state)
+    traces = []
+    try:
+        for epoch in (0, 1, 0):
+            prepared.set_epoch(epoch)
+            traces.append(
+                [int(v) for batch in prepared for v in batch.reshape(-1)]
+            )
+    finally:
+        _close_dataloader_owner_resources(prepared)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / f"rank_{accelerator.process_index}.json").write_text(
+        json.dumps(
+            {
+                "rank": accelerator.process_index,
+                "prepared_type": type(prepared).__name__,
+                "dataset_type": type(prepared.dataset).__name__,
+                "epochs": traces,
+            }
+        )
+    )
+    accelerator.wait_for_everyone()
+    return 0
+
+
 def main() -> int:
     args = _parse_args()
     shard_strategy = (
@@ -165,6 +256,8 @@ def main() -> int:
             split_batches=False,
         ),
     )
+    if args.rng_path is not None:
+        return _run_managed_rng(args, accelerator)
     generator = torch.Generator()
     generator.manual_seed(123)
     dataset = DictIterableDataset(

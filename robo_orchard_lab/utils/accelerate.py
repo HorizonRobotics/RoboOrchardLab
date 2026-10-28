@@ -24,7 +24,11 @@ from accelerate.data_loader import (
 )
 from torch.utils.data import DataLoader
 
-__all__ = ["configure_data_loader_for_accelerate", "prepare_data_loader"]
+__all__ = [
+    "bind_prepared_data_loader_sampling",
+    "configure_data_loader_for_accelerate",
+    "prepare_data_loader",
+]
 
 _DISPATCHER_SLOW_PATH_WARNING = (
     "The prepared dataloader fell back to DataLoaderDispatcher. "
@@ -85,6 +89,50 @@ def _warn_if_prepare_falls_back_to_slow_path(
         warnings.warn(_ITERABLE_SHARD_SLOW_PATH_WARNING, UserWarning)
 
 
+def bind_prepared_data_loader_sampling(
+    accelerator: Accelerator, data_loader: DataLoader
+) -> bool:
+    """Bind managed sampling to the final prepared loader before iteration.
+
+    Native shards use global-rank-specific streams. ``IterableDatasetShard``
+    reads a common stream on every rank before assigning rows, so its private
+    sampling seed omits rank. Dispatcher and other datasets retain their own
+    behavior. Only explicitly seeded ``DictIterableDataset`` owners are bound;
+    RNG synchronization, worker startup and user-owned Generators retain their
+    existing behavior. Call after a combined ``accelerator.prepare`` and before
+    iteration. Repeated calls are safe.
+
+    Args:
+        accelerator: Existing runtime supplying the final global process rank.
+        data_loader: Final loader returned by Accelerate prepare.
+
+    Returns:
+        bool: Whether this loader uses managed native or fallback sampling.
+
+    Raises:
+        ValueError: If an owner already bound to a fallback is reused directly
+            for native sampling. A new RoboOrchard DataLoader clones it into
+            an independent native owner.
+    """
+    from robo_orchard_lab.dataset.robot.dataset_ex import DictIterableDataset
+
+    dataset = getattr(data_loader, "dataset", None)
+    if isinstance(data_loader, DataLoaderDispatcher):
+        return False
+    if isinstance(dataset, IterableDatasetShard):
+        owner = dataset.dataset
+        if not isinstance(owner, DictIterableDataset):
+            return False
+        owner = owner._bind_sampling(None)
+        if owner is None:
+            return False
+        dataset.dataset = owner
+        return True
+    if not isinstance(dataset, DictIterableDataset):
+        return False
+    return dataset._bind_sampling(accelerator.process_index) is not None
+
+
 def configure_data_loader_for_accelerate(
     accelerator: Accelerator,
     data_loader: DataLoader,
@@ -94,13 +142,15 @@ def configure_data_loader_for_accelerate(
     Recommended usage:
         When the dataloader should be prepared together with model,
         optimizer, and lr_scheduler, call this helper first, then call
-        `accelerator.prepare(...)` exactly once on all objects.
+        `accelerator.prepare(...)` exactly once on all objects. Bind the
+        prepared loader before iteration to finalize managed RNG ownership.
 
     Pattern:
         `configure_data_loader_for_accelerate(accelerator, dataloader)`
         `dataloader, model, optimizer, scheduler = accelerator.prepare(`
         `    dataloader, model, optimizer, scheduler`
         `)`
+        `bind_prepared_data_loader_sampling(accelerator, dataloader)`
 
     Returns:
         bool: Whether the prepared dataloader should be checked for
@@ -176,7 +226,8 @@ def prepare_data_loader(
 
         If the dataloader must be prepared together with model, optimizer,
         and lr_scheduler, call `configure_data_loader_for_accelerate(...)`
-        first, then call `accelerator.prepare(...)` once on all objects.
+        first, then call `accelerator.prepare(...)` once on all objects and
+        `bind_prepared_data_loader_sampling(...)` on the returned loader.
 
     Recommended usage:
         Use this helper only when the dataloader must be prepared on its own.
@@ -197,6 +248,7 @@ def prepare_data_loader(
         data_loader=data_loader,
     )
     ret = accelerator.prepare_data_loader(data_loader, **kwargs)
+    bind_prepared_data_loader_sampling(accelerator, ret)
 
     if should_check_slow_path:
         _warn_if_prepare_falls_back_to_slow_path(ret)

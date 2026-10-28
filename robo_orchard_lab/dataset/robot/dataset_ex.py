@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
+import copy
 import hashlib
 import inspect
 import json
@@ -30,6 +31,8 @@ from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
+from multiprocessing.context import get_spawning_popen
+from multiprocessing.sharedctypes import RawValue
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -276,6 +279,9 @@ class DataLoader(TorchDataLoader):
     When ``use_dataset_side_batching`` is True and the input dataset is a
     supported iterable dataset without ``batch_loader_kwargs``, this loader
     will internally enable aligned ``batch_loader_kwargs`` on a cloned dataset.
+    A seeded ``DictIterableDataset`` is also cloned when batching is disabled:
+    each loader owns its sampling epoch and does not mutate the input or a
+    sibling loader's sampling state.
 
     Args:
         dataset: The dataset to load.
@@ -435,10 +441,15 @@ class DataLoader(TorchDataLoader):
             isinstance(dataset, DictIterableDataset)
             and dataset.offload_num_batches is not None
         )
+        should_clone_for_sampling = (
+            isinstance(dataset, DictIterableDataset)
+            and dataset._sampling_seed is not None
+        )
         if not (
             uses_dataset_batch_loader
             or should_clone_for_shuffle
             or should_clone_for_offload
+            or should_clone_for_sampling
         ):
             return dataset, False, None
 
@@ -472,13 +483,20 @@ class DataLoader(TorchDataLoader):
                 datasets=dataset.logical_dataset_items,
                 shuffle=aligned_shuffle_config,
                 shard_kwargs=dataset.shard_kwargs,
-                generator=dataset._generator,
+                generator=(
+                    dataset._generator
+                    if dataset._sampling_seed is None
+                    else None
+                ),
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
                 max_dataset_concurrency=dataset._max_dataset_concurrency,
                 resample_ratios=dataset._logical_resample_ratios,
                 offload_num_batches=dataset.offload_num_batches,
                 offload_dir=dataset.offload_dir,
+                seed=dataset._sampling_seed,
             )
+            if cloned_dataset._sampling_seed is not None:
+                cloned_dataset.set_epoch(dataset._sampling_epoch.value)
             cloned_dataset._offload_batch_size = (
                 aligned_batch_loader_kwargs.batch_size
                 if aligned_batch_loader_kwargs is not None
@@ -1848,8 +1866,11 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             processors in `accelerate`. Defaults to None, which means the
             default sharding strategy will be used (contiguous shards).
         generator (torch.Generator | np.random.Generator | None, optional): An
-            optional generator to use for shuffling. If None, a new generator
-            will be created with a random seed. Defaults to None.
+            optional stateful sampling stream. Prefer ``seed`` for framework
+            ownership and epoch replay. An explicit generator keeps advancing
+            across iterations; ``set_epoch`` does not reseed it. If neither
+            input is supplied, a random seed initializes a private stream.
+            Cannot be combined with ``seed``. Defaults to None.
         batch_loader_kwargs (BatchLoaderConfig | dict | None, optional): An
             optional configuration for using a batch loader. If provided, the
             dataset will be wrapped with a DataLoader to return batches of
@@ -1875,6 +1896,12 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             system temporary directory. Base files survive epochs; private
             plans are removed after normal exhaustion and retained after an
             interrupted iteration. Inputs must stay immutable while cached.
+        seed (int | None, optional): Base seed for framework-owned dataset
+            sampling. Recommended for reproducible sampling across epochs.
+            With an explicit seed, each complete iteration replays its epoch
+            from the beginning; reader offload does not reset it. Worker
+            default RNG and user transforms remain caller-owned.
+            Defaults to None, preserving stateful Generator behavior.
 
     Offload supports both shuffle and batching modes. Enabling it changes
     mixture/reservoir delivery order; it does not provide training-checkpoint
@@ -1921,6 +1948,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         | None = None,
         offload_num_batches: int | None = None,
         offload_dir: str | None = None,
+        *,
+        seed: int | None = None,
     ):
         # try to make this instance compatible with HF Iterable at class-level
         # or instance-level if class-level MRO change fails
@@ -1947,7 +1976,30 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 for item in self.logical_dataset_items
             ]
 
-        if generator is None:
+        if seed is not None and (
+            isinstance(seed, bool)
+            or not isinstance(seed, int)
+            or not 0 <= seed < 2**64
+        ):
+            raise ValueError("seed must be an integer in [0, 2**64).")
+        if seed is not None and generator is not None:
+            raise ValueError("seed and generator cannot be combined.")
+        self._sampling_seed = seed
+        self._sampling_rank: int | None = 0
+        """Runtime global rank; None selects a common fallback stream.
+
+        The final parent-side Accelerate binding selects the rank before any
+        workers start. Unprepared local datasets use rank zero.
+        """
+        self._sampling_epoch = RawValue("q", 0) if seed is not None else None
+        """Owner's epoch notification shared with its worker copies.
+
+        Only complete mixture iterations read this cell. Ordinary pickle
+        creates an independent cell; actual worker spawn retains its sharing.
+        """
+        if seed is not None:
+            generator = self._make_sampling_generator(0)
+        elif generator is None:
             seed = int(torch.empty((), dtype=torch.int64).random_().item())
             generator = torch.Generator()
             generator.manual_seed(seed)
@@ -2030,9 +2082,11 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         self._total_indices_length: list[int] | None = None
 
     def __getstate__(self) -> dict[str, Any]:
-        """Serialize Torch RNG state without multiprocessing shared storage.
+        """Serialize sampling identity, retaining epoch sharing during spawn.
 
-        A ``torch.Generator`` stores its state in a tensor. Under a spawned
+        Managed generators restart from identity at each complete iteration,
+        so their current state is omitted. A legacy ``torch.Generator`` stores
+        its state in a tensor. Under a spawned
         DataLoader worker, Torch's default ``file_descriptor`` IPC strategy
         transports that tensor as shared storage, which is not reliable across
         every supported runtime. Plain bytes preserve the exact RNG sequence
@@ -2040,8 +2094,15 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         """
 
         state = self.__dict__.copy()
+        sampling_epoch = state.get("_sampling_epoch")
+        if sampling_epoch is not None and get_spawning_popen() is None:
+            # RawValue may only cross processes during spawn. Regular pickle
+            # and deepcopy instead receive an independent epoch notification.
+            state["_sampling_epoch"] = sampling_epoch.value
         generator = state.get("_generator")
-        if isinstance(generator, torch.Generator):
+        if state.get("_sampling_seed") is not None:
+            state["_generator"] = None
+        elif isinstance(generator, torch.Generator):
             state["_generator"] = None
             state["_serialized_torch_generator"] = (
                 str(generator.device),
@@ -2050,12 +2111,14 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore a Torch generator serialized by :meth:`__getstate__`."""
+        """Restore sampling identity or an explicit legacy Generator state."""
 
         serialized_generator = state.pop(
             "_serialized_torch_generator",
             None,
         )
+        if isinstance(state.get("_sampling_epoch"), int):
+            state["_sampling_epoch"] = RawValue("q", state["_sampling_epoch"])
         if serialized_generator is not None:
             device, generator_state = serialized_generator
             generator = torch.Generator(device=device)
@@ -2064,6 +2127,73 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             )
             state["_generator"] = generator
         self.__dict__.update(state)
+        if self._sampling_seed is not None:
+            self._epoch = self._sampling_epoch.value
+            self._generator = self._make_sampling_generator(self._epoch)
+
+    def _make_sampling_generator(self, epoch: int) -> torch.Generator:
+        """Derive a private sampling stream without drawing any default RNG.
+
+        Native shards include global rank; fallback streams deliberately omit
+        it because Accelerate assigns rows after reading the common stream.
+        Worker identity never participates in framework sampling.
+        """
+        if self._sampling_seed is None:
+            raise RuntimeError("Managed sampling requires an explicit seed.")
+        rank = (
+            str(self._sampling_rank) if self._sampling_rank is not None else ""
+        )
+        identity = (
+            f"robo-orchard-sampling-v1\0{self._sampling_seed}\0{epoch}\0{rank}"
+        ).encode("ascii")
+        seed = int.from_bytes(
+            hashlib.blake2b(identity, digest_size=8).digest(), "big"
+        ) & (2**63 - 1)
+        return torch.Generator().manual_seed(seed)
+
+    def _bind_sampling(self, rank: int | None) -> DictIterableDataset | None:
+        """Bind the final loader's stream before iteration or worker startup.
+
+        ``None`` selects the common stream required by Accelerate fallback.
+        That wrapper receives an independent owner, including its epoch cell.
+        Reusing that owner in place for native sampling would change an
+        existing loader's stream, so callers must first create a new loader
+        or shard. Unmanaged datasets retain their legacy RNG ownership.
+        """
+        if self._sampling_seed is None:
+            return None
+        if self._sampling_rank is None and rank is not None:
+            raise ValueError(
+                "A fallback-scoped dataset cannot be reused as a native "
+                "loader "
+                "without a new owner. Construct the loader with "
+                "robo_orchard_lab.dataset.robot.DataLoader."
+            )
+        owner = copy.copy(self) if rank is None else self
+        owner._sampling_rank = rank
+        return owner
+
+    def set_epoch(self, epoch: int) -> None:
+        """Choose the next complete epoch without resetting active readers.
+
+        Epoch replay applies only when constructed with ``seed``. With an
+        explicit Generator, this records the epoch without reseeding its
+        advancing stream; a repeated epoch does not guarantee sequence replay.
+
+        Call after closing the previous iterator and before starting the next.
+        Repeated notifications do not advance or reseed the active private RNG.
+        Persistent workers observe the shared value on their next iteration.
+        Seeded sampling restarts a whole epoch, not a mid-epoch cursor.
+        """
+        if (
+            isinstance(epoch, bool)
+            or not isinstance(epoch, int)
+            or not 0 <= epoch < 2**63
+        ):
+            raise ValueError("epoch must be an integer in [0, 2**63).")
+        self._epoch = epoch
+        if self._sampling_epoch is not None:
+            self._sampling_epoch.value = epoch
 
     @property
     def batch_loader_kwargs(self) -> BatchLoaderConfig | None:
@@ -2082,14 +2212,17 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         result = DictIterableDataset(
             datasets=sharded_items,
             shuffle=self._shuffle,
-            generator=self._generator,
+            generator=self._generator if self._sampling_seed is None else None,
             batch_loader_kwargs=self.batch_loader_kwargs,
             max_dataset_concurrency=self._max_dataset_concurrency,
             shard_kwargs=self.shard_kwargs,
             resample_ratios=self._logical_resample_ratios,
             offload_num_batches=self.offload_num_batches,
             offload_dir=self.offload_dir,
+            seed=self._sampling_seed,
         )
+        if result._sampling_seed is not None:
+            result.set_epoch(self._sampling_epoch.value)
         result._offload_batch_size = self._offload_batch_size
         return result
 
@@ -2372,6 +2505,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         Yields:
             Any: One sample or dataset-side batch from an active dataset item.
         """
+        if self._sampling_seed is not None:
+            self._epoch = self._sampling_epoch.value
+            self._generator = self._make_sampling_generator(self._epoch)
         cur_dataset_iters: list[tuple[int, Iterator[Any]]] = []
         dataset_indices = list(range(len(self.dataset_items)))
         _ = self.total_iterator_length

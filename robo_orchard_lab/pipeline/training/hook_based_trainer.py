@@ -61,6 +61,7 @@ from robo_orchard_lab.pipeline.training._progress import (
 from robo_orchard_lab.processing.step_processor import BatchStepProcessorMixin
 from robo_orchard_lab.utils.accelerate import (
     _warn_if_prepare_falls_back_to_slow_path,
+    bind_prepared_data_loader_sampling,
     configure_data_loader_for_accelerate,
 )
 from robo_orchard_lab.utils.huggingface import (
@@ -446,6 +447,9 @@ class HookBasedTrainer:
                 lr_scheduler,
             )
         )
+        self._managed_sampling = bind_prepared_data_loader_sampling(
+            accelerator, self.dataloader
+        )
         if should_check_slow_path:
             _warn_if_prepare_falls_back_to_slow_path(self.dataloader)
 
@@ -692,6 +696,10 @@ class HookBasedTrainer:
         Returns:
             bool: Whether the training loop should end after this epoch.
         """
+        if self._managed_sampling:
+            # Align the final wrapper's iteration too: DataLoaderShard applies
+            # that value to its dataset immediately before worker iteration.
+            self.dataloader.set_epoch(self.trainer_progress_state.epoch_id)
         dataloader_iter = iter(self.dataloader)
         primary_exc: BaseException | None = None
         end_loop_flag = False
