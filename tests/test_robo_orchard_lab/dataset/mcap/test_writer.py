@@ -19,7 +19,9 @@ import os
 import random
 import string
 
+import datasets as hg_datasets
 import pytest
+from mcap.reader import make_reader
 
 from robo_orchard_lab.dataset.datatypes import BatchCameraDataEncoded
 from robo_orchard_lab.dataset.experimental.mcap.messages import StampedMessage
@@ -32,7 +34,19 @@ from robo_orchard_lab.dataset.experimental.mcap.writer import (
     Dict2Mcap,
 )
 from robo_orchard_lab.dataset.robot.dataset import RODataset
-from robo_orchard_lab.dataset.robot.db_orm import Episode
+from robo_orchard_lab.dataset.robot.db_orm import Episode, Instruction
+from robo_orchard_lab.dataset.robot.metadata_schema import (
+    ROInstructionContent,
+    parse_registered_metadata_schema,
+)
+from robo_orchard_lab.dataset.robot.packaging import (
+    DataFrame,
+    DatasetPackaging,
+    EpisodeData,
+    EpisodeMeta,
+    EpisodePackaging,
+    InstructionData,
+)
 
 
 @pytest.fixture(scope="module")
@@ -162,3 +176,112 @@ class TestDict2Mcap:
             data=data_dict,
             mcap=target_path,
         )
+
+
+def test_packaged_interval_instruction_actual_mcap_round_trip(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+    origin = 2**53 + 101
+    content = ROInstructionContent(
+        subtask_type="time",
+        descriptions=[" z ", "a"],
+        subtasks=[
+            {
+                "timestamp_ns_begin": origin,
+                "timestamp_ns_end": origin + 20,
+                "descriptions": ["goal"],
+            },
+        ],
+    ).to_json_dict()
+    raw = {
+        "schema_id": "robo_orchard.instruction_content",
+        "schema_version": "1.0",
+        "descriptions": [" Z ", "A", " Z "],
+        "subtasks": [
+            {
+                "frame_index_begin": 8,
+                "frame_index_end": 10,
+                "descriptions": [],
+            },
+            {
+                "frame_index_begin": 1,
+                "frame_index_end": 3,
+                "descriptions": [" b ", "a"],
+            },
+        ],
+    }
+
+    class TinyEpisode(EpisodePackaging):
+        def __init__(self, payload, name, record_times):
+            self.payload, self.name, self.record_times = (
+                payload,
+                name,
+                record_times,
+            )
+
+        def generate_episode_meta(self):
+            return EpisodeMeta(episode=EpisodeData())
+
+        def generate_frames(self):
+            for t in self.record_times:
+                yield DataFrame(
+                    features={"value": 1},
+                    instruction=InstructionData(self.name, self.payload),
+                    timestamp_ns_min=t,
+                    timestamp_ns_max=t,
+                )
+
+    path = tmp_path / "dataset"
+    DatasetPackaging(
+        hg_datasets.Features({"value": hg_datasets.Value("int64")}),
+        database_driver="sqlite",
+    ).packaging(
+        [
+            TinyEpisode(content, "new", [origin + 3, origin + 9]),
+            TinyEpisode(raw, "legacy", [origin + 1]),
+        ],
+        str(path),
+        writer_batch_size=1,
+    )
+    # Reopen the public SQLite-backed dataset before parsing/exporting.
+    with RODataset(str(path)) as dataset:
+        stored = dataset.get_meta(
+            Instruction, dataset.index_dataset[0]["instruction_index"]
+        )
+        assert (
+            parse_registered_metadata_schema(
+                stored.json_content
+            ).to_json_dict()
+            == content
+        )
+        for episode, expected, times in [
+            (0, content, [origin + 3, origin + 9]),
+            (1, raw, [origin + 1]),
+        ]:
+            target = tmp_path / f"episode-{episode}.mcap"
+            Dataset2Mcap(dataset).save_episode(
+                str(target), episode, encoder_cfg={}
+            )
+            with target.open("rb") as stream:
+                messages = list(
+                    make_reader(stream).iter_messages(
+                        topics=["/action/instruction"]
+                    )
+                )
+            assert [message.log_time for _, _, message in messages] == times
+            assert [
+                message.publish_time for _, _, message in messages
+            ] == times
+            for _, channel, message in messages:
+                assert channel.message_encoding == "json"
+                payload = json.loads(message.data)
+                assert payload["json_content"] == expected
+                if episode == 0:
+                    interval = payload["json_content"]["subtasks"][0]
+                    assert type(interval["timestamp_ns_begin"]) is int
+                    assert interval["timestamp_ns_begin"] == origin
+                    assert interval["timestamp_ns_end"] == origin + 20
+                    assert message.log_time != origin
+                else:
+                    assert payload["md5"] == "e2da3b864f36ff1031639a75c23fa539"

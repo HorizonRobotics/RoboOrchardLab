@@ -23,9 +23,19 @@ from pathlib import Path
 
 import datasets as hg_datasets
 import pytest
+from sqlalchemy import update
 
 from robo_orchard_lab.dataset.robot.dataset import RODataset
+from robo_orchard_lab.dataset.robot.dataset_db_engine import (
+    create_engine,
+    get_local_db_url,
+)
 from robo_orchard_lab.dataset.robot.db_orm import Episode, Instruction, Task
+from robo_orchard_lab.dataset.robot.metadata_schema import (
+    MetadataSchemaError,
+    ROInstructionContent,
+    parse_registered_metadata_schema,
+)
 from robo_orchard_lab.dataset.robot.packaging import (
     DataFrame,
     DatasetPackaging,
@@ -424,6 +434,8 @@ def test_repack_runner_uses_unified_internal_names() -> None:
         "EpisodePackagingTransform",
         "EpisodePackagingView",
         "IdentityEpisodePackagingTransform",
+        "InstructionTimestampError",
+        "validate_instruction_episode_timestamps",
     ]
     assert (
         importlib.util.find_spec(
@@ -2059,3 +2071,184 @@ def test_staged_repack_restores_target_after_backup_identity_read_error(
 
     assert (target_path / "old").read_text(encoding="utf-8") == "old"
     assert not list(tmp_path.glob(".target.backup-*"))
+
+
+def test_historical_point_reads_raw_but_repack_rejects_known_new_write(
+    tmp_path,
+):
+    source_path = tmp_path / "point-source"
+    DatasetPackaging(
+        _SimpleRepackEpisode.features, database_driver="sqlite"
+    ).packaging([_SimpleRepackEpisode(0)], str(source_path))
+    raw = {
+        "schema_id": "robo_orchard.instruction_content",
+        "schema_version": "1.1",
+        "subtasks": [
+            {"timestamp_ns": 2**53 + 9, "descriptions": ["old point"]}
+        ],
+    }
+    item = Instruction(index=7, name="point", json_content=raw)
+    digest = item.calculate_md5()
+    with RODataset(str(source_path)) as source:
+        rows = source.frame_dataset.map(
+            lambda row: {
+                "instruction_index": 7,
+                "timestamp_min": 10,
+                "timestamp_max": 10,
+            }
+        )
+    engine = create_engine(
+        get_local_db_url(
+            db_path=str(source_path / "meta_db.sqlite"), drivername="sqlite"
+        )
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            Instruction.__table__.insert().values(
+                index=7,
+                name="point",
+                json_content=raw,
+                md5=digest,
+            )
+        )
+    target = tmp_path / "point-repacked"
+    with RODataset.from_dataset(rows, engine) as source:
+        assert source.get_meta(Instruction, 7).json_content == raw
+        assert source.get_meta(Instruction, 7).md5 == digest
+        with pytest.raises(MetadataSchemaError):
+            repack_dataset(source, str(target))
+        assert source.get_meta(Instruction, 7).json_content == raw
+        assert source.get_meta(Instruction, 7).md5 == digest
+    assert not target.exists()
+
+
+def test_time_intervals_survive_selection_and_sparse_episode_remapping(
+    tmp_path,
+):
+    origin = 2**53 + 101
+    content = ROInstructionContent(
+        subtask_type="time",
+        subtasks=[
+            {
+                "timestamp_ns_begin": origin,
+                "timestamp_ns_end": origin + 5,
+                "descriptions": ["first"],
+            },
+            {
+                "timestamp_ns_begin": origin + 6,
+                "timestamp_ns_end": origin + 7,
+                "descriptions": ["unobserved"],
+            },
+            {
+                "timestamp_ns_begin": origin + 8,
+                "timestamp_ns_end": origin + 12,
+                "descriptions": ["later"],
+            },
+        ],
+    ).to_json_dict()
+    raw = {
+        "schema_id": "robo_orchard.instruction_content",
+        "schema_version": "1.0",
+        "descriptions": [" Z ", "A", " Z "],
+        "subtasks": [
+            {
+                "frame_index_begin": 8,
+                "frame_index_end": 10,
+                "descriptions": [],
+            },
+            {
+                "frame_index_begin": 1,
+                "frame_index_end": 3,
+                "descriptions": [" b ", "a"],
+            },
+        ],
+    }
+    features = hg_datasets.Features({"value": hg_datasets.Value("int64")})
+    episodes = [
+        _TestEpisodePackaging(
+            EpisodeMeta(episode=EpisodeData()),
+            [
+                DataFrame(
+                    features={"value": i},
+                    instruction=InstructionData("legacy", raw),
+                )
+                for i in range(2)
+            ],
+        ),
+        _TestEpisodePackaging(
+            EpisodeMeta(episode=EpisodeData()),
+            [
+                DataFrame(
+                    features={"value": i},
+                    instruction=InstructionData("new", content),
+                    timestamp_ns_min=origin + offset,
+                    timestamp_ns_max=origin + offset,
+                )
+                for i, offset in enumerate([1, 4, 10, 15])
+            ],
+        ),
+    ]
+    source_path = tmp_path / "interval_source"
+    DatasetPackaging(features, database_driver="sqlite").packaging(
+        episodes, str(source_path), writer_batch_size=1
+    )
+    # Use actual sparse IDs, independently from episode row positions.
+    with RODataset(str(source_path)) as original:
+        rows = original.frame_dataset.map(
+            lambda row: {
+                "episode_index": 17 if row["episode_index"] == 0 else 33,
+                "instruction_index": 7 if row["instruction_index"] == 0 else 9,
+            }
+        )
+    engine = create_engine(
+        get_local_db_url(
+            db_path=str(source_path / "meta_db.sqlite"), drivername="sqlite"
+        )
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            update(Episode).where(Episode.index == 0).values(index=17)
+        )
+        connection.execute(
+            update(Episode).where(Episode.index == 1).values(index=33)
+        )
+        connection.execute(
+            update(Instruction).where(Instruction.index == 0).values(index=7)
+        )
+        connection.execute(
+            update(Instruction).where(Instruction.index == 1).values(index=9)
+        )
+    target = tmp_path / "selected"
+    with RODataset.from_dataset(rows, engine) as source:
+        assert (
+            source.get_meta(Instruction, 7).md5.hex()
+            == "e2da3b864f36ff1031639a75c23fa539"
+        )
+        repack_dataset(
+            source, str(target), frame_indices=[0, 2, 4], writer_batch_size=1
+        )
+    with RODataset(str(target)) as result:
+        assert list(result.index_dataset["episode_index"]) == [0, 1, 1]
+        assert list(result.index_dataset["frame_index"]) == [0, 0, 1]
+        legacy = result.get_meta(
+            Instruction, result.index_dataset[0]["instruction_index"]
+        )
+        assert legacy.json_content == raw
+        assert legacy.md5.hex() == "e2da3b864f36ff1031639a75c23fa539"
+        modern = result.get_meta(
+            Instruction, result.index_dataset[1]["instruction_index"]
+        )
+        assert modern.json_content == content
+        parsed = parse_registered_metadata_schema(modern.json_content)
+        assert (
+            len(parsed.subtasks) == 3
+        )  # No retained sample for the middle interval.
+        for row, expected in zip(
+            result.index_dataset.select([1, 2]),
+            ["first", "later"],
+            strict=True,
+        ):
+            assert parsed.get_subtasks(timestamp_ns=row["timestamp_min"])[
+                0
+            ].descriptions == [expected]
+            assert row["timestamp_min"] in [origin + 1, origin + 10]

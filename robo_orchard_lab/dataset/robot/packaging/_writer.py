@@ -51,6 +51,8 @@ from robo_orchard_lab.dataset.robot.packaging._episode import (
     DataFrame,
     EpisodePackaging,
     EpisodePackagingTransform,
+    InstructionTimestampError,
+    validate_instruction_episode_timestamps,
 )
 from robo_orchard_lab.dataset.robot.packaging._metadata import (
     EpisodeMetaORM,
@@ -116,11 +118,10 @@ class DatasetPackaging:
             are injected.
         database_driver (str): The database driver to use for the meta
             database. Default is "duckdb".
-        check_timestamp (bool, optional): Whether to check the
-            timestamp of the frames. Timestamps are required for time-based
-            queries and operations. If True, it will raise an error
-            if the timestamp is not set or if timestamp_min is greater
-            than timestamp_max. Default is False.
+        check_timestamp (bool, optional): Also require timestamps for legacy
+            episodes. Any episode associated with instruction 1.1 always
+            requires valid integer-ns min/max on every row, including its
+            prefix, regardless of this flag or ``fail_fast``. Default False.
         transforms (Sequence[EpisodePackagingTransform] | None, optional):
             Resource-free transforms applied to each episode payload before
             frame writing. Transforms run in the provided order, may update
@@ -150,7 +151,7 @@ class DatasetPackaging:
         )
         self._database_driver = database_driver
         self._index_state: DatasetIndexState = DatasetIndexState()
-        self._instruction_cache: InstructionCache = InstructionCache()
+        self._instruction_cache: dict[bytes, Instruction] = {}
         self._check_timestamp = check_timestamp
 
     @property
@@ -218,7 +219,8 @@ class DatasetPackaging:
         self, instruction_data: InstructionData, engine: Engine
     ) -> Instruction:
         """Add an instruction to the database and update the index state."""
-        cached_instruction = self._instruction_cache.get(instruction_data)
+        raw_key = pickle.dumps(instruction_data)
+        cached_instruction = self._instruction_cache.get(raw_key)
         if cached_instruction is not None:
             # If the instruction is already cached, return it
             return cached_instruction
@@ -231,7 +233,7 @@ class DatasetPackaging:
                 session.add(instruction)
                 session.commit()
                 make_transient(instruction)
-                self._instruction_cache.add(instruction)
+            self._instruction_cache[raw_key] = instruction
             return instruction
 
     def _make_packaging_generator(
@@ -251,9 +253,11 @@ class DatasetPackaging:
         engine = create_engine(url=url, echo=False)
         create_tables(engine=engine)
 
-        def frame_generator(episode: EpisodePackaging):
+        def frame_generator(episode: EpisodePackaging, episode_index: int):
             try:
-                for frame in episode.generate_frames():
+                for frame in validate_instruction_episode_timestamps(
+                    episode.generate_frames(), episode_index=episode_index
+                ):
                     if self._check_timestamp:
                         if (
                             frame.timestamp_ns_min is None
@@ -268,8 +272,9 @@ class DatasetPackaging:
                                 "timestamp_ns_min cannot be greater than "
                                 "timestamp_ns_max."
                             )
-
                     yield frame
+            except InstructionTimestampError:
+                raise
             except Exception as e:
                 if fail_fast:
                     raise
@@ -328,7 +333,9 @@ class DatasetPackaging:
                 )
                 # clear _instruction_cache for each episode
                 self._instruction_cache.clear()
-                for frame in frame_generator(episode):
+                for frame in frame_generator(
+                    episode, episode_index=episode_meta_orm.episode.index
+                ):
                     instruction_orm = (
                         self._add_instruction(
                             frame.instruction,
@@ -608,9 +615,12 @@ class DatasetPackaging:
                 )
                 packaging_succeeded = True
             except Exception as e:
-                if fail_fast and isinstance(e, DatasetGenerationError):
+                if isinstance(e, DatasetGenerationError):
                     cause = e.__cause__
-                    if cause is not None:
+                    if cause is not None and (
+                        fail_fast
+                        or isinstance(cause, InstructionTimestampError)
+                    ):
                         raise cause
                 raise
             finally:
@@ -639,33 +649,6 @@ class DatasetPackaging:
                 )
             else:
                 raise
-
-
-class InstructionCache:
-    def __init__(self):
-        self._cache: dict[bytes, Instruction] = {}
-
-    def _get_key(self, instruction: InstructionData) -> bytes:
-        """Generate a unique key for the instruction data."""
-        return pickle.dumps(instruction)
-
-    def get(self, instruction_data: InstructionData) -> Instruction | None:
-        """Get an instruction from the cache using its packing data."""
-        return self._cache.get(self._get_key(instruction_data), None)
-
-    def add(self, instruction: Instruction):
-        """Add an instruction to the cache."""
-        self._cache[
-            self._get_key(
-                InstructionData(
-                    name=instruction.name,
-                    json_content=instruction.json_content,
-                )
-            )
-        ] = instruction
-
-    def clear(self):
-        self._cache.clear()
 
 
 @dataclass

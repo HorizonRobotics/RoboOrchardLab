@@ -19,7 +19,16 @@
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generator, Iterable, Protocol, Sequence
+from numbers import Integral
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generator,
+    Iterable,
+    Iterator,
+    Protocol,
+    Sequence,
+)
 
 import datasets as hg_datasets
 from sqlalchemy.orm import Session
@@ -47,6 +56,8 @@ __all__ = [
     "EpisodePackagingTransform",
     "EpisodePackagingView",
     "IdentityEpisodePackagingTransform",
+    "InstructionTimestampError",
+    "validate_instruction_episode_timestamps",
 ]
 
 
@@ -119,9 +130,15 @@ class DataFrame:
     features: dict[str, Any]
     instruction: InstructionData | None = None
     timestamp_ns_min: int | None = None
-    """The minimum timestamp of the frame in nanoseconds."""
+    """Minimum record time in integer ns, preserving the recorded origin.
+
+    New writes require both bounds on every frame of an episode associated with
+    any canonical instruction 1.1, including frames before that instruction.
+    Bool and nonintegral values are invalid. Pure legacy episodes may omit
+    bounds unless the writer's optional timestamp check is enabled.
+    """
     timestamp_ns_max: int | None = None
-    """The maximum timestamp of the frame in nanoseconds."""
+    """Maximum record time in integer ns, >= min; a point min=max is valid."""
 
 
 class EpisodePackaging(metaclass=ABCMeta):
@@ -423,3 +440,77 @@ def _validate_target_link_unchanged(
         "EpisodePackagingTransform must not change target episode linkage "
         "fields EpisodeData.index or EpisodeData.prev_episode_index."
     )
+
+
+class InstructionTimestampError(ValueError):
+    """Mandatory episode timestamp failure, including in best-effort mode."""
+
+
+def validate_instruction_episode_timestamps(
+    frames: Iterable[DataFrame], *, episode_index: int | None = None
+) -> Iterator[DataFrame]:
+    """Validate new-write raw timestamps for one real episode while streaming.
+
+    Any instruction with canonical 1.1 headers activates the timestamp rule
+    for every row, including an invalid earlier prefix. Keep only activation
+    and the first bad row; do not parse instruction schemas or buffer frames.
+    Call before Arrow coercion. Schema/identity owners still validate content.
+
+    Args:
+        frames: One episode's raw frames, after source transforms.
+        episode_index: Optional episode/source identity for error context.
+
+    Yields:
+        The original frames, with valid Integral timestamps losslessly lowered
+        to Python int. Pure legacy episodes may retain missing/invalid times.
+
+    Raises:
+        InstructionTimestampError: If any associated 1.1 header activates an
+            episode containing missing/invalid integer-ns bounds or min > max.
+            This mandatory error must escape best-effort source handling.
+    """
+    required = False
+    first_invalid: tuple[int, str] | None = None
+    for offset, frame in enumerate(frames):
+        error = _timestamp_range_error(
+            frame.timestamp_ns_min, frame.timestamp_ns_max
+        )
+        if first_invalid is None and error:
+            first_invalid = offset, error
+        content = (
+            frame.instruction.json_content
+            if frame.instruction is not None
+            else None
+        )
+        required = required or (
+            isinstance(content, dict)
+            and content.get("schema_id") == "robo_orchard.instruction_content"
+            and content.get("schema_version") == "1.1"
+        )
+        if required and first_invalid:
+            bad_offset, reason = first_invalid
+            raise InstructionTimestampError(
+                f"Episode {episode_index} frame {bad_offset}: instruction 1.1 "
+                f"requires valid timestamps on every episode row: {reason}."
+            )
+        if error is None:
+            frame.timestamp_ns_min = int(frame.timestamp_ns_min)
+            frame.timestamp_ns_max = int(frame.timestamp_ns_max)
+        yield frame
+
+
+def _timestamp_range_error(minimum: object, maximum: object) -> str | None:
+    """Return the first invalid public int64-nanosecond envelope field."""
+    for field, value in (
+        ("timestamp_min", minimum),
+        ("timestamp_max", maximum),
+    ):
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            return (
+                f"{field} must be an integer nanosecond value, got {value!r}"
+            )
+        if not -(2**63) <= value < 2**63:
+            return f"{field} is outside the signed int64 range: {value!r}"
+    if minimum > maximum:
+        return "timestamp_min must be <= timestamp_max"
+    return None

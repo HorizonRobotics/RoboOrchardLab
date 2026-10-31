@@ -30,6 +30,8 @@ from robo_orchard_lab.dataset.robot.packaging._episode import (
     EpisodePackagingTransform,
     EpisodePackagingView,
     IdentityEpisodePackagingTransform,
+    InstructionTimestampError,
+    validate_instruction_episode_timestamps,
 )
 from robo_orchard_lab.dataset.robot.packaging._metadata import (
     EpisodeData,
@@ -44,7 +46,6 @@ from robo_orchard_lab.dataset.robot.packaging._staging import (
 from robo_orchard_lab.dataset.robot.packaging._writer import (
     DatasetIndexState,
     DatasetPackaging,
-    InstructionCache,
     dataset_format_version,
 )
 
@@ -60,4 +61,6 @@ __all__ = [
     "normalize_local_dataset_path",
     "EpisodePackagingTransform",
     "StagedDatasetWriteSession",
+    "InstructionTimestampError",
+    "validate_instruction_episode_timestamps",
 ]

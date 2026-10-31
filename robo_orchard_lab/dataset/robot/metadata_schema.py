@@ -22,6 +22,7 @@ translate old shapes into these models at the dataset layer.
 """
 
 from __future__ import annotations
+import json
 import math
 from typing import (
     Any,
@@ -42,6 +43,7 @@ from pydantic import (
     FiniteFloat,
     ValidationError,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic.types import JsonValue as _PydanticJsonValue
@@ -59,6 +61,7 @@ __all__ = [
     "ROMetadataSchema",
     "ROInstructionContent",
     "InstructionSubtask",
+    "InstructionTimeSubtask",
     "ROEpisodeInfo",
     "EpisodeTimingInfo",
     "EpisodeMediaInfo",
@@ -283,8 +286,8 @@ class InstructionSubtask(_ROBaseModel):
     """A semantic subtask span inside an instruction episode.
 
     Spans use half-open frame indices ``[frame_index_begin, frame_index_end)``.
-    Individual spans only validate their own bounds; overlap checks happen in
-    :class:`ROInstructionContent` so sparse spans with holes remain valid.
+    Individual spans validate their own bounds. Instruction version 1.0
+    rejects overlaps; version 1.1 permits every overlapping target.
     """
 
     descriptions: list[str] = Field(default_factory=list)
@@ -310,13 +313,57 @@ class InstructionSubtask(_ROBaseModel):
         return self
 
 
+class InstructionTimeSubtask(_ROBaseModel):
+    """A half-open target interval on the data record's time axis.
+
+    Bounds are strict integer nanoseconds, preserving the recorded origin.
+    Converters own clock alignment; no Unix epoch or episode-relative origin
+    is implied. Every subtask needs at least one nonblank description.
+    """
+
+    descriptions: list[str]
+    """Equivalent target descriptions, normalized as a sorted set."""
+    timestamp_ns_begin: int
+    """Inclusive record-time bound in integer nanoseconds."""
+    timestamp_ns_end: int
+    """Exclusive record-time bound in integer nanoseconds."""
+
+    @field_validator("descriptions", mode="before")
+    @classmethod
+    def _normalize_descriptions(cls, value: Any) -> Any:
+        value = _normalize_descriptions(value)
+        if isinstance(value, list) and all(
+            isinstance(item, str) for item in value
+        ):
+            return sorted(value)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_interval(self) -> "InstructionTimeSubtask":
+        if not self.descriptions:
+            raise ValueError("subtask descriptions must not be empty.")
+        if self.timestamp_ns_begin >= self.timestamp_ns_end:
+            raise ValueError(
+                "timestamp_ns_end must be greater than timestamp_ns_begin."
+            )
+        return self
+
+
 class ROInstructionContent(ROMetadataSchema):
     """Canonical metadata stored in ``Instruction.json_content``.
 
-    ``descriptions`` contains equivalent natural-language instructions; order
-    is not a training priority contract. Empty descriptions are allowed so
-    downstream datasets can decide whether instruction text is required.
-    Optional subtasks may annotate sparse, non-overlapping frame spans.
+    New content defaults to 1.1: descriptions are sorted equivalent-text sets,
+    and nonempty subtasks require an explicit homogeneous frame/time mode.
+    Intervals are half-open, may overlap or have gaps, and are stably sorted
+    by begin/end with exact full-record duplicates removed. Same-boundary
+    different targets retain input order. :meth:`get_subtasks` returns all
+    hits in that order. Empty subtask lists and their mode are omitted.
+
+    Version 1.0 retains its frame-only, non-overlapping validation and legacy
+    serialization. Parsing old content does not replace its raw storage
+    identity. New packaging of an episode associated with any 1.1 instruction
+    requires valid public row timestamps throughout that episode. Generic
+    readers preserve arbitrary historical JSON without this write-time check.
     """
 
     schema_id: Literal["robo_orchard.instruction_content"] = (
@@ -324,14 +371,30 @@ class ROInstructionContent(ROMetadataSchema):
     )
     """Schema identifier for canonical instruction metadata."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     """Schema version for canonical instruction metadata."""
 
     descriptions: list[str] = Field(default_factory=list)
     """Equivalent natural-language descriptions for the instruction."""
 
-    subtasks: list[InstructionSubtask] | None = None
-    """Optional sparse, non-overlapping semantic subtask spans."""
+    subtasks: (
+        list[InstructionSubtask] | list[InstructionTimeSubtask] | None
+    ) = None
+    """Optional homogeneous intervals; 1.1 subtasks need nonempty text."""
+
+    subtask_type: Literal["frame", "time"] | None = None
+    """Required for nonempty 1.1 subtasks; omitted when there are none."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_legacy_shape(cls, value: Any) -> Any:
+        if (
+            isinstance(value, Mapping)
+            and value.get("schema_version") == "1.0"
+            and "subtask_type" in value
+        ):
+            raise ValueError("schema_version 1.0 does not allow subtask_type.")
+        return value
 
     @field_validator("descriptions", mode="before")
     @classmethod
@@ -340,8 +403,60 @@ class ROInstructionContent(ROMetadataSchema):
 
     @model_validator(mode="after")
     def _normalize_subtasks(self) -> "ROInstructionContent":
+        if self.schema_version == "1.1":
+            self.descriptions = sorted(self.descriptions)
+            if not self.subtasks:
+                self.subtasks = None
+                self.subtask_type = None
+                return self
+            model_type = {
+                "frame": InstructionSubtask,
+                "time": InstructionTimeSubtask,
+            }.get(self.subtask_type)
+            if model_type is None:
+                raise ValueError("nonempty subtasks require subtask_type.")
+            normalized = []
+            for item in self.subtasks:
+                if not isinstance(item, model_type):
+                    raise ValueError("subtasks must match subtask_type.")
+                # Rebuild before normalization: nested models may be owned by
+                # the caller, and the frame model also serves legacy 1.0.
+                item = model_type.model_validate(item.model_dump())
+                item.descriptions = sorted(item.descriptions)
+                if not item.descriptions:
+                    raise ValueError("subtask descriptions must not be empty.")
+                normalized.append(item)
+            if self.subtask_type == "frame":
+                normalized.sort(
+                    key=lambda item: (
+                        item.frame_index_begin,
+                        item.frame_index_end,
+                    )
+                )
+            else:
+                normalized.sort(
+                    key=lambda item: (
+                        item.timestamp_ns_begin,
+                        item.timestamp_ns_end,
+                    )
+                )
+            seen = set()
+            self.subtasks = []
+            for item in normalized:
+                key = json.dumps(
+                    item.model_dump(mode="json", exclude_none=True),
+                    sort_keys=True,
+                )
+                if key not in seen:
+                    self.subtasks.append(item)
+                    seen.add(key)
+            return self
         if self.subtasks is None:
             return self
+        if any(
+            not isinstance(item, InstructionSubtask) for item in self.subtasks
+        ):
+            raise ValueError("schema_version 1.0 requires frame subtasks.")
         self.subtasks = sorted(
             self.subtasks,
             key=lambda item: (item.frame_index_begin, item.frame_index_end),
@@ -355,6 +470,64 @@ class ROInstructionContent(ROMetadataSchema):
                 raise ValueError("subtasks must not overlap.")
             previous = current
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_content(self, handler: Any) -> dict[str, Any]:
+        content = handler(self)
+        if self.schema_version == "1.0" or not self.subtasks:
+            content.pop("subtask_type", None)
+        if self.schema_version == "1.1" and not self.subtasks:
+            content.pop("subtasks", None)
+        return content
+
+    def get_subtasks(
+        self,
+        *,
+        frame_index: int | None = None,
+        timestamp_ns: int | None = None,
+    ) -> list[InstructionSubtask | InstructionTimeSubtask]:
+        """Return every interval containing exactly one supplied coordinate.
+
+        Args:
+            frame_index: Nonnegative integer frame coordinate for frame mode.
+            timestamp_ns: Integer nanoseconds on the recorded time axis for
+                time mode. No row-envelope timestamp is selected implicitly.
+
+        Returns:
+            All half-open hits in canonical interval order; an empty list for
+            holes or content without subtasks.
+
+        Raises:
+            ValueError: If neither/both coordinates, an invalid coordinate,
+                or the wrong mode is supplied.
+        """
+        if (frame_index is None) == (timestamp_ns is None):
+            raise ValueError(
+                "provide exactly one frame_index or timestamp_ns."
+            )
+        coordinate = frame_index if frame_index is not None else timestamp_ns
+        if type(coordinate) is not int or (
+            frame_index is not None and frame_index < 0
+        ):
+            raise ValueError(
+                "coordinate must be an integer; frame_index >= 0."
+            )
+        if not self.subtasks:
+            return []
+        mode = "frame" if self.schema_version == "1.0" else self.subtask_type
+        if (mode == "frame") != (frame_index is not None):
+            raise ValueError("coordinate does not match subtask_type.")
+        if mode == "frame":
+            return [
+                item
+                for item in self.subtasks
+                if item.frame_index_begin <= coordinate < item.frame_index_end
+            ]
+        return [
+            item
+            for item in self.subtasks
+            if item.timestamp_ns_begin <= coordinate < item.timestamp_ns_end
+        ]
 
 
 class EpisodeTimingInfo(_ROBaseModel):

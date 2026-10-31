@@ -123,6 +123,7 @@ from robo_orchard_lab.dataset.robot import (
     RODataset,
     TaskData,
 )
+from robo_orchard_lab.dataset.robot.metadata_schema import ROInstructionContent
 
 OUTPUT_DATASET_PATH = ".workspace/dummy_dataset/"
 
@@ -174,10 +175,29 @@ MOCK_ROBOT = RobotData(
 )
 MOCK_TASK = TaskData(name="stack_blocks", description="Stack red on blue")
 
-# We can also define instructions that might change frame-by-frame
-INST_1 = InstructionData(name="pickup_red", json_content={"goal": "red_block"})
+# Canonical instructions default to 1.1. Nonempty subtasks explicitly declare
+# frame or time mode; frame intervals here use half-open [begin, end) bounds.
+# Time intervals instead use integer ns on the data record's original axis.
+# Overlapping intervals are allowed and get_subtasks returns every hit.
+INST_1 = InstructionData(
+    name="pickup_red",
+    json_content=ROInstructionContent(
+        descriptions=["Pick up the red block."],
+        subtask_type="frame",
+        subtasks=[
+            {
+                "frame_index_begin": 0,
+                "frame_index_end": 1,
+                "descriptions": ["Reach for the red block."],
+            }
+        ],
+    ).to_json_dict(),
+)
 INST_2 = InstructionData(
-    name="place_on_blue", json_content={"goal": "blue_block"}
+    name="place_on_blue",
+    json_content=ROInstructionContent(
+        descriptions=["Place the red block on the blue block."]
+    ).to_json_dict(),
 )
 
 
@@ -202,8 +222,12 @@ class MyCustomEpisode(EpisodePackaging):
         """A generator that yields one `DataFrame` at a time."""
         print(f"  [{self.episode_id}] Starting frame generation...")
         for i in range(self.num_frames):
-            # 1. Assign a timestamp (optional but highly recommended)
-            # Timestamps are in nanoseconds
+            # 1. Use the record timestamp in integer nanoseconds. Every row
+            # in an episode using any instruction 1.1 needs min/max, even
+            # before the first such instruction. Pure 1.0 episodes retain
+            # optional timestamps unless check_timestamp=True is requested.
+            # This mock source defines its own 25 Hz recording clock; real
+            # converters preserve actual record times rather than infer FPS.
             current_time_ns = i * 40_000_000  # 40ms = 25Hz
 
             # 2. Create the features (the actual sensor data)

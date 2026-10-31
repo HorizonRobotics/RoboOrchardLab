@@ -35,11 +35,11 @@ class MD5FieldMixin(Generic[T]):
 
         This method use the MD5 hash to filter results, and then checks
         if all provided keyword arguments match the attributes of the
-        instance.
+        instance. Digest preview must not invoke write-time formatting.
 
         """
 
-        md5 = cls(**kwargs).update_md5()
+        md5 = cls(**kwargs).calculate_md5()
         stmt = select(cls).where(cls.md5 == md5)
         for result in session.execute(stmt).scalars():
             if all(getattr(result, k) == kwargs[k] for k in kwargs):

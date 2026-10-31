@@ -46,9 +46,10 @@ metadata persistence, metadata parsing or export behavior, or merged-dataset
 - `parse_registered_metadata_schema(...)` should only parse canonical tagged
   metadata. `MetadataSchemaNotTagged` is the only parse error that a
   dataset-local adapter may use as the signal to try legacy parsing.
-- Partial tags, unknown schema ids or versions, disallowed schema ids, and
-  model validation failures mean the value already claims to be canonical but
-  is invalid. These cases should fail hard instead of falling back to legacy
+- In an explicit parser call, partial tags, unknown schema ids or versions,
+  disallowed schema ids, and model validation failures mean the value already
+  claims to be canonical but is invalid. These cases should fail hard instead
+  of falling back to legacy
   parsing.
 - Preserve the useful underlying validation message when wrapping validation
   failures in `MetadataSchemaValidationError`; callers need the field path and
@@ -103,9 +104,41 @@ metadata persistence, metadata parsing or export behavior, or merged-dataset
   language expressions. It may be empty; the schema does not define a default
   training prompt. Dataloaders or transforms own any fixed-choice, random
   sampling, skip, or error policy for empty or multi-description inputs.
-- Instruction subtasks may have gaps, but must not overlap. Keep
-  per-subtask self-contained range validation in the schema; checks that need
-  `EpisodeData.frame_num` belong in the dataset, converter, or packer layer.
+- `ROInstructionContent` defaults to 1.1. Nonempty subtasks explicitly declare
+  `subtask_type="frame"` or `"time"` and contain only that interval type.
+  Bounds are half-open; both modes allow gaps, nesting and overlaps.
+  `get_subtasks(frame_index=...)` or `get_subtasks(timestamp_ns=...)` returns
+  every hit in stable begin/end order, preserving equal-boundary input order.
+  Time bounds are strict integer ns on the data record's original time axis;
+  converters own clock alignment and source-boundary interpretation.
+- In 1.1, equivalent descriptions are trimmed, emptied/duplicate values
+  removed and sorted; each subtask needs nonempty text. Exact complete
+  subtask records, including extras, are deduplicated after stable sorting.
+  Different equal-boundary goals retain input order and distinct identity.
+  Empty/None subtasks omit both list and mode; top-level descriptions may
+  remain empty. Selection does not clip time intervals or remove intervals
+  without retained samples.
+- Version 1.0 remains frame-only and rejects overlapping spans and new mode
+  fields; retain its description-order/empty-text and JSON-shape rules.
+  Keep self-contained range validation in schema; checks requiring episode
+  context belong in dataset/converter/packaging owners.
+- Instruction storage, assignment, reads, raw hash and content query preserve
+  arbitrary JSON, including lists/scalars, unknown/partial/foreign tags,
+  invalid 1.0 and historical point 1.1. Readers do not parse or scan business
+  associations/timestamps. Merge clones preserve raw JSON and stored MD5.
+- Explicit update and new InstructionData writes format only the exact known
+  instruction schema id with string version "1.1" through the strict current
+  interval model. Malformed exact 1.1 fails at that write boundary; other JSON
+  remains opaque. Repack uses this new-write boundary, so it does not imply a
+  point-to-interval migration. Explicit schema parsers remain strict for all
+  tagged inputs, independently of generic storage compatibility.
+- DTO writes format a local content value before both raw query and new ORM
+  construction, preserving producer input and canonical new-write dedupe.
+  Raw query does not canonicalize arbitrary variants or perform a fallback
+  query. The writer memo keys serialized raw input and reuses successful
+  resolutions without parsing on a hit. Preserve the original hash algorithm,
+  empty-value rule and raw legacy identity; parser/dump is not a lossless
+  reconstruction of historical JSON. Do not auto-upgrade across versions.
 - `EpisodeData.info` is the preferred storage location for episode-level
   metadata such as timing and media decoding contracts.
 - Store sensor-specific media metadata by stable target names, such as camera
@@ -119,9 +152,26 @@ metadata persistence, metadata parsing or export behavior, or merged-dataset
   subtask frame ranges to `EpisodeData.frame_num` in the dataset or packer
   layer, and compare depth encoding keys to the actual depth camera list in
   the converter or packer layer.
-- Persisted metadata must be strict JSON-compatible data. Reject non-string
-  dict keys, non-finite floats, non-JSON objects, and implicit conversions at
-  the schema boundary instead of waiting for database or exporter failures.
+- In new packaging, any actual 1.1 instruction association activates mandatory
+  public `timestamp_min`/`timestamp_max` on every row of that episode, including
+  earlier unassociated or legacy rows. Require genuine integer ns (not bool,
+  float or strings), signed int64 storage bounds and min <= max; min=max is
+  valid. Writer admission checks raw values before Arrow coercion. Generic
+  RODataset reads keep historical nullable timestamps and arbitrary JSON;
+  packaging guarantees are not a read-time qualification of old datasets.
+  `validate_instruction_episode_timestamps` is the shared lightweight raw
+  iterator for one real episode; it does no schema normalization. Datasets
+  prepare normalizes transformed instruction content and applies the iterator
+  before Arrow coercion/READY. Direct Lab writers wrap their raw stream once.
+  `InstructionTimestampError` must propagate across best-effort preparation;
+  `check_timestamp=False` cannot bypass this hard contract. State resets per
+  episode: other pure 1.0 episodes may lack times,
+  and no within/across-episode monotonicity or physical synchronization is
+  implied. No parallel dataset/episode version field is needed.
+- Canonical schema payloads must be strict JSON-compatible data. Reject
+  non-string dict keys, non-finite floats, non-JSON objects, and implicit
+  conversions at the schema boundary instead of waiting for database or
+  exporter failures.
 - Use `extras` only for explicit, JSON-compatible extension data. Keep source
   fields namespaced and do not use `extras` as an untyped second schema.
 - If an `extras` collection needs durable typed records, give those records

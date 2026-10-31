@@ -25,6 +25,7 @@ from robo_orchard_lab.dataset.robot.metadata_schema import (
     EpisodeMediaInfo,
     EpisodeTimingInfo,
     InstructionSubtask,
+    InstructionTimeSubtask,
     MetadataSchemaNotAllowed,
     MetadataSchemaNotTagged,
     MetadataSchemaPartialTag,
@@ -45,11 +46,11 @@ def test_instruction_content_dumps_tagged_json() -> None:
         extras={"source": "unit-test"},
     )
 
-    assert content.descriptions == ["Pick cup", "Lift cup"]
+    assert content.descriptions == ["Lift cup", "Pick cup"]
     assert content.to_json_dict() == {
         "schema_id": "robo_orchard.instruction_content",
-        "schema_version": "1.0",
-        "descriptions": ["Pick cup", "Lift cup"],
+        "schema_version": "1.1",
+        "descriptions": ["Lift cup", "Pick cup"],
         "extras": {"source": "unit-test"},
     }
 
@@ -63,6 +64,7 @@ def test_instruction_content_allows_empty_descriptions() -> None:
 
 def test_subtasks_allow_holes_and_are_sorted() -> None:
     content = ROInstructionContent(
+        subtask_type="frame",
         descriptions=["Do task"],
         subtasks=[
             InstructionSubtask(
@@ -87,6 +89,7 @@ def test_subtasks_allow_holes_and_are_sorted() -> None:
 def test_subtasks_reject_overlap() -> None:
     with pytest.raises(ValidationError, match="must not overlap"):
         ROInstructionContent(
+            schema_version="1.0",
             descriptions=["Do task"],
             subtasks=[
                 InstructionSubtask(
@@ -403,3 +406,212 @@ def test_to_json_dict_preserves_user_extras_payload() -> None:
     assert content.to_json_dict()["extras"] == {
         "source": {"unit_test": {"extras": {}}}
     }
+
+
+@pytest.mark.parametrize("mode", ["frame", "time"])
+def test_interval_normalization_and_all_half_open_hits(mode: str) -> None:
+    begin, end = (
+        ("frame_index_begin", "frame_index_end")
+        if mode == "frame"
+        else ("timestamp_ns_begin", "timestamp_ns_end")
+    )
+    origin = 0 if mode == "frame" else 2**53 + 101
+    records = [
+        {begin: origin + 5, end: origin + 8, "descriptions": ["tail"]},
+        {
+            begin: origin,
+            end: origin + 5,
+            "descriptions": [" z ", "a", "a", ""],
+        },
+        {begin: origin + 1, end: origin + 4, "descriptions": ["nested"]},
+        {begin: origin, end: origin + 5, "descriptions": ["different"]},
+        {begin: origin, end: origin + 5, "descriptions": ["a", "z"]},
+        {
+            begin: origin,
+            end: origin + 5,
+            "descriptions": ["a", "z"],
+            "extras": {"x": 1},
+        },
+    ]
+    content = ROInstructionContent.model_validate(
+        {"subtask_type": mode, "subtasks": records}
+    )
+
+    def query(value):
+        return content.get_subtasks(
+            **{"frame_index" if mode == "frame" else "timestamp_ns": value}
+        )
+
+    assert len(content.subtasks) == 5
+    assert [item.descriptions for item in query(origin)] == [
+        ["a", "z"],
+        ["different"],
+        ["a", "z"],
+    ]
+    assert [item.descriptions for item in query(origin + 2)] == [
+        ["a", "z"],
+        ["different"],
+        ["a", "z"],
+        ["nested"],
+    ]
+    assert [item.descriptions for item in query(origin + 5)] == [["tail"]]
+    assert query(origin + 8) == []
+    assert query(origin + 20) == []
+    partial = ROInstructionContent(
+        subtask_type=mode,
+        subtasks=[
+            {begin: origin, end: origin + 5, "descriptions": ["left"]},
+            {begin: origin + 3, end: origin + 7, "descriptions": ["crossing"]},
+        ],
+    )
+    coordinate = "frame_index" if mode == "frame" else "timestamp_ns"
+    assert [
+        item.descriptions
+        for item in partial.get_subtasks(**{coordinate: origin + 4})
+    ] == [["left"], ["crossing"]]
+    restored = parse_registered_metadata_schema(
+        json.loads(content.model_dump_json())
+    )
+    assert restored == content
+    assert restored.to_json_dict() == content.to_json_dict()
+    assert (
+        resolve_metadata_schema(content.schema_id, "1.1")
+        is ROInstructionContent
+    )
+
+
+@pytest.mark.parametrize("mode", ["frame", "time"])
+@pytest.mark.parametrize("invalid", [True, 1.0, "1"])
+def test_intervals_reject_noninteger_bounds(
+    mode: str, invalid: object
+) -> None:
+    bounds = (
+        {"frame_index_begin": invalid, "frame_index_end": 4}
+        if mode == "frame"
+        else {"timestamp_ns_begin": invalid, "timestamp_ns_end": 4}
+    )
+    with pytest.raises(ValidationError):
+        ROInstructionContent(
+            subtask_type=mode, subtasks=[{"descriptions": ["x"], **bounds}]
+        )
+
+
+@pytest.mark.parametrize("mode", ["frame", "time"])
+@pytest.mark.parametrize("bounds", [(3, 3), (4, 3)])
+def test_intervals_reject_empty_or_reversed_bounds(mode, bounds) -> None:
+    keys = (
+        ("frame_index_begin", "frame_index_end")
+        if mode == "frame"
+        else ("timestamp_ns_begin", "timestamp_ns_end")
+    )
+    with pytest.raises(ValidationError):
+        ROInstructionContent(
+            subtask_type=mode,
+            subtasks=[
+                {**dict(zip(keys, bounds, strict=True)), "descriptions": ["x"]}
+            ],
+        )
+
+
+def test_modes_empty_content_and_caller_ownership() -> None:
+    frame = InstructionSubtask(
+        frame_index_begin=0, frame_index_end=3, descriptions=["z", "a"]
+    )
+    content = ROInstructionContent(subtask_type="frame", subtasks=[frame])
+    time = InstructionTimeSubtask(
+        timestamp_ns_begin=-2, timestamp_ns_end=-1, descriptions=["a"]
+    )
+    time.descriptions[:] = [" z ", "a", "a"]
+    copied = ROInstructionContent(subtask_type="time", subtasks=[time])
+    assert time.descriptions == [" z ", "a", "a"]
+    assert copied.subtasks[0].descriptions == ["a", "z"]
+    assert frame.descriptions == ["z", "a"]
+    assert content.subtasks[0].descriptions == ["a", "z"]
+    for payload in (
+        {"subtasks": [frame]},
+        {"subtask_type": "time", "subtasks": [frame]},
+        {
+            "subtask_type": "frame",
+            "subtasks": [
+                frame,
+                InstructionTimeSubtask(
+                    timestamp_ns_begin=-2,
+                    timestamp_ns_end=-1,
+                    descriptions=["x"],
+                ),
+            ],
+        },
+        {
+            "subtask_type": "frame",
+            "subtasks": [
+                {
+                    "frame_index_begin": -1,
+                    "frame_index_end": 3,
+                    "descriptions": ["x"],
+                }
+            ],
+        },
+        {
+            "subtask_type": "frame",
+            "subtasks": [
+                {
+                    "frame_index_begin": 0,
+                    "frame_index_end": 3,
+                    "descriptions": [" "],
+                }
+            ],
+        },
+    ):
+        with pytest.raises(ValidationError):
+            ROInstructionContent.model_validate(payload)
+    for empty in (None, []):
+        model = ROInstructionContent(subtasks=empty, subtask_type="time")
+        assert model.to_json_dict() == {
+            "schema_id": model.schema_id,
+            "schema_version": "1.1",
+            "descriptions": [],
+        }
+        assert model.get_subtasks(frame_index=0) == []
+        assert model.get_subtasks(timestamp_ns=-1) == []
+    for kwargs in (
+        {},
+        {"frame_index": 1, "timestamp_ns": 2},
+        {"frame_index": True},
+        {"frame_index": -1},
+        {"timestamp_ns": 1.0},
+        {"timestamp_ns": "1"},
+        {"timestamp_ns": 1},
+    ):
+        with pytest.raises(ValueError):
+            content.get_subtasks(**kwargs)
+
+
+def test_legacy_shape_and_description_rules_stay_versioned() -> None:
+    legacy = ROInstructionContent(
+        schema_version="1.0",
+        descriptions=["z", "a"],
+        subtasks=[InstructionSubtask(frame_index_begin=0, frame_index_end=1)],
+    )
+    assert legacy.descriptions == ["z", "a"]
+    assert legacy.subtasks[0].descriptions == []
+    assert "subtask_type" not in legacy.to_json_dict()
+    assert legacy.get_subtasks(frame_index=0) == legacy.subtasks
+    assert (
+        ROInstructionContent(schema_version="1.0", subtasks=[]).to_json_dict()[
+            "subtasks"
+        ]
+        == []
+    )
+    with pytest.raises(ValidationError, match="1.0"):
+        ROInstructionContent(schema_version="1.0", subtask_type="frame")
+    with pytest.raises(ValidationError, match="1.0"):
+        ROInstructionContent(
+            schema_version="1.0",
+            subtasks=[
+                InstructionTimeSubtask(
+                    timestamp_ns_begin=-2,
+                    timestamp_ns_end=-1,
+                    descriptions=["x"],
+                )
+            ],
+        )

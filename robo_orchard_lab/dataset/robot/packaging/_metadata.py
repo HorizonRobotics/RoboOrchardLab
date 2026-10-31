@@ -225,9 +225,13 @@ class InstructionData:
 
     name: str | None
     """The name of the instruction."""
-    json_content: dict[str, Any] | None
-    """The content of the instruction, typically a dictionary with keys like
-    'instruction', 'robot', and 'task'.
+    json_content: Any
+    """Instruction JSON, preferably ``ROInstructionContent.to_json_dict()``.
+
+    New writes format exact known instruction 1.1 before lookup/storage and
+    require valid timestamps throughout the real episode. Other JSON remains
+    opaque. The caller's payload is not changed; raw ORM reads/queries do not
+    format it.
     """
 
     def make_transient_orm(
@@ -247,16 +251,20 @@ class InstructionData:
 
         """
 
+        content = Instruction.normalize_content(self.json_content)
+
         def make_new():
             ret = Instruction(
-                index=index_state.last_instruction_idx + 1, **self.__dict__
+                index=index_state.last_instruction_idx + 1,
+                name=self.name,
+                json_content=content,
             )
             ret.update_md5()
             return ret
 
         if session is not None:
             ret = Instruction.query_by_content_with_md5(
-                session, **self.__dict__
+                session, name=self.name, json_content=content
             )
             if ret is not None:
                 make_transient(ret)

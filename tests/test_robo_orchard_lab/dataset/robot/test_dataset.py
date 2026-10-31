@@ -13,18 +13,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
+import hashlib
 import importlib.util
+import json
 import os
+import pickle
 import random
 import string
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Generator, Iterable
 
 import datasets as hg_datasets
+import numpy as np
 import pytest
 import torch
-from sqlalchemy import select
+from sqlalchemy import event, null, select
 from sqlalchemy.orm import Session
 
 from robo_orchard_lab.dataset.datatypes import (
@@ -42,6 +47,7 @@ from robo_orchard_lab.dataset.robot.dataset import (
 )
 from robo_orchard_lab.dataset.robot.dataset_db_engine import (
     create_engine,
+    create_tables,
     get_local_db_url,
     need_upgrade,
 )
@@ -56,6 +62,10 @@ from robo_orchard_lab.dataset.robot.merge import (
     create_merged_dataset,
     merge_datasets,
 )
+from robo_orchard_lab.dataset.robot.metadata_schema import (
+    MetadataSchemaError,
+    ROInstructionContent,
+)
 from robo_orchard_lab.dataset.robot.packaging import (
     ComposedEpisodePackagingTransform,
     DataFrame,
@@ -66,9 +76,11 @@ from robo_orchard_lab.dataset.robot.packaging import (
     EpisodePackagingTransform,
     IdentityEpisodePackagingTransform,
     InstructionData,
+    InstructionTimestampError,
     RobotData,
     RobotDescriptionFormat,
     TaskData,
+    validate_instruction_episode_timestamps,
 )
 from robo_orchard_lab.dataset.robot.re_packing import repack_dataset
 from robo_orchard_lab.dataset.robot.row_sampler import (
@@ -2130,6 +2142,64 @@ def example_some_empty_meta_dataset_path(
 
 
 class TestMergeDataset:
+    def test_merge_mixed_versions_preserves_raw_legacy_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+        raw = {
+            "schema_id": "robo_orchard.instruction_content",
+            "schema_version": "1.0",
+            "descriptions": [" Z ", "A", " Z "],
+            "subtasks": [
+                {
+                    "frame_index_begin": 8,
+                    "frame_index_end": 10,
+                    "descriptions": [],
+                },
+                {
+                    "frame_index_begin": 1,
+                    "frame_index_end": 3,
+                    "descriptions": [" b ", "a"],
+                },
+            ],
+        }
+        modern = ROInstructionContent(descriptions=["new"]).to_json_dict()
+        writer = DatasetPackaging(
+            _TimestampEpisode.features, database_driver="sqlite"
+        )
+        writer.packaging(
+            [
+                _TimestampEpisode([(None, None, raw)]),
+                _TimestampEpisode([(2**53 + 9, 2**53 + 9, modern)]),
+            ],
+            str(tmp_path / "source"),
+        )
+        cache = tmp_path / "merge"
+        cache.mkdir()
+        with RODataset(str(tmp_path / "source")) as source:
+            with create_merged_dataset(
+                [source, source], cache_dir=str(cache)
+            ) as merged:
+                assert len(merged) == 4
+                assert list(merged.index_dataset["episode_index"]) == [
+                    0,
+                    1,
+                    2,
+                    3,
+                ]
+                assert list(merged.index_dataset["instruction_index"]) == [
+                    0,
+                    1,
+                    0,
+                    1,
+                ]
+                old = merged.get_meta(Instruction, 0)
+                assert old.json_content == raw
+                assert old.md5.hex() == "e2da3b864f36ff1031639a75c23fa539"
+                assert merged.get_meta(Instruction, 1).json_content == modern
+                assert merged.index_dataset[0]["timestamp_min"] is None
+                assert merged.index_dataset[2]["timestamp_min"] is None
+
     @pytest.mark.parametrize("cache_source_mappings_in_memory", [True, False])
     def test_create_merged_dataset_remaps_source_local_previous_links(
         self,
@@ -2537,3 +2607,553 @@ def test_rodataset_item_group_lazily_generates_single_path_items() -> None:
     assert all(item.num_shards == 1 and item.shard_id == 0 for item in items)
     assert all(item.storage_options == {"anon": False} for item in items)
     assert all(item.meta_index2meta is True for item in items)
+
+
+class _TimestampEpisode(EpisodePackaging):
+    features = hg_datasets.Features({"value": hg_datasets.Value("int64")})
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def generate_episode_meta(self):
+        return EpisodeMeta(episode=EpisodeData())
+
+    def generate_frames(self):
+        for offset, (minimum, maximum, content) in enumerate(self.rows):
+            yield DataFrame(
+                features={"value": offset},
+                timestamp_ns_min=minimum,
+                timestamp_ns_max=maximum,
+                instruction=InstructionData(
+                    "legacy"
+                    if content.get("schema_version") == "1.0"
+                    else "goal",
+                    content,
+                )
+                if content is not None
+                else None,
+            )
+
+
+@pytest.fixture
+def historical_instruction_dataset(tmp_path):
+    from robo_orchard_lab.dataset.robot.columns import (
+        PreservedIndexColumnsKeys,
+    )
+
+    contents = [
+        None,
+        [],
+        "caption",
+        17,
+        True,
+        ["one", {"value": 2}],
+        {"schema_id": "robo_orchard.instruction_content"},
+        {"schema_version": "1.1"},
+        {
+            "schema_id": "robo_orchard.instruction_content",
+            "schema_version": "9.9",
+        },
+        {"schema_id": "foreign.schema", "schema_version": "1.1"},
+        {
+            "schema_id": "robo_orchard.instruction_content",
+            "schema_version": "1.0",
+            "subtasks": [{}],
+        },
+        {
+            "schema_id": "robo_orchard.instruction_content",
+            "schema_version": "1.1",
+            "subtasks": [
+                {"timestamp_ns": 2**53 + 9, "descriptions": ["old point"]}
+            ],
+        },
+        {
+            "schema_id": "robo_orchard.instruction_content",
+            "schema_version": "1.1",
+            "descriptions": [" z ", "a", "a"],
+        },
+    ]
+    target = tmp_path / "historical"
+    frames = hg_datasets.Dataset.from_list(
+        [
+            {
+                **dict.fromkeys(PreservedIndexColumnsKeys),
+                "index": i,
+                "episode_index": 37,
+                "frame_index": i,
+                "instruction_index": i if i < len(contents) else 999,
+                "value": i,
+            }
+            for i in range(len(contents) + 1)
+        ],
+        features=hg_datasets.Features(
+            {
+                key: hg_datasets.Value("int64")
+                for key in (*PreservedIndexColumnsKeys, "value")
+            }
+        ),
+    )
+    frames.save_to_disk(str(target))
+    digests = [
+        hashlib.md5(
+            (
+                f"raw-{i}"
+                + (json.dumps(value, sort_keys=True) if value else "")
+            ).encode()
+        ).digest()
+        for i, value in enumerate(contents)
+    ]
+    engine = create_engine(
+        get_local_db_url(
+            db_path=str(target / "meta_db.sqlite"), drivername="sqlite"
+        )
+    )
+    create_tables(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            Instruction.__table__.insert(),
+            [
+                {
+                    "index": i,
+                    "name": f"raw-{i}",
+                    "json_content": value,
+                    "md5": digests[i],
+                }
+                for i, value in enumerate(contents)
+            ],
+        )
+        connection.execute(
+            Episode.__table__.insert().values(
+                index=37, frame_num=len(frames), dataset_begin_index=0
+            )
+        )
+        connection.execute(
+            Instruction.__table__.update()
+            .where(Instruction.index == 0)
+            .values(json_content=null())
+        )
+    engine.dispose()
+    return target, frames, contents, digests
+
+
+@pytest.mark.parametrize("entrypoint", ["path", "from_dataset"])
+def test_historical_json_reads_hashes_and_queries_are_raw(
+    historical_instruction_dataset, monkeypatch, entrypoint
+):
+    target, frames, contents, digests = historical_instruction_dataset
+    before = deepcopy(contents)
+
+    def no_business_validation(*args, **kwargs):
+        pytest.fail("raw read/hash/query invoked formatting or an index scan")
+
+    monkeypatch.setattr(
+        Instruction, "normalize_content", no_business_validation
+    )
+    monkeypatch.setattr(Instruction, "update_md5", no_business_validation)
+    monkeypatch.setattr(hg_datasets.Dataset, "iter", no_business_validation)
+    if entrypoint == "path":
+        reader = RODataset(str(target))
+    else:
+        engine = create_engine(
+            get_local_db_url(
+                db_path=str(target / "meta_db.sqlite"), drivername="sqlite"
+            )
+        )
+        reader = RODataset.from_dataset(frames, engine)
+    with reader:
+        assert len(reader) == len(contents) + 1
+        assert reader.get_meta(Instruction, 999) is None
+        assert reader.index_dataset.data.column(
+            "timestamp_min"
+        ).to_pylist() == [None] * len(reader)
+        for i, value in enumerate(contents):
+            item = reader.get_meta(Instruction, i)
+            assert item.json_content == value
+            assert item.calculate_md5() == item.md5 == digests[i]
+        with Session(reader.db_engine) as session:
+            for i, value in enumerate(contents):
+                item = Instruction.query_by_content_with_md5(
+                    session, f"raw-{i}", value
+                )
+                assert item.index == i and item.json_content == value
+                assert item not in session.dirty
+                assert item.md5 == digests[i]
+            session.commit()
+    with RODataset(str(target)) as reopened:
+        assert [
+            reopened.get_meta(Instruction, i).json_content
+            for i in range(len(contents))
+        ] == before
+        assert [
+            reopened.get_meta(Instruction, i).md5 for i in range(len(contents))
+        ] == digests
+
+
+def test_merge_preserves_arbitrary_historical_json_and_source_md5(
+    historical_instruction_dataset, tmp_path, monkeypatch
+):
+    target, _, contents, digests = historical_instruction_dataset
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+
+    def no_formatting(*args, **kwargs):
+        pytest.fail("raw merge clone invoked instruction formatting")
+
+    monkeypatch.setattr(Instruction, "normalize_content", no_formatting)
+    cache = tmp_path / "merged"
+    cache.mkdir()
+    with RODataset(str(target)) as original:
+        source = original.select(list(range(len(contents))))
+        with create_merged_dataset(
+            [source, source], cache_dir=str(cache)
+        ) as merged:
+            assert len(merged) == 2 * len(source)
+            for i, value in enumerate(contents):
+                item = merged.get_meta(Instruction, i)
+                assert item.json_content == value
+                assert item.md5 == item.calculate_md5() == digests[i]
+        for i, value in enumerate(contents):
+            assert source.get_meta(Instruction, i).json_content == value
+            assert source.get_meta(Instruction, i).md5 == digests[i]
+
+
+class TestInstructionEpisodeTimestamps:
+    @pytest.mark.parametrize(
+        "invalid", [None, True, 1.0, "1", 2**63, -(2**63) - 1]
+    )
+    @pytest.mark.parametrize("field", [0, 1])
+    @pytest.mark.parametrize("position", ["prefix", "current", "suffix"])
+    def test_raw_invalid_rows_are_hard_errors(
+        self, tmp_path, monkeypatch, invalid, field, position
+    ):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+        new = ROInstructionContent().to_json_dict()
+        bad = [10, 10]
+        bad[field] = invalid
+        if position == "prefix":
+            rows = [(*bad, None), (11, 11, new)]
+        elif position == "current":
+            rows = [(10, 10, None), (*bad, new)]
+        else:
+            rows = [(10, 10, new), (*bad, None)]
+        writer = DatasetPackaging(
+            _TimestampEpisode.features,
+            database_driver="sqlite",
+            check_timestamp=False,
+        )
+        target = tmp_path / "rejected"
+        with pytest.raises(Exception) as info:
+            writer.packaging(
+                [_TimestampEpisode(rows)],
+                str(target),
+                writer_batch_size=1,
+                fail_fast=False,
+            )
+        # HF may wrap the hard error; preserve its originating diagnostic.
+        causes = []
+        error = info.value
+        while error is not None:
+            causes.append(str(error))
+            error = error.__cause__
+        diagnostic = " ".join(causes)
+        # An overflow before a late association can be rejected by Arrow while
+        # consuming the pure-legacy prefix. All reached 1.1 rows use our error.
+        if position != "prefix" or invalid not in (2**63, -(2**63) - 1):
+            assert "Episode 0 frame" in diagnostic
+            assert "timestamp" in diagnostic
+        assert not target.exists()
+        assert not list(tmp_path.glob(".rejected*"))
+
+    @pytest.mark.parametrize(
+        "old_prefix",
+        [None, ROInstructionContent(schema_version="1.0").to_json_dict()],
+    )
+    @pytest.mark.parametrize("check_timestamp", [False, True])
+    def test_reverse_range_late_trigger_and_valid_prefix(
+        self, tmp_path, monkeypatch, old_prefix, check_timestamp
+    ):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+        new = ROInstructionContent().to_json_dict()
+        writer = DatasetPackaging(
+            _TimestampEpisode.features,
+            database_driver="sqlite",
+            check_timestamp=check_timestamp,
+        )
+        # The 1.1 trigger is actually reached with both best-effort flags off.
+        with pytest.raises(
+            ValueError, match="Episode 0 frame 1.*timestamp_min"
+        ):
+            writer.packaging(
+                [_TimestampEpisode([(10, 10, old_prefix), (12, 11, new)])],
+                str(tmp_path / "bad"),
+            )
+        target = tmp_path / "valid"
+        writer.packaging(
+            [
+                _TimestampEpisode(
+                    [(np.int64(10), np.int64(10), old_prefix), (11, 11, new)]
+                )
+            ],
+            str(target),
+        )
+        with RODataset(str(target)) as dataset:
+            assert dataset.frame_dataset[0]["timestamp_min"] == 10
+            assert len(dataset) == 2
+
+    def test_late_new_instruction_checks_legacy_and_unassociated_prefix(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+        old = ROInstructionContent(schema_version="1.0").to_json_dict()
+        new = ROInstructionContent().to_json_dict()
+        episode = _TimestampEpisode(
+            [(None, None, old), (20, 20, None), (21, 21, new)]
+        )
+        with pytest.raises(
+            ValueError, match="Episode 0 frame 0.*timestamp_min"
+        ):
+            DatasetPackaging(
+                _TimestampEpisode.features,
+                database_driver="sqlite",
+                check_timestamp=False,
+            ).packaging(
+                [episode],
+                str(tmp_path / "bad_prefix"),
+                fail_fast=False,
+                writer_batch_size=1,
+            )
+        assert not (tmp_path / "bad_prefix").exists()
+
+    @pytest.mark.parametrize("mode", ["frame", "time", "text", "empty"])
+    @pytest.mark.parametrize("old_first", [False, True])
+    def test_mixed_episodes_reset_and_decreasing_origins(
+        self, tmp_path, monkeypatch, mode, old_first
+    ):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+        kwargs = {"descriptions": ["target"]}
+        if mode == "frame":
+            kwargs.update(
+                subtask_type="frame",
+                subtasks=[
+                    {
+                        "frame_index_begin": 0,
+                        "frame_index_end": 2,
+                        "descriptions": ["x"],
+                    }
+                ],
+            )
+        elif mode == "time":
+            kwargs.update(
+                subtask_type="time",
+                subtasks=[
+                    {
+                        "timestamp_ns_begin": 99,
+                        "timestamp_ns_end": 102,
+                        "descriptions": ["x"],
+                    }
+                ],
+            )
+        elif mode == "empty":
+            kwargs.update(subtasks=[], subtask_type="time")
+        new = ROInstructionContent(**kwargs).to_json_dict()
+        old = ROInstructionContent(schema_version="1.0").to_json_dict()
+        legacy = _TimestampEpisode([(None, None, old)])
+        modern = _TimestampEpisode([(100, 100, new), (101, 101, None)])
+        episodes = [legacy, modern] if old_first else [modern, legacy]
+        episodes.append(_TimestampEpisode([(-10, -10, new)]))
+        writer = DatasetPackaging(
+            _TimestampEpisode.features, database_driver="sqlite"
+        )
+        target = tmp_path / "mixed"
+        writer.packaging(
+            episodes, str(target), writer_batch_size=1, fail_fast=False
+        )
+        with RODataset(str(target)) as dataset:
+            assert len(dataset) == 4
+            assert dataset.frame_dataset[-1]["timestamp_min"] == -10
+        # A later call reusing the same writer must not inherit activation.
+        writer.packaging(
+            [_TimestampEpisode([(None, None, old)])], str(tmp_path / "again")
+        )
+        # Every 1.1 shape activates mandatory row times.
+        with pytest.raises(ValueError, match="Episode 0 frame 0"):
+            writer.packaging(
+                [_TimestampEpisode([(None, None, new)])],
+                str(tmp_path / "missing"),
+            )
+
+    def test_writer_canonical_cache_and_sql_dedup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+        first = ROInstructionContent(descriptions=["a", "z"]).to_json_dict()
+        variant = {**first, "descriptions": [" z ", "a", "a"]}
+        target = tmp_path / "dedup"
+        DatasetPackaging(
+            _TimestampEpisode.features, database_driver="sqlite"
+        ).packaging(
+            [
+                _TimestampEpisode([(1, 1, first), (2, 2, variant)]),
+                _TimestampEpisode([(0, 0, variant)]),
+            ],
+            str(target),
+        )
+        with RODataset(str(target)) as dataset:
+            assert list(dataset.index_dataset["instruction_index"]) == [
+                0,
+                0,
+                0,
+            ]
+            assert dataset.get_meta(Instruction, 0).json_content == first
+
+
+def test_instruction_timestamp_iterator_is_lightweight_and_pickleable(
+    monkeypatch,
+):
+    content = ROInstructionContent().to_json_dict()
+
+    def no_schema_work(*args, **kwargs):
+        raise AssertionError(
+            "the raw timestamp guard must not normalize schemas"
+        )
+
+    monkeypatch.setattr(Instruction, "normalize_content", no_schema_work)
+    valid = DataFrame(
+        features={},
+        instruction=InstructionData("goal", content),
+        timestamp_ns_min=np.int64(10),
+        timestamp_ns_max=np.int64(10),
+    )
+    assert list(
+        validate_instruction_episode_timestamps([valid], episode_index=7)
+    ) == [valid]
+    assert type(valid.timestamp_ns_min) is int
+    bad_prefix = DataFrame(features={})
+    with pytest.raises(
+        InstructionTimestampError, match="Episode 7 frame 0"
+    ) as error:
+        list(
+            validate_instruction_episode_timestamps(
+                [bad_prefix, valid], episode_index=7
+            )
+        )
+    restored = pickle.loads(pickle.dumps(error.value))
+    assert type(restored) is InstructionTimestampError
+    assert str(restored) == str(error.value)
+
+
+def test_writer_raw_resolution_memo_variants_mutation_and_db_hits(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+    import robo_orchard_lab.dataset.robot.packaging._writer as writer_module
+
+    calls = []
+    selects = []
+    metrics = []
+    normalize = Instruction.normalize_content
+    create = writer_module.create_engine
+
+    def counted(content):
+        calls.append(True)
+        return normalize(content)
+
+    def create_counted(*args, **kwargs):
+        engine = create(*args, **kwargs)
+
+        def count_sql(
+            connection, cursor, statement, parameters, context, executemany
+        ):
+            if (
+                statement.lstrip().lower().startswith("select")
+                and "from instruction" in statement.lower()
+            ):
+                selects.append(True)
+
+        event.listen(engine, "before_cursor_execute", count_sql)
+        return engine
+
+    monkeypatch.setattr(
+        Instruction, "normalize_content", staticmethod(counted)
+    )
+    monkeypatch.setattr(writer_module, "create_engine", create_counted)
+    raw_a = ROInstructionContent(descriptions=["a", "z"]).to_json_dict()
+    raw_a["descriptions"] = [" a ", "z", "a"]
+    raw_b = ROInstructionContent(descriptions=["a", "z"]).to_json_dict()
+    a, b = InstructionData("goal", raw_a), InstructionData("goal", raw_b)
+
+    class MemoEpisode(_TimestampEpisode):
+        def __init__(self, second=False):
+            self.second = second
+
+        def generate_frames(self):
+            sequence = [a, a] if self.second else [a, a, b, b, b, b, b, b]
+            for offset, instruction in enumerate(sequence):
+                if not self.second and offset == 4:
+                    b.json_content["descriptions"].append("other")
+                if not self.second and offset == 6:
+                    b.name = "another"
+                if not self.second and offset == 7:
+                    b.json_content["schema_version"] = "1.0"
+                before = len(calls), len(selects)
+                yield DataFrame(
+                    features={"value": offset},
+                    instruction=instruction,
+                    timestamp_ns_min=offset,
+                    timestamp_ns_max=offset,
+                )
+                metrics.append(
+                    (len(calls) - before[0], len(selects) - before[1])
+                )
+
+    target = tmp_path / "memo"
+    DatasetPackaging(
+        _TimestampEpisode.features, database_driver="sqlite"
+    ).packaging(
+        [MemoEpisode(), MemoEpisode(True)],
+        str(target),
+        writer_batch_size=1,
+        fail_fast=True,
+    )
+    assert [sql for _, sql in metrics] == [1, 0, 1, 0, 1, 0, 1, 1, 1, 0]
+    assert [metrics[i][0] for i in (1, 3, 5, 9)] == [0, 0, 0, 0]
+    with RODataset(str(target)) as dataset:
+        assert list(dataset.index_dataset["instruction_index"]) == [
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            2,
+            3,
+            0,
+            0,
+        ]
+        for row in dataset.iterate_meta(Instruction):
+            assert row.md5 == row.calculate_md5()
+
+
+def test_writer_raw_memo_does_not_fold_invalid_tuple_into_list(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "locks"))
+    valid = ROInstructionContent(extras={"items": [1]}).to_json_dict()
+    invalid = deepcopy(valid)
+    invalid["extras"]["items"] = (1,)
+
+    class RawEpisode(_TimestampEpisode):
+        def generate_frames(self):
+            for payload in (valid, invalid):
+                yield DataFrame(
+                    features={"value": 1},
+                    instruction=InstructionData("same", payload),
+                    timestamp_ns_min=10,
+                    timestamp_ns_max=10,
+                )
+
+    target = tmp_path / "invalid_tuple"
+    with pytest.raises(MetadataSchemaError):
+        DatasetPackaging(
+            _TimestampEpisode.features, database_driver="sqlite"
+        ).packaging(
+            [RawEpisode([])], str(target), fail_fast=True, writer_batch_size=1
+        )
+    assert not target.exists()
