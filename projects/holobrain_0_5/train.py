@@ -72,7 +72,11 @@ class ActionStepProcessor(SimpleStepProcessor):
 
 
 def train(config_path, overrides, workspace, seed=0, logging_dir=None):
-    """Train for max_step optimizer updates and export the resulting policy."""
+    """Train for max_step completed accumulation windows and export a policy.
+
+    AMP-skipped parameter updates still count toward max_step and the existing
+    training_result.json optimizer_steps field.
+    """
     module = load_config(config_path)
     config = dict(module.config)
     config.update(overrides)
@@ -192,6 +196,8 @@ def train(config_path, overrides, workspace, seed=0, logging_dir=None):
         model = accelerator.unwrap_model(trainer.model)
         model.save_model(str(output), required_empty=False)
         completed_steps = trainer.trainer_progress_state.global_step_id
+        # The existing result key counts optimizer-step boundaries, including
+        # AMP skips, rather than successful parameter updates.
         (output / "training_result.json").write_text(
             json.dumps(
                 {"optimizer_steps": completed_steps},

@@ -60,17 +60,18 @@ class SimpleTrainer(HookBasedTrainer):
             batches to the model.
         optimizer (torch.optim.Optimizer): The optimizer used for training.
         lr_scheduler (torch.optim.lr_scheduler.LRScheduler): The learning rate
-            scheduler.
+            scheduler, stepped without a validation metric. Metric-based
+            schedulers such as ``ReduceLROnPlateau`` are not supported.
         lr_scheduler_step_at (str): Deprecated; must be ``"step"``.
-        max_step (Optional[int]): The maximum committed optimizer steps to
-            train.
+        max_step (Optional[int]): The maximum completed accumulation windows,
+            including AMP skips.
         max_epoch (Optional[int]): The maximum number of epochs to train.
         val_dataloader (Optional[DataLoader | Iterable]): The data loader for
             validation.
         metric (Optional[Any]): The metric used for evaluation, with update,
             compute and reset functions.
         step_eval_freq (Optional[int]): The frequency of evaluation in
-            committed optimizer-step units.
+            completed accumulation-window units.
         epoch_eval_freq (Optional[int]): The frequency of evaluation in terms
             of epochs.
         resume_from (Optional[str]): The path or URL to resume training from.

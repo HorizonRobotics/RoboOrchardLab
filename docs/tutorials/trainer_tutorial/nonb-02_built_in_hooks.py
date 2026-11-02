@@ -20,7 +20,7 @@
 ==========================================================
 
 Hooks are the primary way to add custom behavior to the training or evaluation loop without modifying its source code.
-They are called at specific points during training or evaluation (e.g., end of epoch, after a micro step, or after a committed optimizer step).
+They are called at specific points during training or evaluation (e.g., end of epoch, after a micro step, or after a completed accumulation window).
 """
 
 # %%
@@ -236,6 +236,12 @@ hooks = []
 #   :py:class:`~robo_orchard_lab.pipeline.hooks.metric.MetricTrackerConfig`,
 #   :py:class:`~robo_orchard_lab.pipeline.hooks.checkpoint.SaveCheckpointConfig`).
 #
+# ``global_step_id`` and ``step_id`` count completed gradient-accumulation
+# windows, including an AMP-skipped parameter update. The separate
+# ``is_optimizer_step_committed`` flag reports whether parameters were actually
+# updated. Built-in step frequencies use completed windows; scheduler stepping
+# retains its optimizer-success condition.
+#
 
 # %%
 # Some built-in hooks
@@ -267,16 +273,16 @@ hooks = []
 # :py:class:`~robo_orchard_lab.pipeline.hooks.loss_tracker.LossTracker` reads
 # loss entries from ``model_outputs`` after each micro-step. It keeps one local
 # detached sum and count per key, then performs a single packed distributed
-# reduction only when a committed optimizer step reaches ``step_log_freq``.
+# reduction only when a completed accumulation window reaches ``step_log_freq``.
 # Therefore ``accumulate_grad_steps=1`` remains numerically compatible with the
-# old per-update reduction, while multi-micro-step accumulation and failed
-# optimizer steps use the explicit committed-boundary semantics.
+# old per-update reduction, while multi-micro-step accumulation and AMP-skipped
+# updates use the completed-window cadence.
 #
 # The first update after each logging-window reset defines the complete loss-key
 # set. Every later update in that window must provide the same keys on every
 # rank; the tracker does not synchronize key presence or infer missing values.
-# A committed logging boundary, an uncommitted boundary, or an exception resets
-# the window, so the next window may use a different complete key set. The
+# A logging boundary or an exception resets the window, so the next window may
+# use a different complete key set. An AMP skip alone does not reset it. The
 # separate backward-loss return value is never read by this hook. A custom
 # ``update`` override must call ``super().update`` to contribute to the
 # canonical aggregation.
@@ -299,7 +305,10 @@ hooks = []
 #
 # :py:class:`~robo_orchard_lab.pipeline.hooks.metric.MetricTracker` is an abstarct class, you should inherit it
 # and implement the :py:meth:`~robo_orchard_lab.pipeline.hooks.metric.MetricTracker.update_metric` method, which is called by the trainer to update these metrics with batch outputs and targets.
-# Metrics are updated from micro-batch outputs, while ``step_log_freq`` is evaluated on committed optimizer steps.
+# Metrics are updated from micro-batch outputs, while ``step_log_freq`` is evaluated on completed accumulation windows.
+# Trainer checkpoints do not save ``LossTracker`` or ``MetricTracker``
+# aggregation state. When an aggregation interval crosses a restart, logged
+# values can cover only post-resume updates until the next reset.
 #
 
 from torchmetrics import Accuracy as AccuracyMetric
@@ -356,7 +365,7 @@ hooks.append(metric_tracker)
 # ``Performance/step_time_seconds`` (seconds), and, when the remaining time can
 # be estimated, ``Performance/estimated_remaining_seconds`` (seconds). When an
 # optimizer is available it also publishes ``LR/group{idx}`` for each parameter
-# group. ``step_log_freq`` controls the committed optimizer-step cadence for
+# group. ``step_log_freq`` controls the completed-window cadence for
 # these metrics.
 #
 
@@ -371,8 +380,60 @@ hooks.append(stats)
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 #
 # :py:class:`~robo_orchard_lab.pipeline.hooks.checkpoint.SaveCheckpointConfig` is responsible for triggering model checkpoint saves.
-# It calls :py:class:`~acclerator.Accelerator.save_state()`` internally. ``save_step_freq`` defines how many committed optimizer steps between checkpoints.
-# Resuming is handled by Accelerator
+# It calls :py:meth:`~accelerate.Accelerator.save_state` internally.
+# ``save_step_freq`` counts completed optimizer-step boundaries, including AMP
+# skips. Trainer/data checkpoints do not restore an unfinished gradient
+# accumulation window.
+# In ``HookBasedTrainer``, an epoch save runs after the epoch hooks complete.
+# On natural exhaustion it records the next epoch's starting position; an early
+# ``max_step`` stop retains the current epoch and consumed position. Earlier
+# checkpoint formats do not identify this boundary reliably, and arbitrary
+# user hooks are not guaranteed to execute exactly once across a restart.
+# Checkpoints use Accelerate's directory naming and retention behavior. Saving
+# is best effort: interruption can leave a partial directory, and automatic
+# retention may remove an older checkpoint before the next save completes.
+# Choose a checkpoint known to have saved successfully for resume; the latest
+# directory name does not prove that its contents are complete.
+# If training, a hook or saving fails, checkpoint behavior is undefined; peers
+# are not guaranteed to complete checkpoint operations or receive that error.
+# The trainer attempts DataLoader cleanup through its normal teardown.
+#
+# Pass :py:class:`~robo_orchard_lab.pipeline.training.hook_based_trainer.ResumeCheckpointConfig`
+# to ``HookBasedTrainer(resume_from=...)`` to restore training and data progress.
+# This training entrypoint validates recovery capability and starts a new
+# accumulation window after the complete native load. The generic
+# ``utils.huggingface.accelerator_load_state`` delegates to Accelerate and
+# preserves its loaded phase, even with registered Trainer progress.
+# Data recovery applies the saved position once; do not additionally skip
+# batches. Keep the rank/worker layout compatible with the checkpoint. A
+# resumed accumulation window starts at a boundary; changing the accumulation
+# size is allowed but can change the subsequent training trajectory. Increasing
+# the training limit is supported, while a limit that is already reached ends
+# without processing another batch.
+#
+# With multi-rank gradient accumulation, configure distributed sampling so
+# ranks reach compatible synchronization boundaries. Uneven inputs can make
+# ranks synchronize on different batches and hang.
+# By default, a short epoch tail completes an accumulation window. If an
+# Accelerate gradient accumulation plugin sets ``sync_with_dataloader=False``,
+# windows can span epochs and a final unfinished window is not applied.
+#
+# Data recovery on the normal path is best effort, including ``in_order=False``.
+# In supported recovery configurations, a checkpoint without a current
+# DataLoader snapshot, such as a native save after training advances, resumes
+# by replaying the epoch prefix with a warning; data order and position may
+# differ.
+# A native save during an unfinished accumulation window cannot restore its
+# gradients. Resume warns and starts a new window after the consumed batches.
+# Trainer/data resume currently excludes DeepSpeed/FSDP, node-local checkpoint
+# layouts, and external stateful loaders. Accelerate restores global RNG and
+# invokes registered serialization hooks. After loading, the trainer preserves
+# that RNG state across a nonzero data skip before processing the next batch or
+# ending the epoch. Random draws by hooks before the first resumed batch can
+# also be rolled back; user hooks and random transforms are not guaranteed to
+# replay exactly. Resumed tail-batch metrics follow Accelerate's normal
+# behavior without a separate correction. Old progress formats require a new
+# run from separately loadable model weights.
 #
 
 from robo_orchard_lab.pipeline.hooks import SaveCheckpointConfig

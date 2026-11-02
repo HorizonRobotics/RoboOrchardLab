@@ -101,3 +101,19 @@ def test_pipeline_hook_args_supports_standard_dataclass_replace():
 
     assert copied.global_step_id == 2
     assert copied.accelerator is args.accelerator
+
+
+def test_pipeline_hook_args_copies_epoch_checkpoint_queue():
+    args = PipelineHookArgs(accelerator=MagicMock())
+    assert args._defer_epoch_checkpoint is None
+    pending = []
+    args._defer_epoch_checkpoint = pending.append
+
+    for copied in (
+        args.copy_with_updates(global_step_id=2),
+        replace(args, global_step_id=2),
+    ):
+        assert copied.global_step_id == 2
+        assert copied._defer_epoch_checkpoint is args._defer_epoch_checkpoint
+        assert "_defer_epoch_checkpoint" not in repr(copied)
+    assert args.global_step_id == 0

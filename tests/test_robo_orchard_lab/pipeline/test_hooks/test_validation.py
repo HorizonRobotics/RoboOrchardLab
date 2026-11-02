@@ -45,8 +45,8 @@ def test_validation_runs_after_committed_optimizer_step():
     callback.assert_called_once_with(model)
 
 
-def test_validation_skips_uncommitted_optimizer_boundary():
-    """Skipped optimizer boundaries should not run step validation."""
+def test_validation_runs_after_skipped_optimizer_update():
+    """An AMP skip remains a completed window for validation cadence."""
 
     callback = MagicMock()
     hook = ValidationHookConfig(
@@ -56,15 +56,15 @@ def test_validation_skips_uncommitted_optimizer_boundary():
     args = PipelineHookArgs(
         accelerator=MagicMock(),
         model=torch.nn.Linear(1, 1),
-        global_step_id=0,
-        step_id=0,
+        global_step_id=1,
+        step_id=1,
         is_optimizer_step_committed=False,
     )
 
     with hook.begin("on_optimizer_step", args):
         pass
 
-    callback.assert_not_called()
+    callback.assert_called_once_with(args.model)
 
 
 def test_validation_epoch_end_ignores_step_frequency():

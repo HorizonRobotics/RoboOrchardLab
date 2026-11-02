@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 class LossTracker(PipelineHooks):
-    """Aggregate model-output losses and log them on committed optimizer steps.
+    """Aggregate model-output losses across completed accumulation windows.
 
     The hook reads only ``PipelineHookArgs.model_outputs`` at ``on_step``
     after-hooks. For outputs implementing ``ModelOutputHasLossKeys``, the
@@ -55,10 +55,15 @@ class LossTracker(PipelineHooks):
     is never inspected by this hook.
 
     Selected losses are accumulated as detached local sum/count tensors. One
-    packed distributed reduction runs only when a committed optimizer step
+    packed distributed reduction runs only when a completed accumulation window
     reaches the logging boundary. Logging and reset happen from
     ``on_optimizer_step`` after-hooks once the trainer knows whether the
     optimizer boundary committed.
+
+    Aggregation state is not included in the trainer checkpoint. If a
+    checkpoint interrupts a logging window, the resumed window contains only
+    the values observed after recovery. Its configured logging boundary and
+    metric names do not change.
 
     Each logging window establishes its complete loss-key set on the first
     update. Every later update in that window must provide exactly the same
@@ -125,7 +130,7 @@ class LossTracker(PipelineHooks):
 
         ``accelerator`` is accepted only for compatibility with the former
         ``update(accelerator, model_outputs)`` public API. It is ignored:
-        distributed reduction belongs to the committed optimizer-step hook,
+        distributed reduction belongs to the completed-window hook,
         after all local micro-step losses have been accumulated.
 
         Args:
@@ -226,13 +231,12 @@ class LossTracker(PipelineHooks):
             self.update(args.accelerator, args.model_outputs)
 
     def _on_optimizer_step_end(self, args: PipelineHookArgs) -> None:
-        """Log and reset losses after a committed optimizer step."""
+        """Log and reset losses after a completed accumulation window."""
         if args.exception is not None:
             self._reset_window()
             return
 
-        if not args.is_optimizer_step_committed:
-            self._reset_window()
+        if not args.is_optimizer_step_boundary:
             return
 
         if args.global_step_id % self.cfg.step_log_freq == 0:
@@ -297,12 +301,12 @@ class LossTracker(PipelineHooks):
 
 
 class LossTrackerConfig(PipelineHooksConfig[LossTracker]):
-    """Configuration for committed optimizer-step model-output loss logging."""
+    """Configuration for completed-window model-output loss logging."""
 
     class_type: ClassType[LossTracker] = LossTracker
 
     step_log_freq: int = Field(ge=1, default=5)
-    """The frequency in committed optimizer steps to log the loss."""
+    """The frequency in completed accumulation windows to log the loss."""
 
     log_total_loss: bool = False
     """If True, log the total loss as well."""
@@ -312,7 +316,7 @@ class LossTrackerConfig(PipelineHooksConfig[LossTracker]):
 
     If True, accumulate a sum/count across all updates in the window. If
     False, retain only the latest value for each key with a count of one. The
-    window size is controlled by ``step_log_freq`` committed optimizer steps.
+    window size is controlled by ``step_log_freq`` completed windows.
     """
 
 

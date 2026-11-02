@@ -209,9 +209,11 @@ By default `ckpt/Qwen3.5-2B` is a symlink to
 the supplied local resource; preserve or replace that link when moving exports.
 That reference is resolved relative to the export directory, so loading an
 export never depends on `HOLOBRAIN_CKPT_BASE`.
-This is a small training entry with one optimizer update per batch, final export,
-loss logging, and a `training_result.json` recording completed optimizer
-updates. Before training starts it logs the resolved config and copies it into
+This is a small training entry with one optimizer-step boundary per batch, final
+export, loss logging, and a `training_result.json`. Its existing `optimizer_steps`
+field counts completed accumulation windows, including AMP-skipped parameter
+updates; it does not count only successful parameter updates.
+Before training starts it logs the resolved config and copies it into
 the workspace: the config directory as `<workspace>/configs/` and the resolved
 values, overrides included, as `training_config.json`.
 
@@ -226,12 +228,17 @@ python -m projects.holobrain_0_5.export --workspace ./outputs/holobrain_0_5_expo
   --kwargs '{"checkpoint":"./ckpt/action.safetensors"}'
 ```
 
-`save_step_freq` (default 5000) writes a resumable Accelerate checkpoint every
-that many committed optimizer updates, under `<workspace>/checkpoints/checkpoint_<n>`;
+`save_step_freq` (default 5000) writes an Accelerate checkpoint every that many
+completed accumulation windows, including AMP skips, under
+`<workspace>/checkpoints/checkpoint_<n>`;
 the final export stays at the workspace root. `total_limit` (default 3) caps how
 many are kept. Each holds the model plus optimizer state and measured about
 7.6 GB for the shipped config, so the default retention needs roughly 23 GB.
-Checkpoints are also written at the end of each epoch and of the training loop.
+Checkpoints are also written at the end of the training loop.
+Saving and retention follow Accelerate's best-effort behavior: an interrupted
+save can leave a partial directory, and retention can delete an older checkpoint
+before the next save completes. The latest directory number does not prove
+that its contents are complete.
 
 To resume, point `resume_from` at a checkpoint directory:
 

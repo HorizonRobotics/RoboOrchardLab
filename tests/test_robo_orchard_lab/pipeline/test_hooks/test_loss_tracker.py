@@ -256,14 +256,18 @@ def test_loss_tracker_logs_on_committed_optimizer_step(mocker):
     )
 
 
-def test_loss_tracker_discards_uncommitted_optimizer_window():
-    """Skipped optimizer boundaries should discard pending loss values."""
+def test_loss_tracker_logs_skipped_optimizer_window():
+    """An AMP skip remains a completed window for loss logging."""
 
     tracker = LossTrackerConfig(step_log_freq=1)()
     accelerator = MagicMock()
+    accelerator.is_main_process = True
+    accelerator.reduce.return_value = torch.tensor([[4.0, 1.0]])
     args = PipelineHookArgs(
         accelerator=accelerator,
         model_outputs={"loss": torch.tensor(4.0, requires_grad=True)},
+        global_step_id=1,
+        is_optimizer_step_committed=False,
     )
 
     with tracker.begin("on_step", args):
@@ -274,7 +278,7 @@ def test_loss_tracker_discards_uncommitted_optimizer_window():
     with tracker.begin("on_optimizer_step", args):
         pass
 
-    accelerator.reduce.assert_not_called()
+    accelerator.reduce.assert_called_once()
     assert tracker._cached_loss_sums == {}
     assert tracker._cached_loss_counts == {}
 

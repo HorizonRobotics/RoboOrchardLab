@@ -932,7 +932,9 @@ class TestOffloadIdentity:
             persistent_workers=True,
         )
         try:
-            epochs = [flatten(list(loader)), flatten(list(loader))]
+            epochs = [flatten(list(loader))]
+            loader.dataset.set_epoch(1)
+            epochs.append(flatten(list(loader)))
             for epoch in epochs:
                 assert Counter(row for _, row in epoch) == {
                     row: 1 for row in range(31)
@@ -1309,8 +1311,8 @@ class TestWeightedAdmission:
         captured = []
 
         @contextmanager
-        def capture():
-            with original() as sources:
+        def capture(context=None):
+            with original(context) as sources:
                 captured.append(sources[1][0])
                 yield sources
 

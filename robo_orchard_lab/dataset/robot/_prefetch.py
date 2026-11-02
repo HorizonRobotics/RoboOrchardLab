@@ -251,6 +251,27 @@ def close_dataloader_resources(
                         ),
                     ) and inner._dataset is getattr(owner, "dataset", None):
                         iterators.append(inner)
+                    elif isinstance(inner, GeneratorType):
+                        from robo_orchard_lab.dataset.robot._resume import (
+                            _LoaderResumeRuntime,
+                        )
+
+                        inner_locals = inspect.getgeneratorlocals(inner)
+                        loader = inner_locals.get("loader")
+                        runtime = inner_locals.get("self")
+                        delivery = _LoaderResumeRuntime._iterate_deliveries
+                        if (
+                            inner.gi_code is delivery.__code__
+                            and any(
+                                loader is candidate
+                                for candidate in dataloader_owners
+                            )
+                            and isinstance(runtime, _LoaderResumeRuntime)
+                            and runtime
+                            is getattr(loader, "_resume_runtime", None)
+                            and inner in runtime._active_iterators
+                        ):
+                            iterators.append(inner)
             traceback = traceback.tb_next
     errors: list[BaseException] = []
     try:

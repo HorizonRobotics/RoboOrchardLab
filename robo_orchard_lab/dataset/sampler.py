@@ -39,7 +39,11 @@ __all__ = [
     "IndiceTable",
     "ChunkedIndiceTable",
     "IndiceTableSampler",
+    "DEFAULT_SAMPLING_SEED",
 ]
+
+DEFAULT_SAMPLING_SEED = 42
+"""Default seed for framework-owned dataset sampling streams."""
 
 
 @runtime_checkable

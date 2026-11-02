@@ -44,6 +44,25 @@ To do this:
      no-new-class alternative before accepting new protocols, providers,
      adapters, factories, registries, DTOs, snapshots, or caches.
 
+   For responsibility, concept, or call-chain convergence requests:
+   - Trace representative normal, restore, early-stop, exhaustion, and error
+     paths as applicable. Map responsibilities, concept names, mutable state,
+     and the calls that create, advance, capture, restore, or release them.
+   - Identify the authoritative owner of each state or decision. Distinguish
+     necessary views at different boundaries (such as delivery versus processed
+     position) from duplicate sources of truth; similar names are not proof
+     that two states or methods are interchangeable.
+   - Check repeated owner discovery, thin forwarding, cross-layer private-state
+     access, and framework mechanics exposed to business callers. Test whether
+     the existing owner can absorb the behavior before proposing another layer.
+   - For every candidate, name the symbols, state, or calls that can disappear,
+     the dependency or concept it removes, and any execution-order, lifecycle,
+     checkpoint-format, or public-contract impact. Moving code alone is not a
+     simplification unless it makes a meaningful ownership boundary reusable.
+   - Preserve accepted capabilities and the normal non-restore path. Report
+     behavior changes separately from implementation-only convergence, and
+     obtain a decision before dropping a capability or widening the contract.
+
 4. Launch one strong architecture-review subagent for the current round by
    default. Require one structured candidate list covering:
    - boundaries, dependency direction, and ownership

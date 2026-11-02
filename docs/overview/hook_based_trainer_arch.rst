@@ -74,8 +74,15 @@ in conjunction with **Hugging Face ``Accelerator``**, manages higher-level opera
 * Moving data and models to the correct device.
 * Wrapping the model, optimizer, and dataloader for distributed training.
 * Handling gradient accumulation (``on_step`` tracks each micro-batch, and ``Accelerator`` determines when to sync gradients and step the optimizer).
+  By default, Accelerate completes a short window at the end of an epoch.
+  With ``sync_with_dataloader=False``, windows can span epochs, and a final
+  unfinished window is not applied when training ends.
 * Performing ``optimizer.step()`` and ``optimizer.zero_grad()`` inside the ``on_optimizer_step`` hook context on optimizer-step boundaries.
-* Calling ``lr_scheduler.step()``, often within ``on_optimizer_step`` or ``on_epoch_end`` depending on the scheduler type.
+* Calling ``lr_scheduler.step()`` during training without a validation metric.
+  Metric-based schedulers such as ``ReduceLROnPlateau`` are not supported by
+  this trainer. DeepSpeed-owned schedulers follow the engine configuration.
+  A DeepSpeed scheduler factory is resolved by the engine, so the trainer's
+  early validation does not inspect its result.
   With DeepSpeed, the engine may perform the optimizer step during backward; the trainer observes the committed progress and reports it through ``on_optimizer_step`` instead of owning the low-level step call.
 
 Role of ``PipelineHookArgs``
@@ -97,20 +104,97 @@ not assumed to be the tensor used for backward.
 
 **Loss aggregation.** ``LossTracker`` accumulates detached local sum/count
 pairs from every micro-step and performs one packed ``sum`` reduction only at
-the committed optimizer-step logging boundary. With
+the completed accumulation-window logging boundary, including AMP skips. With
 ``accumulate_grad_steps=1`` this is numerically equivalent to the former
 per-update mean reduction; the delayed boundary is intentional so multi-step
 accumulation and uncommitted optimizer steps are handled correctly. A logging
 window infers its complete loss-key set from the first update. Every later
 update in that window must publish exactly the same set on every rank; the
-tracker does not synchronize key presence or fill missing keys. A committed
-logging boundary, an uncommitted boundary, or an exception clears the window,
+tracker does not synchronize key presence or fill missing keys. A completed
+logging boundary or an exception clears the window,
 so the next window may establish a different key set. The old two-argument
 ``LossTracker.update(accelerator, model_outputs)`` call shape remains accepted,
 but the accelerator is ignored and the retired mutable cache fields are not a
 supported extension point. A custom ``update`` override must delegate to
 ``super().update`` to contribute to the canonical aggregation; arbitrary
 override-owned state is not reconstructed.
+
+Trainer checkpoints do not persist ``LossTracker`` or ``MetricTracker``
+aggregation state. A logging or reset interval crossing a restart may report
+only post-resume updates until the next reset. The trainer warns on resume;
+metric names and logging boundaries remain unchanged.
+
+**Checkpoint persistence.** For supported trainer/data recovery configurations,
+at a completed optimizer-step boundary the trainer records its processed batch
+progress and data recovery information for each rank. It delegates file
+saving and retention to Accelerate. It does not restore unfinished gradient
+accumulation. There is no directory-level atomic publication or rollback: an
+interrupted save may leave partial files, and automatic retention may delete
+older checkpoints before a new save finishes. Accelerate loads training state
+and global RNG; data recovery uses the saved position. When resuming within an
+epoch, the prepared iteration adapter preserves the post-load training RNG across data skipping;
+random behavior in custom hooks and transforms is not guaranteed to replay.
+For supported recovery configurations, if a checkpoint lacks a current
+DataLoader snapshot, the trainer warns and replays the consumed epoch prefix.
+Its data order and position may differ. An unfinished accumulation window in a
+native checkpoint is restarted with a warning; its uncheckpointed gradients
+are not recovered. Trainer/data recovery excludes DeepSpeed/FSDP, node-local
+checkpoints, and external stateful loaders; native saving remains available.
+Recovery capability is checked at every save. If a temporary limitation
+is removed, later saves can capture data recovery state again; an earlier
+native-only save does not permanently downgrade the running trainer.
+``ResumeCheckpointConfig.load_state`` applies Lab training recovery checks
+and resets a registered trainer's accumulation phase after native loading
+finishes. The generic ``utils.huggingface.accelerator_load_state`` only handles
+local/remote loading and staging cleanup: it delegates registered custom
+objects to Accelerate and preserves the native loaded phase. Registering
+``TrainerProgressState`` alone does not enable training policy in that helper.
+Once training, a hook or saving raises an error, checkpoint behavior is
+undefined. There is no cross-rank checkpoint error-coordination guarantee; the
+trainer attempts its normal DataLoader cleanup.
+
+Prepared Data in Custom Training Loops
+----------------------------------------------------------
+
+``utils.accelerate.prepare_data_loader`` prepares a loader once and binds its
+sampling and recovery owners. Use ``iterate_prepared_loader`` to manage an
+epoch in a handwritten loop; ``HookBasedTrainer`` uses the same boundary.
+The context owns epoch binding, staged data recovery, first-fetch RNG
+restoration, read-failure/EOF coordination and iterator cleanup. All ranks
+must follow the same fetch and post-batch stop-check sequence. Notification
+cannot release a peer blocked outside those checks.
+
+.. code-block:: python
+
+    from robo_orchard_lab.utils.accelerate import (
+        iterate_prepared_loader,
+        prepare_data_loader,
+    )
+
+    loader = prepare_data_loader(accelerator, loader)
+    model, optimizer = accelerator.prepare(model, optimizer)
+    for epoch in range(num_epochs):
+        with iterate_prepared_loader(accelerator, loader, epoch=epoch) as batches:
+            for batch in batches:
+                with accelerator.accumulate(model):
+                    loss = compute_loss(model, batch)
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    if accelerator.sync_gradients:
+                        batches.commit()
+                if batches.should_stop(local_stop=reached_training_limit()):
+                    break
+            else:
+                continue
+            break
+
+``commit()`` latches the processed Lab data position at a completed optimizer
+window, including AMP-skipped updates. Call it before checkpoint hooks run.
+The loop owns model updates, scheduler calls, hooks, progress counters and
+checkpoint persistence; this context does not save training state. On normal
+EOF, persistent workers may remain available for the next epoch. Early exit
+and errors close the active iteration through the existing loader lifecycle.
 
 Training and Evaluation Modes
 ----------------------------------------------------------

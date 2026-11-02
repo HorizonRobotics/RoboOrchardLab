@@ -94,6 +94,9 @@ Local agent asset index lives in `.agents/README.md`.
   drafting scaffold is helpful
 - Architecture review, layering, abstraction seams, or public API surface design:
   `.agents/references/architecture-review-guideline.md`
+- Responsibility, concept, state ownership, or call-chain convergence
+  (including requests to simplify these boundaries):
+  `.agents/skills/codereview/architecture-review/SKILL.md`
 - License header requirements and template: `.agents/references/license-header-guideline.md`
 - Test creation, updates, or validation: `.agents/instructions/test.instructions.md`
 - Validation scope and developer workflow decisions: `.agents/instructions/workflow.instructions.md`

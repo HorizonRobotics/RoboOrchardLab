@@ -77,8 +77,12 @@ class MetricTracker(PipelineHooks):
     """Update metrics from batches and log/reset them at trainer boundaries.
 
     Subclasses implement ``update_metric`` to consume batch outputs from
-    ``on_batch``. Step-level logging and reset are driven by committed
-    optimizer-step progress from ``on_optimizer_step``.
+    ``on_batch``. Step-level logging and reset are driven by completed
+    accumulation windows from ``on_optimizer_step``, including AMP skips.
+
+    Metric state is not included in the trainer checkpoint. After recovery,
+    metrics covering a reset interval that began before the checkpoint may
+    contain only post-recovery updates until the next reset.
     """
 
     def __init__(
@@ -91,11 +95,11 @@ class MetricTracker(PipelineHooks):
             metric_entrys (MetricEntry|Sequence[MetricEntry]): Single
                 or multiple metric entries to update.
             reset_by (Literal["epoch", "step"], optional): Basis for resetting
-                metrics; either "epoch" or committed optimizer "step".
+                metrics; either "epoch" or completed-window "step".
             reset_freq (int, optional): Frequency to reset metrics.
                 Defaults to 1.
-            step_log_freq (int, optional): Frequency to log at the committed
-                optimizer-step level. Defaults to 512.
+            step_log_freq (int, optional): Frequency in completed
+                accumulation windows. Defaults to 512.
             epoch_log_freq (int, optional): Frequency to log at the epoch
                 level. Defaults to 1.
             log_main_process_only (int, optional): Only logging in the main
@@ -211,20 +215,18 @@ class MetricTracker(PipelineHooks):
         self.update_metric(args.batch, args.model_outputs)
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Handle committed optimizer-step metric logging and reset.
+        """Handle completed-window metric logging and reset.
 
-        Logs metrics and optionally resets them at the end of a committed
-        optimizer-step scope based on `step_log_freq`.
+        Logs metrics and optionally resets them at the end of a completed
+        accumulation window based on `step_log_freq`.
 
         Args:
             args (PipelineHookArgs): Arguments containing the current
-                committed optimizer step and epoch IDs.
+                completed accumulation window and epoch IDs.
         """
         if args.exception is not None:
             return
-        if not args.is_optimizer_step_committed:
-            if self.reset_by == "step":
-                self._reset()
+        if not args.is_optimizer_step_boundary:
             return
 
         if (
@@ -282,12 +284,12 @@ class MetricTrackerConfig(PipelineHooksConfig[MetricTracker]):
     reset_by: Literal["epoch", "step"] = "epoch"
     """Frequency basis for metric reset.
 
-    Uses either "epoch" or committed optimizer "step".
+    Uses either "epoch" or completed-window "step".
     """
     reset_freq: int = 1
     """Frequency to reset metrics."""
     step_log_freq: int = 512
-    """Frequency of logging at the committed optimizer-step level."""
+    """Frequency of logging at the completed-window level."""
     epoch_log_freq: int = 1
     """Frequency of logging at the epoch level."""
     log_main_process_only: bool = True

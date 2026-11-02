@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 from __future__ import annotations
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
@@ -82,8 +82,8 @@ class MicroStepProgressState:
     """Progress for dataloader-batch micro steps in trainer loops.
 
     The top-level ``step_id`` and ``global_step_id`` fields in
-    ``PipelineHookArgs`` are optimizer-step counters. This state carries the
-    batch-level counters used by ``on_step`` and ``on_batch`` events when
+    ``PipelineHookArgs`` count completed accumulation windows. This state
+    carries the batch-level counters used by ``on_step`` and ``on_batch`` when
     gradient accumulation is enabled.
     """
 
@@ -94,7 +94,7 @@ class MicroStepProgressState:
     index_in_optimizer_step: int = 0
     """Number of micro steps accumulated in the current optimizer window."""
     last_optimizer_step_size: int = 0
-    """Number of micro steps used by the last committed optimizer step."""
+    """Number of micro steps in the last completed accumulation window."""
 
 
 @dataclass(init=False)
@@ -103,7 +103,7 @@ class PipelineHookArgs:
 
     Hook handlers use this object to inspect trainer-owned runtime objects and
     the current progress snapshot. ``step_id`` and ``global_step_id`` are
-    committed optimizer-step counters; hooks that need dataloader-batch
+    completed-window counters; hooks that need dataloader-batch
     progress should read ``micro_step`` when it is provided by a trainer loop.
 
     ``reduced_backward_loss`` remains an accepted constructor argument only
@@ -118,9 +118,9 @@ class PipelineHookArgs:
     accelerator: Accelerator
     epoch_id: int = 0
     step_id: int = 0
-    """Current optimizer-step id within the epoch."""
+    """Current completed-window id within the epoch."""
     global_step_id: int = 0
-    """Current global optimizer-step id."""
+    """Current global completed-window id."""
     micro_step: Optional[MicroStepProgressState] = None
     """Current micro-step progress, when created by a trainer loop."""
     is_optimizer_step_boundary: bool = True
@@ -151,6 +151,14 @@ class PipelineHookArgs:
     is already failing. The original exception is re-raised by the context
     manager.
     """
+    _defer_epoch_checkpoint: Callable[[Callable[[], None]], None] | None = (
+        field(default=None, repr=False, compare=False)
+    )
+    """Trainer-owned epoch save queue; copied with the event context."""
+    _trainer_dataloader: Optional[Iterable] = field(
+        default=None, repr=False, compare=False
+    )
+    """Trainer-owned loader for checkpointing, independent of hook edits."""
 
     def __init__(
         self,
@@ -173,6 +181,10 @@ class PipelineHookArgs:
         model_outputs: Optional[ModelOutput] = None,
         exception: BaseException | None = None,
         reduced_backward_loss: Optional[torch.Tensor] = None,
+        _defer_epoch_checkpoint: (
+            Callable[[Callable[[], None]], None] | None
+        ) = None,
+        _trainer_dataloader: Optional[Iterable] = None,
     ) -> None:
         """Construct hook arguments while discarding retired loss input.
 
@@ -201,6 +213,15 @@ class PipelineHookArgs:
         self.batch = batch
         self.model_outputs = model_outputs
         self.exception = exception
+        self._defer_epoch_checkpoint = _defer_epoch_checkpoint
+        self._trainer_dataloader = _trainer_dataloader
+
+    @property
+    def _checkpoint_dataloader(self) -> Optional[Iterable]:
+        """Use the trainer loader or the public loader for standalone use."""
+        if self._trainer_dataloader is not None:
+            return self._trainer_dataloader
+        return self.dataloader
 
     @property
     def reduced_backward_loss(self) -> NoReturn:

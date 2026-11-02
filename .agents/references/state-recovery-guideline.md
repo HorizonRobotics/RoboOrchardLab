@@ -51,6 +51,18 @@ capture, refresh, discard, or apply recovery state.
   explicit and do not make cross-domain recovery depend on inspecting opaque
   blobs.
 
+## Schema Versioning
+
+- Before merging an MR, choose the final persisted schema version relative to
+  the target branch's published format and field semantics. Do not increment
+  it for each development iteration or internal refactor. A new format starts
+  at version 1; an incompatible change to an existing format normally uses
+  the next version.
+- Do not retain reader compatibility or migration branches solely for
+  unpublished intermediate formats from the same MR. Supported published
+  formats still require tested compatibility or explicit rejection. Validate
+  the final format's round trip and its actual published-version boundary.
+
 ## Capture And Apply
 
 - Prefer `get_state() -> State` and `load_state(state: State) -> None` as the
@@ -103,6 +115,31 @@ capture, refresh, discard, or apply recovery state.
   `decode_state_payload_for_apply(...)` before handing payloads to domain
   implementations. Do not leak `StateSequence` into metric, policy, env, or
   evaluator domain state handlers.
+
+## Snapshot Ownership And Freshness
+
+- Keep generic persistence and staging mechanics independent of domain recovery
+  policy. Domain owners decide capability checks and post-load transitions;
+  generic loaders must not discover those policies by inspecting registered
+  domain objects or importing a higher layer.
+- For asynchronous input, distinguish produced, prefetched, delivered, and
+  successfully processed positions. Capture the frontier promised by the
+  recovery API; fetching or lookahead alone must not advance a processed
+  checkpoint position.
+- Read seed metadata from its authoritative sampling owner rather than caching
+  a second live copy. A seed and an epoch-origin Generator state serve different
+  purposes: the seed alone does not reconstruct an already-advanced stream.
+  Conventional attribute names do not prove RNG ownership or independence.
+- When checkpointing through mutable hook/event arguments, use a runtime
+  reference established by the owning trainer or loop. A callback-rebound
+  convenience field must not silently select a different recovery owner.
+- A cached recovery snapshot describes the progress at capture time. When
+  that progress advances, invalidate or refresh the snapshot before saving;
+  distinguish missing or stale state from a valid empty state.
+- Best-effort replay must preserve the runtime owner's checkpoint lifecycle
+  so later saves describe the resumed execution. Report missing state and
+  replay limits; do not imply that replay recovers missing randomness or
+  guarantees the original data order.
 
 ## Env-Domain State
 
@@ -182,3 +219,7 @@ capture, refresh, discard, or apply recovery state.
   not enough to enter the recovery path.
 - For recreate paths, test that construction metadata and runtime state remain
   distinct and both survive the intended recovery boundary.
+- For cached positions or replay fallback, validate save, fresh-instance
+  resume, continued execution, save, and resume again. Include relevant
+  mutable hook arguments, missing/stale state, and a re-save before consuming
+  another item; a single successful load does not cover those boundaries.

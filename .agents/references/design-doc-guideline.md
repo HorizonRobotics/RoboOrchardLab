@@ -75,6 +75,13 @@ as a controlled convergence loop rather than a transcript:
 - Run a minimality pass before accepting the design. State the smallest viable
   shape first, then explain why each additional method, field, protocol, DTO,
   adapter, registry, factory, cache, or snapshot is necessary.
+- Bound the promised behavior before adding implementation safeguards. For
+  behavior built on an existing framework, distinguish delegated guarantees,
+  repository-specific requirements, and optional improvements. Evaluate each
+  improvement against a concrete use case and its runtime, test, and maintenance
+  cost; inexpensive useful additions can belong in the first version. Do not
+  silently accumulate stronger guarantees during development. Explicitly scoped
+  replay or best-effort recovery may be preferable to exact recovery machinery.
 - For persisted schemas and storage formats, run an exclusion pass before
   accepting the first version. Delete speculative fields until a concrete
   producer, consumer, validation rule, or migration need justifies storing

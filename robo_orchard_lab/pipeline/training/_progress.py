@@ -28,26 +28,29 @@ __all__ = ["TrainerProgressState"]
 class TrainerProgressState(AcceleratorState):
     """Checkpointable training progress owned by ``HookBasedTrainer``.
 
-    ``step_id`` and ``global_step_id`` track committed optimizer updates.
+    ``step_id`` and ``global_step_id`` track completed accumulation windows,
+    including windows whose optimizer update was skipped by mixed precision.
     ``micro_step`` tracks dataloader-batch progress and the active gradient
     accumulation window.
     """
 
-    schema_version: int = 2
+    schema_version: int = 3
     """Persisted progress schema version."""
     epoch_id: int = 0
     """The current epoch. Starts from 0."""
     step_id: int = 0
-    """The number of committed optimizer steps in the current epoch."""
+    """The number of completed accumulation windows in the current epoch."""
     global_step_id: int = 0
-    """The total number of committed optimizer steps across all epochs."""
+    """The total number of completed accumulation windows across epochs."""
     micro_step: MicroStepProgressState = field(
         default_factory=MicroStepProgressState
     )
     """The dataloader-batch micro-step progress."""
+    rank_states: list[dict[str, Any]] = field(default_factory=list)
+    """Ordered per-rank data and accelerator state captured at checkpoint."""
 
     def update_step(self) -> None:
-        """Increments the optimizer-step counters by 1."""
+        """Increments the completed-window counters by 1."""
         self.commit_optimizer_step(micro_steps=1)
 
     def preview_next_micro_step(self) -> MicroStepProgressState:
@@ -68,6 +71,7 @@ class TrainerProgressState(AcceleratorState):
         current_micro_step: MicroStepProgressState,
     ) -> None:
         """Commits a successfully processed micro step."""
+        self.rank_states = []
         self.micro_step.epoch_step_id = current_micro_step.epoch_step_id + 1
         self.micro_step.global_step_id = current_micro_step.global_step_id + 1
         self.micro_step.index_in_optimizer_step = (
@@ -75,9 +79,10 @@ class TrainerProgressState(AcceleratorState):
         )
 
     def commit_optimizer_step(self, *, micro_steps: int) -> None:
-        """Commits one successful optimizer step."""
+        """Commit one completed accumulation window, including an AMP skip."""
         if micro_steps < 1:
             raise ValueError("micro_steps must be greater than 0.")
+        self.rank_states = []
         self.step_id += 1
         self.global_step_id += 1
         self.micro_step.last_optimizer_step_size = micro_steps
@@ -85,14 +90,17 @@ class TrainerProgressState(AcceleratorState):
 
     def reset_optimizer_step_window(self) -> None:
         """Resets the active accumulation window without committing a step."""
+        self.rank_states = []
         self.micro_step.index_in_optimizer_step = 0
 
     def update_epoch(self) -> None:
         """Increments the epoch and resets epoch-local progress."""
+        self.rank_states = []
         self.epoch_id += 1
         self.step_id = 0
         self.micro_step.epoch_step_id = 0
-        self.micro_step.index_in_optimizer_step = 0
+        # With sync_with_dataloader=False, a window can span epochs. Preserve
+        # that position; trainer/data checkpoints reject an unfinished window.
 
     def is_training_end(
         self, max_step: int | None, max_epoch: int | None
@@ -100,7 +108,7 @@ class TrainerProgressState(AcceleratorState):
         """Checks if the training loop should end based on current state.
 
         Args:
-            max_step (int | None): The maximum optimizer steps allowed.
+            max_step (int | None): The maximum completed windows allowed.
             max_epoch (int | None): The maximum epochs allowed.
 
         Returns:
@@ -126,25 +134,17 @@ class TrainerProgressState(AcceleratorState):
     def load_state_dict(self, state: dict[str, Any]) -> None:
         """Loads progress state and restores nested micro-step state.
 
-        Legacy checkpoints without ``micro_step`` stored dataloader-step
-        counters in ``step_id`` and ``global_step_id``. They cannot be safely
-        interpreted as optimizer-step progress and must be restarted or
-        migrated explicitly.
+        Earlier checkpoints counted successful updates or dataloader steps,
+        not completed windows, and cannot be loaded as current progress.
         """
         state = dict(state)
         schema_version = state.get("schema_version")
         if schema_version is None:
-            if "micro_step" not in state:
-                raise RuntimeError(
-                    "Legacy TrainerProgressState checkpoint detected: old "
-                    "checkpoints stored step_id/global_step_id as "
-                    "dataloader-step counters. Automatic migration to "
-                    "optimizer-step progress is not supported. Please "
-                    "restart training or run an explicit migration tool."
-                )
-            # Earlier optimizer-step progress payloads may have micro_step
-            # but no schema marker. They already carry the new counter split.
-            state["schema_version"] = self.schema_version
+            raise RuntimeError(
+                "Legacy TrainerProgressState checkpoint detected: older "
+                "progress counters cannot be interpreted as completed "
+                "accumulation windows. Restart from weights only."
+            )
         elif schema_version != self.schema_version:
             raise RuntimeError(
                 "Unsupported TrainerProgressState schema_version="

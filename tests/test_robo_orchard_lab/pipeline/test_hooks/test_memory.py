@@ -44,8 +44,8 @@ def test_clear_cache_runs_after_committed_optimizer_step(mocker):
     clear_device_cache.assert_called_once_with(garbage_collection=True)
 
 
-def test_clear_cache_skips_uncommitted_optimizer_boundary(mocker):
-    """Skipped optimizer boundaries should not clear step cache."""
+def test_clear_cache_runs_after_skipped_optimizer_update(mocker):
+    """An AMP skip remains a completed window for cache cadence."""
 
     clear_device_cache = mocker.patch(
         "robo_orchard_lab.pipeline.hooks.memory.clear_device_cache"
@@ -53,12 +53,12 @@ def test_clear_cache_skips_uncommitted_optimizer_boundary(mocker):
     hook = ClearCacheHookConfig(empty_cache_at="step", empty_cache_freq=1)()
     args = PipelineHookArgs(
         accelerator=MagicMock(),
-        global_step_id=0,
-        step_id=0,
+        global_step_id=1,
+        step_id=1,
         is_optimizer_step_committed=False,
     )
 
     with hook.begin("on_optimizer_step", args):
         pass
 
-    clear_device_cache.assert_not_called()
+    clear_device_cache.assert_called_once_with(garbage_collection=False)

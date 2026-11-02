@@ -122,10 +122,11 @@ print(
 # %%
 # Framework sampling seeds
 # ------------------------
-# ``DictIterableDataset(..., seed=42)``
-# owns a private sampling stream. Its initialization does not draw from the
-# default Torch RNG. Model startup seeding, worker default RNG and user
-# transforms/collators remain separate responsibilities. Prefer ``seed`` for
+# ``DictIterableDataset`` defaults to ``seed=42`` when neither ``seed`` nor
+# ``generator`` is supplied. It owns a private sampling stream; initialization
+# does not draw from the
+# default Torch RNG. Model startup seeding and user transforms/collators remain
+# separate responsibilities. Prefer ``seed`` for
 # framework-owned sampling and reproducible complete epochs. It is a base seed
 # for dataset sampling, not a model or worker initialization seed.
 #
@@ -133,6 +134,9 @@ print(
 # stateful sampling stream. Without ``seed``, that stream keeps advancing;
 # ``set_epoch`` records the epoch but does not reseed the Generator or promise
 # same-epoch replay. ``seed`` and ``generator`` cannot be combined.
+# ``IterableWithLenDataset`` also accepts keyword-only ``seed`` for its private
+# index-sampling generator. Omitting both inputs uses ``DEFAULT_SAMPLING_SEED``
+# from ``robo_orchard_lab.dataset.sampler``; an explicit generator is retained.
 #
 # ``HookBasedTrainer`` and ``utils.accelerate.prepare_data_loader`` bind the
 # final prepared dataset's sampling scope automatically. With a combined raw
@@ -158,12 +162,72 @@ print(
 # For managed native/fallback sampling, before a new full traversal call
 # ``prepared_loader.set_epoch(epoch)``; ``HookBasedTrainer`` does this
 # automatically. For an unprepared loader, use ``loader.dataset.set_epoch``.
-# Complete traversals replay from that epoch's start, including persistent
-# workers. This is not mid-epoch checkpoint recovery; offload reader rotation
-# never restarts the stream. Dispatcher and unmanaged epoch notifications
-# retain Accelerate's behavior.
-# Loader startup may still consume default RNG, and changing workers, batching
-# or offload settings does not promise the same sample sequence.
+# Seeded complete traversals replay from that epoch's start, including
+# persistent workers. Explicit generators retain their advancing state.
+# Offload reader rotation never restarts the stream. Dispatcher and unmanaged
+# epoch notifications retain Accelerate's behavior. Managed training gives
+# missing loader and map-sampler generators independent data RNGs. Sampling
+# defaults to 42; worker initialization uses a separate stream derived from
+# ``torch.initial_seed()`` and global rank. Thus the run seed can change worker
+# randomness without consuming the model's default RNG. An explicit loader
+# generator keeps its PyTorch semantics. This differs from PyTorch's default
+# of drawing worker seeds from the current global RNG state and does not
+# guarantee exact replay of random transforms. Changing workers, batching or offload settings
+# does not promise the same sample sequence.
+#
+# %%
+# Resuming within an epoch
+# ------------------------
+# The Lab ``DataLoader`` exposes ``state_dict()`` and ``load_state_dict(state)``.
+# Capture after a batch has been processed successfully, and load into an
+# inactive loader before creating its iterator. The state records delivery
+# positions and the information needed to reconstruct the data plan; it does
+# not save readers, full permutations or prefetched batches. A retained
+# iterator must be closed before loading state. Concurrent iterators have no
+# unique recovery position.
+#
+# With ``HookBasedTrainer``, use ``SaveCheckpointConfig`` and
+# ``ResumeCheckpointConfig``. In supported recovery configurations, a successful
+# save at a completed optimizer-step boundary includes processed batch progress
+# and the final prepared loader's recovery information, excluding unconsumed
+# lookahead and prefetch. The Lab loader owns its worker positions. Trainer/data
+# recovery excludes DeepSpeed/FSDP, node-local saves and external stateful
+# loaders. Restoring model state alone or saving an arbitrary base-loader
+# position does not establish that boundary.
+#
+# ``ResumeCheckpointConfig.load_state`` owns training capability checks and
+# the post-load accumulation phase reset. The generic
+# ``utils.huggingface.accelerator_load_state`` only loads native state and
+# preserves its phase, even when Trainer progress is registered.
+#
+# For a seed-managed ``DictIterableDataset`` in the Lab ``DataLoader``, each
+# worker can skip its consumed prefix without reading old samples when the
+# data and iteration configuration can be reconstructed. Offload, sample
+# prefetch, explicit dataset generators and other unsupported configurations
+# instead replay data; recovery may repeat or omit samples. Both
+# ``in_order=True`` and ``False`` are supported, but unordered delivery does
+# not preserve the original cross-worker order. Keep the source data and
+# rank/worker layout fixed. Random transforms, custom generator sharing and
+# persistent workers' random streams are best effort.
+#
+# Other loaders use Accelerate's batch skipping during trainer resume. For map
+# datasets this can skip sampler indices without reading old samples; iterable
+# datasets may read and discard the skipped prefix. A regular PyTorch
+# ``DataLoader`` wrapping ``DictIterableDataset`` follows this iterable replay
+# path; use the Lab ``DataLoader`` for worker-local fast forward. Framework-owned
+# map sampler RNG is restored from the epoch start, while user-provided
+# generators and custom samplers are best effort.
+# During generic loader recovery, the prepared loader and Accelerate's skip
+# wrapper can both notify ``set_epoch``. Custom dataset and sampler methods
+# should therefore tolerate repeated calls for the same epoch.
+# Arbitrary dataset decisions made by an external ``set_epoch`` call are not
+# serialized; the dataset must persist those decisions itself when they are
+# needed for recovery.
+#
+# For direct dataset iteration, ``create_iterator(skip_n_items=N)`` counts native
+# yields: samples, or dataset-side batches when batching is enabled. It does not
+# count optimizer steps. The separate ``iter(batch_size)`` batching interface
+# remains available.
 #
 
 # %%

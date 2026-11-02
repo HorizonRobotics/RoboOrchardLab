@@ -256,7 +256,7 @@ class MyBatchProcessor(SimpleStepProcessor):
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 # Hooks are a powerful feature for injecting custom behaviors into the
 # training or evaluation loop at predefined stages (e.g., end of an epoch,
-# after a micro step, or after a committed optimizer step), all without
+# after a micro step, or after a completed accumulation window), all without
 # modifying the core engine code.
 #
 # This tutorial provides a brief introduction, demonstrating how to use the

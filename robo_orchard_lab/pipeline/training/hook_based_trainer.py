@@ -14,10 +14,12 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import warnings
 from collections.abc import (
     Callable,
     Iterable as IterableABC,
 )
+from contextlib import nullcontext
 from typing import Any, Iterable
 
 import torch
@@ -30,9 +32,7 @@ from robo_orchard_core.utils.config import Config
 from torch.utils.data import DataLoader
 
 from robo_orchard_lab.dataset.robot._prefetch import (
-    DataloaderCloseReason,
     _close_dataloader_owner_resources,
-    close_dataloader_resources,
 )
 from robo_orchard_lab.models.torch_model import TorchModelMixin
 from robo_orchard_lab.pipeline.hooks.grad_clip import (
@@ -49,9 +49,9 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
 from robo_orchard_lab.pipeline.hooks.validation import ValidationHookConfig
 from robo_orchard_lab.pipeline.training._deepspeed import (
     DeepSpeedStepSnapshot,
-    commit_deepspeed_optimizer_progress,
     configure_deepspeed_gradient_clipping,
     is_deepspeed_accelerator,
+    observe_deepspeed_optimizer_step,
     prepare_deepspeed_optimizer_scheduler,
     read_deepspeed_step_snapshot,
 )
@@ -60,15 +60,22 @@ from robo_orchard_lab.pipeline.training._progress import (
 )
 from robo_orchard_lab.processing.step_processor import BatchStepProcessorMixin
 from robo_orchard_lab.utils.accelerate import (
+    PreparedDataLoaderIteration,
+    _configure_prepared_loader_recovery,
+    _load_prepared_loader_recovery,
+    _set_prepared_loader_epoch,
     _warn_if_prepare_falls_back_to_slow_path,
-    bind_prepared_data_loader_sampling,
     configure_data_loader_for_accelerate,
+    iterate_prepared_loader,
 )
 from robo_orchard_lab.utils.huggingface import (
+    _checkpoint_capability_reason,
     accelerator_load_state,
+    get_accelerate_project_last_checkpoint_id,
 )
 
 logger = get_logger(__name__)
+
 
 __all__ = [
     "HookBasedTrainer",
@@ -88,7 +95,12 @@ LRSchedulerFactory = Callable[
 
 
 class ResumeCheckpointConfig(Config):
-    """A configuration class for resuming from checkpoints."""
+    """Load checkpoints with Lab training policy and continued save naming.
+
+    Registered trainer progress enables recovery capability checks and a new
+    accumulation window after loading. Call ``load_state`` without trainer
+    progress for native loading and continued automatic save naming only.
+    """
 
     resume_from: str
     """The directory containing the checkpoints."""
@@ -96,22 +108,32 @@ class ResumeCheckpointConfig(Config):
     """The directory to cache the checkpoints if from a remote path."""
 
     safe_serialization: bool = True
-    """Whether to use safe serialization when loading the state.
-
-    This is used when input_dir is a remote path. The names of checkpoint
-    files depend on whether ``safe_serialization`` is set to ``True`` or
-    ``False``. Users should ensure that the checkpoint files in the remote
-    directory are compatible with the specified
-    ``safe_serialization`` option.
-    """
+    """Retained for existing callers; Accelerate detects the saved format."""
 
     def load_state(self, accelerator: Accelerator, **kwargs) -> None:
-        """Loads the state of the accelerator from a checkpoint.
+        """Restore native state, then normalize a registered trainer's phase.
+
+        Capability checks run before loading when ``TrainerProgressState`` is
+        registered. The accumulation phase is reset only after the complete
+        native load succeeds, including custom objects and global RNG. The
+        trainer applies prepared DataLoader recovery separately afterward.
 
         Args:
-            accelerator (Accelerator): The ``Accelerator`` instance to load
-                the state into.
+            accelerator: Accelerator containing the objects to restore.
+            **kwargs: Forwarded to the native checkpoint loader.
+
+        Raises:
+            RuntimeError: Registered trainer/data recovery is unsupported by
+                the current runtime configuration.
         """
+        has_trainer_progress = any(
+            isinstance(obj, TrainerProgressState)
+            for obj in getattr(accelerator, "_custom_objects", ())
+        )
+        if has_trainer_progress:
+            reason = _checkpoint_capability_reason(accelerator)
+            if reason is not None:
+                raise RuntimeError(reason)
         accelerator_load_state(
             accelerator=accelerator,
             input_dir=self.resume_from,
@@ -119,6 +141,18 @@ class ResumeCheckpointConfig(Config):
             safe_serialization=self.safe_serialization,
             **kwargs,
         )
+        if has_trainer_progress:
+            # A fresh phase also permits changing the accumulation size.
+            accelerator.step = 0
+        project = accelerator.project_configuration
+        if project.automatic_checkpoint_naming and accelerator.project_dir:
+            project.iteration = max(
+                project.iteration,
+                get_accelerate_project_last_checkpoint_id(
+                    accelerator.project_dir
+                )
+                + 1,
+            )
 
 
 def _normalize_hook_inputs(
@@ -225,6 +259,14 @@ def _resolve_optimizer_scheduler_before_prepare(
     ``training._deepspeed``.
     """
 
+    def reject_metric_scheduler(scheduler: object) -> None:
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            raise ValueError(
+                "HookBasedTrainer does not support ReduceLROnPlateau: "
+                "its scheduler is stepped without a validation metric."
+            )
+
+    reject_metric_scheduler(lr_scheduler)
     if is_deepspeed_accelerator(accelerator):
         return prepare_deepspeed_optimizer_scheduler(
             accelerator=accelerator,
@@ -243,6 +285,7 @@ def _resolve_optimizer_scheduler_before_prepare(
         return optimizer, lr_scheduler
     if callable(lr_scheduler):
         resolved_scheduler = lr_scheduler(optimizer)
+        reject_metric_scheduler(resolved_scheduler)
         if not isinstance(
             resolved_scheduler,
             torch.optim.lr_scheduler.LRScheduler,
@@ -328,12 +371,16 @@ class HookBasedTrainer:
         lr_scheduler (LRScheduler | DummyScheduler | LRSchedulerFactory): The
             scheduler input. Factories receive the optimizer that owns runtime
             parameter groups: immediately on ordinary backends, or from
-            DeepSpeed after it constructs the actual optimizer.
+            DeepSpeed after it constructs the actual optimizer. Ordinary
+            schedulers are stepped during training without a validation
+            metric; ``ReduceLROnPlateau`` is not supported. The trainer
+            cannot validate a DeepSpeed factory's deferred result before
+            the engine creates it.
         hooks (PipelineHooks | Iterable[PipelineHooks] | None, optional): The
             hooks used during training. These hooks can customize various
             stages of the training process. Default is None.
-        max_step (int | None, optional): The maximum number of committed
-            optimizer steps for training. Either ``max_step`` or
+        max_step (int | None, optional): The maximum number of completed
+            accumulation windows, including AMP skips. Either ``max_step`` or
             ``max_epoch`` must be specified. Default is None.
         max_epoch (int | None, optional): The maximum number of epochs for
             training. Either ``max_step`` or ``max_epoch`` must be specified.
@@ -439,6 +486,7 @@ class HookBasedTrainer:
         should_check_slow_path = configure_data_loader_for_accelerate(
             accelerator=accelerator, data_loader=dataloader
         )
+        source_dataloader = dataloader
         self.dataloader, self.model, self.optimizer, self.lr_scheduler = (
             accelerator.prepare(
                 dataloader,
@@ -447,8 +495,8 @@ class HookBasedTrainer:
                 lr_scheduler,
             )
         )
-        self._managed_sampling = bind_prepared_data_loader_sampling(
-            accelerator, self.dataloader
+        _configure_prepared_loader_recovery(
+            accelerator, self.dataloader, source_dataloader
         )
         if should_check_slow_path:
             _warn_if_prepare_falls_back_to_slow_path(self.dataloader)
@@ -469,13 +517,34 @@ class HookBasedTrainer:
 
         # register user hooks
         self.hooks += user_hooks
-
         self._start_epoch = 0
         self._start_step = 0
 
         if resume_from is not None:
             logger.info(f"Resume from: {resume_from}", main_process_only=True)
             resume_from.load_state(accelerator=self.accelerator)
+            if self.trainer_progress_state.micro_step.index_in_optimizer_step:
+                warnings.warn(
+                    "Checkpoint contains an unfinished accumulation window; "
+                    "its gradients were not restored. Starting a new window.",
+                    UserWarning,
+                )
+                self.trainer_progress_state.reset_optimizer_step_window()
+            _load_prepared_loader_recovery(
+                accelerator,
+                self.dataloader,
+                self.trainer_progress_state.rank_states,
+                epoch=self.trainer_progress_state.epoch_id,
+                processed_batches=(
+                    self.trainer_progress_state.micro_step.epoch_step_id
+                ),
+            )
+            logger.warning(
+                "LossTracker and MetricTracker aggregation state is not "
+                "restored from checkpoints; statistics spanning a resume "
+                "may contain only post-resume samples until their next reset.",
+                main_process_only=True,
+            )
             self._start_epoch = self.trainer_progress_state.epoch_id
             self._start_step = self.trainer_progress_state.step_id
 
@@ -504,10 +573,8 @@ class HookBasedTrainer:
             accelerator=self.accelerator,
             max_step=self.max_step,
             max_epoch=self.max_epoch,
-            epoch_id=self.trainer_progress_state.epoch_id,
-            step_id=self.trainer_progress_state.step_id,
-            global_step_id=self.trainer_progress_state.global_step_id,
             dataloader=self.dataloader,
+            _trainer_dataloader=self.dataloader,
             model=self.model,
             optimizer=self.optimizer,
             lr_scheduler=self.lr_scheduler,
@@ -521,30 +588,6 @@ class HookBasedTrainer:
                 self.accelerator.sync_gradients
             )
         return hookargs
-
-    def _run_gradient_clipping(
-        self,
-        hook_args: PipelineHookArgs,
-        *,
-        is_optimizer_step_boundary: bool,
-    ) -> None:
-        """Clip gradients for the trainer-owned ordinary torch/DDP path."""
-
-        if self._grad_clip is None:
-            return
-        if hook_args.exception is not None:
-            return
-        if not is_optimizer_step_boundary:
-            return
-
-        _clip_optimizer_gradients(
-            accelerator=self.accelerator,
-            optimizer=self.optimizer,
-            clip_mode=self._grad_clip.clip_mode,
-            clip_value=self._grad_clip.clip_value,
-            max_norm=self._grad_clip.max_norm,
-            norm_type=self._grad_clip.norm_type,
-        )
 
     def _run_optimizer_step(
         self,
@@ -583,43 +626,44 @@ class HookBasedTrainer:
                     "DeepSpeed optimizer-step observation requires a "
                     "pre-step snapshot from HookBasedTrainer._run_batch_step."
                 )
-            return commit_deepspeed_optimizer_progress(
+            committed = observe_deepspeed_optimizer_step(
                 accelerator=self.accelerator,
-                progress_state=self.trainer_progress_state,
-                hook_args=hook_args,
                 is_optimizer_step_boundary=is_optimizer_step_boundary,
-                micro_steps=micro_steps,
                 step_before=deepspeed_step_before,
             )
+        else:
+            if is_optimizer_step_boundary and self._grad_clip is not None:
+                _clip_optimizer_gradients(
+                    accelerator=self.accelerator,
+                    optimizer=self.optimizer,
+                    clip_mode=self._grad_clip.clip_mode,
+                    clip_value=self._grad_clip.clip_value,
+                    max_norm=self._grad_clip.max_norm,
+                    norm_type=self._grad_clip.norm_type,
+                )
+            self.optimizer.step()
+            committed = (
+                is_optimizer_step_boundary
+                and not self.accelerator.optimizer_step_was_skipped
+            )
+            scheduler_handles_optimizer_step_gating = (
+                isinstance(self.lr_scheduler, AcceleratedScheduler)
+                and self.lr_scheduler.step_with_optimizer
+            )
+            if scheduler_handles_optimizer_step_gating or committed:
+                self.lr_scheduler.step()
+            self.optimizer.zero_grad()
 
-        self._run_gradient_clipping(
-            hook_args,
-            is_optimizer_step_boundary=is_optimizer_step_boundary,
-        )
-        self.optimizer.step()
-        committed = (
-            is_optimizer_step_boundary
-            and not self.accelerator.optimizer_step_was_skipped
-        )
-        scheduler_handles_optimizer_step_gating = (
-            isinstance(self.lr_scheduler, AcceleratedScheduler)
-            and self.lr_scheduler.step_with_optimizer
-        )
-        if scheduler_handles_optimizer_step_gating or committed:
-            self.lr_scheduler.step()
-        self.optimizer.zero_grad()
-
-        if committed:
+        if is_optimizer_step_boundary:
             self.trainer_progress_state.commit_optimizer_step(
                 micro_steps=micro_steps
             )
             self.trainer_progress_state.sync_pipeline_hook_arg(hook_args)
-        elif is_optimizer_step_boundary:
-            self.trainer_progress_state.reset_optimizer_step_window()
-            self.trainer_progress_state.sync_pipeline_hook_arg(hook_args)
         return committed
 
-    def _run_batch_step(self, batch: Any) -> None:
+    def _run_batch_step(
+        self, batch: Any, *, data_iteration: PreparedDataLoaderIteration
+    ) -> None:
         """Run one batch through step and batch hooks.
 
         The batch processor owns forward/backward work. The trainer commits
@@ -660,31 +704,26 @@ class HookBasedTrainer:
             is_optimizer_step_boundary
         )
         on_step_hook_args.is_optimizer_step_committed = False
-        if is_optimizer_step_boundary:
-            with self.hooks.begin(
+        optimizer_scope = (
+            self.hooks.begin(
                 "on_optimizer_step",
                 on_step_hook_args,
-            ) as optimizer_hook_args:
-                committed = self._run_optimizer_step(
-                    optimizer_hook_args,
-                    is_optimizer_step_boundary=is_optimizer_step_boundary,
-                    micro_steps=micro_steps,
-                    deepspeed_step_before=deepspeed_step_before,
-                )
-                optimizer_hook_args.is_optimizer_step_committed = committed
-                self.trainer_progress_state.sync_pipeline_hook_arg(
-                    optimizer_hook_args
-                )
-        else:
+            )
+            if is_optimizer_step_boundary
+            else nullcontext(on_step_hook_args)
+        )
+        with optimizer_scope as optimizer_hook_args:
             committed = self._run_optimizer_step(
-                on_step_hook_args,
+                optimizer_hook_args,
                 is_optimizer_step_boundary=is_optimizer_step_boundary,
                 micro_steps=micro_steps,
                 deepspeed_step_before=deepspeed_step_before,
             )
-            on_step_hook_args.is_optimizer_step_committed = committed
+            if is_optimizer_step_boundary:
+                data_iteration.commit()
+            optimizer_hook_args.is_optimizer_step_committed = committed
             self.trainer_progress_state.sync_pipeline_hook_arg(
-                on_step_hook_args
+                optimizer_hook_args
             )
 
     def _run_epoch_steps(
@@ -696,65 +735,42 @@ class HookBasedTrainer:
         Returns:
             bool: Whether the training loop should end after this epoch.
         """
-        if self._managed_sampling:
-            # Align the final wrapper's iteration too: DataLoaderShard applies
-            # that value to its dataset immediately before worker iteration.
-            self.dataloader.set_epoch(self.trainer_progress_state.epoch_id)
-        dataloader_iter = iter(self.dataloader)
-        primary_exc: BaseException | None = None
         end_loop_flag = False
-        close_reason = DataloaderCloseReason.EARLY_BREAK
-        try:
-            while True:
-                try:
-                    batch = next(dataloader_iter)
-                except StopIteration:
-                    # Signal other ranks to stop the current epoch before
-                    # they step on an extra local batch.
-                    close_reason = DataloaderCloseReason.EPOCH_EXHAUSTED
-                    self.accelerator.set_trigger()
-                    self.accelerator.check_trigger()
-                    break
-
-                if self.accelerator.check_trigger():
-                    close_reason = DataloaderCloseReason.COORDINATED_EPOCH_END
-                    break
-
+        with iterate_prepared_loader(
+            self.accelerator,
+            self.dataloader,
+            epoch=self.trainer_progress_state.epoch_id,
+        ) as iteration:
+            for batch in iteration:
                 with self.accelerator.accumulate(self.model):
-                    self._run_batch_step(batch=batch)
+                    self._run_batch_step(batch=batch, data_iteration=iteration)
                 self.trainer_progress_state.sync_pipeline_hook_arg(
                     on_epoch_hook_args
                 )
-                if self.trainer_progress_state.is_training_end(
+                end_loop_flag = self.trainer_progress_state.is_training_end(
                     max_step=self.max_step,
                     max_epoch=self.max_epoch,
-                ):
-                    end_loop_flag = True
-                    close_reason = DataloaderCloseReason.MAX_STEP_END
-                    self.accelerator.set_trigger()
-                if self.accelerator.check_trigger():
-                    if not end_loop_flag:
-                        close_reason = (
-                            DataloaderCloseReason.COORDINATED_EPOCH_END
-                        )
+                )
+                if iteration.should_stop(local_stop=end_loop_flag):
                     break
-                if end_loop_flag:
-                    break
-        except BaseException as exc:
-            primary_exc = exc
-            raise
-        finally:
-            if primary_exc is not None:
-                reason = DataloaderCloseReason.EXCEPTION_ABORT
-            else:
-                reason = close_reason
-            close_dataloader_resources(
-                self.dataloader,
-                dataloader_iter,
-                reason=reason,
-                primary_exc=primary_exc,
-            )
         return end_loop_flag
+
+    def _run_epoch(self) -> bool:
+        """Finish epoch hooks and data transition before queued saves."""
+        epoch_saves: list[Callable[[], None]] = []
+        epoch_args = self._get_hook_args()
+        epoch_args._defer_epoch_checkpoint = epoch_saves.append
+        with self.hooks.begin("on_epoch", epoch_args) as hook_args:
+            end_loop = self._run_epoch_steps(hook_args)
+        if not end_loop:
+            self.trainer_progress_state.update_epoch()
+            _set_prepared_loader_epoch(
+                self.dataloader,
+                self.trainer_progress_state.epoch_id,
+            )
+        for save in epoch_saves:
+            save()
+        return end_loop
 
     def __call__(self):
         logger.info(
@@ -766,7 +782,12 @@ class HookBasedTrainer:
             f"and step {self._start_step}",
             main_process_only=True,
         )
-        end_loop_flag = False
+        end_loop_flag = self.trainer_progress_state.is_training_end(
+            max_step=self.max_step, max_epoch=self.max_epoch
+        )
+        if end_loop_flag:
+            self.accelerator.set_trigger()
+        end_loop_flag = self.accelerator.check_trigger()
         self.model.train()
 
         primary_exc: BaseException | None = None
@@ -775,14 +796,10 @@ class HookBasedTrainer:
                 "on_loop", self._get_hook_args()
             ) as on_loop_hook_args:
                 while not end_loop_flag:
-                    with self.hooks.begin(
-                        "on_epoch", self._get_hook_args()
-                    ) as on_epoch_hook_args:
-                        end_loop_flag = self._run_epoch_steps(
-                            on_epoch_hook_args
-                        )
-
-                    self.trainer_progress_state.update_epoch()
+                    # Uneven rank inputs may make gradient accumulation
+                    # synchronize on different batches and hang. Callers
+                    # must configure distributed sampling accordingly.
+                    end_loop_flag = self._run_epoch()
                     self.trainer_progress_state.sync_pipeline_hook_arg(
                         on_loop_hook_args
                     )

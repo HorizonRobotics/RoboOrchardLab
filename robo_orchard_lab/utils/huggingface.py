@@ -14,15 +14,20 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import logging
 import os
+import posixpath
 import re
-import warnings
+import shutil
+import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 import fsspec
 from accelerate import Accelerator
+from accelerate.utils import DistributedType
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 from huggingface_hub.hf_api import RepoFile
 
@@ -76,53 +81,95 @@ def _is_accelerate_model_artifact_name(filename: str) -> bool:
 def get_accelerate_project_last_checkpoint_id(project_dir: str) -> int:
     """Helper function to get last checkpoint id.
 
-    Retrieves the ID of the last checkpoint in the specified project directory.
+    Return the highest occupied automatic checkpoint ID in a project.
 
     This function specifically handles checkpoints saved using the
     `Accelerator.save_state` method from the Hugging Face `accelerate`
     library, which follows an automatic checkpoint naming convention.
     It searches the specified `project_dir/checkpoints` directory,
-    extracts numerical IDs from folder names, and returns the highest ID,
-    representing the most recent checkpoint.
+    recognizes entries named ``checkpoint_<nonnegative integer>`` and returns
+    the highest ID. Other entries are ignored.
 
     Args:
         project_dir (str): Path to the project directory containing the
-            `checkpoints` folder. This directory should contain only
-            checkpoints saved by `Accelerator.save_state`.
+            `checkpoints` folder.
 
     Returns:
-        int: The ID of the last (most recent) checkpoint found in the
-            project directory. Returns `-1` if the `checkpoints` directory
-            does not exist or is empty.
-
-    Raises:
-        ValueError: If no valid checkpoint IDs are found in the `checkpoints`
-            directory.
+        int: The largest occupied checkpoint ID, or ``-1`` if no matching
+        entry exists. An empty checkpoint directory still occupies its ID.
 
     Example:
         >>> get_accelerate_project_last_checkpoint_id("/path/to/project")
         42
 
     Note:
-        This function assumes that all entries in the `checkpoints` directory
-        follow the automatic checkpoint naming pattern used by
-        `Accelerator.save_state`. Checkpoints not saved with
-        `Accelerator.save_state` may cause this function to fail.
+        The result is suitable for selecting the next unused ID; it does not
+        establish that the matching checkpoint is complete or loadable.
     """
     input_dir = os.path.join(project_dir, "checkpoints")
 
     if not os.path.exists(input_dir):
         return -1
 
-    iter_ids = []
-    for folder_i in os.listdir(input_dir):
-        iter_ids.append(
-            int(re.findall(r"[\/]?([0-9]+)(?=[^\/]*$)", folder_i)[0])
+    return max(
+        (
+            int(match.group(1))
+            for name in os.listdir(input_dir)
+            if (match := re.fullmatch(r"checkpoint_([0-9]+)", name))
+            is not None
+        ),
+        default=-1,
+    )
+
+
+def _supports_checkpoint_backend(accelerator: Accelerator) -> bool:
+    """Identify backends supporting trainer/data recovery."""
+    return accelerator.distributed_type in {
+        DistributedType.NO,
+        DistributedType.MULTI_CPU,
+        DistributedType.MULTI_GPU,
+    }
+
+
+def _checkpoint_capability_reason(accelerator: Accelerator) -> str | None:
+    """Return a current trainer/data recovery limitation, if any."""
+    if not _supports_checkpoint_backend(accelerator):
+        return (
+            "Trainer/data checkpoint recovery is unsupported for this backend."
         )
+    if accelerator.device.type not in {"cpu", "cuda"}:
+        return "Trainer/data recovery RNG is unsupported for this device."
+    if accelerator.project_configuration.save_on_each_node:
+        return "Trainer/data recovery with node-local saves is unsupported."
+    for loader in accelerator._dataloaders:
+        if getattr(loader, "use_stateful_dataloader", False):
+            return (
+                "Trainer/data recovery of an external stateful loader "
+                "is unsupported."
+            )
+    return None
 
-    iter_ids.sort()
 
-    return iter_ids[-1]
+def _copy_remote_checkpoint(input_dir: str, stage: str) -> None:
+    """Copy all remote members into an owned staging directory."""
+    fs, remote_path = fsspec.core.url_to_fs(input_dir)
+    members = []
+    for source in fs.find(remote_path):
+        relative = posixpath.relpath(source, remote_path)
+        if (
+            relative in {".", ".."}
+            or relative.startswith("../")
+            or posixpath.isabs(relative)
+        ):
+            raise ValueError("Remote checkpoint member escapes its root.")
+        members.append((source, relative))
+    if not members:
+        raise FileNotFoundError("Remote checkpoint contains no files.")
+    for source, relative in members:
+        target = os.path.join(stage, *relative.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with fs.open(source, "rb") as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024 * 32)
 
 
 def accelerator_load_state(
@@ -132,109 +179,48 @@ def accelerator_load_state(
     safe_serialization: bool = True,
     **kwargs,
 ) -> None:
-    """Load the state of the accelerator from a checkpoint.
+    """Load local or staged remote state through Accelerate.
 
-    This function extends the functionality of `accelerator.load_state` to
-    support loading checkpoints from remote filesystems (e.g., S3, GCS).
-
-    It first checks if the `input_dir` is a local path or a remote path.
-    If it's a local path, it directly calls `accelerator.load_state`. If it's
-    a remote path, it synchronizes the checkpoint files to a local cache
-    directory before loading the state.
+    Accelerate owns model, optimizer, custom-object and global RNG loading.
+    This helper does not inspect registered object types or reset the native
+    accumulation phase. Training-specific capability checks and phase handling
+    belong to ``ResumeCheckpointConfig.load_state``; prepared data restoration
+    remains separate.
 
     Args:
-        accelerator (Accelerator): The `Accelerator` instance to load the
-            state into.
-        input_dir (str): The path to the checkpoint directory or file.
-            This can be a local path or a remote path (e.g., S3, GCS).
-        cache_dir (str | None): The local directory to cache the checkpoint
-            files. This is required if `input_dir` is a remote path.
-        safe_serialization (bool): Whether to use safe serialization when
-            loading the state. This is used when input_dir is a remote
-            path. The names of checkpoint files depend on whether
-            `safe_serialization` is set to `True` or `False`. Users should
-            ensure that the checkpoint files in the remote directory are
-            compatible with the specified `safe_serialization` option.
-        **kwargs: Additional arguments passed to `accelerator.load_state`.
+        accelerator: Existing Accelerator containing the runtime objects.
+        input_dir: Local checkpoint directory, file:// path or remote URL.
+        cache_dir: Existing local directory used for remote staging.
+        safe_serialization: Retained for callers; Accelerate detects format.
+        **kwargs: Passed to Accelerator.load_state.
     """
 
-    def get_fs_protocol(path: str) -> str:
-        """Get the filesystem protocol from a path."""
-        path_splits = path.split("://")
-        if len(path_splits) == 1:
-            protocol = "file"
-        else:
-            protocol = path_splits[0]
-        return protocol
-
-    def sync_remote_checkpoints(
-        accelerator: Accelerator,
-        remote_dir: str,
-        cache_dir: str,
-        safe_serialization: bool = True,
-    ) -> None:
-        """Sync remote checkpoints to local cache."""
-        if not accelerator.is_local_main_process:
-            raise RuntimeError(
-                "sync_remote_checkpoints should only be called "
-                "on the main process."
-            )
-        pj_config = accelerator.project_configuration
-        old_v = pj_config.automatic_checkpoint_naming
-        # disable automatic checkpoint naming to use given checkpoint
-        # directory!
-        pj_config.automatic_checkpoint_naming = False
-        accelerator.save_state(
-            cache_dir, safe_serialization=safe_serialization
-        )
-        file_names = list(os.listdir(cache_dir))
-        for file_name in file_names:
+    del safe_serialization
+    remote = "://" in input_dir and not input_dir.startswith("file://")
+    directory = input_dir.removeprefix("file://")
+    stage: str | None = None
+    try:
+        if remote:
+            if cache_dir is None or not os.path.isdir(cache_dir):
+                raise ValueError("Remote recovery requires a cache directory.")
+            stage = tempfile.mkdtemp(prefix="checkpoint-load-", dir=cache_dir)
+            _copy_remote_checkpoint(input_dir, stage)
+            directory = stage
+        accelerator.load_state(directory, **kwargs)
+    finally:
+        if stage is not None:
+            primary_active = sys.exc_info()[0] is not None
             try:
-                with (
-                    fsspec.open(
-                        os.path.join(remote_dir, file_name), "rb"
-                    ) as remote_file,
-                    open(
-                        os.path.join(cache_dir, file_name), "wb"
-                    ) as local_file,
-                ):
-                    # chunk read and write with 32MB
-                    while True:
-                        data = remote_file.read(1024 * 1024 * 32)  # type: ignore
-                        if not data:
-                            break
-                        local_file.write(data)
-            except FileNotFoundError:
-                warnings.warn(
-                    f"File {file_name} not found in {cache_dir}. Skipping."
-                )
-        pj_config.automatic_checkpoint_naming = old_v
-
-    input_dir_fs_protocol = get_fs_protocol(input_dir)
-    if input_dir_fs_protocol == "file":
-        if not os.path.exists(input_dir):
-            raise ValueError(
-                f"Checkpoint directory {input_dir} does not exist."
-            )
-        return accelerator.load_state(input_dir, **kwargs)
-    else:
-        if cache_dir is None:
-            raise ValueError(
-                "cache_dir should be specified when input_dir is "
-                "not a local path."
-            )
-        if not os.path.exists(cache_dir):
-            raise ValueError(f"Cache directory {cache_dir} does not exist.")
-
-        if accelerator.is_local_main_process:
-            sync_remote_checkpoints(
-                accelerator,
-                input_dir,
-                cache_dir,
-                safe_serialization=safe_serialization,
-            )
-        accelerator.wait_for_everyone()
-        accelerator.load_state(cache_dir, **kwargs)
+                shutil.rmtree(stage)
+            except BaseException as cleanup_error:
+                if not primary_active:
+                    raise
+                try:
+                    logging.getLogger(__name__).warning(
+                        "Checkpoint staging cleanup failed: %r", cleanup_error
+                    )
+                except Exception:
+                    pass
 
 
 @dataclass

@@ -17,9 +17,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from typing import Optional, TypeVar
+from typing import Any, Optional, TypeVar
 
 from accelerate import Accelerator
+from accelerate.utils import gather_object
 
 from robo_orchard_lab.models.torch_model import TorchModelMixin
 from robo_orchard_lab.pipeline.hooks.mixin import (
@@ -29,9 +30,14 @@ from robo_orchard_lab.pipeline.hooks.mixin import (
     PipelineHooks,
     PipelineHooksConfig,
 )
+from robo_orchard_lab.utils.accelerate import (
+    _capture_prepared_loader_recovery,
+)
 from robo_orchard_lab.utils.huggingface import (
+    _checkpoint_capability_reason,
     _has_model_save_artifact,
     _should_write_like_accelerate_save,
+    _supports_checkpoint_backend,
 )
 
 __all__ = [
@@ -47,13 +53,31 @@ SaveHookType = TypeVar("SaveHookType", bound=PipelineHooks)
 logger = logging.getLogger(__name__)
 
 
+def _export_checkpoint_models(
+    accelerator: Accelerator, directory: str
+) -> None:
+    """Export models and their configs alongside the native checkpoint."""
+    should_write = _should_write_like_accelerate_save(accelerator)
+    for idx, model in enumerate(accelerator._models):
+        prefix = "model" if len(accelerator._models) == 1 else f"model_{idx}"
+        target = os.path.join(directory, prefix)
+        accelerator.save_model(model, target)
+        config = os.path.join(directory, f"{prefix}.config.json")
+        if (
+            os.path.exists(config)
+            and should_write
+            and _has_model_save_artifact(target)
+        ):
+            shutil.copy(config, target)
+
+
 class SaveHookConfigT(PipelineHooksConfig[SaveHookType]):
     save_root: str | None = None
     """The root directory where checkpoints are saved."""
     save_epoch_freq: Optional[int] = 1
     """Frequency of saving checkpoints based on epochs."""
     save_step_freq: Optional[int] = None
-    """Frequency of saving checkpoints based on committed optimizer steps."""
+    """Checkpoint frequency in completed accumulation windows."""
     save_when_loop_end: bool = True
     """Whether to save the model at the end of the training loop."""
     save_model: bool = True
@@ -82,8 +106,8 @@ class SaveHookConfigT(PipelineHooksConfig[SaveHookType]):
 class SaveCheckpoint(PipelineHooks):
     """Save Accelerate training state at configured training boundaries.
 
-    Step-based saves run only after committed optimizer steps. Epoch and loop
-    saves use their own scopes and do not depend on step-frequency triggers.
+    Step-based saves run after completed accumulation windows. Epoch and
+    loop saves use their own scopes and independent frequency triggers.
 
     Args:
         cfg (SaveCheckpointConfig): Configuration object containing
@@ -136,36 +160,101 @@ class SaveCheckpoint(PipelineHooks):
             )
         self._is_checked = True
 
-    def _save_state(self, accelerator: Accelerator) -> str:
-        accelerator.wait_for_everyone()
-        save_location = accelerator.save_state(self.save_root)  # type: ignore
-        if self.cfg.save_model:
-            should_write_config = _should_write_like_accelerate_save(
-                accelerator
-            )
-            for idx, model in enumerate(accelerator._models):
-                model_prefix = f"model_{idx}"
-                if idx == 0 and len(accelerator._models) == 1:
-                    model_prefix = "model"
-                save_directory = os.path.join(save_location, model_prefix)
-                accelerator.save_model(model, save_directory)
-                model_config_path = os.path.join(
-                    save_location, f"{model_prefix}.config.json"
-                )
-                if os.path.exists(model_config_path):
-                    # copy config to save_directory
-                    if should_write_config and _has_model_save_artifact(
-                        save_directory
-                    ):
-                        shutil.copy(model_config_path, save_directory)
-            accelerator.wait_for_everyone()
+    def _save_state(
+        self, accelerator: Accelerator, data_loader: Any | None = None
+    ) -> str:
+        """Gather recovery state and delegate best-effort saving to Accelerate.
 
+        Checkpoint behavior is undefined after training, hook or save errors.
+        The rank gather below carries normal recovery state and capability; it
+        does not coordinate errors or make the filesystem save atomic.
+        A prepared loader supplies its data state; standalone calls without
+        one save the remaining checkpoint state without data recovery details.
+        Recovery capability is evaluated for each save, so a temporary
+        limitation does not permanently disable data-state capture.
+        """
+        from robo_orchard_lab.pipeline.training._progress import (
+            TrainerProgressState,
+        )
+
+        self._check(accelerator)
+        owners = [
+            obj
+            for obj in getattr(accelerator, "_custom_objects", ())
+            if isinstance(obj, TrainerProgressState)
+        ]
+        if any(
+            progress.micro_step.index_in_optimizer_step != 0
+            for progress in owners
+        ):
+            raise RuntimeError("Cannot checkpoint an unfinished window.")
+        if owners:
+            supports_recovery = _supports_checkpoint_backend(accelerator)
+            if supports_recovery and len(owners) != 1:
+                raise RuntimeError(
+                    "Trainer/data recovery requires one trainer "
+                    "progress owner."
+                )
+            reason = _checkpoint_capability_reason(accelerator)
+            outcomes = []
+            if supports_recovery:
+                progress = owners[0]
+                if (
+                    reason is None
+                    and getattr(data_loader, "_lab_recovery", None) is None
+                ):
+                    reason = "prepared DataLoader is unavailable"
+                local_state = None
+                if reason is None:
+                    if (
+                        accelerator.step
+                        % accelerator.gradient_accumulation_steps
+                    ):
+                        raise RuntimeError(
+                            "Checkpoint accumulation phase is unsafe."
+                        )
+                    data_state = _capture_prepared_loader_recovery(
+                        data_loader,
+                        epoch=progress.epoch_id,
+                        processed_batches=progress.micro_step.epoch_step_id,
+                    )
+                    local_state = {
+                        "rank": accelerator.process_index,
+                        **data_state,
+                    }
+                outcomes = gather_object(
+                    [{"reason": reason, "state": local_state}]
+                )
+                reason = next(
+                    (
+                        item["reason"]
+                        for item in outcomes
+                        if item["reason"] is not None
+                    ),
+                    None,
+                )
+            for progress in owners:
+                progress.rank_states = (
+                    [item["state"] for item in outcomes]
+                    if reason is None
+                    else []
+                )
+            if reason is not None:
+                logger.warning(
+                    "Saving native Accelerate state without trainer/data "
+                    "recovery: %s",
+                    reason,
+                )
+
+        save_location = accelerator.save_state(self.save_root)
+        if self.cfg.save_model:
+            _export_checkpoint_models(accelerator, save_location)
         return save_location
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Callback when a committed optimizer-step scope ends.
+        """Callback when a completed-window scope ends.
 
-        Saves a checkpoint at the end of a committed optimizer step if
+        Saves a checkpoint at the end of a completed accumulation window if
         `save_step_freq` conditions are met.
 
 
@@ -178,21 +267,35 @@ class SaveCheckpoint(PipelineHooks):
         """
         if args.exception is not None:
             return
-        if not args.is_optimizer_step_committed:
+        if not args.is_optimizer_step_boundary:
             return
 
         if (
             self.save_step_freq is not None
             and args.global_step_id % self.save_step_freq == 0
         ):
-            self._check(args.accelerator)
-            save_location = self._save_state(args.accelerator)
+            save_location = self._save_state(
+                args.accelerator, args._checkpoint_dataloader
+            )
             if args.accelerator.is_main_process:
                 logger.info(
                     "Save checkpoint at the end of step {} to {}".format(
                         args.global_step_id, save_location
                     )
                 )
+
+    @staticmethod
+    def _skip_unfinished_window(args: PipelineHookArgs) -> bool:
+        """Skip non-step saves while an accumulation window is unfinished."""
+        if (
+            args.micro_step is not None
+            and args.micro_step.index_in_optimizer_step != 0
+        ):
+            logger.warning(
+                "Skipping checkpoint: gradient accumulation is unfinished."
+            )
+            return True
+        return False
 
     def _on_epoch_end(self, args: PipelineHookArgs) -> None:
         """Callback when epoch ends.
@@ -210,28 +313,43 @@ class SaveCheckpoint(PipelineHooks):
         if args.exception is not None:
             return
 
-        if (
-            self.save_epoch_freq is not None
-            and (args.epoch_id + 1) % self.save_epoch_freq == 0
+        if self._epoch_checkpoint_due(args.epoch_id) and not (
+            self._skip_unfinished_window(args)
         ):
-            self._check(args.accelerator)
-            save_location = self._save_state(args.accelerator)
-            if args.accelerator.is_main_process:
-                logger.info(
-                    "Save checkpoint at the end of epoch {} to {}".format(
-                        args.epoch_id, save_location
-                    )
+            defer = args._defer_epoch_checkpoint
+            if defer is not None:
+                defer(lambda: self._save_epoch_checkpoint(args))
+            else:
+                self._save_epoch_checkpoint(args)
+
+    def _epoch_checkpoint_due(self, epoch: int) -> bool:
+        return self.save_epoch_freq is not None and (
+            (epoch + 1) % self.save_epoch_freq == 0
+        )
+
+    def _save_epoch_checkpoint(self, args: PipelineHookArgs) -> None:
+        """Save at the trainer's epoch boundary, or immediately standalone."""
+        save_location = self._save_state(
+            args.accelerator, args._checkpoint_dataloader
+        )
+        if args.accelerator.is_main_process:
+            logger.info(
+                "Save checkpoint at the end of epoch {} to {}".format(
+                    args.epoch_id, save_location
                 )
+            )
 
     def _on_loop_end(self, args: PipelineHookArgs) -> None:
-        if args.exception is not None:
+        if (
+            args.exception is not None
+            or not self.cfg.save_when_loop_end
+            or self._skip_unfinished_window(args)
+        ):
             return
 
-        if not self.cfg.save_when_loop_end:
-            return
-
-        self._check(args.accelerator)
-        save_location = self._save_state(args.accelerator)
+        save_location = self._save_state(
+            args.accelerator, args._checkpoint_dataloader
+        )
         if args.accelerator.is_main_process:
             logger.info(
                 "Save checkpoint at the end of training to {}".format(
@@ -247,11 +365,11 @@ class SaveCheckpointConfig(SaveHookConfigT[SaveCheckpoint]):
 
 
 class SaveModel(PipelineHooks):
-    """Save model weights at configured epoch or committed-step boundaries.
+    """Save model weights at configured epoch or completed-window boundaries.
 
     This hook writes model artifacts via ``Accelerator.save_model``. It tracks
     the last saved global step to avoid duplicate saves when a step, epoch, and
-    loop-end event refer to the same committed optimizer step.
+    loop-end event refer to the same completed accumulation window.
     """
 
     cfg: SaveModelConfig
@@ -317,10 +435,10 @@ class SaveModel(PipelineHooks):
         return save_root
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Save the model after matching committed optimizer steps."""
+        """Save the model after matching completed accumulation windows."""
         if args.exception is not None:
             return
-        if not args.is_optimizer_step_committed:
+        if not args.is_optimizer_step_boundary:
             return
 
         if (

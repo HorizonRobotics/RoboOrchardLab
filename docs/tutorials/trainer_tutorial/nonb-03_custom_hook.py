@@ -20,7 +20,7 @@
 ==========================================================
 In many complex training scenarios, you might need to inject custom logic at various
 points within the training loop (e.g., at the beginning/end of an epoch, or before/after
-a micro step or committed optimizer step). The **robo_orchard_lab** framework provides a powerful and flexible
+a micro step or completed accumulation window). The **robo_orchard_lab** framework provides a powerful and flexible
 Hook system based on :py:class:`~robo_orchard_lab.pipeline.hooks.mixin.PipelineHooks` to achieve this
 without modifying the core training engine.
 
@@ -315,8 +315,9 @@ class MyHook(PipelineHooks):
             ),
         )
 
-        # Register micro-step-level hooks. Use "on_optimizer_step" instead
-        # for logic that must run after a committed optimizer update.
+        # Register micro-step-level hooks. To act after an actual optimizer
+        # update, use an "on_optimizer_step" after-hook and check
+        # args.is_optimizer_step_committed (AMP may skip the update).
         self.register_hook(
             channel="on_step",
             hook=HookContext.from_callable(

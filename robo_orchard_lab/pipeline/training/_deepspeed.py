@@ -28,12 +28,10 @@ from accelerate.utils.deepspeed import DummyOptim, DummyScheduler
 from robo_orchard_lab.pipeline.hooks.grad_clip import (
     GradientClippingHookConfig,
 )
-from robo_orchard_lab.pipeline.hooks.mixin import PipelineHookArgs
-from robo_orchard_lab.pipeline.training._progress import TrainerProgressState
 
 __all__ = [
     "DeepSpeedStepSnapshot",
-    "commit_deepspeed_optimizer_progress",
+    "observe_deepspeed_optimizer_step",
     "configure_deepspeed_gradient_clipping",
     "is_deepspeed_accelerator",
     "prepare_deepspeed_optimizer_scheduler",
@@ -290,16 +288,13 @@ def configure_deepspeed_gradient_clipping(
     deepspeed_plugin.gradient_clipping = grad_clip.max_norm
 
 
-def commit_deepspeed_optimizer_progress(
+def observe_deepspeed_optimizer_step(
     *,
     accelerator: Accelerator,
-    progress_state: TrainerProgressState,
-    hook_args: PipelineHookArgs,
     is_optimizer_step_boundary: bool,
-    micro_steps: int,
     step_before: DeepSpeedStepSnapshot,
 ) -> bool:
-    """Commit trainer progress from DeepSpeed engine step counters.
+    """Observe one DeepSpeed step using engine counters.
 
     Accelerate calls ``DeepSpeedEngine.step()`` from ``accelerator.backward``
     at sync-gradient boundaries. The trainer must therefore observe DeepSpeed
@@ -314,12 +309,6 @@ def commit_deepspeed_optimizer_progress(
         RuntimeError: If DeepSpeed counters move in a way that cannot be
         mapped to one HookBasedTrainer micro step.
     """
-
-    if hook_args.micro_step is None:
-        raise RuntimeError(
-            "DeepSpeed optimizer-step observation requires "
-            "PipelineHookArgs.micro_step."
-        )
 
     step_after = read_deepspeed_step_snapshot(accelerator)
     if step_after is None:
@@ -361,14 +350,7 @@ def commit_deepspeed_optimizer_progress(
             "processor calls accelerator.backward(loss)."
         )
 
-    if skipped_step_delta:
-        progress_state.reset_optimizer_step_window()
-        committed = False
-    else:
-        progress_state.commit_optimizer_step(micro_steps=micro_steps)
-        committed = True
-    progress_state.sync_pipeline_hook_arg(hook_args)
-    return committed
+    return skipped_step_delta == 0
 
 
 def _validate_dummy_scheduler_ownership(

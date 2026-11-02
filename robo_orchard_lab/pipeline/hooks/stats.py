@@ -46,15 +46,15 @@ logger = logging.getLogger(__name__)
 class StatsMonitor(PipelineHooks):
     """Log trainer progress, speed, remaining time, and learning rates.
 
-    Step-level statistics are emitted after committed optimizer steps. When a
-    committed optimizer step covers multiple micro steps, sample throughput
-    is scaled by the committed optimizer window size. Logging boundaries
+    Step-level statistics are emitted after completed accumulation windows.
+    When a window covers multiple micro steps, sample throughput is scaled by
+    the window size. Logging boundaries
     publish these metrics through the accelerator's configured experiment
-    trackers at every ``step_log_freq`` committed steps:
+    trackers at every ``step_log_freq`` completed windows:
 
     * ``Performance/samples_per_second``: smoothed throughput in samples/sec
       across all processes.
-    * ``Performance/step_time_seconds``: smoothed committed-step duration in
+    * ``Performance/step_time_seconds``: smoothed completed-window duration in
       seconds.
     * ``Performance/estimated_remaining_seconds``: estimated remaining time
       in seconds, only when a maximum step/epoch and enough epoch-length data
@@ -71,9 +71,8 @@ class StatsMonitor(PipelineHooks):
                 it attempts to be inferred from the dataloader.
             steps_per_epoch (Optional[int]): The number of steps per epoch.
                 If None, it attempts to be inferred from the dataloader.
-            step_log_freq (int): Frequency to log stats at the committed
-                optimizer-step level. Logs are output every `step_log_freq`
-                committed optimizer steps.
+            step_log_freq (int): Frequency in completed accumulation windows,
+                including windows whose optimizer update was skipped.
             epoch_log_freq (int): Frequency to log stats at the epoch level.
                 Logs are output every `epoch_log_freq` epochs.
         """
@@ -150,7 +149,7 @@ class StatsMonitor(PipelineHooks):
                 across all devices.
             - **Steps per Epoch**:
                 - If `self.steps_per_epoch` is not provided, it attempts to
-                infer committed optimizer steps from `len(dataloader)` and
+                infer completed accumulation windows from `len(dataloader)` and
                 gradient accumulation settings if the dataloader is a finite
                 iterable.
                 - If the dataloader does not have a length (e.g., it is an
@@ -199,7 +198,7 @@ class StatsMonitor(PipelineHooks):
 
         if self.steps_per_epoch is None:
             try:
-                self.steps_per_epoch = _estimate_committed_steps_per_epoch(
+                self.steps_per_epoch = _estimate_completed_windows_per_epoch(
                     dataloader_step_count=len(dataloader),  # type: ignore
                     accelerator=accelerator,
                 )
@@ -227,17 +226,17 @@ class StatsMonitor(PipelineHooks):
         max_epoch: Optional[int],
         steps_per_epoch: Optional[int],
     ) -> Optional[float]:
-        """Estimate remaining time from committed optimizer-step duration.
+        """Estimate remaining time from completed-window duration.
 
         Args:
             avg_step_time (float): The average time per step, calculated from
                 a smoothing window.
-            current_step (int): The current committed global optimizer step.
+            current_step (int): The completed global accumulation windows.
             current_epoch (int): The current epoch in the training loop.
             start_step (int): The starting global step in the training loop.
             start_epoch (int): The starting epoch in the training loop.
-            max_step (Optional[int]): The maximum number of committed global
-                optimizer steps in the training loop.
+            max_step (Optional[int]): The maximum number of completed global
+                accumulation windows in the training loop.
             max_epoch (Optional[int]): The maximum number of epochs
                 in the training loop.
             steps_per_epoch (Optional[int]): The number of steps per
@@ -286,19 +285,19 @@ class StatsMonitor(PipelineHooks):
         self._last_step_end_time = time.time()
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:
-        """Log stats after a committed optimizer step.
+        """Log stats after a completed accumulation window.
 
-        Non-committed optimizer boundaries are ignored. Throughput is measured
+        Non-boundary events are ignored. Throughput is measured
         in samples per second across all devices and accounts for the number
-        of micro steps consumed by the committed optimizer step.
+        of micro steps consumed by the completed accumulation window.
 
         Args:
-            args (PipelineHookArgs): Hook arguments including committed
-                optimizer-step and epoch information.
+            args (PipelineHookArgs): Hook arguments including completed
+                accumulation-window and epoch information.
         """
         if args.exception is not None:
             return
-        if not args.is_optimizer_step_committed:
+        if not args.is_optimizer_step_boundary:
             return
 
         assert (
@@ -504,9 +503,9 @@ class StatsMonitorConfig(PipelineHooksConfig[StatsMonitor]):
     from the dataloader."""
 
     step_log_freq: int = 512
-    """Frequency to log stats at the committed optimizer-step level.
+    """Frequency to log stats at the completed-window level.
 
-    Logs are output every `step_log_freq` committed optimizer steps.
+    Logs are output every `step_log_freq` completed accumulation windows.
     """
 
     epoch_log_freq: int = 1
@@ -574,12 +573,12 @@ def _get_gradient_accumulation_steps(accelerator: Accelerator) -> int:
     return max(gradient_accumulation_steps, 1)
 
 
-def _estimate_committed_steps_per_epoch(
+def _estimate_completed_windows_per_epoch(
     *,
     dataloader_step_count: int,
     accelerator: Accelerator,
 ) -> int:
-    """Estimate committed optimizer steps from a finite dataloader length."""
+    """Estimate completed windows from a finite dataloader length."""
 
     return ceil(
         dataloader_step_count / _get_gradient_accumulation_steps(accelerator)

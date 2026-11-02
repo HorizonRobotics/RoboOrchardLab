@@ -32,7 +32,7 @@ __all__ = ["ValidationHook", "ValidationHookConfig"]
 class ValidationHook(PipelineHooks):
     """Run a caller-provided evaluation callback at training boundaries.
 
-    Step-frequency evaluation is tied to committed optimizer steps through
+    Step-frequency evaluation is tied to completed accumulation windows through
     ``on_optimizer_step``. Epoch-frequency evaluation is tied to ``on_epoch``
     and does not reuse the step schedule.
 
@@ -128,10 +128,10 @@ class ValidationHook(PipelineHooks):
         self,
         hook_args: PipelineHookArgs,
     ) -> None:
-        """Run step-frequency eval after committed optimizer steps only."""
+        """Run step-frequency evaluation after completed windows."""
         if hook_args.exception is not None:
             return
-        if not hook_args.is_optimizer_step_committed:
+        if not hook_args.is_optimizer_step_boundary:
             return
 
         if self.need_step_eval(hook_args):
@@ -160,10 +160,10 @@ class ValidationHookConfig(PipelineHooksConfig[ValidationHook]):
     is to pass a closure that performs the evaluation.
     """
     step_eval_freq: int | None = None
-    """The frequency of evaluation in committed optimizer-step units.
+    """The frequency of evaluation in completed-window units.
 
     If specified, the evaluation will be performed every `step_eval_freq`
-    committed optimizer steps.
+    completed accumulation windows.
     """
     epoch_eval_freq: int | None = None
     """The frequency of evaluation in terms of epochs. If specified, the

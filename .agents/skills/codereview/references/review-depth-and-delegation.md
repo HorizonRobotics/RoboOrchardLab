@@ -97,16 +97,24 @@ section so report ownership remains clear.
 - Count only fresh issue-discovery examinations. Fix verification by the
   reviewer that reported the finding resolves that round's ledger and does
   not start another round.
-- Cap an ordinary review-convergence loop at three fresh issue-discovery
-  rounds. Stop after round three if it still returns a must-fix finding, is
-  blocked by an unresolved contract, or reveals that the effective scope is
-  expanding rather than converging. Do not start a fourth round without the
-  user's explicit direction.
-- At that stop, report the round-by-round finding ledger, verified repairs,
-  remaining findings, and the contract or scope choice that prevents
-  convergence. Return to a design/scope decision instead of repeatedly
-  patching the same review target.
-- Otherwise, stop the review loop when a fresh round returns no new must-fix
+- After the third fresh issue-discovery round, if must-fix findings remain,
+  ask an independent subagent that did not implement the change to classify
+  their causes and the proposed repairs against the agreed scope and user
+  decisions. This is a classification, not another discovery round; keep
+  the finding reviewer responsible for verifying repairs. Repeat this check
+  after each later discovery round that still has must-fix findings.
+- If a finding stems from a contract issue, an unsuitable architecture,
+  excessive defensive design, or another scope or design choice requiring a
+  user decision, stop and present the evidence and concrete choices to the
+  user. Also stop if the independent classification cannot be obtained or
+  the work is no longer converging. Report the round-by-round finding ledger,
+  verified repairs, and remaining decision.
+- If the independent assessment finds only implementation defects within the
+  already agreed contract and scope, repair them, have the original finding
+  reviewer verify the repairs, and automatically start the next fresh review
+  round. This does not grant authority for commits, publication, cleanup, or
+  other actions outside the user's existing authorization.
+- Stop the review loop when a fresh round returns no new must-fix
   findings, or when the user explicitly accepts the remaining risk. Do not
   reuse the previous round's reviewer as the issue-discovery reviewer for the
   next round.

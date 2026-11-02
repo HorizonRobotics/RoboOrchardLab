@@ -61,7 +61,17 @@ from robo_orchard_lab.dataset.robot._prefetch import (
     close_iterators_best_effort,
     create_prefetch_iterator,
 )
+from robo_orchard_lab.dataset.robot._resume import (
+    _SKIPPED_ITEM,
+    _IterationSkip,
+    _LoaderResumeRuntime,
+    _native_loader_kwargs,
+    _replay_skipped_outputs,
+    _SkipCollate,
+    _validate_skip_n_items,
+)
 from robo_orchard_lab.dataset.sampler import (
+    DEFAULT_SAMPLING_SEED,
     ChunkedIndiceTable,
     IndiceTable,
     IndiceTableSampler,
@@ -281,7 +291,9 @@ class DataLoader(TorchDataLoader):
     will internally enable aligned ``batch_loader_kwargs`` on a cloned dataset.
     A seeded ``DictIterableDataset`` is also cloned when batching is disabled:
     each loader owns its sampling epoch and does not mutate the input or a
-    sibling loader's sampling state.
+    sibling loader's sampling state. Without an explicit loader generator,
+    worker startup uses a private stream derived from the Torch run seed and
+    global rank, independently of framework sampling and the model RNG.
 
     Args:
         dataset: The dataset to load.
@@ -350,6 +362,7 @@ class DataLoader(TorchDataLoader):
         use_dataset_side_batching: bool = False,
         **kwargs,
     ):
+        worker_prefix_source_known = type(dataset) is DictIterableDataset
         dataloader_kwargs = self._bind_dataloader_kwargs(
             dataset=dataset,
             args=args,
@@ -390,6 +403,109 @@ class DataLoader(TorchDataLoader):
             )
 
         super().__init__(**dataloader_kwargs)
+        self._resume_runtime = _LoaderResumeRuntime(
+            self, worker_prefix_source_known=worker_prefix_source_known
+        )
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Serialize inactive loader state without runtime iterator owners."""
+        if (
+            self._resume_runtime._live_iterators()
+            or self._iterator is not None
+        ):
+            raise RuntimeError(
+                "cannot pickle a loader with an active iterator"
+            )
+        if (
+            self._dataloader is not None
+            and getattr(self._dataloader, "_iterator", None) is not None
+        ):
+            raise RuntimeError("cannot pickle a loader with a persistent pool")
+        state = self.__dict__.copy()
+        state["_dataloader"] = None
+        state["_iterator"] = None
+        state["_pickled_dataset_loader_alias"] = (
+            isinstance(self.dataset, DictIterableDataset)
+            and self.dataset._generator is self.generator
+        )
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Recreate private runtime ownership after deserialization."""
+        alias = state.pop("_pickled_dataset_loader_alias", False)
+        self.__dict__.update(state)
+        if alias and isinstance(self.dataset, DictIterableDataset):
+            self.dataset._generator = self.generator
+
+    @classmethod
+    def _from_prepared_base(
+        cls, base: TorchDataLoader, *, source_loader: DataLoader
+    ) -> DataLoader:
+        """Rebind an unstarted prepared base without repeating its sharding.
+
+        ``base`` supplies the actual dataset, sampler, and normalized native
+        options. ``source_loader`` supplies Lab's effective batching
+        metadata and source-type recovery capability. Call this before the
+        prepared base is iterated; an owner-held iterator is rejected.
+        """
+        if type(base) is not TorchDataLoader:
+            raise TypeError(
+                "prepared base must be an ordinary PyTorch DataLoader"
+            )
+        if getattr(base, "_iterator", None) is not None:
+            raise RuntimeError("cannot replace an active prepared base")
+        result = cls.__new__(cls)
+        result._uses_dataset_batch_loader = (
+            source_loader._uses_dataset_batch_loader
+        )
+        result._effective_batch_size = source_loader._effective_batch_size
+        result._effective_drop_last = source_loader._effective_drop_last
+        TorchDataLoader.__init__(result, **_native_loader_kwargs(base))
+        if (
+            getattr(source_loader, "_default_worker_generator", None)
+            is (result.generator)
+            and result.generator is not None
+        ):
+            result._default_worker_generator = result.generator
+            result._worker_run_seed = source_loader._worker_run_seed
+            result._worker_seed_rank = source_loader._worker_seed_rank
+        result._resume_runtime = _LoaderResumeRuntime(
+            result,
+            prepared=True,
+            worker_prefix_source_known=(
+                source_loader._resume_runtime._worker_prefix_source_known
+            ),
+        )
+        return result
+
+    def _get_sampling_seed(self) -> int | None:
+        """Return the framework sampling seed when its owner is known."""
+        return self._resume_runtime._get_sampling_seed(self)
+
+    def state_dict(self) -> dict[str, Any]:
+        """Copy the delivered data position and its recovery capability.
+
+        Worker counts cover delivered native outputs, not prefetch. Recovery
+        requires unchanged data and topology and does not preserve cross-worker
+        order or user processing state. Other iterable configurations replay
+        batches with unknown accuracy. Concurrent iterators cannot be saved.
+        """
+        return self._resume_runtime.state_dict(self)
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Validate and stage a data position for the next iterator.
+
+        Active iterators are rejected; a kept persistent pool is closed so
+        its worker dataset copies cannot retain the old position.
+        """
+        self._resume_runtime.load_state_dict(self, state)
+
+    def _notify_epoch(self, epoch: int) -> None:
+        """Notify an inactive loader of an epoch without starting workers."""
+        self._resume_runtime._notify_epoch(self, epoch)
+
+    def __iter__(self) -> Iterator[Any]:
+        return self._resume_runtime.iterate(self)
 
     def __len__(self) -> int:
         """Return the batch count using the effective batching layer.
@@ -478,6 +594,7 @@ class DataLoader(TorchDataLoader):
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
                 resample_ratio=dataset.resample_ratio,
             )
+            cloned_dataset._sampling_seed = dataset._sampling_seed
         elif isinstance(dataset, DictIterableDataset):
             cloned_dataset = DictIterableDataset(
                 datasets=dataset.logical_dataset_items,
@@ -900,8 +1017,11 @@ class IterableWithLenDataset(
             processors in `accelerate`. Defaults to None, which means the
             default sharding strategy will be used (contiguous shards).
         generator (torch.Generator | np.random.Generator | None, optional): An
-            optional generator to use for shuffling. If None, a new generator
-            will be created with a random seed. Defaults to None.
+            optional generator to use for shuffling. Cannot be combined with
+            ``seed``. Defaults to None.
+        seed (int | None, optional): Seed for a private sampling generator.
+            If neither seed nor generator is supplied,
+            ``DEFAULT_SAMPLING_SEED`` is used. Must be in ``[0, 2**64)``.
         batch_loader_kwargs (BatchLoaderConfig | dict | None, optional): An
             optional configuration for using a batch loader. If provided, the
             dataset will be wrapped with a DataLoader to return batches
@@ -915,7 +1035,8 @@ class IterableWithLenDataset(
     Raises:
         TypeError: If ``resample_ratio`` is not numeric.
         ValueError: If indices cannot be inferred, the ratio is not finite and
-            positive, or non-unit resampling is requested without shuffling.
+            positive, non-unit resampling is requested without shuffling,
+            ``seed`` is invalid, or both seed and generator are provided.
 
     """  # noqa: E501
 
@@ -932,7 +1053,17 @@ class IterableWithLenDataset(
         generator: torch.Generator | np.random.Generator | None = None,
         batch_loader_kwargs: BatchLoaderConfig | dict | None = None,
         resample_ratio: float = 1.0,
+        *,
+        seed: int | None = None,
     ):
+        if seed is not None and (
+            isinstance(seed, bool)
+            or not isinstance(seed, int)
+            or not 0 <= seed < 2**64
+        ):
+            raise ValueError("seed must be an integer in [0, 2**64).")
+        if seed is not None and generator is not None:
+            raise ValueError("seed and generator cannot be combined.")
         logger.debug(
             "Initializing IterableWithLenDataset with shuffle config: %s, "
             "shard config: %s and batch loader kwargs: %s",
@@ -961,6 +1092,10 @@ class IterableWithLenDataset(
                 "resample_ratio values other than 1.0 require shuffle=True."
             )
 
+        if generator is None:
+            seed = DEFAULT_SAMPLING_SEED if seed is None else seed
+            generator = torch.Generator().manual_seed(seed)
+        self._sampling_seed = seed
         self.indice_sampler = IndiceTableSampler(
             indices=indices,
             shuffle=self._shuffle_config.shuffle,
@@ -1021,7 +1156,7 @@ class IterableWithLenDataset(
             shard_id=index,
             contiguous=self.shard_kwargs.contiguous,
         )
-        return IterableWithLenDataset(
+        result = IterableWithLenDataset(
             dataset=self.dataset,
             indices=shard_sampler.table,
             shard_kwargs=self.shard_kwargs,
@@ -1030,12 +1165,14 @@ class IterableWithLenDataset(
             batch_loader_kwargs=self.batch_loader_kwargs,
             resample_ratio=self.resample_ratio,
         )
+        result._sampling_seed = self._sampling_seed
+        return result
 
     def take(
         self, key: int | slice | range | Iterator[int]
     ) -> IterableWithLenDataset[DatasetType]:
         """Return a new IterableWithLenDataset with the rows specified by key."""  # noqa: E501
-        return IterableWithLenDataset(
+        result = IterableWithLenDataset(
             dataset=self.dataset,
             indices=self.indice_sampler.table.take(key),
             shard_kwargs=self.shard_kwargs,
@@ -1044,6 +1181,8 @@ class IterableWithLenDataset(
             batch_loader_kwargs=self.batch_loader_kwargs,
             resample_ratio=self.resample_ratio,
         )
+        result._sampling_seed = self._sampling_seed
+        return result
 
     def iter(
         self, batch_size: int, drop_last_batch: bool = False
@@ -1087,7 +1226,49 @@ class IterableWithLenDataset(
             batch_config,
         )
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Any]:
+        context = getattr(self, "_parent_skip_context", None)
+        if context is not None:
+            return self._create_iterator(context, consume_skip=False)
+        offsets = getattr(self, "_resume_worker_offsets", None)
+        self._resume_worker_offsets = None
+        worker = torch.utils.data.get_worker_info()
+        worker_id = worker.id if worker else 0
+        offset = offsets[worker_id] if offsets else 0
+        return self.create_iterator(skip_n_items=offset)
+
+    def create_iterator(self, *, skip_n_items: int = 0) -> Iterator[Any]:
+        """Create one worker-local iterator starting after native yields.
+
+        The unit is one sample, or one dataset-side batch when configured.
+        The skipped index prefix is not read when sample prefetching is off;
+        reservoir-prefetched streams instead replay and discard their prefix.
+        This position applies to this iterator only.
+
+        Args:
+            skip_n_items: Non-negative number of native outputs to skip.
+
+        Returns:
+            An iterator over the remaining native outputs.
+
+        Raises:
+            ValueError: If the skip count is not a non-negative integer.
+        """
+        _validate_skip_n_items(skip_n_items)
+        if not skip_n_items:
+            return self._create_iterator(None, consume_skip=False)
+        # Dataset-side batching still prefetches in its unbatched view.
+        if skip_n_items and _uses_sample_prefetch(self._shuffle_config, None):
+            return _replay_skipped_outputs(
+                self._create_iterator(None, consume_skip=False), skip_n_items
+            )
+        return self._create_iterator(
+            _IterationSkip(skip_n_items), consume_skip=True
+        )
+
+    def _create_iterator(
+        self, context: _IterationSkip | None, *, consume_skip: bool
+    ) -> Iterator[Any]:
         """Yield the worker-local logical stream with optional prefetching.
 
         PyTorch worker sharding is applied before resampling. Prefetch
@@ -1115,7 +1296,7 @@ class IterableWithLenDataset(
                 generator=source_generator,
             )
         iterator = _wrap_with_prefetch_if_needed(
-            self._iter_impl(indice_sampler),
+            self._iter_impl(indice_sampler, context),
             shuffle_config=self._shuffle_config,
             generator=prefetch_generator,
             batch_loader_kwargs=self.batch_loader_kwargs,
@@ -1123,6 +1304,12 @@ class IterableWithLenDataset(
         primary_exc: BaseException | None = None
         try:
             for item in iterator:
+                if context is not None and context.remaining:
+                    if consume_skip:
+                        context.remaining -= 1
+                        continue
+                    yield _SKIPPED_ITEM
+                    continue
                 yield item
         except BaseException as exc:
             primary_exc = exc
@@ -1184,6 +1371,7 @@ class IterableWithLenDataset(
                 TorchDataLoader(
                     prepared,
                     num_workers=0,
+                    generator=torch.Generator().manual_seed(0),
                     **self.batch_loader_kwargs.to_dict(),
                 )
             )
@@ -1265,7 +1453,11 @@ class IterableWithLenDataset(
             f"resample_ratio={self.resample_ratio})"
         )
 
-    def _iter_indices(self, indice_iter: Iterable[int]) -> Iterator[Any]:
+    def _iter_indices(
+        self,
+        indice_iter: Iterable[int],
+        context: _IterationSkip | None = None,
+    ) -> Iterator[Any]:
         """Yield samples for the provided indices.
 
         When the wrapped dataset implements ``__getitems__``, this helper uses
@@ -1275,18 +1467,34 @@ class IterableWithLenDataset(
         dataset = self.dataset
         if not hasattr(dataset, "__getitems__"):
             for idx in indice_iter:
-                yield dataset[idx]
+                if context is not None and context.remaining:
+                    yield _SKIPPED_ITEM
+                else:
+                    yield dataset[idx]
             return
 
         batch_indices: list[int] = []
         for idx in indice_iter:
             batch_indices.append(int(idx))
             if len(batch_indices) >= _DEFAULT_VIRTUAL_GETITEMS_BATCH_SIZE:
-                yield from dataset.__getitems__(batch_indices)  # type: ignore[attr-defined]
+                yield from self._read_index_batch(batch_indices, context)
                 batch_indices = []
 
         if batch_indices:
-            yield from dataset.__getitems__(batch_indices)  # type: ignore[attr-defined]
+            yield from self._read_index_batch(batch_indices, context)
+
+    def _read_index_batch(
+        self, indices: list[int], context: _IterationSkip | None
+    ) -> Iterator[Any]:
+        """Keep index lookahead while skipping without reading old samples."""
+        index = 0
+        while index < len(indices):
+            if context is not None and context.remaining:
+                index += 1
+                yield _SKIPPED_ITEM
+            else:
+                yield from self.dataset.__getitems__(indices[index:])  # type: ignore[attr-defined]
+                return
 
     def _iter_resampled_indices(
         self,
@@ -1337,6 +1545,7 @@ class IterableWithLenDataset(
         self,
         indice_sampler: IndiceTableSampler,
         batch_loader_kwargs: BatchLoaderConfig,
+        context: _IterationSkip | None = None,
     ) -> Iterator[Any]:
         """Yield dataset-side batches and close the inner iterator.
 
@@ -1360,18 +1569,27 @@ class IterableWithLenDataset(
             self._shuffle_config,
             batch_loader_kwargs,
         )
+        sample_view = IterableWithLenDataset(
+            dataset=self.dataset,
+            indices=indice_sampler.table,
+            shard_kwargs=self.shard_kwargs,
+            shuffle=self._shuffle_config,
+            generator=indice_sampler.generator,
+            batch_loader_kwargs=None,
+            resample_ratio=self.resample_ratio,
+        )
+        sample_view._parent_skip_context = context
+        loader_kwargs = batch_loader_kwargs.to_dict()
+        if context is not None:
+            collate_fn = loader_kwargs.get("collate_fn")
+            if collate_fn is None:
+                collate_fn = torch.utils.data.default_collate
+            loader_kwargs["collate_fn"] = _SkipCollate(context, collate_fn)
         inner_loader = torch.utils.data.DataLoader(
-            dataset=IterableWithLenDataset(
-                dataset=self.dataset,
-                indices=indice_sampler.table,
-                shard_kwargs=self.shard_kwargs,
-                shuffle=self._shuffle_config,
-                generator=indice_sampler.generator,
-                batch_loader_kwargs=None,
-                resample_ratio=self.resample_ratio,
-            ),
+            dataset=sample_view,
             num_workers=0,
-            **batch_loader_kwargs.to_dict(),
+            generator=torch.Generator().manual_seed(0),
+            **loader_kwargs,
         )
         inner_iter = iter(inner_loader)
         primary_exc: BaseException | None = None
@@ -1390,6 +1608,7 @@ class IterableWithLenDataset(
     def _iter_impl(
         self,
         indice_sampler: IndiceTableSampler | None = None,
+        context: _IterationSkip | None = None,
     ) -> Iterator[Any]:
         """Prepare indices, then read samples through the common reader.
 
@@ -1401,12 +1620,12 @@ class IterableWithLenDataset(
             indice_sampler = self.indice_sampler
         if self.batch_loader_kwargs is not None:
             yield from self._iter_batches(
-                indice_sampler, self.batch_loader_kwargs
+                indice_sampler, self.batch_loader_kwargs, context
             )
             return
 
         yield from self._iter_indices(
-            self._prepare_torch_indices(indice_sampler)
+            self._prepare_torch_indices(indice_sampler), context
         )
 
     def _prepare_torch_indices(
@@ -1869,7 +2088,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             optional stateful sampling stream. Prefer ``seed`` for framework
             ownership and epoch replay. An explicit generator keeps advancing
             across iterations; ``set_epoch`` does not reseed it. If neither
-            input is supplied, a random seed initializes a private stream.
+            input is supplied, seed 42 initializes a private stream.
             Cannot be combined with ``seed``. Defaults to None.
         batch_loader_kwargs (BatchLoaderConfig | dict | None, optional): An
             optional configuration for using a batch loader. If provided, the
@@ -1984,6 +2203,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             raise ValueError("seed must be an integer in [0, 2**64).")
         if seed is not None and generator is not None:
             raise ValueError("seed and generator cannot be combined.")
+        if seed is None and generator is None:
+            seed = DEFAULT_SAMPLING_SEED
         self._sampling_seed = seed
         self._sampling_rank: int | None = 0
         """Runtime global rank; None selects a common fallback stream.
@@ -1999,11 +2220,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         """
         if seed is not None:
             generator = self._make_sampling_generator(0)
-        elif generator is None:
-            seed = int(torch.empty((), dtype=torch.int64).random_().item())
-            generator = torch.Generator()
-            generator.manual_seed(seed)
-
         if isinstance(shuffle, bool):
             shuffle = ShuffleConfig(shuffle=shuffle)
 
@@ -2491,7 +2707,47 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         state = AcceleratorState()
         return max(self.total_iterator_length, state.num_processes + 1)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Any]:
+        offsets = getattr(self, "_resume_worker_offsets", None)
+        self._resume_worker_offsets = None
+        worker = torch.utils.data.get_worker_info()
+        worker_id = worker.id if worker else 0
+        offset = offsets[worker_id] if offsets else 0
+        return self.create_iterator(skip_n_items=offset)
+
+    def create_iterator(self, *, skip_n_items: int = 0) -> Iterator[Any]:
+        """Create one worker-local mixture iterator after native yields.
+
+        The skip unit is one sample or one configured dataset-side batch. When
+        no sample reservoir or reader offload is active, the existing mixture
+        and index plans are replayed without reading skipped sample payloads.
+        Other configurations replay and discard outputs. The count applies to
+        this iterator only.
+
+        Args:
+            skip_n_items: Non-negative number of native outputs to skip.
+
+        Returns:
+            An iterator over the remainder of the worker-local mixture.
+
+        Raises:
+            ValueError: If the skip count is not a non-negative integer.
+        """
+        _validate_skip_n_items(skip_n_items)
+        if not skip_n_items:
+            return self._create_iterator(None)
+        # Dataset-side batching still prefetches in its unbatched view.
+        if self.offload_num_batches is not None or _uses_sample_prefetch(
+            self._shuffle, None
+        ):
+            return _replay_skipped_outputs(
+                self._create_iterator(None), skip_n_items
+            )
+        return self._create_iterator(_IterationSkip(skip_n_items))
+
+    def _create_iterator(
+        self, context: _IterationSkip | None
+    ) -> Iterator[Any]:
         """Yield a row-weighted mixture and close all materialized datasets.
 
         Shuffled iteration uses compensated reader-admission and active-yield
@@ -2518,7 +2774,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             else 1
         )
         segment_remaining: dict[int, int] = {}
-        with self._iteration_sources() as (
+        with self._iteration_sources(context) as (
             make_iter,
             offload_cursors,
             worker_targets,
@@ -2550,7 +2806,10 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                         ) from exc
                     unit_rows = min(batch_size, remaining)
                     segment_remaining[item_idx] -= unit_rows
-                    yield item
+                    if context is not None and context.remaining:
+                        context.remaining -= 1
+                    else:
+                        yield item
                     if segment_remaining[item_idx] == 0:
                         # Resume the owner through EOF/cleanup before requeue.
                         # Early close after the last yield must not commit.
@@ -2646,6 +2905,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         *,
         resample_ratio: float,
         expected_rows: int,
+        skip_context: _IterationSkip | None = None,
     ) -> Iterator[Any]:
         """Iterate one materialized item and close its resources.
 
@@ -2685,6 +2945,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 batch_loader_kwargs=self.batch_loader_kwargs,
                 resample_ratio=resample_ratio,
             )
+            iterable_dataset._parent_skip_context = skip_context
             _validate_dataset_item_rows(
                 iterable_dataset.total_iterator_length, expected_rows
             )
@@ -2718,6 +2979,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     @contextmanager
     def _iteration_sources(
         self,
+        skip_context: _IterationSkip | None = None,
     ) -> Iterator[
         tuple[
             Callable[[int], Iterator[Any] | None],
@@ -2794,6 +3056,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     data_item,
                     resample_ratio=self._resample_ratios[index],
                     expected_rows=targets[index],
+                    skip_context=skip_context,
                 )
             cursor = offload_cursors[index]
             if cursor.exhausted:

@@ -79,6 +79,9 @@ or planning shapes in `templates/`.
 
 ## Current Skill-Local References
 
+- `skills/codereview/architecture-review/SKILL.md`: responsibility, concept,
+  state-ownership, and call-chain convergence, including an owner map and
+  concrete removable surfaces with behavior-impact checks.
 - `skills/codereview/references/triggering-and-signal.md`,
   `skills/codereview/references/review-depth-and-delegation.md`, and
   `skills/codereview/references/report-composition.md`: heavy-review routing,

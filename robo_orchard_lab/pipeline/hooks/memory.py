@@ -32,7 +32,7 @@ class ClearCacheHook(PipelineHooks):
     """A Hook to periodically release cached device memory.
 
     This class is designed to work with training pipelines that use hooks
-    for committed optimizer-step and epoch management. It integrates with
+    for completed-window and epoch management. It integrates with
     PyTorch's `accelerate.utils.memory.clear_device_cache()` to clear unused
     memory, helping to avoid out-of-memory (OOM) errors during
     long-running training loops.
@@ -51,7 +51,7 @@ class ClearCacheHook(PipelineHooks):
             >>> memory_manager = ClearCacheHookConfig(
             >>>     empty_cache_at="step", empty_cache_freq=10
             >>> )()
-            >>> # Simulate a committed optimizer step
+            >>> # Simulate a completed accumulation window
             >>> hook_args = PipelineHookArgs(
             ...     global_step_id=10,
             ...     epoch_id=0,
@@ -59,7 +59,7 @@ class ClearCacheHook(PipelineHooks):
             ... )
             >>> with memory_manager.begin("on_optimizer_step", hook_args):
             >>>     ... # Simulate optimizer-step finalization
-            # Clears the cache after 10 committed optimizer steps
+            # Clears the cache after 10 completed accumulation windows
 
         Epoch-Based Clearing:
             >>> memory_manager = ClearCacheHookConfig(
@@ -91,10 +91,10 @@ class ClearCacheHook(PipelineHooks):
         )
 
     def _on_step_end(self, arg: PipelineHookArgs) -> None:
-        """Hook invoked at the end of a committed optimizer-step scope.
+        """Hook invoked at the end of a completed-window scope.
 
         Clears the CUDA cache if `empty_cache_at` is set to "step" and the
-        current committed optimizer step satisfies the clearing frequency
+        current completed accumulation window satisfies the clearing frequency
         (`empty_cache_freq`).
 
         Args:
@@ -104,7 +104,7 @@ class ClearCacheHook(PipelineHooks):
         """
         if arg.exception is not None:
             return
-        if not arg.is_optimizer_step_committed:
+        if not arg.is_optimizer_step_boundary:
             return
 
         if (
@@ -140,16 +140,15 @@ class ClearCacheHookConfig(PipelineHooksConfig[ClearCacheHook]):
     class_type: type[ClearCacheHook] = ClearCacheHook
 
     empty_cache_at: Literal["step", "epoch"] = "epoch"
-    """Specifies whether to clear the cache at the end of each committed
-    optimizer step or epoch. Default is "epoch"."""
+    """Clear at completed windows or epochs. Default is "epoch"."""
 
     empty_cache_freq: int = 1
     """The frequency of cache clearing. For example:
         - If `empty_cache_at="step"`, this clears the cache every
-        `empty_cache_freq` committed optimizer steps.
+        `empty_cache_freq` completed accumulation windows.
         - If `empty_cache_at="epoch"`, this clears the cache every
-        `empty_cache_freq` epochs. Default is 1 (clear after every committed
-        optimizer step or epoch).
+        `empty_cache_freq` epochs. Default is 1 (clear after every completed
+        accumulation window or epoch).
     """
 
     garbage_collection: bool = False
