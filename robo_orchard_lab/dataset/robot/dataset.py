@@ -20,8 +20,10 @@ import json
 import os
 import shutil
 import warnings
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from glob import has_magic
 from types import TracebackType
 from typing import (
     Any,
@@ -84,6 +86,7 @@ __all__ = [
     "ConcatRODataset",
     "RODatasetItem",
     "RODatasetItemGroup",
+    "resolve_dataset_paths",
     "_complete_dataset_info",
     "get_row_num_from_dataset_info",
 ]
@@ -1740,11 +1743,112 @@ class RODatasetItem(DatasetItem[RODataset]):
         return DatasetItem.get_index_cache_key(self.replace(transform=None))
 
 
+def resolve_dataset_paths(
+    dataset_path: str | list[str],
+    *,
+    storage_options: dict | None = None,
+    allowed_paths: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Resolve ordered dataset directories and optional allowed selections.
+
+    Without an allowlist, glob matches are sorted per input; explicit
+    duplicates are retained unless any input uses a glob. With an allowlist,
+    selected paths follow the first occurrence of each normalized allowlist
+    entry, with duplicates determined by the selected inputs. Local paths
+    return absolute paths; URI paths retain their filesystem protocol.
+    Resolution happens on every call.
+
+    Args:
+        dataset_path (str | list[str]): Directories or glob patterns in order.
+        storage_options (dict | None, optional): Options passed to fsspec.
+            Default is None.
+        allowed_paths (Sequence[str] | None, optional): Ordered allowed exact
+            paths, normalized using the same local or URI rules before
+            comparison. Repeated allowlist paths do not add selections.
+            Unselected candidates are ignored before checking directory
+            status. None selects every candidate. Default is None.
+
+    Returns:
+        tuple[str, ...]: Ordered resolved directory paths.
+
+    Raises:
+        FileNotFoundError: A selected explicit path does not exist.
+        NotADirectoryError: A selected path is not a directory.
+        ValueError: An input is empty, a glob matches nothing, a selection
+            involving a glob repeats a path, or no allowed candidate remains.
+    """
+    paths = [dataset_path] if isinstance(dataset_path, str) else dataset_path
+    if not paths or any(not path for path in paths):
+        raise ValueError("dataset_path entries must not be empty.")
+
+    def normalize(path: str) -> tuple[fsspec.AbstractFileSystem, str, str]:
+        protocol, _ = fsspec.core.split_protocol(path)
+        if protocol is None:
+            path = os.path.abspath(os.path.expanduser(path))
+        fs, fs_path = fsspec.core.url_to_fs(path, **(storage_options or {}))
+        return fs, fs_path, protocol or "file"
+
+    def output_path(
+        fs: fsspec.AbstractFileSystem, path: str, protocol: str
+    ) -> str:
+        if protocol in ("file", "local"):
+            return os.path.abspath(path)
+        return fs.unstrip_protocol(path)
+
+    allowed = None
+    ordered_allowed: list[str] = []
+    if allowed_paths is not None:
+        for allowed_path in allowed_paths:
+            fs, fs_path, protocol = normalize(allowed_path)
+            ordered_allowed.append(output_path(fs, fs_path, protocol))
+        allowed = set(ordered_allowed)
+
+    uses_glob = any(has_magic(path) for path in paths)
+    resolved_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for path in paths:
+        if fsspec.core.split_protocol(path)[0] is None:
+            path = os.path.abspath(os.path.expanduser(path))
+        fs, fs_path, protocol = normalize(path)
+        matches = sorted(fs.glob(fs_path)) if has_magic(path) else [fs_path]
+        if not matches:
+            raise ValueError(
+                f"dataset_path glob matched no directories: {path!r}."
+            )
+        for match in matches:
+            resolved = output_path(fs, match, protocol)
+            if allowed is not None and resolved not in allowed:
+                continue
+            if not fs.isdir(match):
+                if not fs.exists(match):
+                    raise FileNotFoundError(match)
+                raise NotADirectoryError(match)
+            if uses_glob and resolved in seen_paths:
+                raise ValueError(
+                    "dataset_path selections involving globs contain "
+                    f"a duplicate root: {resolved!r}."
+                )
+            resolved_paths.append(resolved)
+            seen_paths.add(resolved)
+    if allowed is not None and not resolved_paths:
+        raise ValueError("dataset_path has no matches in allowed_paths.")
+    if allowed is not None:
+        counts = Counter(resolved_paths)
+        return tuple(
+            path
+            for path in dict.fromkeys(ordered_allowed)
+            for _ in range(counts[path])
+        )
+    return tuple(resolved_paths)
+
+
 class RODatasetItemGroup(DatasetItemGroup):
     """Expose compatible RODataset roots as one logical mixture input.
 
     This has the same reader configuration as :class:`RODatasetItem`, except
-    that ``dataset_path`` is an ordered list of physical roots. Use it when
+    that ``dataset_path`` accepts one directory, a glob, or an ordered mixed
+    list. Config construction performs no filesystem I/O; physical roots are
+    discovered when :meth:`iter_dataset_items` is consumed. Use it when
     those roots should share one ``name``, one resample rule, and one summary
     leaf in :class:`~.dataset_ex.DictIterableDataset`.
 
@@ -1776,11 +1880,11 @@ class RODatasetItemGroup(DatasetItemGroup):
     """
 
     class_type: ClassType[RODataset] = RODataset
-    dataset_path: list[str] = Field(
+    dataset_path: str | list[str] = Field(
         min_length=1,
         description=(
-            "Ordered physical RODataset roots. Each path becomes one fresh "
-            "physical RODatasetItem under this logical group."
+            "One directory or glob, or an ordered mixed list. Ordinary "
+            "directories are single roots, not recursive selections."
         ),
     )
     storage_options: dict | None = None
@@ -1797,28 +1901,47 @@ class RODatasetItemGroup(DatasetItemGroup):
         dataset reader or merge the configured paths.
         """
 
-        for item in self.iter_dataset_items():
-            item._reader_init_kwargs()
+        paths = (
+            [self.dataset_path]
+            if isinstance(self.dataset_path, str)
+            else self.dataset_path
+        )
+        if any(not path for path in paths):
+            raise ValueError("dataset_path entries must not be empty.")
+        self._make_dataset_item(paths[0])
         return self
 
+    def _make_dataset_item(self, path: str) -> RODatasetItem:
+        """Build an unsharded item using this group's reader settings."""
+        return RODatasetItem(
+            class_type=self.class_type,
+            dataset_path=path,
+            storage_options=self.storage_options,
+            meta_index2meta=self.meta_index2meta,
+            image_decode_options=self.image_decode_options,
+            transform=self.transform,
+            reader_init_kwargs=self.reader_init_kwargs,
+        )
+
     def iter_dataset_items(self) -> Iterator[RODatasetItem]:
-        """Yield fresh unsharded physical items in ``dataset_path`` order.
+        """Yield physical items for directories and sorted glob matches.
 
-        The generated leaves intentionally have no names or static shards.
-        ``DatasetItemGroup`` owns the logical name and applies its static shard
-        independently to every leaf when the mixture is constructed.
+        Local relative paths are interpreted relative to the current working
+        directory. URI paths use their filesystem and ``storage_options``.
+        Each invocation discovers roots anew and creates unsharded items;
+        the group applies its static shard independently to each member.
+
+        Raises:
+            FileNotFoundError: An explicit directory does not exist.
+            NotADirectoryError: A selected path is a file.
+            ValueError: A glob has no matches or selections involving a glob
+                contain duplicate roots. Pure explicit duplicates retain the
+                existing per-member sampling behavior.
         """
-
-        for dataset_path in self.dataset_path:
-            yield RODatasetItem(
-                class_type=self.class_type,
-                dataset_path=dataset_path,
-                storage_options=self.storage_options,
-                meta_index2meta=self.meta_index2meta,
-                image_decode_options=self.image_decode_options,
-                transform=self.transform,
-                reader_init_kwargs=self.reader_init_kwargs,
-            )
+        for dataset_path in resolve_dataset_paths(
+            self.dataset_path, storage_options=self.storage_options
+        ):
+            yield self._make_dataset_item(dataset_path)
 
 
 @dataclass(slots=True)

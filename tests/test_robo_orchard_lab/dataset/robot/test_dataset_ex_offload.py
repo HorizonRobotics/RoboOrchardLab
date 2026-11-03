@@ -20,12 +20,12 @@ import gc
 import json
 import multiprocessing as mp
 import os
+import pickle
 import subprocess
 import sys
 import time
 import weakref
 from collections import Counter
-from itertools import combinations, product
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -33,6 +33,7 @@ from typing import ClassVar
 import numpy as np
 import pytest
 import torch
+from accelerate.data_loader import prepare_data_loader
 from pydantic import PrivateAttr
 from robo_orchard_core.utils.config import ClassType
 from torch.utils.data import Dataset
@@ -177,6 +178,13 @@ class TrackedGroup(DatasetItemGroup):
             yield TrackedItem(
                 rows=self.rows, source=source, root=self.root, split=split
             )
+
+
+class TrackedMembers(DatasetItemGroup):
+    members: list[TrackedItem]
+
+    def iter_dataset_items(self):
+        yield from self.members
 
 
 @pytest.fixture(autouse=True)
@@ -349,8 +357,9 @@ class TestIterationSources:
     ):
         from robo_orchard_lab.dataset.robot import dataset_ex
 
-        # Two admission draws, then service each resident once.
-        choices = iter([0, 0, 0, 1])
+        # Logical admission uses fixed priorities, so these are service draws:
+        # advance each resident once before arming read/cleanup failures.
+        choices = iter([0, 1])
         prefetchers = []
         original_prefetch = dataset_ex.create_prefetch_iterator
 
@@ -697,6 +706,54 @@ class TestOffloadPlans:
             iterator.close()
 
 
+class _ProcessIdentityTransform:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, row):
+        self.calls += 1
+        return {
+            "value": row["value"],
+            "owner_id": id(self),
+            "pid": os.getpid(),
+            "call": self.calls,
+        }
+
+
+@pytest.fixture()
+def tiny_rodataset_roots(tmp_path, monkeypatch):
+    import datasets
+
+    from robo_orchard_lab.dataset.robot.packaging import (
+        DataFrame,
+        DatasetPackaging,
+        EpisodeData,
+        EpisodeMeta,
+        EpisodePackaging,
+    )
+
+    class Rows(EpisodePackaging):
+        @property
+        def features(self):
+            return datasets.Features({"value": datasets.Value("int64")})
+
+        def generate_episode_meta(self):
+            return EpisodeMeta(episode=EpisodeData())
+
+        def generate_frames(self):
+            for index in range(5):
+                yield DataFrame(features={"value": index})
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    roots = [str(tmp_path / name) for name in ("source-a", "source-b")]
+    for root in roots:
+        episode = Rows()
+        DatasetPackaging(episode.features, database_driver="sqlite").packaging(
+            [episode], root, fail_fast=True
+        )
+    return roots
+
+
 class TestOffloadIdentity:
     @pytest.mark.parametrize("offload", [False, True])
     @pytest.mark.parametrize("grouped", [False, True])
@@ -1019,41 +1076,17 @@ class TestOffloadIdentity:
             == 1
         )
 
+    @pytest.mark.parametrize("use_group", [False, True])
     def test_real_rodataset_callable_transform_and_reopen(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, tiny_rodataset_roots, use_group
     ):
-        import datasets
-
         from robo_orchard_lab.dataset.robot.dataset import (
             RODataset,
             RODatasetItem,
-        )
-        from robo_orchard_lab.dataset.robot.packaging import (
-            DataFrame,
-            DatasetPackaging,
-            EpisodeData,
-            EpisodeMeta,
-            EpisodePackaging,
+            RODatasetItemGroup,
         )
 
-        class Rows(EpisodePackaging):
-            @property
-            def features(self):
-                return datasets.Features({"value": datasets.Value("int64")})
-
-            def generate_episode_meta(self):
-                return EpisodeMeta(episode=EpisodeData())
-
-            def generate_frames(self):
-                for index in range(5):
-                    yield DataFrame(features={"value": index})
-
-        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-        root = str(tmp_path / "source")
-        episode = Rows()
-        DatasetPackaging(episode.features, database_driver="sqlite").packaging(
-            [episode], root, fail_fast=True
-        )
+        root = tiny_rodataset_roots[0]
         closed = []
         close = RODataset.close
 
@@ -1072,17 +1105,117 @@ class TestOffloadIdentity:
                 },
             )
             keys.append(item.get_index_cache_key())
+            if use_group:
+                item = RODatasetItemGroup(
+                    dataset_path=str(tmp_path / "source-*"),
+                    transform=item.transform,
+                )
             dataset = DictIterableDataset(
                 [item], offload_num_batches=1, offload_dir=str(cache)
             )
-            assert [row["value"] for row in dataset] == list(
-                range(offset, offset + 5)
+            if use_group:
+                assert all(
+                    leaf.transform is item.transform
+                    for leaf in dataset.dataset_items
+                )
+            values = [row["value"] for row in dataset]
+            assert sorted(values) == sorted(
+                list(range(offset, offset + 5)) * (2 if use_group else 1)
             )
-        assert len(closed) == 10
+        assert len(closed) == (20 if use_group else 10)
         assert keys[0] == keys[1]
         gc.collect()
         assert all(ref() is None for ref in closed)
-        assert len(list(cache.glob("*/base/*.arrow"))) == 1
+        assert len(list(cache.glob("*/base/*.arrow"))) == (
+            2 if use_group else 1
+        )
+
+    @pytest.mark.parametrize("worker_context", ["fork", "spawn"])
+    @pytest.mark.parametrize("prepared", [False, True])
+    def test_group_keeps_shared_callable_across_worker_epochs(
+        self, tmp_path, tiny_rodataset_roots, worker_context, prepared
+    ):
+        if worker_context not in mp.get_all_start_methods():
+            pytest.skip(f"{worker_context} is unavailable")
+        from robo_orchard_lab.dataset.robot.dataset import RODatasetItemGroup
+
+        owner = _ProcessIdentityTransform()
+        group = RODatasetItemGroup(
+            name="sim/source",
+            dataset_path=str(tmp_path / "source-*"),
+            transform=owner,
+        )
+        mixture = DictIterableDataset(
+            [group],
+            shuffle=True,
+            seed=17,
+            resample_ratios={"sim/*": 1.0},
+            max_dataset_concurrency=2,
+            offload_num_batches=1,
+            offload_dir=str(tmp_path / "offload"),
+        )
+        assert [
+            leaf.dataset_path for leaf in mixture.dataset_items
+        ] == tiny_rodataset_roots
+        restored = pickle.loads(pickle.dumps(mixture))
+        assert all(
+            leaf.transform is restored.logical_dataset_items[0].transform
+            for leaf in restored.dataset_items
+        )
+        loader = DataLoader(
+            mixture,
+            batch_size=2,
+            num_workers=2,
+            multiprocessing_context=worker_context,
+            persistent_workers=False,
+        )
+        assert all(
+            leaf.transform is owner for leaf in loader.dataset.dataset_items
+        )
+        if prepared:
+            loader = prepare_data_loader(
+                loader,
+                device=torch.device("cpu"),
+                num_processes=1,
+                process_index=0,
+                put_on_device=False,
+                dispatch_batches=False,
+            )
+        loader_iter = None
+        try:
+            for epoch in range(2):
+                if prepared:
+                    loader.set_epoch(epoch)
+                else:
+                    loader.dataset.set_epoch(epoch)
+                values = []
+                calls_by_pid = {}
+                owner_ids_by_pid = {}
+                loader_iter = iter(loader)
+                for batch in loader_iter:
+                    values.extend(batch["value"].tolist())
+                    for pid, owner_id, call in zip(
+                        batch["pid"].tolist(),
+                        batch["owner_id"].tolist(),
+                        batch["call"].tolist(),
+                        strict=True,
+                    ):
+                        calls_by_pid.setdefault(pid, []).append(call)
+                        owner_ids_by_pid.setdefault(pid, set()).add(owner_id)
+                assert sorted(values) == sorted(list(range(5)) * 2)
+                assert len(calls_by_pid) == 2
+                assert all(len(ids) == 1 for ids in owner_ids_by_pid.values())
+                assert all(
+                    sorted(calls) == list(range(1, len(calls) + 1))
+                    for calls in calls_by_pid.values()
+                )
+        finally:
+            close_dataloader_resources(
+                loader,
+                loader_iter,
+                reason=DataloaderCloseReason.TRAINER_TEARDOWN,
+            )
+        assert owner.calls == 0
 
     def test_failed_base_write_does_not_publish_and_can_retry(
         self, tmp_path, monkeypatch
@@ -1148,95 +1281,261 @@ class TestOffloadIdentity:
 
 
 class TestWeightedAdmission:
-    @pytest.mark.parametrize("batch_size", [1, 4])
-    @pytest.mark.parametrize("capacity", [1, 2, 3])
-    def test_exact_cyclic_row_flow(self, batch_size, capacity, monkeypatch):
-        # Enumerate the complete tiny closed-chain state space. Probabilities
-        # come from the production admission/service paths, not a replay copy.
-        targets = [20, 50, 10]
-        lengths = [6, 9, 1]
-        units = [list(range(length, 0, -batch_size)) for length in lengths]
+    @pytest.mark.parametrize(
+        "batch_size,remaining,expected",
+        [
+            (1, {0: 12, 1: 36, 2: 48}, [0.1, 0.3, 0.6]),
+            (4, {0: 1, 1: 3, 2: 4}, [2 / 7, 2 / 7, 3 / 7]),
+        ],
+    )
+    def test_active_weights_preserve_logical_row_shares(
+        self, batch_size, remaining, expected
+    ):
         dataset = DictIterableDataset(
-            [TrackedItem(rows=n, source=i) for i, n in enumerate(targets)],
+            [
+                TrackedMembers(
+                    members=[TrackedItem(rows=12), TrackedItem(rows=36)]
+                ),
+                TrackedMembers(
+                    members=[TrackedItem(rows=48), TrackedItem(rows=24)]
+                ),
+            ],
             shuffle=True,
-            max_dataset_concurrency=capacity,
+            max_dataset_concurrency=3,
             batch_loader_kwargs=BatchLoaderConfig(batch_size=batch_size),
         )
+        assert dataset._logical_item_indices == [(0, 1), (2, 3)]
+        targets = [12, 36, 48, 24]
+        dataset._total_indices_length = targets
+        booked = [48, 48]
+        weights = dataset._prepare_dataset_for_iter(
+            [(i, iter(())) for i in (0, 1, 2)],
+            [],
+            lambda _: iter(()),
+            targets,
+            remaining,
+            None,
+            logical_indices=[0, 0, 1, 1],
+            logical_targets=[48, 72],
+            booked=booked,
+            priorities=[0.0] * 4,
+        )
+        # Hand-derived cases include an inactive member's logical quota and
+        # unequal short yields. Reader count must not multiply group weight.
+        np.testing.assert_allclose(weights, expected)
+        row_mass = weights * np.array(
+            [min(batch_size, remaining[i]) for i in (0, 1, 2)]
+        )
+        np.testing.assert_allclose(
+            np.array([sum(row_mass[:2]), row_mass[2]]) / row_mass.sum(),
+            [0.4, 0.6],
+        )
+        assert booked == [48, 48]
+        assert not TrackedReader.events
+
+    @pytest.mark.parametrize(
+        "segments,admitted,booked_rows",
+        [([3, 4, 5], [0, 2], [3, 5]), ([4, 4, 4], [2, 1], [4, 4])],
+    )
+    def test_admission_uses_booked_midpoints_and_fixed_ties(
+        self, segments, admitted, booked_rows, monkeypatch
+    ):
+        dataset = DictIterableDataset(
+            [TrackedItem(rows=n) for n in (8, 8, 16)],
+            shuffle=True,
+            max_dataset_concurrency=2,
+        )
+        targets = [8, 8, 16]
         dataset._total_indices_length = targets
         cursors = {
-            i: _OffloadCursor("", "", n, n) for i, n in enumerate(lengths)
+            i: _OffloadCursor("", "", target, segment)
+            for i, (target, segment) in enumerate(
+                zip(targets, segments, strict=True)
+            )
         }
-        draws = []
-
-        def choose(weights):
-            draws.append(weights.copy())
-            return 0
-
-        monkeypatch.setattr(dataset, "_sample_dataset_index", choose)
-        states = [
-            (group, phase)
-            for group in combinations(range(3), capacity)
-            for phase in product(*(range(len(units[i])) for i in group))
-        ]
-        state_index = {state: i for i, state in enumerate(states)}
-        matrix = np.zeros((len(states), len(states)))
-        stationary = []
-        flow = np.zeros(3)
-        for state_idx, (group, phase) in enumerate(states):
-            remaining = {
-                i: units[i][k] for i, k in zip(group, phase, strict=True)
-            }
-            active = [(i, iter(())) for i in group]
-            service = dataset._prepare_dataset_for_iter(
-                active, [], lambda _: iter(()), targets, remaining, cursors
-            )
-            v = np.array(
-                [targets[i] / min(batch_size, remaining[i]) for i in group]
-            )
-            a = np.array(targets) / np.array(lengths)
-            mass = v.sum() * np.prod(a[list(group)] / v)
-            stationary.append(mass)
-            for pos, i in enumerate(group):
-                unit = min(batch_size, remaining[i])
-                flow[i] += mass * service[pos] * unit
-                if phase[pos] + 1 < len(units[i]):
-                    next_phase = list(phase)
-                    next_phase[pos] += 1
-                    destination = (group, tuple(next_phase))
-                    matrix[state_idx, state_index[destination]] += service[pos]
-                    continue
-                survivors = [j for j in group if j != i]
-                pending = [j for j in range(3) if j not in survivors]
-                survivor_remaining = {j: remaining[j] for j in survivors}
-                draws.clear()
-                dataset._prepare_dataset_for_iter(
-                    [(j, iter(())) for j in survivors],
-                    pending.copy(),
-                    lambda _: iter(()),
-                    targets,
-                    survivor_remaining,
-                    cursors,
-                )
-                assert len(draws) == 1
-                for j, admission in zip(pending, draws[0], strict=True):
-                    new_group = tuple(sorted([*survivors, j]))
-                    phase_by_source = dict(zip(group, phase, strict=True))
-                    phase_by_source[j] = 0
-                    destination = (
-                        new_group,
-                        tuple(phase_by_source[k] for k in new_group),
-                    )
-                    matrix[state_idx, state_index[destination]] += (
-                        service[pos] * admission
-                    )
-        stationary = np.array(stationary)
-        stationary /= stationary.sum()
-        np.testing.assert_allclose(matrix.sum(axis=1), 1, atol=1e-14)
-        np.testing.assert_allclose(stationary @ matrix, stationary, atol=1e-14)
-        np.testing.assert_allclose(
-            flow / flow.sum(), np.array(targets) / sum(targets), atol=1e-14
+        monkeypatch.setattr(
+            dataset,
+            "_sample_dataset_index",
+            lambda _: pytest.fail("admission must reuse fixed priorities"),
         )
+        active, pending, remaining, booked = [], [0, 1, 2], {}, [0, 0]
+        kwargs = dict(
+            logical_indices=[0, 0, 1],
+            logical_targets=[16, 16],
+            booked=booked,
+            priorities=[0.9, 0.1, 0.0],
+        )
+        first = dataset._prepare_dataset_for_iter(
+            active,
+            pending,
+            lambda _: iter(()),
+            targets,
+            remaining,
+            cursors,
+            **kwargs,
+        )
+        assert [i for i, _ in active] == admitted
+        assert booked == booked_rows
+        assert remaining == {i: segments[i] for i in admitted}
+        again = dataset._prepare_dataset_for_iter(
+            active,
+            pending,
+            lambda _: iter(()),
+            targets,
+            remaining,
+            cursors,
+            **kwargs,
+        )
+        np.testing.assert_allclose(again, first)
+        assert booked == booked_rows
+        assert all(cursor.cursor == 0 for cursor in cursors.values())
         assert not TrackedReader.events
+
+    @pytest.mark.parametrize("offload", [None, 2])
+    @pytest.mark.parametrize(
+        "batch_size,drop_last", [(None, False), (4, False), (4, True)]
+    )
+    def test_grouped_quotas_rebuild_for_seed_epoch_and_pickle(
+        self, offload, batch_size, drop_last, tmp_path
+    ):
+        targets = [4, 9, 22, 0]
+        dataset = DictIterableDataset(
+            [
+                TrackedMembers(
+                    members=[
+                        TrackedItem(rows=7, source=0),
+                        TrackedItem(rows=18, source=1),
+                    ]
+                ),
+                TrackedMembers(
+                    members=[
+                        TrackedItem(rows=11, source=2),
+                        TrackedItem(rows=0, source=3),
+                    ]
+                ),
+            ],
+            shuffle=True,
+            seed=17,
+            resample_ratios=[0.5, 2.0],
+            max_dataset_concurrency=2,
+            offload_num_batches=offload,
+            offload_dir=str(tmp_path),
+            batch_loader_kwargs=BatchLoaderConfig(
+                batch_size=batch_size, drop_last=drop_last
+            )
+            if batch_size
+            else None,
+        )
+
+        def rows(source):
+            values = list(source)
+            return (
+                flatten(values)
+                if batch_size
+                else [(row["source"], row["row"]) for row in values]
+            )
+
+        first = rows(dataset)
+        assert first == rows(dataset)
+        expected = {
+            i: target // batch_size * batch_size if drop_last else target
+            for i, target in enumerate(targets)
+        }
+        assert Counter(source for source, _ in first) == Counter(expected)
+        dataset.set_epoch(1)
+        epoch1 = rows(dataset)
+        assert Counter(source for source, _ in epoch1) == Counter(expected)
+        restored = pickle.loads(pickle.dumps(dataset))
+        assert rows(restored) == epoch1
+        dataset.set_epoch(0)
+        assert rows(dataset) == first
+        assert TrackedReader.high_water <= 2
+        assert not list(tmp_path.glob("*/iteration-*"))
+
+    @pytest.mark.parametrize("offload", [None, 1])
+    def test_ordered_groups_keep_admission_order_without_rng(
+        self, offload, tmp_path
+    ):
+        generator = torch.Generator().manual_seed(17)
+        dataset = DictIterableDataset(
+            [
+                TrackedMembers(
+                    members=[
+                        TrackedItem(rows=3, source=0),
+                        TrackedItem(rows=3, source=1),
+                    ]
+                ),
+                TrackedItem(rows=3, source=2),
+            ],
+            generator=generator,
+            max_dataset_concurrency=2,
+            offload_num_batches=offload,
+            offload_dir=str(tmp_path),
+        )
+        before = generator.get_state().clone()
+        rows = list(dataset)
+        assert [row["source"] for row in rows] == (
+            [0, 1, 2] * 3 if offload else [0] * 3 + [1] * 3 + [2] * 3
+        )
+        assert torch.equal(generator.get_state(), before)
+        assert TrackedReader.high_water <= 2
+
+    def test_grouped_rank_worker_quotas_through_prepared_loader(
+        self, tmp_path
+    ):
+        combined = []
+        for rank in range(2):
+            dataset = DictIterableDataset(
+                [
+                    TrackedMembers(
+                        members=[
+                            TrackedItem(rows=23, source=0),
+                            TrackedItem(rows=11, source=1),
+                        ]
+                    ),
+                    TrackedItem(rows=7, source=2),
+                ],
+                shuffle=True,
+                seed=17,
+                max_dataset_concurrency=2,
+                offload_num_batches=1,
+                offload_dir=str(tmp_path),
+            ).shard(2, rank)
+            raw_loader = DataLoader(
+                dataset,
+                batch_size=3,
+                num_workers=2,
+                multiprocessing_context="spawn",
+                use_dataset_side_batching=True,
+            )
+            # The Lab loader owns exact batch counts; Accelerate replaces it
+            # with a generic Torch base loader whose iterable has no __len__.
+            expected_batches = len(raw_loader)
+            loader = prepare_data_loader(
+                raw_loader,
+                device=torch.device("cpu"),
+                num_processes=1,
+                process_index=0,
+                put_on_device=False,
+                dispatch_batches=False,
+            )
+            iterator = iter(loader)
+            try:
+                batches = list(iterator)
+                assert len(batches) == expected_batches
+                combined.extend(flatten(batches))
+            finally:
+                close_dataloader_resources(
+                    loader,
+                    iterator,
+                    reason=DataloaderCloseReason.TRAINER_TEARDOWN,
+                )
+        assert Counter(combined) == {
+            (source, row): 1
+            for source, rows in enumerate((23, 11, 7))
+            for row in range(rows)
+        }
+        assert not list(tmp_path.glob("*/iteration-*"))
 
     @pytest.mark.parametrize("offload", [None, 1, 2])
     @pytest.mark.parametrize("drop_last", [False, True])

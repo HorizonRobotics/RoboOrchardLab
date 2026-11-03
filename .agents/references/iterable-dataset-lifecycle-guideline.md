@@ -27,6 +27,23 @@ in [dataset_ex.py](../../robo_orchard_lab/dataset/robot/dataset_ex.py) and the
   and worker. Logical groups expand into physical members. Rank/worker count,
   prefetched samples and batches retained by callers remain separate costs;
   this setting does not bound process RSS.
+- Keep admission accounting, remaining rows in the active segment, and the
+  EOF-committed cursor distinct. They describe different units or commit
+  points; merging them can change scheduling or interruption semantics.
+
+## Sampling Evidence
+
+- Validate full-epoch quotas, finite-window logical-source balance, and
+  cross-epoch ordering separately. Unchanged totals do not imply repeated
+  sample order, and exact epoch quotas do not guarantee a fixed window ratio.
+- Ratios attach to logical items or groups; physical members retain their own
+  sharding and rounding. Multiple active members must not multiply their
+  logical group's intended service share. Measure output rows, accounting for
+  dataset-side batches and short or dropped tails, rather than counting yields.
+- Compare ordered sample identities across epochs under the supported
+  seed/generator contract. Include real restarted non-persistent workers and
+  epoch notification when checking epoch reconstruction; retain explicit
+  generator ownership rather than assuming every generator resets on epoch.
 
 ## Cleanup And Prepared Wrappers
 
@@ -69,3 +86,13 @@ in [dataset_ex.py](../../robo_orchard_lab/dataset/robot/dataset_ex.py) and the
 - Report the measured rank, worker and reader topology and observation window.
   A small lifecycle test does not establish a production RSS ceiling, and a
   Python reference test does not establish absence of native allocations.
+- When close or join reports a worker failure, distinguish detection from
+  cause. Record the failing PID, its parent and owning loader/iterator, plus
+  native traceback or exit evidence where available; a process-wide worker
+  signal handler may report a failure from another registered iterator.
+- For intermittent worker failures, reproduce with the relevant framework
+  versions, parallel test scheduling and coverage settings. Check the actual
+  runtime and installed dependencies even when using the same image tag.
+  Compare with and without diagnostic instrumentation when timing matters.
+  Bounded repeated passes establish only that the failure was not reproduced;
+  they do not identify its cause, prove recovery, or justify hiding the error.

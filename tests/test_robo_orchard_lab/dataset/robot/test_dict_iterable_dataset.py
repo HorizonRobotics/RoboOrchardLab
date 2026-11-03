@@ -296,6 +296,84 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert len(values) == dataset.total_iterator_length == 14
         assert sorted(values) == sorted([*range(7), *range(7)])
 
+    @pytest.mark.parametrize(
+        "rules,expected",
+        [
+            ({"sim": 0.5, "sim/*": 0.8, "sim/ur5": 1.0}, [1.0, 0.8, 0.5, 1.0]),
+            ({"sim/**": 0.8}, [0.8, 0.8, 0.8, 1.0]),
+            ({"**/ur?": 0.7}, [0.7, 1.0, 0.7, 1.0]),
+            ({"sim/[au]*": 0.7}, [0.7, 0.7, 1.0, 1.0]),
+            ({"sim/*": 0.7, "sim/**": 0.7}, [0.7, 0.7, 0.7, 1.0]),
+            ({"sim/**/ur5": 0.7}, [0.7, 1.0, 0.7, 1.0]),
+        ],
+    )
+    def test_named_globs_apply_only_to_complete_logical_names(
+        self, rules, expected
+    ):
+        mixture = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=[0], name="sim/ur5"),
+                ArrayDatasetItem(data=[1], name="sim/arx"),
+                ArrayDatasetItem(data=[2], name="sim/sub/ur5"),
+                ArrayDatasetItem(data=[3], name="real/horizon"),
+            ],
+            shuffle=True,
+            resample_ratios=rules,
+        )
+        assert mixture._logical_resample_ratios == expected
+
+    def test_glob_conflicts_require_exact_name_override(self):
+        item = ArrayDatasetItem(data=[0], name="sim/ur5")
+        rules = {"sim/*": 0.5, "**/ur5": 0.8}
+        with pytest.raises(ValueError, match="Conflicting.*sim/ur5"):
+            DictIterableDataset([item], shuffle=True, resample_ratios=rules)
+        rules["sim/ur5"] = 1.0
+        mixture = DictIterableDataset([item], resample_ratios=rules)
+        assert mixture._logical_resample_ratios == [1.0]
+
+    @pytest.mark.parametrize("pattern", ["real/*", "SIM/*", "sim/*/ur5"])
+    def test_glob_rules_must_match_a_logical_name(self, pattern):
+        with pytest.raises(
+            ValueError, match="does not match any dataset item"
+        ):
+            DictIterableDataset(
+                [ArrayDatasetItem(data=[0], name="sim/ur5")],
+                shuffle=True,
+                resample_ratios={pattern: 0.5},
+            )
+
+    @pytest.mark.parametrize(
+        "pattern", ["sim//**", "sim/ur**", "/sim/*", "sim/*/"]
+    )
+    def test_glob_rules_reject_empty_or_partial_recursive_segments(
+        self, pattern
+    ):
+        with pytest.raises(ValueError, match="nonempty segments"):
+            DictIterableDataset(
+                [ArrayDatasetItem(data=[0], name="sim/ur5")],
+                shuffle=True,
+                resample_ratios={pattern: 0.5},
+            )
+
+    def test_group_glob_ratio_keeps_per_member_rounding_and_clone_metadata(
+        self,
+    ):
+        mixture = DictIterableDataset(
+            [
+                ArrayDatasetItemGroup(
+                    name="sim/source", data_groups=[[0], [1, 2]]
+                )
+            ],
+            shuffle=True,
+            resample_ratios={"sim/*": 0.5},
+        )
+        assert mixture._logical_resample_ratios == [0.5]
+        assert mixture._resample_ratios == [0.5, 0.5]
+        assert len(list(mixture)) == 1
+        cloned = DataLoader(mixture, batch_size=2, shuffle=True).dataset
+        assert cloned._logical_resample_ratios == [0.5]
+        assert cloned._resample_ratios == [0.5, 0.5]
+
     def test_dict_resample_ratios_resolve_path_prefixes(self):
         dataset = DictIterableDataset(
             [
@@ -895,12 +973,13 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             cur_dataset_iters: list[tuple[int, Any]],
             remaining_dataset_indices: list[int],
             make_iter,
-            worker_targets,
+            targets,
             segment_remaining,
             offload_cursors,
+            **logical_accounting,
         ) -> list[float]:
             del remaining_dataset_indices, make_iter
-            del worker_targets, offload_cursors
+            del targets, offload_cursors, logical_accounting
             segment_remaining.update({0: 2, 1: 2})
             if not cur_dataset_iters:
                 cur_dataset_iters.extend(

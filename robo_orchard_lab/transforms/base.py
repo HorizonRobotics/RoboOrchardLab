@@ -224,7 +224,11 @@ def _build_transform_reflection_metadata(
     input_defaults = {}
     for param in sig.parameters.values():
         if (
-            param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+            param.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
             and param.name != "self"
         ):
             input_columns.append(param.name)
@@ -400,8 +404,10 @@ class DictTransform(DictRowTransform[SemanticOutputT]):
     def transform(self, **kwargs) -> SemanticOutputT:
         """Transform input columns into a semantic stage output.
 
-        All input columns will be passed as keyword arguments. The return
-        value may be a ``dict``, dataclass instance, or ``BaseModel``.
+        Positional-or-keyword and keyword-only parameters define input
+        columns, passed as keyword arguments with their declared defaults
+        when absent. The return value may be a ``dict``, dataclass instance,
+        or ``BaseModel``.
         ``apply(...)`` and ``__call__(...)`` handle row-level merging.
         """
         raise NotImplementedError

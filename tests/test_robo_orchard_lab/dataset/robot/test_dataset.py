@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Generator, Iterable
 
 import datasets as hg_datasets
+import fsspec
 import numpy as np
 import pytest
 import torch
@@ -44,6 +45,7 @@ from robo_orchard_lab.dataset.robot.dataset import (
     RODatasetItemGroup,
     ROMultiRowDataset,
     get_row_num_from_dataset_info,
+    resolve_dataset_paths,
 )
 from robo_orchard_lab.dataset.robot.dataset_db_engine import (
     create_engine,
@@ -2587,10 +2589,14 @@ def test_packaging_force_overwrite_retires_reserved_workspace(
     assert not Path(paths.workspace_dir).exists()
 
 
-def test_rodataset_item_group_lazily_generates_single_path_items() -> None:
+def test_rodataset_item_group_lazily_generates_single_path_items(
+    tmp_path,
+) -> None:
+    for name in ("part-a", "part-b"):
+        (tmp_path / name).mkdir()
     group = RODatasetItemGroup(
         name="training/robotwin",
-        dataset_path=["/datasets/part-a", "/datasets/part-b"],
+        dataset_path=[str(tmp_path / "part-a"), str(tmp_path / "part-b")],
         storage_options={"anon": False},
         meta_index2meta=True,
         reader_init_kwargs={},
@@ -2599,14 +2605,205 @@ def test_rodataset_item_group_lazily_generates_single_path_items() -> None:
     items = list(group.iter_dataset_items())
 
     assert [item.dataset_path for item in items] == [
-        "/datasets/part-a",
-        "/datasets/part-b",
+        str(tmp_path / "part-a"),
+        str(tmp_path / "part-b"),
     ]
     assert all(isinstance(item, RODatasetItem) for item in items)
     assert all(item.name is None for item in items)
     assert all(item.num_shards == 1 and item.shard_id == 0 for item in items)
     assert all(item.storage_options == {"anon": False} for item in items)
     assert all(item.meta_index2meta is True for item in items)
+
+
+class TestResolveDatasetPaths:
+    def test_allowed_order_duplicates_and_local_uri_forms(
+        self, tmp_path, monkeypatch
+    ):
+        for name in ("part-a", "part-b", "job_records"):
+            (tmp_path / name).mkdir()
+        (tmp_path / "unrelated.txt").write_text("not a directory")
+        monkeypatch.chdir(tmp_path)
+        assert resolve_dataset_paths(
+            ["*", "missing-explicit"],
+            allowed_paths=[
+                "part-b",
+                (tmp_path / "part-a").as_uri(),
+                str(tmp_path / "part-b"),
+            ],
+        ) == tuple(str(tmp_path / name) for name in ("part-b", "part-a"))
+
+        assert resolve_dataset_paths(
+            ["part-a", (tmp_path / "part-a").as_uri(), "part-b"],
+            allowed_paths=[
+                (tmp_path / "part-b").as_uri(),
+                "part-a",
+                str(tmp_path / "part-a"),
+            ],
+        ) == tuple(
+            str(tmp_path / name) for name in ("part-b", "part-a", "part-a")
+        )
+
+    def test_selection_errors_and_duplicates(self, tmp_path):
+        root = tmp_path / "part-a"
+        root.mkdir()
+        file = tmp_path / "part-file"
+        file.write_text("file")
+        assert resolve_dataset_paths([str(root), str(root)]) == (
+            str(root),
+            str(root),
+        )
+        with pytest.raises(NotADirectoryError):
+            resolve_dataset_paths(str(tmp_path / "part-*"))
+        with pytest.raises(NotADirectoryError):
+            resolve_dataset_paths(str(file), allowed_paths=[str(file)])
+        with pytest.raises(ValueError, match="no matches in allowed_paths"):
+            resolve_dataset_paths(str(file), allowed_paths=[])
+        with pytest.raises(ValueError, match="glob matched no directories"):
+            resolve_dataset_paths(str(tmp_path / "absent-*"), allowed_paths=[])
+        with pytest.raises(ValueError, match="duplicate root"):
+            resolve_dataset_paths(
+                [str(root), str(tmp_path / "part-?")],
+                allowed_paths=[str(root)],
+            )
+        for paths in ("", [], [str(root), ""]):
+            with pytest.raises(ValueError, match="must not be empty"):
+                resolve_dataset_paths(paths)
+
+    def test_memory_uri_allowlist_normalization(self, tmp_path):
+        fs = fsspec.filesystem("memory")
+        prefix = f"/{tmp_path.name}/resolver"
+        for name in ("part-a", "part-b"):
+            fs.makedirs(f"{prefix}/{name}", exist_ok=True)
+        with fs.open(f"{prefix}/unrelated", "wb") as file:
+            file.write(b"file")
+        assert resolve_dataset_paths(
+            f"memory://{prefix}/*",
+            allowed_paths=[
+                f"memory://{prefix}/part-b",
+                fs.unstrip_protocol(f"{prefix}/part-a"),
+                f"memory://{prefix}/part-b",
+            ],
+            storage_options={"skip_instance_cache": True},
+        ) == tuple(
+            fs.unstrip_protocol(f"{prefix}/{name}")
+            for name in ("part-b", "part-a")
+        )
+
+
+class TestRODatasetItemGroupDiscovery:
+    def test_config_validation_does_not_discover_paths(self, monkeypatch):
+        def unexpected_io(*args, **kwargs):
+            raise AssertionError("config validation performed filesystem I/O")
+
+        monkeypatch.setattr(fsspec.core, "url_to_fs", unexpected_io)
+        group = RODatasetItemGroup(dataset_path=["relative/part-*", "other"])
+        validated = RODatasetItemGroup.model_validate(group.to_dict())
+        restored = RODatasetItemGroup.from_str(group.to_str())
+        assert (
+            validated.dataset_path
+            == restored.dataset_path
+            == group.dataset_path
+        )
+        with pytest.raises(ValueError, match="cannot override"):
+            RODatasetItemGroup(
+                dataset_path="relative/part-*",
+                reader_init_kwargs={"dataset_path": "other"},
+            )
+        with pytest.raises(AssertionError, match="filesystem I/O"):
+            list(restored.iter_dataset_items())
+
+    def test_single_directory_and_relative_current_directory(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "source"
+        (root / "nested").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        group = RODatasetItemGroup(dataset_path="source")
+        assert [item.dataset_path for item in group.iter_dataset_items()] == [
+            str(root)
+        ]
+
+    def test_discovery_reflects_later_changes(self, tmp_path):
+        (tmp_path / "part-a").mkdir()
+        group = RODatasetItemGroup(dataset_path=str(tmp_path / "part-*"))
+        assert [item.dataset_path for item in group.iter_dataset_items()] == [
+            str(tmp_path / "part-a")
+        ]
+        (tmp_path / "part-b").mkdir()
+        assert [item.dataset_path for item in group.iter_dataset_items()] == [
+            str(tmp_path / "part-a"),
+            str(tmp_path / "part-b"),
+        ]
+
+    def test_mixed_glob_patterns_keep_declared_order_and_sort_each_result(
+        self, tmp_path, monkeypatch
+    ):
+        for name in ("part-b", "part-a", "first", "nested/deep-0"):
+            (tmp_path / name).mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        group = RODatasetItemGroup(
+            dataset_path=["first", "part-[ab]", "**/deep-?"],
+        )
+        assert [item.dataset_path for item in group.iter_dataset_items()] == [
+            str(tmp_path / name)
+            for name in ("first", "part-a", "part-b", "nested/deep-0")
+        ]
+
+    @pytest.mark.parametrize(
+        "path_kind", ["missing", "file", "empty-glob", "glob-file"]
+    )
+    def test_discovery_rejects_missing_or_non_directory_selections(
+        self, tmp_path, monkeypatch, path_kind
+    ):
+        (tmp_path / "file.arrow").write_bytes(b"not a dataset directory")
+        monkeypatch.chdir(tmp_path)
+        path, exception = {
+            "missing": ("missing", FileNotFoundError),
+            "file": ("file.arrow", NotADirectoryError),
+            "empty-glob": ("missing-*", ValueError),
+            "glob-file": ("*.arrow", NotADirectoryError),
+        }[path_kind]
+        with pytest.raises(exception):
+            list(RODatasetItemGroup(dataset_path=path).iter_dataset_items())
+
+    def test_glob_overlap_fails_but_explicit_duplicates_remain(self, tmp_path):
+        root = tmp_path / "part-a"
+        root.mkdir()
+        explicit = RODatasetItemGroup(dataset_path=[str(root), str(root)])
+        assert [
+            item.dataset_path for item in explicit.iter_dataset_items()
+        ] == [str(root), str(root)]
+        with pytest.raises(ValueError, match="duplicate root"):
+            list(
+                RODatasetItemGroup(
+                    dataset_path=[str(root), str(tmp_path / "part-*")]
+                ).iter_dataset_items()
+            )
+
+    def test_uri_uses_its_filesystem_and_storage_options(
+        self, tmp_path, monkeypatch
+    ):
+        fs = fsspec.filesystem("memory")
+        prefix = f"/{tmp_path.name}/ro-group"
+        fs.makedirs(f"{prefix}/part-b", exist_ok=True)
+        fs.makedirs(f"{prefix}/part-a", exist_ok=True)
+        real_url_to_fs = fsspec.core.url_to_fs
+        options = []
+
+        def track_options(path, **kwargs):
+            options.append(kwargs)
+            return real_url_to_fs(path, **kwargs)
+
+        monkeypatch.setattr(fsspec.core, "url_to_fs", track_options)
+        group = RODatasetItemGroup(
+            dataset_path=f"memory://{prefix}/part-*",
+            storage_options={"skip_instance_cache": True},
+        )
+        assert [item.dataset_path for item in group.iter_dataset_items()] == [
+            fs.unstrip_protocol(f"{prefix}/part-{suffix}")
+            for suffix in ("a", "b")
+        ]
+        assert options == [{"skip_instance_cache": True}]
 
 
 class _TimestampEpisode(EpisodePackaging):

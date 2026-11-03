@@ -89,6 +89,36 @@ class TestManagedSamplingRng:
         dataset.set_epoch(0)
         assert prefix + list(iterator) == reference
 
+    def test_default_seed_changes_epoch_with_restarted_spawn_workers(self):
+        if "spawn" not in mp.get_all_start_methods():
+            pytest.skip("spawn is unavailable")
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(start, start + 24)))
+                for start in (0, 100, 200)
+            ],
+            shuffle=True,
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=4,
+            num_workers=2,
+            persistent_workers=False,
+            multiprocessing_context="spawn",
+        )
+        try:
+            epochs = []
+            for epoch in (0, 1, 0):
+                loader.dataset.set_epoch(epoch)
+                epochs.append(
+                    [int(v) for batch in loader for v in batch.reshape(-1)]
+                )
+            assert epochs[0] != epochs[1]
+            assert epochs[0] == epochs[2]
+            assert sorted(epochs[0]) == sorted(epochs[1])
+        finally:
+            _close_dataloader_owner_resources(loader)
+
     def test_pickle_and_clone_keep_independent_sampling_owners(self):
         dataset = self._dataset()
         dataset.set_epoch(5)

@@ -117,6 +117,9 @@ description: Load these instructions when working with git history, commit messa
   workflow changes it contains.
 - Keep the description concise and preserve the multiline section structure used in commit bodies.
 - Use the review title as the first line of the final squash commit message unless told otherwise, and mirror the final squash body in the review description unless told otherwise.
+- Keep formal review conclusions, finding ledgers, and approval-state records
+  in MR/PR comments, outside the description and squash commit body. Keep
+  concise validation results and relevant unresolved risks in the description.
 - Prefer explicit `none` / `not applicable` markers over ambiguous omissions.
 - If the description is auto-filled from commit text, review and scrub the exact final title and description before sending.
 - Require squash on merge unless explicitly instructed otherwise.

@@ -30,6 +30,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from functools import partial
 from multiprocessing.context import get_spawning_popen
 from multiprocessing.sharedctypes import RawValue
@@ -1964,18 +1965,21 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     - One ``float``: apply the same ratio to every item.
     - An ``Iterable[float]``: provide one ratio per logical input, in
       ``datasets`` order.
-    - A ``dict[str, float]``: apply ratios by logical item name path prefix.
+    - A ``dict[str, float]``: apply ratios by logical name, glob or path prefix.
 
-    Dict keys and item names are lowercase relative paths whose segments match
-    ``[a-z0-9][a-z0-9._-]*``. Matching is by complete path segment: ``"a"``
-    matches ``"a"`` and ``"a/..."``, but not ``"abc"``. The deepest matching
-    key wins, and an item with no matching key uses ``1.0``. In dict mode, every
-    logical input must have a unique leaf name: ``"a"`` cannot coexist with
-    ``"a/b"``. A group's physical members do not need names; its parent name
-    is the one validated and matched.
-    Every dict key must match at least one item, so misspelled rules fail during
-    construction instead of silently doing nothing. Scalar and iterable forms
-    do not require item names.
+    Dict rules match logical names, including group names:
+
+    - Names are unique lowercase leaf paths: ``a`` and ``a/b`` cannot coexist.
+      Plain name segments match ``[a-z0-9][a-z0-9._-]*``.
+    - Plain keys match complete path prefixes: ``a`` matches ``a/b``, not
+      ``abc``. Globs match the whole name case-sensitively; ``*``, ``?`` and
+      ``[...]`` stay within one segment. ``**`` is only allowed as a complete
+      segment, where it spans zero or more segments.
+    - Priority is exact name, then glob, then longest plain prefix, then ``1.0``.
+      Different ratios from overlapping globs are an error unless an exact
+      rule overrides them. Every key must match at least one logical name.
+
+    Scalar and iterable forms do not require item names.
 
     For every form, ratios must be finite and strictly positive; any final ratio
     other than ``1.0`` requires ``shuffle=True``. Ratios are resolved once at
@@ -2007,8 +2011,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             )
             # The resolved ratios are [2.0, 0.5], in datasets order.
 
-        Use dict keys to weight a path subtree, then override a more specific
-        leaf or subtree:
+        Combine a prefix, a segment glob and an exact override:
 
         .. code-block:: python
 
@@ -2019,9 +2022,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     training_items["d/e"],
                 ],
                 shuffle=True,
-                resample_ratios={"a": 0.5, "a/b": 2.0},
+                resample_ratios={"a": 0.5, "a/*": 1.5, "a/b": 2.0},
             )
-            # Resolved ratios: [2.0, 0.5, 1.0].
+            # a/b: 2.0 (exact), a/c: 1.5 (glob), d/e: 1.0 (default).
 
         Group several physical RODataset roots under one logical path without
         concatenating them. The ratio is resolved from the group's name and
@@ -2048,19 +2051,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             # Each physical path targets round(its own sharded row count * 2.0).
             # summary() keeps one logical "open_x/bridge" leaf.
 
-        Dict paths are a namespace, not arbitrary string prefixes. For
-        example, this configuration is rejected because dataset item names
-        must be leaves of one tree:
-
-        .. code-block:: python
-
-            invalid = DictIterableDataset(
-                datasets=[training_items["a"], training_items["a/b"]],
-                shuffle=True,
-                resample_ratios={"a": 1.0},
-            )
-            # Raises ValueError: "a" is an ancestor of "a/b".
-
     In multi-worker loading, every child dataset is physically sharded first
     and resampled only within that shard.
 
@@ -2068,6 +2058,13 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     row level. Every physical item owns its own batch stream, so a group does
     not form batches across member boundaries and ``drop_last`` applies to
     each member's final incomplete batch.
+
+    Shuffled mixtures use each input item or group as one logical fairness
+    unit. Reader admission balances their cumulative admitted output rows;
+    active service compensates for physical membership and yield row counts.
+    This preserves complete-epoch quotas, but absent logical sources and
+    finite reader residencies can still cause uneven short windows. Changing
+    grouping or upgrading the scheduler can change shuffled delivery order.
 
     Item names for :meth:`summary` come from :attr:`DatasetItemNode.name`.
     Unnamed items use ``(unnamed #0)``, ``(unnamed #1)``, and so on.
@@ -2099,7 +2096,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             expand to several such iterators. Defaults to 4.
         resample_ratios (float | Iterable[float] | dict | None, optional):
             Row-count multiplier configuration. Use one of the four forms
-            described above. In dict form, keys are path strings and values are
+            described above. In dict form, keys are paths/globs and values are
             floats. Group members inherit their group's resolved multiplier and
             round independently. Defaults to None, which uses 1.0 for each
             logical input.
@@ -2116,11 +2113,12 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             plans are removed after normal exhaustion and retained after an
             interrupted iteration. Inputs must stay immutable while cached.
         seed (int | None, optional): Base seed for framework-owned dataset
-            sampling. Recommended for reproducible sampling across epochs.
-            With an explicit seed, each complete iteration replays its epoch
-            from the beginning; reader offload does not reset it. Worker
-            default RNG and user transforms remain caller-owned.
-            Defaults to None, preserving stateful Generator behavior.
+            sampling. When neither seed nor generator is supplied, sampling
+            uses a default seed of 42. Each complete seeded iteration replays
+            its epoch from the beginning; reader offload does not reset it.
+            An explicit generator uses stateful sampling and cannot be combined
+            with a seed. Worker default RNG and user transforms remain
+            caller-owned. Defaults to None.
 
     Offload supports both shuffle and batching modes. Enabling it changes
     mixture/reservoir delivery order; it does not provide training-checkpoint
@@ -2750,9 +2748,10 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     ) -> Iterator[Any]:
         """Yield a row-weighted mixture and close all materialized datasets.
 
-        Shuffled iteration uses compensated reader-admission and active-yield
-        weights. Ordered iteration keeps the original source order. A completed
-        segment closes after normal EOF and successful owned cleanup before
+        Shuffled iteration balances admitted rows by logical input and shares
+        active service by logical then physical row quotas, compensating for
+        dataset-side batch sizes. Ordered iteration keeps its existing
+        admission and delivery order. A segment reaches EOF and closes before
         its unfinished source can re-enter, including immediate reselection;
         sources need not complete a physical round before entering again.
         Failure or caller abandonment terminates this iteration without
@@ -2779,16 +2778,58 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             offload_cursors,
             worker_targets,
         ):
+            targets = [
+                rows // batch_size * batch_size
+                if self.batch_loader_kwargs is not None
+                and self.batch_loader_kwargs.drop_last
+                else rows
+                for rows in worker_targets
+            ]
+            logical_indices = [0] * len(targets)
+            logical_targets = []
+            for logical_idx, physical_indices in enumerate(
+                self._logical_item_indices
+            ):
+                logical_targets.append(
+                    sum(targets[idx] for idx in physical_indices)
+                )
+                for idx in physical_indices:
+                    logical_indices[idx] = logical_idx
+            # Only this iteration owns admission progress. It includes both
+            # delivered rows and the unconsumed rows of admitted residences;
+            # it never advances or mirrors an offload cursor.
+            booked = [0] * len(logical_targets)
+            priorities = [0.0] * len(targets)
+            if self._shuffle.shuffle and targets:
+                if isinstance(self._generator, np.random.Generator):
+                    priorities = self._generator.random(len(targets)).tolist()
+                elif isinstance(self._generator, torch.Generator):
+                    priorities = torch.rand(
+                        len(targets),
+                        dtype=torch.float64,
+                        generator=self._generator,
+                    ).tolist()
+                else:
+                    raise ValueError(
+                        "Generator must be either a torch.Generator "
+                        "or a numpy.random.Generator."
+                    )
+            prepare = partial(
+                self._prepare_dataset_for_iter,
+                cur_dataset_iters,
+                dataset_indices,
+                make_iter,
+                targets,
+                segment_remaining,
+                offload_cursors,
+                logical_indices=logical_indices,
+                logical_targets=logical_targets,
+                booked=booked,
+                priorities=priorities,
+            )
             primary_exc: BaseException | None = None
             try:
-                weights = self._prepare_dataset_for_iter(
-                    cur_dataset_iters,
-                    dataset_indices,
-                    make_iter,
-                    worker_targets,
-                    segment_remaining,
-                    offload_cursors,
-                )
+                weights = prepare()
                 while cur_dataset_iters:
                     selected_idx = (
                         self._sample_dataset_index(weights)
@@ -2830,24 +2871,10 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                             and not offload_cursors[item_idx].exhausted
                         ):
                             dataset_indices.append(item_idx)
-                        weights = self._prepare_dataset_for_iter(
-                            cur_dataset_iters,
-                            dataset_indices,
-                            make_iter,
-                            worker_targets,
-                            segment_remaining,
-                            offload_cursors,
-                        )
+                        weights = prepare()
                     elif segment_remaining[item_idx] < batch_size:
                         # A non-drop short batch is a different selection unit.
-                        weights = self._prepare_dataset_for_iter(
-                            cur_dataset_iters,
-                            dataset_indices,
-                            make_iter,
-                            worker_targets,
-                            segment_remaining,
-                            offload_cursors,
-                        )
+                        weights = prepare()
             except BaseException as exc:
                 primary_exc = exc
                 raise
@@ -2878,7 +2905,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         """Expand one logical input node into independently scheduled leaves.
 
         A physical item remains one leaf. A group applies its static shard to
-        every generated member, but otherwise has no runtime representation.
+        every generated member. Its logical membership remains in the mixture's
+        scheduling map, without materializing a separate group reader.
         With offload enabled, count on fresh configs so retained leaves do not
         cache selection indices; otherwise keep the normal counting path.
         """
@@ -3080,11 +3108,16 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         cur_dataset_iters: list[tuple[int, Iterator[Any]]],
         remaining_dataset_indices: list[int],
         make_iter: Callable[[int], Iterator[Any] | None],
-        worker_targets: list[int],
+        targets: list[int],
         segment_remaining: dict[int, int],
         offload_cursors: dict[int, _OffloadCursor] | None,
+        *,
+        logical_indices: list[int],
+        logical_targets: list[int],
+        booked: list[int],
+        priorities: list[float],
     ) -> np.ndarray:
-        """Admit lazy residences with target/output-length compensation.
+        """Balance logical admissions and row shares without owning readers.
 
         ``T`` is the fixed worker-local effective epoch output-row quota after
         selection (including splits), process/worker sharding and resampling.
@@ -3093,20 +3126,20 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         output rows, including tail merging. ``u`` is the next yield's rows:
         one sample, a full inner batch, or its non-dropped short tail.
 
-        Admission uses ``T/B`` because one entry produces ``B`` rows; active
-        selection uses ``T/u`` because one service draw produces ``u`` rows.
-        The two divisions compensate different selection units. An unfinished
-        source becomes eligible again only after its previous reader closes;
-        it can then win admission even while other sources remain pending.
+        For logical target ``Q=sum(T)``, admit the pending physical item with
+        minimum ``(booked+B/2)/Q``, breaking ties with its fixed per-iteration
+        random priority. Increment the single logical ``booked`` counter only
+        after adding the lazy iterator to the active pool. An unfinished item
+        becomes eligible again only after its owner reaches EOF and closes.
 
-        In a non-exhausting closed-cycle model with fixed targets, residence
-        lengths and positive yield-size cycles, these paired weights have
-        stationary row shares ``T/sum(T)``. An initially empty pool, finite
-        quotas, exhaustion and changing tails do not satisfy that model, so
-        individual prefixes need not match those shares. Without offload,
-        ``B=T`` gives uniform admission and no short-window mixing guarantee.
+        Active physical weight is ``Q*T/(M*u)``, where ``M`` sums only active
+        physical targets in the same logical input. Thus multiple residents
+        do not multiply their group's row share. Fixed epoch targets remain
+        unchanged as rows are delivered; absent logical inputs and finite
+        residencies still prevent general short-window proportion guarantees.
 
-        Mutates the active/pending lists and iteration-local output counters.
+        Mutates active/pending lists, segment row counters and logical booked
+        rows. The caller owns all iteration-local accounting and priorities.
         Zero-output streams exhaust normally, preserving initialization checks
         and cleanup errors. Readers open only when advanced.
         """
@@ -3121,7 +3154,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 else rows
             )
 
-        targets = [output_rows(rows) for rows in worker_targets]
         while (
             len(cur_dataset_iters) < self._max_dataset_concurrency
             and remaining_dataset_indices
@@ -3130,27 +3162,24 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 output_rows(
                     offload_cursors[idx].next_segment_rows
                     if offload_cursors is not None
-                    else worker_targets[idx]
+                    else targets[idx]
                 )
                 for idx in remaining_dataset_indices
             ]
             # Zero output has no sampling weight, but must still run the
             # original lazy initialization/EOF validation before discarding it.
             if self._shuffle.shuffle and all(residence_rows):
-                admission = np.array(
-                    [
-                        targets[idx] / rows
-                        for idx, rows in zip(
-                            remaining_dataset_indices,
-                            residence_rows,
-                            strict=True,
-                        )
-                    ],
-                    dtype=np.float64,
-                )
-                selected = self._sample_dataset_index(
-                    admission / admission.sum()
-                )
+                scores = [
+                    (
+                        (booked[logical_indices[idx]] + rows / 2)
+                        / logical_targets[logical_indices[idx]],
+                        priorities[idx],
+                    )
+                    for idx, rows in zip(
+                        remaining_dataset_indices, residence_rows, strict=True
+                    )
+                ]
+                selected = min(range(len(scores)), key=scores.__getitem__)
             else:
                 selected = (
                     residence_rows.index(0)
@@ -3184,9 +3213,21 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 continue
             cur_dataset_iters.append((idx, dataset_iter))
             segment_remaining[idx] = rows
+            booked[logical_indices[idx]] += rows
+        active_targets: dict[int, int] = {}
+        for idx, _ in cur_dataset_iters:
+            logical_idx = logical_indices[idx]
+            active_targets[logical_idx] = (
+                active_targets.get(logical_idx, 0) + targets[idx]
+            )
         weights = np.array(
             [
-                targets[idx] / min(batch_size, segment_remaining[idx])
+                logical_targets[logical_indices[idx]]
+                * targets[idx]
+                / (
+                    active_targets[logical_indices[idx]]
+                    * min(batch_size, segment_remaining[idx])
+                )
                 for idx, _ in cur_dataset_iters
             ],
             dtype=np.float64,
@@ -3651,16 +3692,16 @@ def _resolve_named_resample_ratios(
     dataset_items: list[DatasetItemNode],
     resample_ratios: dict[str, float],
 ) -> list[float]:
-    """Resolve path-prefix rules into the existing per-item ratio sequence.
+    """Resolve exact, glob and prefix rules into per-logical-item ratios.
 
-    The temporary trie validates that dataset item names are unique leaves and
-    propagates the deepest matching rule to each leaf. It is discarded before
-    iteration, so sharding and DataLoader cloning continue to use the resolved
-    list of ratios.
+    A temporary trie validates unique leaf names and propagates plain prefix
+    rules. Full-name glob matches override prefixes; exact names override
+    globs. Every rule must match an existing name, even if overridden. The
+    resolved numeric list keeps physical scheduling and sharding unchanged.
 
     Args:
         dataset_items: Items whose names define the leaf set.
-        resample_ratios: Positive row multipliers keyed by logical paths.
+        resample_ratios: Positive multipliers keyed by logical paths or globs.
 
     Returns:
         One normalized ratio per item, in ``dataset_items`` order.
@@ -3671,12 +3712,14 @@ def _resolve_named_resample_ratios(
             match an item, or a ratio is not finite and positive.
     """
     root = _ResamplePathNode()
+    item_paths: list[tuple[str, ...]] = []
     for item_index, item in enumerate(dataset_items):
         item_name = item.name
         path_segments = _split_resample_path(
             item_name,
             name=f"dataset_items[{item_index}].name",
         )
+        item_paths.append(path_segments)
         node = root
         for segment in path_segments:
             if node.item_index is not None:
@@ -3702,7 +3745,36 @@ def _resolve_named_resample_ratios(
             )
         node.item_index = item_index
 
+    glob_rules: list[tuple[str, float, set[int]]] = []
     for rule_name, ratio in resample_ratios.items():
+        if isinstance(rule_name, str) and any(
+            char in rule_name for char in "*?["
+        ):
+            pattern = tuple(rule_name.split("/"))
+            if any(
+                not segment or ("**" in segment and segment != "**")
+                for segment in pattern
+            ):
+                raise ValueError(
+                    "resample_ratios glob must have nonempty segments and "
+                    "use ** only as a complete segment: "
+                    f"{rule_name!r}."
+                )
+            normalized_ratio = _normalize_resample_ratio(
+                ratio, name=f"resample_ratios[{rule_name!r}]"
+            )
+            matches = {
+                index
+                for index, item_path in enumerate(item_paths)
+                if _match_resample_glob(pattern, item_path)
+            }
+            if not matches:
+                raise ValueError(
+                    "resample_ratios key does not match any dataset item "
+                    f"name: {rule_name!r}."
+                )
+            glob_rules.append((rule_name, normalized_ratio, matches))
+            continue
         path_segments = _split_resample_path(
             rule_name,
             name="resample_ratios key",
@@ -3742,7 +3814,47 @@ def _resolve_named_resample_ratios(
         return has_item
 
     resolve_node(root, inherited_ratio=None)
+    for item_index, item_path in enumerate(item_paths):
+        item_name = "/".join(item_path)
+        if item_name in resample_ratios:
+            continue
+        matching_rules = [
+            (rule_name, ratio)
+            for rule_name, ratio, matches in glob_rules
+            if item_index in matches
+        ]
+        if not matching_rules:
+            continue
+        if len({ratio for _, ratio in matching_rules}) > 1:
+            raise ValueError(
+                "Conflicting resample_ratios glob rules for logical item "
+                f"{item_name!r}: {matching_rules!r}. Use an exact name "
+                "to override the conflicting rules."
+            )
+        ratio_values[item_index] = matching_rules[0][1]
     return ratio_values
+
+
+def _match_resample_glob(
+    pattern: tuple[str, ...], item_path: tuple[str, ...]
+) -> bool:
+    """Match a logical path with segment-local wildcards and recursive **."""
+    positions = {0}
+    for segment in pattern:
+        if segment == "**":
+            positions = {
+                end
+                for begin in positions
+                for end in range(begin, len(item_path) + 1)
+            }
+        else:
+            positions = {
+                position + 1
+                for position in positions
+                if position < len(item_path)
+                and fnmatchcase(item_path[position], segment)
+            }
+    return len(item_path) in positions
 
 
 def _split_resample_path(value: Any, *, name: str) -> tuple[str, ...]:

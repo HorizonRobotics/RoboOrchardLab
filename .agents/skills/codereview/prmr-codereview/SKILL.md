@@ -41,6 +41,12 @@ To do this:
 
 3. If comment publication was requested, determine whether summary comments,
    inline comments, or both are required.
+   - Keep review reports in comments under the repository's
+     [Git rules](../../../instructions/git.instructions.md), preserving the
+     description for the squash commit body.
+   - After any review publication, read back the posted text and verify it
+     appears in the intended comment or discussion. A matching report appended
+     to the description does not satisfy that check.
 
 4. Run `../changeset-codereview/SKILL.md` against the full current PR/MR diff.
    Pass the title, description, prior-findings ledger, last reviewed head, and

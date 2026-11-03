@@ -90,6 +90,24 @@ class DummyTransform(DictTransform[dict[str, int]]):
         return {"value": value + self.cfg.add_value}
 
 
+class KeywordOnlyContextTransform(DummyTransform):
+    def transform(
+        self,
+        value: int,
+        *,
+        processor_context: DummyDataclassReturn | None = None,
+    ) -> dict:
+        self.seen_context = processor_context
+        return {
+            "value": value
+            + (
+                processor_context.value
+                if processor_context is not None
+                else self.cfg.add_value
+            )
+        }
+
+
 class DummyDataclassTransform(DictTransform[DummyDataclassReturn]):
     """A dummy transform that returns a dataclass."""
 
@@ -303,6 +321,65 @@ class TestDictTransforms:
         assert set(transform.mapped_input_columns) == set(["value"])
         assert set(transform.output_columns) == set(["value"])
         assert set(transform.mapped_output_columns) == set(["value"])
+
+    @pytest.mark.parametrize("row_kind", ["dict", "dataclass", "pydantic"])
+    def test_keyword_only_context_preserves_typed_reference(self, row_kind):
+        @dataclass
+        class DataclassRow:
+            value: int
+            processor_context: DummyDataclassReturn
+
+        class ModelRow(BaseModel):
+            value: int
+            processor_context: DummyDataclassReturn
+
+        context = DummyDataclassReturn(value=7)
+        row = {"value": 5, "processor_context": context}
+        if row_kind == "dataclass":
+            row = DataclassRow(**row)
+        elif row_kind == "pydantic":
+            row = ModelRow(**row)
+        transform = KeywordOnlyContextTransform(
+            DummyTransformConfig(add_value=10, keep_input_columns=False)
+        )
+        assert transform.input_columns == ["value", "processor_context"]
+        raw, merged = transform.apply(row)
+        assert raw == merged == {"value": 12}
+        assert transform.seen_context is context
+        assert transform(row) == merged
+        assert transform.seen_context is context
+
+    def test_keyword_only_context_uses_its_declared_default(self):
+        transform = KeywordOnlyContextTransform(
+            DummyTransformConfig(add_value=10)
+        )
+        assert transform.apply({"value": 5}) == ({"value": 15}, {"value": 15})
+        assert transform.seen_context is None
+
+    def test_required_keyword_only_input_supports_mapping_and_missing_checks(
+        self,
+    ):
+        class RequiredKeywordTransform(DummyTransform):
+            def transform(self, value: int, *, factor: int) -> dict:
+                return {"value": value * factor}
+
+        transform = RequiredKeywordTransform(
+            DummyTransformConfig(
+                add_value=0,
+                input_columns={"source_factor": "factor"},
+                keep_input_columns=False,
+            )
+        )
+        assert transform.apply({"value": 3, "source_factor": 4}) == (
+            {"value": 12},
+            {"value": 12},
+        )
+        # Missing a required mapped source fails before calling the transform.
+        with pytest.raises(ValueError, match="source_factor"):
+            transform.apply({"value": 3})
+        transform.cfg.input_columns = None
+        with pytest.raises(KeyError, match="factor"):
+            transform.apply({"value": 3})
 
     def test_dataclass_transform(self):
         cfg = DummyTransformConfig(

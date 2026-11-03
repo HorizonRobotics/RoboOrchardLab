@@ -271,21 +271,32 @@ print(
 # sample-level segment size uses its actual batch size; direct iteration or
 # an external loader without this context counts one sample per unit.
 #
-# Shuffled mixing uses each worker's fixed resampled output target T. Pending
-# readers are selected with weight T/B, where B is their next residence's
-# output rows; active sources use T/u, where u is the next yield's row count
-# (one sample or an inner batch, including its short tail). These compensate
-# the two different selection units. Inner ``drop_last`` tails do not count
-# toward output weights; the underlying index plan remains unchanged.
+# Shuffled mixing treats each input item or group as one logical source.
+# For each worker, T is a physical item's fixed resampled output-row target,
+# and Q is the sum of T over its logical group. Admit the pending reader with
+# the smallest (booked + B/2)/Q, where B is its next residence's output rows.
+# Fixed per-iteration priorities break ties. The logical booked count grows
+# only on admission and includes delivered rows plus active unconsumed rows.
+# It never advances a reader cursor.
+#
+# Active physical weight is Q*T/(M*u): M sums T over active members of that
+# logical source, and u is the next yield's row count (one sample or an inner
+# batch, including its short tail). Thus multiple active members do not count
+# their group's target repeatedly. Inner ``drop_last`` tails do not count
+# toward Q or T; the underlying index plan remains unchanged.
 # A completed reader closes before it becomes eligible again, including for
 # immediate reselection. The concurrency bound still applies. Finite epoch
 # initialization, changing tails and source exhaustion cause prefix variation:
 # the complete epoch retains exact quotas, not IID finite-window proportions.
-# Ordered iteration retains its source order.
+# Ordered iteration retains its existing admission and delivery order.
+# Grouping changes the fairness unit. Shuffled delivery order can change when
+# upgrading the scheduler; identical seeds replay within this implementation,
+# without a promise of the previous scheduler's element-by-element sequence.
 #
 # ``offload_num_batches=None`` keeps ordinary iteration. Its full-source
-# residences naturally give uniform admission (T/B=1); without finite rotation,
-# short-window mixture proportions are not guaranteed.
+# residences use the same logical scheduling, without finite reader rotation.
+# Missing logical sources in the active pool can still cause skewed windows;
+# the scheduler does not evict readers or guarantee finite-window proportions.
 # When enabled,
 # ``offload_dir`` optionally selects the cache parent; its default is the
 # system temporary directory. Immutable base indices are reused across local
