@@ -21,6 +21,7 @@ import inspect
 import json
 import math
 import os
+import pickle
 import re
 import shutil
 import socket
@@ -29,11 +30,12 @@ import unicodedata
 import warnings
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from functools import partial
 from multiprocessing.context import get_spawning_popen
 from multiprocessing.sharedctypes import RawValue
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -70,6 +72,13 @@ from robo_orchard_lab.dataset.robot._resume import (
     _replay_skipped_outputs,
     _SkipCollate,
     _validate_skip_n_items,
+)
+from robo_orchard_lab.dataset.robot.sampling_strategy import (
+    DefaultMixtureSamplingStrategy,
+    DefaultMixtureSamplingStrategyConfig,
+    MixtureSamplingStrategy,
+    MixtureSamplingStrategyConfig,
+    MixtureSamplingView,
 )
 from robo_orchard_lab.dataset.sampler import (
     DEFAULT_SAMPLING_SEED,
@@ -558,10 +567,9 @@ class DataLoader(TorchDataLoader):
             isinstance(dataset, DictIterableDataset)
             and dataset.offload_num_batches is not None
         )
-        should_clone_for_sampling = (
-            isinstance(dataset, DictIterableDataset)
-            and dataset._sampling_seed is not None
-        )
+        should_clone_for_sampling = isinstance(
+            dataset, DictIterableDataset
+        ) and (dataset._sampling_seed is not None or dataset._shuffle.shuffle)
         if not (
             uses_dataset_batch_loader
             or should_clone_for_shuffle
@@ -601,17 +609,14 @@ class DataLoader(TorchDataLoader):
                 datasets=dataset.logical_dataset_items,
                 shuffle=aligned_shuffle_config,
                 shard_kwargs=dataset.shard_kwargs,
-                generator=(
-                    dataset._generator
-                    if dataset._sampling_seed is None
-                    else None
-                ),
+                generator=dataset._generator_for_native_clone(),
                 batch_loader_kwargs=aligned_batch_loader_kwargs,
                 max_dataset_concurrency=dataset._max_dataset_concurrency,
                 resample_ratios=dataset._logical_resample_ratios,
                 offload_num_batches=dataset.offload_num_batches,
                 offload_dir=dataset.offload_dir,
                 seed=dataset._sampling_seed,
+                sampling_strategy=dataset.sampling_strategy,
             )
             if cloned_dataset._sampling_seed is not None:
                 cloned_dataset.set_epoch(dataset._sampling_epoch.value)
@@ -1954,10 +1959,14 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     ``round(member_sharded_rows * ratio)``. Thus groups do not introduce a
     concatenated runtime dataset or group-level rounding.
 
-    Shuffled mixing weights both reader admission and active sample/batch
-    selection by effective worker-local epoch row targets, compensating for
-    each selection's output size. This preserves the bounded reader pool and
-    exact epoch quotas; it does not guarantee IID finite-window proportions.
+    The default shuffled policy starts with a quota-weighted logical anchor
+    and uniform uncovered logical groups. Normal admissions use live remaining
+    logical rows and pending residency lengths, then choose physical members
+    by remaining rows. With offload, initial reader budgets are jittered;
+    later residencies retain the normal cap/tail rule. Active sample/batch
+    selection uses remaining logical and physical row quotas, compensating
+    for each yield's output size. The reader pool stays bounded and epoch
+    quotas remain exact; finite-window proportions need not be IID.
 
     ``resample_ratios`` has four construction-time forms:
 
@@ -2059,9 +2068,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     not form batches across member boundaries and ``drop_last`` applies to
     each member's final incomplete batch.
 
-    Shuffled mixtures use each input item or group as one logical fairness
-    unit. Reader admission balances their cumulative admitted output rows;
-    active service compensates for physical membership and yield row counts.
+    The default shuffled policy uses each input item or group as one logical
+    fairness unit for active service, compensating for physical membership and
+    yield row counts. Reader admissions use randomized physical residencies.
     This preserves complete-epoch quotas, but absent logical sources and
     finite reader residencies can still cause uneven short windows. Changing
     grouping or upgrading the scheduler can change shuffled delivery order.
@@ -2083,8 +2092,12 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             default sharding strategy will be used (contiguous shards).
         generator (torch.Generator | np.random.Generator | None, optional): An
             optional stateful sampling stream. Prefer ``seed`` for framework
-            ownership and epoch replay. An explicit generator keeps advancing
-            across iterations; ``set_epoch`` does not reseed it. If neither
+            ownership and epoch replay. Each shuffled iteration scopes the
+            current explicit generator state to its rank and worker; the
+            generator continues advancing and ``set_epoch`` does not reset it.
+            Restarted non-persistent workers can repeat their parent state.
+            Fallback sharding requires equal starting states across ranks.
+            If neither
             input is supplied, seed 42 initializes a private stream.
             Cannot be combined with ``seed``. Defaults to None.
         batch_loader_kwargs (BatchLoaderConfig | dict | None, optional): An
@@ -2114,11 +2127,23 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             interrupted iteration. Inputs must stay immutable while cached.
         seed (int | None, optional): Base seed for framework-owned dataset
             sampling. When neither seed nor generator is supplied, sampling
-            uses a default seed of 42. Each complete seeded iteration replays
-            its epoch from the beginning; reader offload does not reset it.
-            An explicit generator uses stateful sampling and cannot be combined
-            with a seed. Worker default RNG and user transforms remain
-            caller-owned. Defaults to None.
+            uses a default seed of 42. With the default policy, each complete
+            seeded iteration replays its epoch from the beginning; custom
+            policies must separately declare deterministic epoch replay.
+            Reader offload does not reset the sampling stream.
+            Shuffled worker streams are derived independently; fallback uses
+            the same stream for corresponding workers across ranks. An explicit
+            generator uses stateful sampling and cannot be combined with a seed.
+            Worker default RNG and user transforms remain caller-owned.
+            Defaults to None.
+        sampling_strategy (MixtureSamplingStrategyConfig | None, optional):
+            Source scheduling configuration. A fresh worker-local runtime
+            chooses pending admission and active service for each iteration.
+            The framework owns row quotas, readers and successful residency
+            commits. Defaults to live remaining-row admission and initial
+            offload residency jitter.
+            Custom runtime classes require ``shuffle=True``. The config alone
+            is retained by clones and serialized datasets.
 
     Offload supports both shuffle and batching modes. Enabling it changes
     mixture/reservoir delivery order; it does not provide training-checkpoint
@@ -2130,7 +2155,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     to the caller.
 
     Raises:
-        TypeError: If ratios are not numeric.
+        TypeError: If ratios are not numeric or the strategy config is invalid.
         ValueError: If iterable argument lengths do not match ``datasets``;
             dict paths are invalid, unmatched, or not unique leaf input names;
             a group yields an invalid member; or a ratio is non-finite, not
@@ -2151,6 +2176,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     These are the items used at runtime.
     """
 
+    sampling_strategy: MixtureSamplingStrategyConfig
+    """Serializable source policy; runtime state belongs to each iterator."""
+
     def __init__(
         self,
         datasets: Iterable[DatasetItemNode],
@@ -2167,6 +2195,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         offload_dir: str | None = None,
         *,
         seed: int | None = None,
+        sampling_strategy: MixtureSamplingStrategyConfig | None = None,
     ):
         # try to make this instance compatible with HF Iterable at class-level
         # or instance-level if class-level MRO change fails
@@ -2226,6 +2255,19 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         )
         self._generator = generator
         self._shuffle = shuffle
+        if sampling_strategy is None:
+            sampling_strategy = DefaultMixtureSamplingStrategyConfig()
+        if not isinstance(sampling_strategy, MixtureSamplingStrategyConfig):
+            raise TypeError(
+                "sampling_strategy must be a MixtureSamplingStrategyConfig."
+            )
+        if (
+            not shuffle.shuffle
+            and sampling_strategy.class_type
+            is not DefaultMixtureSamplingStrategy
+        ):
+            raise ValueError("Custom sampling_strategy requires shuffle=True.")
+        self.sampling_strategy = sampling_strategy
         if isinstance(batch_loader_kwargs, dict):
             batch_loader_kwargs = BatchLoaderConfig(**batch_loader_kwargs)
         self._batch_loader_kwargs = batch_loader_kwargs
@@ -2327,6 +2369,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore sampling identity or an explicit legacy Generator state."""
 
+        state.setdefault(
+            "sampling_strategy", DefaultMixtureSamplingStrategyConfig()
+        )
         serialized_generator = state.pop(
             "_serialized_torch_generator",
             None,
@@ -2345,12 +2390,14 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             self._epoch = self._sampling_epoch.value
             self._generator = self._make_sampling_generator(self._epoch)
 
-    def _make_sampling_generator(self, epoch: int) -> torch.Generator:
+    def _make_sampling_generator(
+        self, epoch: int, worker_id: int | None = None
+    ) -> torch.Generator:
         """Derive a private sampling stream without drawing any default RNG.
 
         Native shards include global rank; fallback streams deliberately omit
         it because Accelerate assigns rows after reading the common stream.
-        Worker identity never participates in framework sampling.
+        Corresponding workers use the same identity in fallback mode.
         """
         if self._sampling_seed is None:
             raise RuntimeError("Managed sampling requires an explicit seed.")
@@ -2360,6 +2407,8 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         identity = (
             f"robo-orchard-sampling-v1\0{self._sampling_seed}\0{epoch}\0{rank}"
         ).encode("ascii")
+        if worker_id is not None:
+            identity += f"\0worker\0{worker_id}".encode("ascii")
         seed = int.from_bytes(
             hashlib.blake2b(identity, digest_size=8).digest(), "big"
         ) & (2**63 - 1)
@@ -2372,9 +2421,10 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         That wrapper receives an independent owner, including its epoch cell.
         Reusing that owner in place for native sampling would change an
         existing loader's stream, so callers must first create a new loader
-        or shard. Unmanaged datasets retain their legacy RNG ownership.
+        or shard. Explicit generators remain stateful and are copied for a
+        fallback owner so it does not advance another loader's generator.
         """
-        if self._sampling_seed is None:
+        if self._sampling_seed is None and not self._shuffle.shuffle:
             return None
         if self._sampling_rank is None and rank is not None:
             raise ValueError(
@@ -2384,8 +2434,20 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 "robo_orchard_lab.dataset.robot.DataLoader."
             )
         owner = copy.copy(self) if rank is None else self
+        if rank is None and self._sampling_seed is None:
+            owner._generator = copy.deepcopy(self._generator)
         owner._sampling_rank = rank
         return owner
+
+    def _generator_for_native_clone(
+        self,
+    ) -> torch.Generator | np.random.Generator | None:
+        """Keep fallback-owned explicit streams private during native reuse."""
+        if self._sampling_seed is not None:
+            return None
+        if self._sampling_rank is None:
+            return copy.deepcopy(self._generator)
+        return self._generator
 
     def set_epoch(self, epoch: int) -> None:
         """Choose the next complete epoch without resetting active readers.
@@ -2426,7 +2488,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         result = DictIterableDataset(
             datasets=sharded_items,
             shuffle=self._shuffle,
-            generator=self._generator if self._sampling_seed is None else None,
+            generator=self._generator_for_native_clone(),
             batch_loader_kwargs=self.batch_loader_kwargs,
             max_dataset_concurrency=self._max_dataset_concurrency,
             shard_kwargs=self.shard_kwargs,
@@ -2434,6 +2496,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             offload_num_batches=self.offload_num_batches,
             offload_dir=self.offload_dir,
             seed=self._sampling_seed,
+            sampling_strategy=self.sampling_strategy,
         )
         if result._sampling_seed is not None:
             result.set_epoch(self._sampling_epoch.value)
@@ -2746,9 +2809,9 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
     def _create_iterator(
         self, context: _IterationSkip | None
     ) -> Iterator[Any]:
-        """Yield a row-weighted mixture and close all materialized datasets.
+        """Yield a strategy-selected mixture and close materialized datasets.
 
-        Shuffled iteration balances admitted rows by logical input and shares
+        The default policy balances admitted rows by logical input and shares
         active service by logical then physical row quotas, compensating for
         dataset-side batch sizes. Ordered iteration keeps its existing
         admission and delivery order. A segment reaches EOF and closes before
@@ -2760,9 +2823,38 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         Yields:
             Any: One sample or dataset-side batch from an active dataset item.
         """
+        worker = torch.utils.data.get_worker_info()
+        worker_id = worker.id if worker is not None else None
         if self._sampling_seed is not None:
             self._epoch = self._sampling_epoch.value
-            self._generator = self._make_sampling_generator(self._epoch)
+            self._generator = self._make_sampling_generator(
+                self._epoch, worker_id if self._shuffle.shuffle else None
+            )
+        elif self._shuffle.shuffle:
+            # Scope a caller-supplied stream without drawing default RNG.
+            # Its state continues advancing and is not reset by set_epoch.
+            if isinstance(self._generator, torch.Generator):
+                state = bytes(self._generator.get_state().tolist())
+            elif isinstance(self._generator, np.random.Generator):
+                state = pickle.dumps(
+                    self._generator.bit_generator.state, protocol=4
+                )
+            else:
+                raise ValueError(
+                    "Generator must be either a torch.Generator "
+                    "or a numpy.random.Generator."
+                )
+            identity = (
+                f"robo-orchard-explicit-v1\0{self._sampling_rank}\0{worker_id}"
+            ).encode("ascii") + state
+            scoped_seed = int.from_bytes(
+                hashlib.blake2b(identity, digest_size=8).digest(), "big"
+            ) & (2**63 - 1)
+            if isinstance(self._generator, torch.Generator):
+                self._generator.manual_seed(scoped_seed)
+            else:
+                bit_generator = self._generator.bit_generator
+                bit_generator.state = type(bit_generator)(scoped_seed).state
         cur_dataset_iters: list[tuple[int, Iterator[Any]]] = []
         dataset_indices = list(range(len(self.dataset_items)))
         _ = self.total_iterator_length
@@ -2778,64 +2870,100 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
             offload_cursors,
             worker_targets,
         ):
-            targets = [
+            targets = tuple(
                 rows // batch_size * batch_size
                 if self.batch_loader_kwargs is not None
                 and self.batch_loader_kwargs.drop_last
                 else rows
                 for rows in worker_targets
-            ]
+            )
+            # Delivered rows include active residencies that have not yet
+            # reached EOF, unlike the committed offload cursor.
+            remaining_targets = dict(enumerate(targets))
             logical_indices = [0] * len(targets)
-            logical_targets = []
             for logical_idx, physical_indices in enumerate(
                 self._logical_item_indices
             ):
-                logical_targets.append(
-                    sum(targets[idx] for idx in physical_indices)
-                )
                 for idx in physical_indices:
                     logical_indices[idx] = logical_idx
-            # Only this iteration owns admission progress. It includes both
-            # delivered rows and the unconsumed rows of admitted residences;
-            # it never advances or mirrors an offload cursor.
-            booked = [0] * len(logical_targets)
-            priorities = [0.0] * len(targets)
-            if self._shuffle.shuffle and targets:
-                if isinstance(self._generator, np.random.Generator):
-                    priorities = self._generator.random(len(targets)).tolist()
-                elif isinstance(self._generator, torch.Generator):
-                    priorities = torch.rand(
-                        len(targets),
-                        dtype=torch.float64,
-                        generator=self._generator,
-                    ).tolist()
-                else:
+            initial_residence_rows = {
+                idx: offload_cursors[idx].next_segment_rows
+                if offload_cursors is not None
+                else target
+                for idx, target in enumerate(targets)
+            }
+            if (
+                self.batch_loader_kwargs is not None
+                and self.batch_loader_kwargs.drop_last
+            ):
+                initial_residence_rows = {
+                    idx: rows // batch_size * batch_size
+                    for idx, rows in initial_residence_rows.items()
+                }
+            view = MixtureSamplingView(
+                pending_ids=tuple(dataset_indices),
+                active_ids=(),
+                logical_indices=tuple(logical_indices),
+                targets=targets,
+                remaining_targets=MappingProxyType(remaining_targets),
+                residence_rows=MappingProxyType(initial_residence_rows),
+                segment_remaining=MappingProxyType(segment_remaining),
+                batch_size=batch_size,
+                logical_names=tuple(
+                    item.name for item in self.logical_dataset_items
+                ),
+                initial_residency_slots=(
+                    self._max_dataset_concurrency
+                    if offload_cursors is not None
+                    and self._shuffle.shuffle
+                    and any(targets)
+                    else 0
+                ),
+            )
+            strategy = None
+            if self._shuffle.shuffle:
+                if not isinstance(
+                    self._generator, (torch.Generator, np.random.Generator)
+                ):
                     raise ValueError(
                         "Generator must be either a torch.Generator "
                         "or a numpy.random.Generator."
+                    )
+                strategy = self.sampling_strategy(
+                    generator=self._generator, view=view
+                )
+                if not isinstance(strategy, MixtureSamplingStrategy):
+                    raise TypeError(
+                        "sampling_strategy must construct a "
+                        "MixtureSamplingStrategy runtime."
                     )
             prepare = partial(
                 self._prepare_dataset_for_iter,
                 cur_dataset_iters,
                 dataset_indices,
                 make_iter,
-                targets,
                 segment_remaining,
                 offload_cursors,
-                logical_indices=logical_indices,
-                logical_targets=logical_targets,
-                booked=booked,
-                priorities=priorities,
+                strategy=strategy,
             )
             primary_exc: BaseException | None = None
             try:
-                weights = prepare()
+                view = prepare(view=view)
                 while cur_dataset_iters:
-                    selected_idx = (
-                        self._sample_dataset_index(weights)
-                        if self._shuffle.shuffle
-                        else 0
-                    )
+                    selected_idx = 0
+                    if strategy is not None:
+                        selected_id = strategy.choose_active(view)
+                        if (
+                            isinstance(selected_id, bool)
+                            or not isinstance(selected_id, (int, np.integer))
+                            or selected_id not in view.active_ids
+                        ):
+                            raise ValueError(
+                                "sampling_strategy.choose_active must return "
+                                "an active physical item ID, "
+                                f"got {selected_id!r}."
+                            )
+                        selected_idx = view.active_ids.index(selected_id)
                     item_idx, iter_dataset = cur_dataset_iters[selected_idx]
                     remaining = segment_remaining[item_idx]
                     try:
@@ -2847,6 +2975,7 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                         ) from exc
                     unit_rows = min(batch_size, remaining)
                     segment_remaining[item_idx] -= unit_rows
+                    remaining_targets[item_idx] -= unit_rows
                     if context is not None and context.remaining:
                         context.remaining -= 1
                     else:
@@ -2866,15 +2995,20 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                         cur_dataset_iters.pop(selected_idx)
                         del segment_remaining[item_idx]
                         close_iterators_best_effort([iter_dataset])
-                        if (
+                        requeue = (
                             offload_cursors is not None
                             and not offload_cursors[item_idx].exhausted
-                        ):
+                        )
+                        if strategy is not None:
+                            strategy.residency_completed(
+                                item_idx, requeue=requeue
+                            )
+                        if requeue:
                             dataset_indices.append(item_idx)
-                        weights = prepare()
+                        view = prepare(view=view)
                     elif segment_remaining[item_idx] < batch_size:
                         # A non-drop short batch is a different selection unit.
-                        weights = prepare()
+                        view = prepare(view=view)
             except BaseException as exc:
                 primary_exc = exc
                 raise
@@ -2883,21 +3017,6 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     [iter_dataset for _, iter_dataset in cur_dataset_iters],
                     primary_exc=primary_exc,
                 )
-
-    def _sample_dataset_index(self, weights: np.ndarray) -> int:
-        """Draw a scheduling choice using only this mixture's explicit RNG."""
-        if isinstance(self._generator, np.random.Generator):
-            return int(self._generator.choice(len(weights), p=weights))
-        if isinstance(self._generator, torch.Generator):
-            return int(
-                torch.multinomial(
-                    torch.from_numpy(weights), 1, generator=self._generator
-                ).item()
-            )
-        raise ValueError(
-            "Generator must be either a torch.Generator "
-            "or a numpy.random.Generator."
-        )
 
     def _expand_dataset_item_node(
         self, item_node: DatasetItemNode
@@ -3108,40 +3227,22 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
         cur_dataset_iters: list[tuple[int, Iterator[Any]]],
         remaining_dataset_indices: list[int],
         make_iter: Callable[[int], Iterator[Any] | None],
-        targets: list[int],
         segment_remaining: dict[int, int],
         offload_cursors: dict[int, _OffloadCursor] | None,
         *,
-        logical_indices: list[int],
-        logical_targets: list[int],
-        booked: list[int],
-        priorities: list[float],
-    ) -> np.ndarray:
-        """Balance logical admissions and row shares without owning readers.
+        view: MixtureSamplingView,
+        strategy: MixtureSamplingStrategy | None,
+    ) -> MixtureSamplingView:
+        """Fill resident slots and expose only read-only scheduling metadata.
 
-        ``T`` is the fixed worker-local effective epoch output-row quota after
-        selection (including splits), process/worker sharding and resampling.
-        Inner drop-last excludes its final incomplete batch from ``T``, never
-        from the raw cursor/index plan. ``B`` is the next residence's actual
-        output rows, including tail merging. ``u`` is the next yield's rows:
-        one sample, a full inner batch, or its non-dropped short tail.
-
-        For logical target ``Q=sum(T)``, admit the pending physical item with
-        minimum ``(booked+B/2)/Q``, breaking ties with its fixed per-iteration
-        random priority. Increment the single logical ``booked`` counter only
-        after adding the lazy iterator to the active pool. An unfinished item
-        becomes eligible again only after its owner reaches EOF and closes.
-
-        Active physical weight is ``Q*T/(M*u)``, where ``M`` sums only active
-        physical targets in the same logical input. Thus multiple residents
-        do not multiply their group's row share. Fixed epoch targets remain
-        unchanged as rows are delivered; absent logical inputs and finite
-        residencies still prevent general short-window proportion guarantees.
-
-        Mutates active/pending lists, segment row counters and logical booked
-        rows. The caller owns all iteration-local accounting and priorities.
-        Zero-output streams exhaust normally, preserving initialization checks
-        and cleanup errors. Readers open only when advanced.
+        The framework owns pending/active membership, effective output quotas,
+        and segment accounting. A shuffled strategy chooses pending IDs;
+        ordered iteration takes the first pending item without scheduling RNG.
+        Only positive-output admissions in the first shuffled offload fill
+        may request a raw first-segment budget. That request is validated and
+        applied before allocation or lazy reader construction. Zero-output
+        residencies retain lazy validation, EOF and owned cleanup. Admission
+        metadata refreshes at pool/tail changes; per-yield counters stay live.
         """
         assert self._total_indices_length is not None
         batch = self.batch_loader_kwargs
@@ -3154,42 +3255,79 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                 else rows
             )
 
+        residence_rows = {
+            idx: output_rows(
+                offload_cursors[idx].next_segment_rows
+                if offload_cursors is not None
+                else view.targets[idx]
+            )
+            for idx in remaining_dataset_indices
+        }
+        view = replace(
+            view,
+            residence_rows=MappingProxyType(residence_rows),
+        )
         while (
             len(cur_dataset_iters) < self._max_dataset_concurrency
             and remaining_dataset_indices
         ):
-            residence_rows = [
-                output_rows(
-                    offload_cursors[idx].next_segment_rows
-                    if offload_cursors is not None
-                    else targets[idx]
+            if strategy is not None:
+                view = replace(
+                    view,
+                    pending_ids=tuple(remaining_dataset_indices),
+                    active_ids=tuple(idx for idx, _ in cur_dataset_iters),
                 )
-                for idx in remaining_dataset_indices
-            ]
-            # Zero output has no sampling weight, but must still run the
-            # original lazy initialization/EOF validation before discarding it.
-            if self._shuffle.shuffle and all(residence_rows):
-                scores = [
-                    (
-                        (booked[logical_indices[idx]] + rows / 2)
-                        / logical_targets[logical_indices[idx]],
-                        priorities[idx],
+                selected_id = strategy.choose_admission(view)
+                if (
+                    isinstance(selected_id, bool)
+                    or not isinstance(selected_id, (int, np.integer))
+                    or selected_id not in view.pending_ids
+                ):
+                    raise ValueError(
+                        "sampling_strategy.choose_admission must return "
+                        "a pending physical item ID, "
+                        f"got {selected_id!r}."
                     )
-                    for idx, rows in zip(
-                        remaining_dataset_indices, residence_rows, strict=True
-                    )
-                ]
-                selected = min(range(len(scores)), key=scores.__getitem__)
+                selected = view.pending_ids.index(selected_id)
             else:
-                selected = (
-                    residence_rows.index(0)
-                    if self._shuffle.shuffle and 0 in residence_rows
-                    else 0
-                )
+                selected = 0
             idx = remaining_dataset_indices.pop(selected)
-            rows = residence_rows[selected]
+            rows = residence_rows[idx]
             if self._total_indices_length[idx] <= 0:
                 continue
+            if (
+                strategy is not None
+                and view.initial_residency_slots
+                and offload_cursors is not None
+                and rows > 0
+                and not offload_cursors[idx].exhausted
+            ):
+                cursor = offload_cursors[idx]
+                base_rows = cursor.next_segment_rows
+                initial_rows = strategy.initial_residency_rows(
+                    idx, rows=base_rows, batch_size=batch_size
+                )
+                if (
+                    isinstance(initial_rows, bool)
+                    or not isinstance(initial_rows, (int, np.integer))
+                    or not 0 < initial_rows <= base_rows
+                    or (
+                        initial_rows != base_rows
+                        and (
+                            base_rows < batch_size
+                            or initial_rows % batch_size != 0
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        "sampling_strategy.initial_residency_rows must "
+                        "retain the original raw budget or return a positive "
+                        "smaller whole-batch budget."
+                    )
+                if initial_rows != base_rows:
+                    cursor.initial_segment_rows = int(initial_rows)
+                rows = output_rows(cursor.next_segment_rows)
+                residence_rows[idx] = rows
             dataset_iter = make_iter(idx)
             if dataset_iter is None:
                 continue
@@ -3210,31 +3348,17 @@ class DictIterableDataset(TorchIterableDataset, IterableDatasetMixin):
                     )
                     raise
                 close_iterators_best_effort([dataset_iter])
+                if strategy is not None:
+                    strategy.residency_completed(idx, requeue=False)
                 continue
             cur_dataset_iters.append((idx, dataset_iter))
             segment_remaining[idx] = rows
-            booked[logical_indices[idx]] += rows
-        active_targets: dict[int, int] = {}
-        for idx, _ in cur_dataset_iters:
-            logical_idx = logical_indices[idx]
-            active_targets[logical_idx] = (
-                active_targets.get(logical_idx, 0) + targets[idx]
-            )
-        weights = np.array(
-            [
-                logical_targets[logical_indices[idx]]
-                * targets[idx]
-                / (
-                    active_targets[logical_indices[idx]]
-                    * min(batch_size, segment_remaining[idx])
-                )
-                for idx, _ in cur_dataset_iters
-            ],
-            dtype=np.float64,
+        return replace(
+            view,
+            pending_ids=tuple(remaining_dataset_indices),
+            active_ids=tuple(idx for idx, _ in cur_dataset_iters),
+            initial_residency_slots=0,
         )
-        if len(weights):
-            weights /= weights.sum()
-        return weights
 
 
 @dataclass(slots=True)
@@ -3257,6 +3381,8 @@ class _OffloadCursor:
     cursor: int = 0
     initialized: bool = False
     prefetch_generator: torch.Generator | np.random.Generator | None = None
+    initial_segment_rows: int | None = None
+    """Owner-validated raw first budget; later segments use the normal cap."""
 
     @property
     def exhausted(self) -> bool:
@@ -3266,6 +3392,8 @@ class _OffloadCursor:
     @property
     def next_segment_rows(self) -> int:
         """Predict raw residency rows without opening or advancing."""
+        if self.cursor == 0 and self.initial_segment_rows is not None:
+            return self.initial_segment_rows
         remaining = self.total_rows - self.cursor
         rows = min(self.segment_rows, remaining)
         if remaining - rows < self.segment_rows:
@@ -3289,7 +3417,8 @@ class _OffloadCursor:
         worker-local index stream through the existing iterable preparation
         path. Reload opens only the raw reader; stored row anchors already
         include selection, sharding and sampling. Non-final segments contain
-        whole batches, with a short remainder merged into the last segment.
+        whole batches. An explicitly shortened first segment never merges its
+        remainder back; later segments retain the original cap/tail merge.
 
         This generator owns its reader and child iterator. Normal exhaustion
         closes both before advancing the cursor. Early close, read failure or

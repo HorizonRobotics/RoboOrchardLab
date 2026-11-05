@@ -230,54 +230,46 @@ class TestDictIterableDatasetAccelerateLaunch:
         )
         assert results[0]["value_trace"] != results[1]["value_trace"]
 
-    @pytest.mark.parametrize("use_dataset_side_batching", [False, True])
-    def test_wrapped_prepare_aligns_rank_schedule(
+    @pytest.mark.parametrize(
+        "use_dataset_side_batching,num_workers",
+        [(False, 0), (True, 0), (True, 2)],
+    )
+    def test_wrapped_prepare_preserves_native_rank_quotas(
         self,
         tmp_path: Path,
         PROJECT_ROOT: str,
         use_dataset_side_batching: bool,
+        num_workers: int,
     ):
         results = _run_accelerate_trace_subprocess(
             tmp_path=tmp_path,
             project_root=PROJECT_ROOT,
             prepare_mode="wrapped",
             use_dataset_side_batching=use_dataset_side_batching,
+            num_workers=num_workers,
         )
 
         assert [result["shard_strategy"] for result in results] == [
             "pad_last",
             "pad_last",
         ]
-        assert (
-            results[0]["total_indices_length"]
-            == results[1]["total_indices_length"]
-        )
-        assert results[0]["trace"] == results[1]["trace"]
-
-    def test_wrapped_prepare_multi_worker_pad_last_stays_rank_aligned(
-        self,
-        tmp_path: Path,
-        PROJECT_ROOT: str,
-    ):
-        results = _run_accelerate_trace_subprocess(
-            tmp_path=tmp_path,
-            project_root=PROJECT_ROOT,
-            prepare_mode="wrapped",
-            use_dataset_side_batching=True,
-            num_workers=2,
-            shard_strategy="pad_last",
-        )
-
-        assert [result["shard_strategy"] for result in results] == [
-            "pad_last",
-            "pad_last",
+        assert [result["num_workers"] for result in results] == [
+            num_workers,
+            num_workers,
         ]
-        assert [result["num_workers"] for result in results] == [2, 2]
         assert (
             results[0]["total_indices_length"]
             == results[1]["total_indices_length"]
         )
-        assert results[0]["trace"] == results[1]["trace"]
+        assert len(results[0]["value_trace"]) == len(results[1]["value_trace"])
+        rank_rows = [
+            [value for batch in result["value_trace"] for value in batch]
+            for result in results
+        ]
+        assert [len(rows) for rows in rank_rows] == [14, 14]
+        assert Counter(rank_rows[0] + rank_rows[1]) == Counter(
+            list(range(21)) + list(range(100, 105)) + [0, 100]
+        )
 
 
 @pytest.mark.parametrize("path", ["native", "fallback", "dispatcher"])

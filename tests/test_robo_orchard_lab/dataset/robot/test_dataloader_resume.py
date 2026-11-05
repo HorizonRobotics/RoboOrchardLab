@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 import torch
 from accelerate import Accelerator
+from robo_orchard_core.utils.config import ClassType
 from test_robo_orchard_lab.dataset.robot._dataset_ex_helpers import (
     ArrayDataset,
     ArrayDatasetItem,
@@ -50,6 +51,138 @@ from robo_orchard_lab.dataset.robot.dataset_ex import (
     DictIterableDataset,
     ShuffleConfig,
 )
+from robo_orchard_lab.dataset.robot.sampling_strategy import (
+    DefaultMixtureSamplingStrategyConfig,
+    MixtureSamplingStrategy,
+    MixtureSamplingStrategyConfig,
+)
+
+
+class _RecoveryMixtureStrategy(MixtureSamplingStrategy):
+    def choose_admission(self, view):
+        choose = max if self.cfg.reverse else min
+        return choose(view.pending_ids)
+
+    def choose_active(self, view):
+        choose = max if self.cfg.reverse else min
+        return choose(view.active_ids)
+
+    def residency_completed(self, item_id, *, requeue):
+        pass
+
+
+class _RecoveryMixtureConfig(MixtureSamplingStrategyConfig):
+    class_type: ClassType[_RecoveryMixtureStrategy] = _RecoveryMixtureStrategy
+    reverse: bool = False
+
+
+class TestMixtureStrategyRecovery:
+    @staticmethod
+    def build(strategy=None, *, offload=False, shuffle=True):
+        return DataLoader(
+            DictIterableDataset(
+                [
+                    ArrayDatasetItem(data=list(range(12))),
+                    ArrayDatasetItem(data=list(range(100, 112))),
+                ],
+                shuffle=shuffle,
+                seed=42,
+                sampling_strategy=strategy,
+                offload_num_batches=2 if offload else None,
+            ),
+            batch_size=2,
+        )
+
+    @pytest.mark.parametrize("offload", [False, True])
+    def test_default_identity_restores_current_sample_order(self, offload):
+        expected = [batch.tolist() for batch in self.build(offload=offload)]
+        loader = self.build(offload=offload)
+        iterator = iter(loader)
+        try:
+            next(iterator)
+            next(iterator)
+            state = loader.state_dict()
+        finally:
+            iterator.close()
+        assert state["layout"]["sampling_strategy"] == (
+            DefaultMixtureSamplingStrategyConfig().model_dump(mode="json")
+        )
+        assert state["layout"]["sampling_policy_version"] == (
+            "remaining-quota-initial-jitter-v1"
+        )
+        assert state["recovery"]["accuracy"] == (
+            "unknown" if offload else "worker_local"
+        )
+        restored = self.build(offload=offload)
+        restored.load_state_dict(state)
+        if offload:
+            with pytest.warns(UserWarning, match="replaying"):
+                actual = [batch.tolist() for batch in restored]
+        else:
+            actual = [batch.tolist() for batch in restored]
+        assert actual == expected[2:]
+
+    @pytest.mark.parametrize(
+        "field", ["sampling_strategy", "sampling_policy_version"]
+    )
+    def test_old_default_layout_cannot_replay_new_policy(self, field):
+        state = self.build().state_dict()
+        state["layout"].pop(field)
+        with pytest.raises(ValueError, match="sampling strategy differs"):
+            self.build().load_state_dict(state)
+
+    def test_ordered_layout_keeps_existing_replay_format(self):
+        expected = [batch.tolist() for batch in self.build(shuffle=False)]
+        loader = self.build(shuffle=False)
+        iterator = iter(loader)
+        try:
+            next(iterator)
+            state = loader.state_dict()
+        finally:
+            iterator.close()
+        assert "sampling_strategy" not in state["layout"]
+        assert "sampling_policy_version" not in state["layout"]
+        restored = self.build(shuffle=False)
+        restored.load_state_dict(state)
+        assert [batch.tolist() for batch in restored] == expected[1:]
+
+    @pytest.mark.parametrize("supports_replay", [False, True])
+    def test_custom_capability_and_reconstruction(self, supports_replay):
+        cfg = _RecoveryMixtureConfig(supports_epoch_replay=supports_replay)
+        expected = [batch.tolist() for batch in self.build(cfg)]
+        loader = self.build(cfg)
+        iterator = iter(loader)
+        try:
+            next(iterator)
+            state = loader.state_dict()
+        finally:
+            iterator.close()
+        assert "sampling_strategy" in state["layout"]
+        assert state["recovery"]["accuracy"] == (
+            "worker_local" if supports_replay else "unknown"
+        )
+        restored = self.build(cfg)
+        restored.load_state_dict(state)
+        if supports_replay:
+            actual = [batch.tolist() for batch in restored]
+        else:
+            with pytest.warns(UserWarning, match="replaying"):
+                actual = [batch.tolist() for batch in restored]
+        assert actual == expected[1:]
+
+    def test_changed_custom_config_rejects_replay(self):
+        loader = self.build(_RecoveryMixtureConfig(supports_epoch_replay=True))
+        iterator = iter(loader)
+        try:
+            next(iterator)
+            state = loader.state_dict()
+        finally:
+            iterator.close()
+        restored = self.build(
+            _RecoveryMixtureConfig(supports_epoch_replay=True, reverse=True)
+        )
+        with pytest.raises(ValueError, match="sampling strategy differs"):
+            restored.load_state_dict(state)
 
 
 def _resume_worker_init(worker_id: int) -> None:

@@ -286,6 +286,15 @@ class _LoaderResumeRuntime:
                     "accuracy": "unknown",
                     "reason": "worker initialization may change the data plan",
                 }
+            if (
+                loader.dataset._shuffle.shuffle
+                and not loader.dataset.sampling_strategy.supports_epoch_replay
+            ):
+                return {
+                    "strategy": "batch_replay",
+                    "accuracy": "unknown",
+                    "reason": "sampling strategy does not declare replay",
+                }
             # Dataset-side batching still prefetches in its unbatched view.
             if (
                 loader.dataset.offload_num_batches is not None
@@ -315,7 +324,14 @@ class _LoaderResumeRuntime:
         ]
 
     def _layout(self, loader: DataLoader) -> dict[str, Any]:
-        return {
+        from robo_orchard_lab.dataset.robot.dataset_ex import (
+            DictIterableDataset,
+        )
+        from robo_orchard_lab.dataset.robot.sampling_strategy import (
+            DefaultMixtureSamplingStrategy,
+        )
+
+        layout = {
             "num_workers": loader.num_workers,
             "in_order": getattr(loader, "in_order", True),
             "outer_batch_size": loader.batch_size,
@@ -326,6 +342,21 @@ class _LoaderResumeRuntime:
             "effective_batch_size": loader._effective_batch_size,
             "effective_drop_last": loader._effective_drop_last,
         }
+        if (
+            isinstance(loader.dataset, DictIterableDataset)
+            and loader.dataset._shuffle.shuffle
+        ):
+            layout["sampling_strategy"] = (
+                loader.dataset.sampling_strategy.model_dump(mode="json")
+            )
+            if (
+                loader.dataset.sampling_strategy.class_type
+                is DefaultMixtureSamplingStrategy
+            ):
+                layout["sampling_policy_version"] = (
+                    "remaining-quota-initial-jitter-v1"
+                )
+        return layout
 
     def _sampler_owner(self, loader: DataLoader) -> Any:
         node = (
@@ -519,6 +550,20 @@ class _LoaderResumeRuntime:
         if recovery["strategy"] == "worker_prefix" and seed is None:
             raise ValueError("checkpoint lacks the managed sampling seed")
         if isinstance(loader.dataset, DictIterableDataset):
+            if loader.dataset._shuffle.shuffle:
+                current_layout = self._layout(loader)
+                if any(
+                    state["layout"].get(key) != current_layout.get(key)
+                    for key in (
+                        "sampling_strategy",
+                        "sampling_policy_version",
+                    )
+                ):
+                    raise ValueError(
+                        "DataLoader sampling strategy differs from the "
+                        "checkpoint; the saved sample order cannot be "
+                        "replayed."
+                    )
             if seed is not None and (
                 type(seed) is not int or not 0 <= seed < 2**64
             ):

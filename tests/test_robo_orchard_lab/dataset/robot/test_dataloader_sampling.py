@@ -81,6 +81,167 @@ class TestManagedSamplingRng:
         first.set_epoch(3)
         assert list(first) == epoch3
 
+    def test_seeded_stream_identity_distinguishes_rank_and_worker(self):
+        dataset = self._dataset()
+        rank_zero = dataset._make_sampling_generator(0, worker_id=0)
+        worker_one = dataset._make_sampling_generator(0, worker_id=1)
+        dataset._bind_sampling(1)
+        rank_one = dataset._make_sampling_generator(0, worker_id=0)
+        assert (
+            len(
+                {
+                    rank_zero.initial_seed(),
+                    worker_one.initial_seed(),
+                    rank_one.initial_seed(),
+                }
+            )
+            == 3
+        )
+        common = dataset._bind_sampling(None)
+        assert common._make_sampling_generator(
+            0, worker_id=0
+        ).initial_seed() != (
+            common._make_sampling_generator(0, worker_id=1).initial_seed()
+        )
+
+    def test_native_ranks_and_workers_choose_distinct_source_streams(
+        self, tmp_path
+    ):
+        from collections import Counter
+
+        ranks = []
+        for rank in (0, 1):
+            dataset = DictIterableDataset(
+                [
+                    ArrayDatasetItem(
+                        data=list(range(source * 1000, source * 1000 + 48))
+                    )
+                    for source in range(7)
+                ],
+                shuffle=True,
+                seed=42,
+                max_dataset_concurrency=4,
+                offload_num_batches=2,
+                offload_dir=str(tmp_path / "offload"),
+            ).shard(num_shards=2, index=rank)
+            loader = DataLoader(
+                dataset,
+                batch_size=4,
+                num_workers=3,
+                multiprocessing_context="spawn",
+            )
+            loader.dataset._bind_sampling(rank)
+            try:
+                ranks.append([batch.tolist() for batch in loader])
+            finally:
+                _close_dataloader_owner_resources(loader)
+
+        source_streams = [
+            [
+                tuple(v // 1000 for b in batches[w::3] for v in b)
+                for w in range(3)
+            ]
+            for batches in ranks
+        ]
+        assert all(len(set(streams)) == 3 for streams in source_streams)
+        assert all(
+            source_streams[0][w] != source_streams[1][w] for w in range(3)
+        )
+        actual = Counter(
+            v for batches in ranks for batch in batches for v in batch
+        )
+        expected = Counter(
+            value
+            for source in range(7)
+            for value in range(source * 1000, source * 1000 + 48)
+        )
+        assert actual == expected
+
+    @pytest.mark.parametrize("context", ["fork", "spawn"])
+    @pytest.mark.parametrize("generator_kind", ["seed", "torch", "numpy"])
+    def test_worker_source_streams_are_distinct_and_epoch_contract_holds(
+        self, tmp_path, context, generator_kind
+    ):
+        if context not in mp.get_all_start_methods():
+            pytest.skip(f"{context} is unavailable")
+        options = {
+            "seed": {"seed": 42},
+            "torch": {"generator": torch.Generator().manual_seed(42)},
+            "numpy": {"generator": np.random.default_rng(42)},
+        }[generator_kind]
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(
+                    data=list(range(source * 1000, source * 1000 + 48))
+                )
+                for source in range(7)
+            ],
+            shuffle=True,
+            max_dataset_concurrency=4,
+            offload_num_batches=2,
+            offload_dir=str(tmp_path / "offload"),
+            **options,
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=4,
+            num_workers=3,
+            persistent_workers=True,
+            multiprocessing_context=context,
+        )
+        epochs = []
+        try:
+            for epoch in (0, 1, 0):
+                loader.dataset.set_epoch(epoch)
+                batches = [batch.tolist() for batch in loader]
+                epochs.append(batches)
+            worker_sources = [
+                tuple(
+                    value // 1000
+                    for batch in epochs[0][worker::3]
+                    for value in batch
+                )
+                for worker in range(3)
+            ]
+            assert len(set(worker_sources)) == 3
+            assert epochs[0] != epochs[1]
+            if generator_kind == "seed":
+                assert epochs[0] == epochs[2]
+            else:
+                assert epochs[0] != epochs[2]
+            assert all(
+                sorted(value for batch in epoch for value in batch)
+                == sorted(value for batch in epochs[0] for value in batch)
+                for epoch in epochs[1:]
+            )
+        finally:
+            _close_dataloader_owner_resources(loader)
+
+    @pytest.mark.parametrize("generator_kind", ["torch", "numpy"])
+    def test_ordered_iteration_does_not_advance_explicit_generator(
+        self, generator_kind
+    ):
+        generator = (
+            torch.Generator().manual_seed(42)
+            if generator_kind == "torch"
+            else np.random.default_rng(42)
+        )
+        before = (
+            generator.get_state().clone()
+            if generator_kind == "torch"
+            else pickle.dumps(generator.bit_generator.state)
+        )
+        dataset = DictIterableDataset(
+            [ArrayDatasetItem(data=[0, 1]), ArrayDatasetItem(data=[2, 3])],
+            shuffle=False,
+            generator=generator,
+        )
+        assert list(dataset) == [0, 1, 2, 3]
+        if generator_kind == "torch":
+            assert torch.equal(generator.get_state(), before)
+        else:
+            assert pickle.dumps(generator.bit_generator.state) == before
+
     def test_epoch_notification_does_not_restart_active_iterator(self):
         reference = list(self._dataset())
         dataset = self._dataset()

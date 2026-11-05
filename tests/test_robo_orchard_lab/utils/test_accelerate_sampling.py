@@ -425,39 +425,87 @@ def test_dispatcher_binding_leaves_shared_source_untouched():
     assert list(source) == expected
 
 
-def test_fallback_owner_can_be_safely_reused_in_native_loader():
+@pytest.mark.parametrize("generator_kind", ["seed", "torch", "numpy"])
+@pytest.mark.parametrize("clone_kind", ["loader", "shard"])
+def test_fallback_owner_can_be_safely_reused_in_native_loader(
+    generator_kind, clone_kind
+):
+    from collections import Counter
+
     from accelerate.data_loader import DataLoaderShard, IterableDatasetShard
 
     from robo_orchard_lab.dataset.robot.dataset_ex import (
         DataLoader as RODataLoader,
     )
 
-    source = DictIterableDataset(
-        [_ManagedRngItem(data=list(range(24)))], shuffle=True, seed=42
-    )
-    fallback = DataLoaderShard(
-        IterableDatasetShard(
-            source, batch_size=1, num_processes=2, process_index=0
-        ),
-        batch_size=1,
-    )
-    accelerator = SimpleNamespace(process_index=0)
-    assert accelerate_utils.bind_prepared_data_loader_sampling(
-        accelerator, fallback
-    )
-    common_owner = fallback.dataset.dataset
-    assert common_owner._sampling_rank is None
+    def build():
+        options = {
+            "seed": {"seed": 42},
+            "torch": {"generator": torch.Generator().manual_seed(42)},
+            "numpy": {"generator": np.random.default_rng(42)},
+        }[generator_kind]
+        return DictIterableDataset(
+            [_ManagedRngItem(data=list(range(24)))],
+            shuffle=True,
+            **options,
+        )
 
-    loader = RODataLoader(common_owner, batch_size=1)
-    native = DataLoaderShard(loader.dataset, batch_size=1)
+    sources, fallbacks = [], []
+    for rank in (0, 1):
+        source = build()
+        sources.append(source)
+        fallback = DataLoaderShard(
+            IterableDatasetShard(
+                source, batch_size=1, num_processes=2, process_index=rank
+            ),
+            batch_size=1,
+        )
+        assert accelerate_utils.bind_prepared_data_loader_sampling(
+            SimpleNamespace(process_index=rank), fallback
+        )
+        fallbacks.append(fallback)
+    accelerator = SimpleNamespace(process_index=0)
+    common_owner = fallbacks[0].dataset.dataset
+    assert common_owner._sampling_rank is None
+    generator = common_owner._generator
+    state = (
+        generator.get_state().clone()
+        if isinstance(generator, torch.Generator)
+        else generator.bit_generator.state
+    )
+
+    clone = (
+        RODataLoader(common_owner, batch_size=1).dataset
+        if clone_kind == "loader"
+        else common_owner.shard(num_shards=1, index=0)
+    )
+    native = DataLoaderShard(clone, batch_size=1)
     assert accelerate_utils.bind_prepared_data_loader_sampling(
         accelerator, native
     )
-    fresh = DictIterableDataset(
-        [_ManagedRngItem(data=list(range(24)))], shuffle=True, seed=42
-    )
-    assert list(native.dataset) == list(fresh)
+    assert native.dataset._generator is not common_owner._generator
+    assert list(native.dataset) == list(build())
     assert common_owner._sampling_rank is None
+    if isinstance(generator, torch.Generator):
+        assert generator.get_state().equal(state)
+    else:
+        assert generator.bit_generator.state == state
+
+    rows = [
+        int(value)
+        for fallback in fallbacks
+        for batch in fallback
+        for value in batch
+    ]
+    assert Counter(rows) == Counter(range(24))
+
+    if generator_kind != "seed":
+        # Ordinary caller-owned streams retain their existing alias contract.
+        source = sources[0]
+        assert RODataLoader(source, batch_size=1).dataset._generator is (
+            source._generator
+        )
+        assert source.shard(1, 0)._generator is source._generator
 
     shared_torch_loader = DataLoader(common_owner, batch_size=1)
     shared_native = DataLoaderShard(shared_torch_loader.dataset, batch_size=1)
@@ -509,6 +557,106 @@ def test_fallback_rebinds_a_preexisting_static_shard_across_ranks():
     ]
     assert Counter(rows) == Counter(expected)
     assert all(source._sampling_rank == 0 for source in sources)
+
+
+@pytest.mark.parametrize("generator_kind", ["seed", "torch", "numpy"])
+def test_fallback_common_stream_covers_randomized_offload_sources(
+    generator_kind, tmp_path
+):
+    from collections import Counter
+
+    from accelerate.data_loader import DataLoaderShard, IterableDatasetShard
+
+    def build():
+        options = {
+            "seed": {"seed": 42},
+            "torch": {"generator": torch.Generator().manual_seed(42)},
+            "numpy": {"generator": np.random.default_rng(42)},
+        }[generator_kind]
+        return DictIterableDataset(
+            [
+                _ManagedRngItem(
+                    data=list(range(source * 100, source * 100 + 24))
+                )
+                for source in range(6)
+            ],
+            shuffle=True,
+            max_dataset_concurrency=4,
+            offload_num_batches=3,
+            offload_dir=str(tmp_path / "offload"),
+            **options,
+        )
+
+    reference_source = build()
+    reference_owner = reference_source._bind_sampling(None)
+    expected = list(reference_owner)
+    loaders, sources = [], []
+    for rank in (0, 1):
+        source = build()
+        sources.append(source)
+        wrapped = DataLoaderShard(
+            IterableDatasetShard(
+                source, batch_size=1, num_processes=2, process_index=rank
+            ),
+            batch_size=1,
+        )
+        assert accelerate_utils.bind_prepared_data_loader_sampling(
+            SimpleNamespace(process_index=rank), wrapped
+        )
+        assert wrapped.dataset.dataset._sampling_rank is None
+        if generator_kind != "seed":
+            assert wrapped.dataset.dataset._generator is not source._generator
+        loaders.append(wrapped)
+
+    rows = [
+        int(value) for loader in loaders for batch in loader for value in batch
+    ]
+    assert Counter(rows) == Counter(expected)
+    if generator_kind != "seed":
+        assert list(sources[0]) == list(sources[1])
+
+
+def test_fallback_two_ranks_with_three_spawn_workers(tmp_path):
+    """Each rank shards the same per-worker stream without losing rows."""
+    from collections import Counter
+
+    from accelerate.data_loader import DataLoaderShard, IterableDatasetShard
+
+    rank_rows = []
+    for rank in (0, 1):
+        source = DictIterableDataset(
+            [
+                _ManagedRngItem(
+                    data=list(range(source_id * 100, source_id * 100 + 48))
+                )
+                for source_id in range(6)
+            ],
+            shuffle=True,
+            seed=42,
+            max_dataset_concurrency=4,
+            offload_num_batches=3,
+            offload_dir=str(tmp_path / "offload"),
+        )
+        loader = DataLoaderShard(
+            IterableDatasetShard(
+                source, batch_size=4, num_processes=2, process_index=rank
+            ),
+            batch_size=4,
+            num_workers=3,
+            multiprocessing_context="spawn",
+        )
+        assert accelerate_utils.bind_prepared_data_loader_sampling(
+            SimpleNamespace(process_index=rank), loader
+        )
+        rank_rows.append([int(v) for batch in loader for v in batch])
+
+    expected = Counter(
+        value
+        for source_id in range(6)
+        for value in range(source_id * 100, source_id * 100 + 48)
+    )
+    assert Counter(rank_rows[0] + rank_rows[1]) == expected
+    assert set(rank_rows[0]).isdisjoint(rank_rows[1])
 
 
 @pytest.mark.parametrize("explicit_generator", [False, True])

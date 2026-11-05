@@ -700,8 +700,9 @@ def bind_prepared_data_loader_sampling(
     Native shards use global-rank-specific streams. ``IterableDatasetShard``
     reads a common stream on every rank before assigning rows, so its private
     sampling seed omits rank. Dispatcher and other datasets retain their own
-    behavior. Only explicitly seeded ``DictIterableDataset`` owners are bound;
-    RNG synchronization and user-owned Generators retain their behavior.
+    behavior. Seed-managed and shuffled explicit-generator
+    ``DictIterableDataset`` owners are bound; fallback copies an explicit
+    generator so its common stream does not advance the original owner.
     The configure helper binds a separate default worker stream to global rank.
     Call after a combined ``accelerator.prepare`` and before iteration.
     Repeated calls are safe. Accelerate's dispatcher discards the source

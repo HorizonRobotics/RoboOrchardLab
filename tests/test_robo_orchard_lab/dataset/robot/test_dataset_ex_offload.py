@@ -26,8 +26,9 @@ import sys
 import time
 import weakref
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import ClassVar
 
 import numpy as np
@@ -53,6 +54,11 @@ from robo_orchard_lab.dataset.robot.dataset_ex import (
     ShardConfig,
     ShuffleConfig,
     _OffloadCursor,
+)
+from robo_orchard_lab.dataset.robot.sampling_strategy import (
+    DefaultMixtureSamplingStrategy,
+    DefaultMixtureSamplingStrategyConfig,
+    MixtureSamplingView,
 )
 from robo_orchard_lab.dataset.sampler import IndiceTable
 
@@ -185,6 +191,63 @@ class TrackedMembers(DatasetItemGroup):
 
     def iter_dataset_items(self):
         yield from self.members
+
+
+class SamplingProbe(np.random.Generator):
+    """Supply fixed residency uniforms and observe choice probabilities."""
+
+    def __init__(self, priorities):
+        super().__init__(np.random.PCG64(0))
+        self.priorities = priorities
+        self.random_sizes = []
+        self.draws = []
+
+    def random(self, size=None):
+        self.random_sizes.append(size)
+        assert size == len(self.priorities)
+        return np.asarray(self.priorities, dtype=np.float64)
+
+    def choice(self, size, *, p):
+        assert len(p) == size
+        self.draws.append(p.copy())
+        return 0
+
+
+def make_sampling_view(
+    *,
+    targets,
+    logical_indices,
+    pending_ids=(),
+    active_ids=(),
+    remaining_targets=None,
+    residence_rows=None,
+    segment_remaining=None,
+    batch_size=1,
+    initial_residency_slots=0,
+):
+    """Build the count-only read-only boundary used by policy unit tests."""
+    return MixtureSamplingView(
+        targets=tuple(targets),
+        logical_indices=tuple(logical_indices),
+        pending_ids=tuple(pending_ids),
+        active_ids=tuple(active_ids),
+        remaining_targets=MappingProxyType(
+            dict(enumerate(targets))
+            if remaining_targets is None
+            else remaining_targets
+        ),
+        residence_rows=MappingProxyType(
+            dict(enumerate(targets))
+            if residence_rows is None
+            else residence_rows
+        ),
+        segment_remaining=MappingProxyType(segment_remaining or {}),
+        batch_size=batch_size,
+        initial_residency_slots=initial_residency_slots,
+        logical_names=tuple(
+            str(idx) for idx in range(max(logical_indices, default=-1) + 1)
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -357,8 +420,7 @@ class TestIterationSources:
     ):
         from robo_orchard_lab.dataset.robot import dataset_ex
 
-        # Logical admission uses fixed priorities, so these are service draws:
-        # advance each resident once before arming read/cleanup failures.
+        # Admit both sources, then advance each once before arming failures.
         choices = iter([0, 1])
         prefetchers = []
         original_prefetch = dataset_ex.create_prefetch_iterator
@@ -382,7 +444,9 @@ class TestIterationSources:
             offload_dir=str(tmp_path),
         )
         monkeypatch.setattr(
-            dataset, "_sample_dataset_index", lambda _: next(choices, 0)
+            DefaultMixtureSamplingStrategy,
+            "choose_active",
+            lambda self, view: next(choices, view.active_ids[0]),
         )
         iterator = iter(dataset)
         try:
@@ -1291,35 +1355,19 @@ class TestWeightedAdmission:
     def test_active_weights_preserve_logical_row_shares(
         self, batch_size, remaining, expected
     ):
-        dataset = DictIterableDataset(
-            [
-                TrackedMembers(
-                    members=[TrackedItem(rows=12), TrackedItem(rows=36)]
-                ),
-                TrackedMembers(
-                    members=[TrackedItem(rows=48), TrackedItem(rows=24)]
-                ),
-            ],
-            shuffle=True,
-            max_dataset_concurrency=3,
-            batch_loader_kwargs=BatchLoaderConfig(batch_size=batch_size),
-        )
-        assert dataset._logical_item_indices == [(0, 1), (2, 3)]
-        targets = [12, 36, 48, 24]
-        dataset._total_indices_length = targets
-        booked = [48, 48]
-        weights = dataset._prepare_dataset_for_iter(
-            [(i, iter(())) for i in (0, 1, 2)],
-            [],
-            lambda _: iter(()),
-            targets,
-            remaining,
-            None,
+        view = make_sampling_view(
+            targets=[12, 36, 48, 24],
             logical_indices=[0, 0, 1, 1],
-            logical_targets=[48, 72],
-            booked=booked,
-            priorities=[0.0] * 4,
+            active_ids=[0, 1, 2],
+            segment_remaining=remaining,
+            batch_size=batch_size,
         )
+        generator = SamplingProbe([0.0] * 4)
+        strategy = DefaultMixtureSamplingStrategyConfig()(
+            generator=generator, view=view
+        )
+        assert strategy.choose_active(view) == 0
+        weights = generator.draws[-1]
         # Hand-derived cases include an inactive member's logical quota and
         # unequal short yields. Reader count must not multiply group weight.
         np.testing.assert_allclose(weights, expected)
@@ -1330,66 +1378,118 @@ class TestWeightedAdmission:
             np.array([sum(row_mass[:2]), row_mass[2]]) / row_mass.sum(),
             [0.4, 0.6],
         )
-        assert booked == [48, 48]
         assert not TrackedReader.events
 
-    @pytest.mark.parametrize(
-        "segments,admitted,booked_rows",
-        [([3, 4, 5], [0, 2], [3, 5]), ([4, 4, 4], [2, 1], [4, 4])],
-    )
-    def test_admission_uses_booked_midpoints_and_fixed_ties(
-        self, segments, admitted, booked_rows, monkeypatch
-    ):
-        dataset = DictIterableDataset(
-            [TrackedItem(rows=n) for n in (8, 8, 16)],
-            shuffle=True,
-            max_dataset_concurrency=2,
+    def test_active_weights_follow_delivered_rows_before_cursor_commit(self):
+        view = make_sampling_view(
+            targets=[12, 36, 48, 24],
+            logical_indices=[0, 0, 1, 1],
+            active_ids=[0, 1, 2],
+            remaining_targets={0: 6, 1: 18, 2: 24, 3: 0},
+            segment_remaining={0: 6, 1: 18, 2: 24},
         )
-        targets = [8, 8, 16]
-        dataset._total_indices_length = targets
-        cursors = {
-            i: _OffloadCursor("", "", target, segment)
-            for i, (target, segment) in enumerate(
-                zip(targets, segments, strict=True)
-            )
-        }
-        monkeypatch.setattr(
-            dataset,
-            "_sample_dataset_index",
-            lambda _: pytest.fail("admission must reuse fixed priorities"),
+        generator = SamplingProbe([0.0] * 4)
+        strategy = DefaultMixtureSamplingStrategyConfig()(
+            generator=generator, view=view
         )
-        active, pending, remaining, booked = [], [0, 1, 2], {}, [0, 0]
-        kwargs = dict(
+        assert strategy.choose_active(view) == 0
+        np.testing.assert_allclose(generator.draws[-1], [0.125, 0.375, 0.5])
+
+    def test_bootstrap_anchors_by_quota_then_covers_unrepresented_groups(self):
+        view = make_sampling_view(
+            targets=[8, 8, 16],
             logical_indices=[0, 0, 1],
-            logical_targets=[16, 16],
-            booked=booked,
-            priorities=[0.9, 0.1, 0.0],
+            pending_ids=[0, 1, 2],
         )
-        first = dataset._prepare_dataset_for_iter(
-            active,
-            pending,
-            lambda _: iter(()),
-            targets,
-            remaining,
-            cursors,
-            **kwargs,
+        generator = SamplingProbe([])
+        strategy = DefaultMixtureSamplingStrategyConfig()(
+            generator=generator, view=view
         )
-        assert [i for i, _ in active] == admitted
-        assert booked == booked_rows
-        assert remaining == {i: segments[i] for i in admitted}
-        again = dataset._prepare_dataset_for_iter(
-            active,
-            pending,
-            lambda _: iter(()),
-            targets,
-            remaining,
-            cursors,
-            **kwargs,
+        assert strategy.choose_admission(view) == 0
+        np.testing.assert_allclose(generator.draws[0], [0.5, 0.5])
+        np.testing.assert_allclose(generator.draws[1], [0.5, 0.5])
+        assert (
+            strategy.choose_admission(
+                replace(
+                    view,
+                    pending_ids=(1, 2),
+                    active_ids=(0,),
+                    segment_remaining=MappingProxyType({0: 8}),
+                )
+            )
+            == 2
         )
-        np.testing.assert_allclose(again, first)
-        assert booked == booked_rows
-        assert all(cursor.cursor == 0 for cursor in cursors.values())
+        np.testing.assert_array_equal(generator.draws[2], [1.0])
+        np.testing.assert_array_equal(generator.draws[3], [1.0])
+        assert generator.random_sizes == []
         assert not TrackedReader.events
+
+    def test_normal_admission_uses_all_live_rows_and_pending_weighted_budget(
+        self,
+    ):
+        view = make_sampling_view(
+            targets=[80, 10, 20, 90, 10],
+            logical_indices=[0, 0, 0, 1, 1],
+            active_ids=[0, 3],
+            pending_ids=[1, 2, 4],
+            remaining_targets={0: 80, 1: 10, 2: 20, 3: 10, 4: 10},
+            residence_rows={1: 10, 2: 20, 4: 10},
+            segment_remaining={0: 80, 3: 10},
+        )
+        generator = SamplingProbe([])
+        strategy = DefaultMixtureSamplingStrategyConfig()(
+            generator=generator, view=view
+        )
+        strategy.choose_active(view)
+        generator.draws.clear()
+        assert strategy.choose_admission(view) == 1
+        # R=(110,20) includes the active rows. Bbar=(50/3,10) uses
+        # pending r_i weights, giving group masses (6.6,2), then r/P.
+        np.testing.assert_allclose(generator.draws[0], [33 / 43, 10 / 43])
+        np.testing.assert_allclose(generator.draws[1], [1 / 3, 2 / 3])
+        assert dict(view.remaining_targets) == {
+            0: 80,
+            1: 10,
+            2: 20,
+            3: 10,
+            4: 10,
+        }
+
+    @pytest.mark.parametrize(
+        "rows,batch_size,uniform,expected",
+        [
+            (10, 1, 0.0, 1),
+            (10, 1, 0.5, 6),
+            (10, 1, np.nextafter(1.0, 0.0), 10),
+            (10, 4, 0.0, 4),
+            (10, 4, 0.5, 8),
+            (3, 4, 0.5, 3),
+            (4, 4, 0.9, 4),
+            (11, 4, 0.99, 8),
+        ],
+    )
+    def test_initial_residency_budget_preserves_complete_yields(
+        self, rows, batch_size, uniform, expected
+    ):
+        view = make_sampling_view(
+            targets=[rows],
+            logical_indices=[0],
+            pending_ids=[0],
+            initial_residency_slots=1,
+            batch_size=batch_size,
+        )
+        generator = SamplingProbe([uniform])
+        strategy = DefaultMixtureSamplingStrategyConfig()(
+            generator=generator, view=view
+        )
+        assert (
+            strategy.initial_residency_rows(
+                0, rows=rows, batch_size=batch_size
+            )
+            == expected
+        )
+        assert generator.random_sizes == [1]
+        assert not generator.draws
 
     @pytest.mark.parametrize("offload", [None, 2])
     @pytest.mark.parametrize(
@@ -1537,11 +1637,13 @@ class TestWeightedAdmission:
         }
         assert not list(tmp_path.glob("*/iteration-*"))
 
-    @pytest.mark.parametrize("offload", [None, 1, 2])
+    @pytest.mark.parametrize(
+        "offload,slots", [(None, 4), (1, 4), (2, 1), (2, 8)]
+    )
     @pytest.mark.parametrize("drop_last", [False, True])
     @pytest.mark.parametrize("rng", ["torch", "numpy"])
     def test_full_quotas_and_short_yields(
-        self, offload, drop_last, rng, tmp_path
+        self, offload, drop_last, rng, slots, tmp_path
     ):
         targets = [0, 1, 2, 7, 18]
 
@@ -1555,25 +1657,93 @@ class TestWeightedAdmission:
                 [TrackedItem(rows=n, source=i) for i, n in enumerate(targets)],
                 shuffle=True,
                 generator=generator,
-                max_dataset_concurrency=2,
+                max_dataset_concurrency=slots,
                 offload_num_batches=offload,
                 offload_dir=str(tmp_path),
                 batch_loader_kwargs=BatchLoaderConfig(
                     batch_size=4, drop_last=drop_last
                 ),
             )
-            return flatten(list(dataset))
+            batches = list(dataset)
+            sizes = {}
+            for batch in batches:
+                source = batch["source"].tolist()
+                assert len(set(source)) == 1
+                sizes.setdefault(source[0], []).append(len(source))
+            return flatten(batches), sizes
 
-        first = run()
-        assert first == run()
+        first, sizes = run()
+        assert (first, sizes) == run()
         expected = {
             i: n // 4 * 4 if drop_last else n
             for i, n in enumerate(targets)
             if n >= 4 or not drop_last
         }
         assert Counter(source for source, _ in first) == Counter(expected)
-        assert TrackedReader.high_water <= 2
+        for source, target in expected.items():
+            if target:
+                assert Counter(sizes[source]) == Counter(
+                    [4] * (target // 4) + ([target % 4] if target % 4 else [])
+                )
+        assert TrackedReader.high_water <= slots
         assert not list(tmp_path.glob("*/iteration-*"))
+
+    @pytest.mark.parametrize("rng", ["torch", "numpy"])
+    @pytest.mark.parametrize("rows", [[], [2, 3]], ids=["empty", "drop-zero"])
+    def test_zero_output_runtime_does_not_prefetch_initial_budgets(
+        self, rng, rows, tmp_path, monkeypatch
+    ):
+        views = []
+        original = DefaultMixtureSamplingStrategy.__init__
+
+        def observe_init(strategy, cfg, *, generator, view):
+            before = (
+                generator.get_state().clone()
+                if rng == "torch"
+                else pickle.dumps(generator.bit_generator.state)
+            )
+            original(strategy, cfg, generator=generator, view=view)
+            views.append(view)
+            if rng == "torch":
+                assert torch.equal(generator.get_state(), before)
+            else:
+                assert pickle.dumps(generator.bit_generator.state) == before
+
+        monkeypatch.setattr(
+            DefaultMixtureSamplingStrategy, "__init__", observe_init
+        )
+        for offload in (None, 1):
+            generator = (
+                torch.Generator().manual_seed(17)
+                if rng == "torch"
+                else np.random.default_rng(17)
+            )
+            start = len(TrackedReader.events)
+            dataset = DictIterableDataset(
+                [TrackedItem(rows=n, source=i) for i, n in enumerate(rows)],
+                shuffle=ShuffleConfig(shuffle=True, chunk_size=2),
+                generator=generator,
+                offload_num_batches=offload,
+                offload_dir=str(tmp_path),
+                batch_loader_kwargs=BatchLoaderConfig(
+                    batch_size=4, drop_last=True
+                ),
+            )
+            assert list(dataset) == []
+            assert views[-1].targets == (0,) * len(rows)
+            assert views[-1].initial_residency_slots == 0
+            # Raw nonempty readers still initialize and finish owned cleanup;
+            # their seed draws occur after the runtime-construction assertion.
+            events = TrackedReader.events[start:]
+            assert {
+                source for kind, source, *rest in events if kind == "open"
+            } == (set(range(len(rows))))
+            assert {
+                source for kind, source, *rest in events if kind == "close"
+            } == (set(range(len(rows))))
+            assert TrackedReader.live == 0
+            assert not list(tmp_path.glob("*/iteration-*"))
+        assert len(views) == 2
 
     @pytest.mark.parametrize("offload", [None, 1])
     def test_zero_output_still_validates_metadata(self, offload, tmp_path):
@@ -1601,7 +1771,7 @@ class TestWeightedAdmission:
         from contextlib import contextmanager
 
         dataset = DictIterableDataset(
-            [TrackedItem(rows=2)],
+            [TrackedItem(rows=1)],
             shuffle=True,
             offload_num_batches=2,
             offload_dir=str(tmp_path),
@@ -1618,7 +1788,6 @@ class TestWeightedAdmission:
         monkeypatch.setattr(dataset, "_iteration_sources", capture)
         iterator = iter(dataset)
         next(iterator)
-        next(iterator)
         assert captured[0].cursor == 0
         if close_after_last:
             iterator.close()
@@ -1626,7 +1795,7 @@ class TestWeightedAdmission:
         else:
             with pytest.raises(StopIteration):
                 next(iterator)
-            assert captured[0].cursor == 2
+            assert captured[0].cursor == 1
 
     @pytest.mark.parametrize("difference", [-1, 1])
     def test_segment_output_mismatch_does_not_commit(
@@ -1667,11 +1836,18 @@ class TestWeightedAdmission:
             if rng == "torch"
             else np.random.default_rng(11)
         )
-        dataset = DictIterableDataset([], shuffle=True, generator=generator)
         torch_before = torch.get_rng_state().clone()
         numpy_before = np.random.get_state()
-        weights = np.array([0.1, 0.9], dtype=np.float64)
-        draws = [dataset._sample_dataset_index(weights) for _ in range(50)]
+        view = make_sampling_view(
+            targets=[1, 9],
+            logical_indices=[0, 1],
+            active_ids=[0, 1],
+            segment_remaining={0: 1, 1: 9},
+        )
+        strategy = DefaultMixtureSamplingStrategyConfig()(
+            generator=generator, view=view
+        )
+        draws = [strategy.choose_active(view) for _ in range(50)]
         assert set(draws) == {0, 1}
         assert torch.equal(torch.get_rng_state(), torch_before)
         assert all(

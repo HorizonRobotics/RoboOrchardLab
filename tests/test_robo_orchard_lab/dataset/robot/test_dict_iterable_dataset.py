@@ -41,6 +41,9 @@ from robo_orchard_lab.dataset.robot import (
     ShardConfig,
     ShuffleConfig,
 )
+from robo_orchard_lab.dataset.robot._prefetch import (
+    _close_dataloader_owner_resources,
+)
 from robo_orchard_lab.dataset.robot.dataset_ex import (
     DictIterableDataset,
     _build_path_tree,
@@ -910,6 +913,51 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
         assert torch.equal(restored._generator.get_state(), expected_state)
         assert "_serialized_torch_generator" not in restored.__dict__
 
+    def test_default_offload_worker_and_epoch_streams_are_reproducible(
+        self, tmp_path
+    ):
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=list(range(start, start + 36)))
+                for start in (0, 100, 200, 300)
+            ],
+            shuffle=True,
+            seed=17,
+            max_dataset_concurrency=4,
+            offload_num_batches=2,
+            offload_dir=str(tmp_path),
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=3,
+            num_workers=2,
+            persistent_workers=True,
+            multiprocessing_context="spawn",
+            use_dataset_side_batching=True,
+        )
+        epochs = []
+        try:
+            for epoch in (0, 1, 0):
+                loader.dataset.set_epoch(epoch)
+                batches = [batch.tolist() for batch in loader]
+                assert all(len(batch) == 3 for batch in batches)
+                assert sorted(v for batch in batches for v in batch) == [
+                    value
+                    for start in (0, 100, 200, 300)
+                    for value in range(start, start + 36)
+                ]
+                schedules = [
+                    [batch[0] // 100 for batch in batches[worker::2]]
+                    for worker in (0, 1)
+                ]
+                assert schedules[0] != schedules[1]
+                epochs.append(batches)
+        finally:
+            _close_dataloader_owner_resources(loader)
+        assert epochs[0] == epochs[2]
+        assert epochs[0] != epochs[1]
+        assert not list(tmp_path.glob("*/iteration-*"))
+
     def test_use_dataset_side_batching_option(
         self, dummy_dataset_items: list[DatasetItem]
     ):
@@ -945,7 +993,6 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
 
     def test_close_closes_active_child_iterators(
         self,
-        dummy_dataset_items: list[DatasetItem],
         monkeypatch,
     ):
         class _CloseTrackingIterator:
@@ -962,35 +1009,24 @@ class TestDictIterableDataset(TestIterableDatasetMixin):
             def close(self) -> None:
                 self.closed = True
 
-        dataset = DictIterableDataset(dummy_dataset_items, shuffle=False)
-        dataset._total_indices_length = [2, 2]
+        dataset = DictIterableDataset(
+            [
+                ArrayDatasetItem(data=[0, 1]),
+                ArrayDatasetItem(data=[100, 101]),
+            ],
+            shuffle=False,
+            max_dataset_concurrency=2,
+        )
         child_iters = [
             _CloseTrackingIterator([0, 1]),
             _CloseTrackingIterator([100, 101]),
         ]
 
-        def fake_prepare_dataset_for_iter(
-            cur_dataset_iters: list[tuple[int, Any]],
-            remaining_dataset_indices: list[int],
-            make_iter,
-            targets,
-            segment_remaining,
-            offload_cursors,
-            **logical_accounting,
-        ) -> list[float]:
-            del remaining_dataset_indices, make_iter
-            del targets, offload_cursors, logical_accounting
-            segment_remaining.update({0: 2, 1: 2})
-            if not cur_dataset_iters:
-                cur_dataset_iters.extend(
-                    [(0, child_iters[0]), (1, child_iters[1])]
-                )
-            return [0.5, 0.5]
-
+        pending_iters = iter(child_iters)
         monkeypatch.setattr(
             dataset,
-            "_prepare_dataset_for_iter",
-            fake_prepare_dataset_for_iter,
+            "_iter_dataset_item",
+            lambda *args, **kwargs: next(pending_iters),
         )
 
         dataset_iter = iter(dataset)
