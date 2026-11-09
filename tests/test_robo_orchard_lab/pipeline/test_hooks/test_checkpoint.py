@@ -15,6 +15,8 @@
 # permissions and limitations under the License.
 
 import os
+from datetime import timedelta
+from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -24,6 +26,7 @@ import torch
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState, GradientState, PartialState
 from accelerate.utils import DistributedType
+from safetensors.torch import load_file
 
 import robo_orchard_lab.pipeline.hooks.checkpoint as checkpoint_module
 from robo_orchard_lab.models.mixin import (
@@ -36,8 +39,10 @@ from robo_orchard_lab.pipeline.hooks.checkpoint import (
     SaveModelConfig,
 )
 from robo_orchard_lab.pipeline.hooks.mixin import (
+    HookContext,
     MicroStepProgressState,
     PipelineHookArgs,
+    PipelineHooks,
 )
 from robo_orchard_lab.pipeline.training._progress import TrainerProgressState
 
@@ -110,8 +115,10 @@ def real_checkpoint(tmp_path, monkeypatch):
     return accelerator, hook, root
 
 
-def test_native_save_retains_rank_progress(real_checkpoint):
+@pytest.mark.parametrize("save_model", [False, True])
+def test_native_save_retains_rank_progress(real_checkpoint, save_model):
     accelerator, hook, root = real_checkpoint
+    hook.cfg.save_model = save_model
     destination = Path(hook._save_state(accelerator))
     assert destination == root
     state = torch.load(root / "custom_checkpoint_0.pkl", weights_only=False)
@@ -119,6 +126,151 @@ def test_native_save_retains_rank_progress(real_checkpoint):
     assert "checkpoint_complete" not in state
     assert state["rank_states"] == []
     assert (root / "random_states_0.pkl").is_file()
+    assert load_file(root / "model.safetensors")
+    assert torch.load(root / "optimizer.bin", weights_only=False)[
+        "param_groups"
+    ]
+    if save_model:
+        assert load_file(root / "model" / "model.safetensors")
+
+
+def _checkpoint_sync_rank(
+    rank: int,
+    root: str,
+    writer_blocked: ProcessEvent,
+    nonmain_saved: ProcessEvent,
+    release_writer: ProcessEvent,
+    next_hooks: list[ProcessEvent],
+) -> None:
+    """Delay one real rank's save while the other reaches the next hook.
+
+    Events expose the successful local save/export boundary without replacing
+    the real checkpoint, model export, or Gloo barrier. The parent releases
+    the writer after checking that the nonmain rank has not run its next hook.
+    """
+    os.environ.update(
+        RANK=str(rank),
+        LOCAL_RANK=str(rank),
+        WORLD_SIZE="2",
+        LOCAL_WORLD_SIZE="2",
+    )
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{root}/rendezvous",
+        rank=rank,
+        world_size=2,
+        timeout=timedelta(seconds=45),
+    )
+    try:
+        accelerator = Accelerator(cpu=True)
+        model = torch.nn.Linear(1, 1)
+        accelerator.prepare(model)
+        accelerator.register_for_checkpointing(TrainerProgressState())
+        native_export = accelerator.save_model
+
+        def export_model(*args, **kwargs):
+            if rank == 0:
+                writer_blocked.set()
+                if not release_writer.wait(timeout=60):
+                    raise TimeoutError("checkpoint writer was not released")
+            native_export(*args, **kwargs)
+            if rank == 1:
+                nonmain_saved.set()
+
+        accelerator.save_model = export_model
+        hooks = PipelineHooks.from_hooks(
+            [
+                SaveCheckpointConfig(
+                    save_root=str(Path(root) / "checkpoint"),
+                    save_step_freq=1,
+                    save_model=True,
+                )()
+            ]
+        )
+        hooks.register_hook(
+            channel="on_optimizer_step",
+            hook=HookContext.from_callable(
+                after=lambda args: next_hooks[rank].set()
+            ),
+        )
+        with hooks.begin(
+            "on_optimizer_step",
+            PipelineHookArgs(accelerator=accelerator, global_step_id=1),
+        ):
+            pass
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_checkpoint_waits_before_next_hook(tmp_path, monkeypatch):
+    """A nonmain rank cannot reach validation while another is still saving."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "lo")
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        monkeypatch.setenv(key, "1")
+    for key in tuple(os.environ):
+        if key.startswith("COV_CORE_") or key == "COVERAGE_PROCESS_START":
+            monkeypatch.delenv(key)
+    context = torch.multiprocessing.get_context("spawn")
+    writer_blocked = context.Event()
+    nonmain_saved = context.Event()
+    release_writer = context.Event()
+    next_hooks = [context.Event(), context.Event()]
+    processes = [
+        context.Process(
+            target=_checkpoint_sync_rank,
+            args=(
+                rank,
+                str(tmp_path),
+                writer_blocked,
+                nonmain_saved,
+                release_writer,
+                next_hooks,
+            ),
+        )
+        for rank in (0, 1)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        assert writer_blocked.wait(timeout=120), (
+            "writer did not reach delay; children (pid, exitcode, alive): "
+            f"{[(p.pid, p.exitcode, p.is_alive()) for p in processes]}"
+        )
+        assert nonmain_saved.wait(timeout=30), (
+            "nonmain local save stalled; children (pid, exitcode, alive): "
+            f"{[(p.pid, p.exitcode, p.is_alive()) for p in processes]}"
+        )
+        assert not next_hooks[1].wait(timeout=0.5), (
+            "nonmain rank ran the next hook before the writer finished"
+        )
+        release_writer.set()
+        for process in processes:
+            process.join(timeout=60)
+        assert all(process.exitcode == 0 for process in processes), (
+            "checkpoint child failed or did not exit; "
+            "children (pid, exitcode, alive): "
+            f"{[(p.pid, p.exitcode, p.is_alive()) for p in processes]}"
+        )
+        assert all(event.is_set() for event in next_hooks)
+    finally:
+        release_writer.set()
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            if process.pid is not None:
+                process.join(timeout=5)
+    root = tmp_path / "checkpoint"
+    assert load_file(root / "model.safetensors")
+    assert (
+        torch.load(root / "custom_checkpoint_0.pkl", weights_only=False)[
+            "schema_version"
+        ]
+        == 3
+    )
+    for rank in (0, 1):
+        assert (root / f"random_states_{rank}.pkl").is_file()
+    assert load_file(root / "model" / "model.safetensors")
 
 
 @pytest.mark.parametrize("boundary", ["step", "epoch", "deferred", "loop"])
@@ -521,42 +673,37 @@ def test_checkpoint_skips_loop_end_save_when_body_raises(
     mock_accelerator.save_state.assert_not_called()
 
 
-def test_save_checkpoint_save_model_runs_on_non_main(tmp_path):
+@pytest.mark.parametrize("is_main_process", [False, True])
+@pytest.mark.parametrize("save_model", [False, True])
+def test_save_checkpoint_synchronizes_after_export(
+    tmp_path, is_main_process, save_model
+):
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
     accelerator = _make_mock_accelerator(
         tmp_path,
-        is_main_process=False,
-        is_local_main_process=False,
+        is_main_process=is_main_process,
+        is_local_main_process=is_main_process,
     )
-    accelerator.save_state = MagicMock(return_value=str(checkpoint_dir))
     accelerator._models = [object()]
+    calls = []
+    accelerator.save_state.side_effect = lambda *_: (
+        calls.append("save") or str(checkpoint_dir)
+    )
+    accelerator.save_model.side_effect = lambda *_: calls.append("export")
+    accelerator.wait_for_everyone.side_effect = lambda: calls.append("wait")
+    hook = SaveCheckpointConfig(
+        save_root="checkpoints", save_step_freq=1, save_model=save_model
+    )()
 
-    hook = SaveCheckpointConfig(save_root="checkpoints", save_step_freq=1)()
-
-    hook._save_state(accelerator)
-
-    accelerator.save_model.assert_called_once()
-
-
-def test_save_checkpoint_delegates_synchronization_to_accelerate(tmp_path):
-    checkpoint_dir = tmp_path / "checkpoint"
-    checkpoint_dir.mkdir()
-    accelerator = _make_mock_accelerator(tmp_path)
-    accelerator.save_state = MagicMock(return_value=str(checkpoint_dir))
-    accelerator._models = [object()]
-
-    def save_model_artifact(_model, save_directory):
-        os.makedirs(save_directory, exist_ok=True)
-        with open(os.path.join(save_directory, "model.safetensors"), "wb"):
-            pass
-
-    accelerator.save_model.side_effect = save_model_artifact
-    hook = SaveCheckpointConfig(save_root="checkpoints", save_step_freq=1)()
-
-    hook._save_state(accelerator)
-
-    accelerator.wait_for_everyone.assert_not_called()
+    assert hook._save_state(accelerator) == str(checkpoint_dir)
+    calls.append("return")
+    assert calls == [
+        "save",
+        *(["export"] if save_model else []),
+        "wait",
+        "return",
+    ]
 
 
 def test_save_checkpoint_skips_config_copy_without_model_artifact(tmp_path):

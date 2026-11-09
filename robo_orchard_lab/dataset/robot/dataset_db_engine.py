@@ -79,6 +79,11 @@ def create_engine(
     This method is a wrapper of :py:func:`sqlalchemy.create_engine` with
     additional support for readonly mode, and default JSON serializer.
 
+    Set ``DUCKDB_THREADS`` before starting Python to configure the default
+    DuckDB thread budget, including temporary schema checks. Pass
+    ``connect_args={"config": {"threads": n}}`` to override the returned
+    engine's budget; schema checks retain the environment default.
+
     See :py:func:`sqlalchemy.create_engine` for more details.
 
     Args:

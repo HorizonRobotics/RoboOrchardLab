@@ -108,6 +108,9 @@ class SaveCheckpoint(PipelineHooks):
 
     Step-based saves run after completed accumulation windows. Epoch and
     loop saves use their own scopes and independent frequency triggers.
+    All ranks must call each save boundary together. A successful save waits
+    for every rank to finish saving and optional model export before later
+    hooks can run.
 
     Args:
         cfg (SaveCheckpointConfig): Configuration object containing
@@ -163,11 +166,13 @@ class SaveCheckpoint(PipelineHooks):
     def _save_state(
         self, accelerator: Accelerator, data_loader: Any | None = None
     ) -> str:
-        """Gather recovery state and delegate best-effort saving to Accelerate.
+        """Save state and wait for every rank's optional model export.
 
         Checkpoint behavior is undefined after training, hook or save errors.
         The rank gather below carries normal recovery state and capability; it
         does not coordinate errors or make the filesystem save atomic.
+        All ranks must enter this boundary together; a successful return means
+        every rank has finished saving and any requested model export.
         A prepared loader supplies its data state; standalone calls without
         one save the remaining checkpoint state without data recovery details.
         Recovery capability is evaluated for each save, so a temporary
@@ -249,6 +254,7 @@ class SaveCheckpoint(PipelineHooks):
         save_location = accelerator.save_state(self.save_root)
         if self.cfg.save_model:
             _export_checkpoint_models(accelerator, save_location)
+        accelerator.wait_for_everyone()
         return save_location
 
     def _on_step_end(self, args: PipelineHookArgs) -> None:

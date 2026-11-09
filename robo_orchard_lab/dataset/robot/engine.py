@@ -44,6 +44,7 @@ from sqlalchemy import (
     event,
     text,
 )
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase
 
@@ -59,6 +60,21 @@ __all__ = [
 ]
 
 logger = LoggerManager().get_child(__name__)
+
+# Read the process-wide budget once; spawned workers inherit the environment.
+# Configure the default connection here, rather than resetting it per reader.
+_DUCKDB_THREADS: int | None = None
+if (_duckdb_threads_env := os.environ.get("DUCKDB_THREADS")) is not None:
+    try:
+        _DUCKDB_THREADS = int(_duckdb_threads_env)
+        if _DUCKDB_THREADS < 1:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError("DUCKDB_THREADS must be a positive integer.") from exc
+
+    import duckdb
+
+    duckdb.sql(f"SET threads = {_DUCKDB_THREADS}")
 
 
 def create_tables(
@@ -146,7 +162,7 @@ def create_engine(
 
     RODataset may pass the internal ``_lock_free_read`` policy for completed
     files that remain unchanged during reader lifetimes. This function does
-    not read the environment. DuckDB reads a shared atomic
+    not read the lock-free environment policy. DuckDB reads a shared atomic
     local copy under ``ROBO_ORCHARD_HOME/datasets/duckdb_read_cache``;
     SQLite reads the original using ``mode=ro&immutable=1``. The caller must
     place the home/cache on a writable local filesystem. The returned URL
@@ -155,7 +171,17 @@ def create_engine(
     new engine from the source URL to check its size and mtime again.
     SQLite immutable reads use the default file-database pool with native
     cross-thread reuse enabled; callers still own a Session per thread.
-    Writable engines and the default disabled policy retain their behavior.
+    Writable engines and disabled lock-free reads retain their existing
+    storage and locking behavior.
+
+    Set ``DUCKDB_THREADS`` to a positive integer before starting Python to
+    configure DuckDB's module-level default connection and the default budget
+    of engines created here, including writable engines. The setting is read
+    once when this module is imported; without it, DuckDB's native defaults
+    apply. Explicit ``threads`` or ``worker_threads`` in
+    ``connect_args["config"]`` override the budget of the returned engine.
+    Supplied mappings are not modified. Other existing database instances
+    and engines created outside this factory are not resized.
 
     See :py:func:`sqlalchemy.create_engine` for more details.
 
@@ -176,8 +202,26 @@ def create_engine(
         Engine: The database engine.
 
     """
+    name = make_url(url).get_backend_name()
+    if name == "duckdb" and (readonly or _DUCKDB_THREADS is not None):
+        connect_args = dict(kwargs.get("connect_args", {}))
+        if readonly:
+            if connect_args.get("read_only", readonly) is not readonly:
+                raise ValueError(
+                    "connect_args['read_only'] must be consistent with "
+                    "`readonly` argument."
+                )
+            connect_args["read_only"] = readonly
+        if _DUCKDB_THREADS is not None:
+            config = dict(connect_args.get("config", {}))
+            if not any(
+                key.lower() in ("threads", "worker_threads") for key in config
+            ):
+                config["threads"] = _DUCKDB_THREADS
+            connect_args["config"] = config
+        kwargs["connect_args"] = connect_args
+
     if readonly:
-        name = url.get_backend_name()
         lock_free = _lock_free_read
         if name == "sqlite":
             # the following does not work!
@@ -210,15 +254,6 @@ def create_engine(
                 **kwargs,
             )
         if name == "duckdb":
-            if "connect_args" not in kwargs:
-                kwargs["connect_args"] = {}
-            connect_args = kwargs["connect_args"]
-            if connect_args.get("read_only", readonly) is not readonly:
-                raise ValueError(
-                    "connect_args['read_only'] must be consistent with "
-                    "`readonly` argument."
-                )
-            connect_args["read_only"] = readonly
             if lock_free and url.database not in (None, "", ":memory:"):
                 url = _get_duckdb_read_cache_url(url)
 

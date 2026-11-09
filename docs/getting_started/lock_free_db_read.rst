@@ -47,10 +47,56 @@ uses the same reading entrypoint.
   previous pool and thread checks.
 
 Frame tables, video payloads, memory/server databases and write interfaces
-keep their existing paths. Existing schema upgrades still write derived
+keep their existing storage paths. Existing schema upgrades still write derived
 databases under ``datasets/upgrade_cache``; raw databases are not upgraded in
 place by reading. Upgrade-key algorithms are unchanged, though the effective
 local URL can produce a different URL digest from a previous source URL.
+
+DuckDB thread budget
+--------------------
+
+Set the DuckDB execution-thread budget before starting Python::
+
+    export DUCKDB_THREADS=1
+
+This is a Lab startup setting, not a native DuckDB environment variable. It
+must be a positive integer; invalid values raise ``ValueError`` when Lab's
+database engine module is imported. Unset, it leaves DuckDB's native defaults
+unchanged. The value is read once at module import, so changing the environment
+afterward does not update the budget.
+
+The setting configures DuckDB's module-level default connection at import
+and supplies the default for new DuckDB engines created by Lab's database
+factory, both readonly and writable. It also covers temporary metadata schema
+checks and default engine reconstruction in spawned workers, which inherit
+the environment. It is independent of the lock-free read policy. Each reader
+keeps its existing engine ownership and close lifecycle; DuckDB may share the
+underlying instance for the same database.
+
+Direct engine callers can override the returned engine's budget at creation::
+
+    from robo_orchard_lab.dataset.robot.engine import create_engine
+
+    engine = create_engine(
+        url,
+        readonly=True,
+        connect_args={"config": {"threads": 2}},
+    )
+
+The ``worker_threads`` alias is also accepted. Supplied option mappings are
+not modified. An explicit budget only overrides the returned engine, not the
+module-level default connection or a temporary metadata schema check. DuckDB's
+existing requirement for compatible configuration when sharing an already-open
+database instance still applies.
+
+The budget is per database instance, not a total process-thread limit. It does
+not resize other existing database instances, configure connections created
+outside Lab's factory, or control other libraries' thread pools. In DuckDB
+versions that create the default connection during import, applying the budget
+shrinks that pool afterward; it cannot prevent the transient import-time peak.
+The existing reader pickle format restores engines from their URL and read
+policy, using the receiving process's thread budget rather than persisting
+arbitrary caller-provided engine options.
 
 Cache ownership
 ---------------

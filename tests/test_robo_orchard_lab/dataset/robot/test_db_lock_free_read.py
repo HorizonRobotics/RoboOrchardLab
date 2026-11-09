@@ -14,12 +14,14 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import multiprocessing as mp
 import os
 import pickle
 import sqlite3
 import stat
 import subprocess
 import sys
+import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -83,6 +85,198 @@ def _make_duckdb(path: Path) -> None:
         connection.execute("CREATE TABLE sample AS SELECT 7 AS value")
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, None), ("1", 1), ("2", 2)]
+)
+def test_duckdb_threads_fresh_process(tmp_path, value, expected):
+    """Import-time policy preserves native defaults and explicit overrides."""
+    source = tmp_path / "source.duckdb"
+    _make_duckdb(source)
+    meta = tmp_path / "meta.duckdb"
+    _make_metadata(meta, "duckdb")
+    child_env = os.environ.copy()
+    child_env.pop("DUCKDB_THREADS", None)
+    if value is not None:
+        child_env["DUCKDB_THREADS"] = value
+    code = textwrap.dedent(
+        """
+        import os, sqlite3, sys, duckdb
+        from pathlib import Path
+        from sqlalchemy import URL, text
+
+        root = Path(sys.argv[1])
+        configured = None if sys.argv[2] == 'native' else int(sys.argv[2])
+        native = duckdb.sql("SELECT current_setting('threads')").fetchone()[0]
+        from robo_orchard_lab.dataset.robot import engine, dataset_db_engine
+        setting = duckdb.sql("SELECT current_setting('threads')").fetchone()[0]
+        expected = native if configured is None else configured
+        assert setting == expected
+
+        # The environment is sampled on import, not when each engine is built.
+        os.environ['DUCKDB_THREADS'] = '9'
+        duckdb.sql('SET threads=4')
+        captured = []
+        create = engine._create_engine
+        def record(*args, **kwargs):
+            captured.append(kwargs)
+            return create(*args, **kwargs)
+        engine._create_engine = record
+
+        for lock_free in (False, True):
+            config = {'preserve_insertion_order': False}
+            args = {'config': config}
+            original_config = dict(config)
+            db = engine.create_engine(
+                URL.create('duckdb', database=str(root / 'source.duckdb')),
+                readonly=True, _lock_free_read=lock_free, connect_args=args)
+            try:
+                with db.connect() as conn:
+                    assert conn.scalar(text(
+                        "SELECT current_setting('threads')")) == expected
+                    assert conn.scalar(text(
+                        "SELECT current_setting('preserve_insertion_order')"
+                    )) is False
+                    assert conn.scalar(text('SELECT value FROM sample')) == 7
+                assert args == {'config': config} and config == original_config
+                if configured is None:
+                    assert 'threads' not in (
+                        captured[-1]['connect_args']['config'])
+            finally:
+                db.dispose()
+
+        for alias in ('threads', 'worker_threads', 'THREADS'):
+            for readonly in (False, True):
+                config = {alias: 3, 'preserve_insertion_order': False}
+                args = {'config': config}
+                path = str(root / 'source.duckdb') if readonly else ':memory:'
+                db = engine.create_engine(
+                    URL.create('duckdb', database=path), readonly=readonly,
+                    _lock_free_read=readonly, connect_args=args)
+                try:
+                    with db.connect() as conn:
+                        assert conn.scalar(text(
+                            "SELECT current_setting('threads')")) == 3
+                        assert conn.scalar(text(
+                            "SELECT current_setting("
+                            "'preserve_insertion_order')"
+                        )) is False
+                    assert args == {'config': {
+                        alias: 3, 'preserve_insertion_order': False}}
+                finally:
+                    db.dispose()
+        assert duckdb.sql(
+            "SELECT current_setting('threads')").fetchone()[0] == 4
+
+        writer = engine.create_engine(
+            URL.create('duckdb', database=':memory:'))
+        try:
+            with writer.begin() as conn:
+                assert conn.scalar(text(
+                    "SELECT current_setting('threads')")) == expected
+                conn.execute(text('CREATE TABLE sample (value INTEGER)'))
+                conn.execute(text('INSERT INTO sample VALUES (7)'))
+                assert conn.scalar(text('SELECT value FROM sample')) == 7
+        finally:
+            writer.dispose()
+
+        probe = dataset_db_engine.get_table_update_plan
+        seen = []
+        def check(engine):
+            with engine.connect() as conn:
+                seen.append(conn.scalar(text(
+                    "SELECT current_setting('threads')")))
+            return probe(engine)
+        dataset_db_engine.get_table_update_plan = check
+        metadata = dataset_db_engine.create_engine(
+            URL.create('duckdb', database=str(root / 'meta.duckdb')),
+            readonly=True)
+        try:
+            assert seen == [expected]
+            with metadata.connect() as conn:
+                assert conn.scalar(text('SELECT name FROM task')) == 'current'
+        finally:
+            metadata.dispose()
+
+        sqlite_path = str(root / 'source.sqlite')
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.execute('CREATE TABLE sample AS SELECT 7 AS value')
+        for readonly in (False, True):
+            url = (URL.create('sqlite', database=sqlite_path)
+                   if readonly else 'sqlite:///:memory:')
+            sqlite = engine.create_engine(
+                url, readonly=readonly)
+            try:
+                with sqlite.connect() as conn:
+                    assert conn.scalar(text('SELECT 7')) == 7
+                assert 'connect_args' not in captured[-1]
+            finally:
+                sqlite.dispose()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path), str(expected or "native")],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "abc", "1.5"])
+def test_duckdb_threads_invalid_on_import(value):
+    """Invalid environment values fail explicitly in a fresh interpreter."""
+    child_env = {**os.environ, "DUCKDB_THREADS": value}
+    result = subprocess.run(
+        [sys.executable, "-c", "import robo_orchard_lab.dataset.robot.engine"],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert "ValueError" in result.stderr
+    assert "DUCKDB_THREADS" in result.stderr
+
+
+def _spawned_duckdb_budget(queue):
+    import duckdb
+
+    from robo_orchard_lab.dataset.robot.engine import create_engine
+
+    engine = create_engine(URL.create("duckdb", database=":memory:"))
+    try:
+        with engine.connect() as conn:
+            queue.put(
+                (
+                    duckdb.sql("SELECT current_setting('threads')").fetchone()[
+                        0
+                    ],
+                    conn.scalar(text("SELECT current_setting('threads')")),
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def test_duckdb_threads_spawn_inherits_environment(monkeypatch):
+    """Spawn initializes default and factory engines from inherited env."""
+    monkeypatch.setenv("DUCKDB_THREADS", "2")
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    process = ctx.Process(target=_spawned_duckdb_budget, args=(queue,))
+    process.start()
+    try:
+        assert queue.get(timeout=30) == (2, 2)
+        process.join(timeout=30)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=10)
+        queue.close()
 
 
 def test_duckdb_copy_helper_cold_hot_and_owned_paths(tmp_path, monkeypatch):
@@ -455,6 +649,7 @@ def test_rodataset_graph_and_pickle_keep_policy(tmp_path, monkeypatch, driver):
     transport.write_bytes(payload)
     child_env = os.environ.copy()
     child_env["ROBO_ORCHARD_DB_LOCK_FREE_READ"] = "0"
+    child_env["DUCKDB_THREADS"] = "2"
     for key in list(child_env):
         if key.startswith("COV_CORE_") or key == "COVERAGE_PROCESS_START":
             child_env.pop(key)
@@ -464,13 +659,19 @@ def test_rodataset_graph_and_pickle_keep_policy(tmp_path, monkeypatch, driver):
             "-c",
             (
                 "import pickle,sys; "
+                "from sqlalchemy import text; "
                 "r=pickle.load(open(sys.argv[1],'rb')); "
                 "assert r[0]._db_resource._lock_free_read is True; "
                 "assert r[0]._db_resource is r[1]._db_resource; "
                 "assert r[0].episode_num==1; "
+                "c=r[0].db_engine.connect(); "
+                "assert sys.argv[2]!='duckdb' or "
+                "c.scalar(text(\"SELECT current_setting('threads')\"))==2; "
+                "c.close(); "
                 "r[0].close(); print('PICKLE_PASS')"
             ),
             str(transport),
+            driver,
         ],
         env=child_env,
         capture_output=True,
