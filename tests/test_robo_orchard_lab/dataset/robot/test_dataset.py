@@ -22,6 +22,7 @@ import random
 import string
 import tempfile
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from typing import Generator, Iterable
 
@@ -2613,6 +2614,177 @@ def test_rodataset_item_group_lazily_generates_single_path_items(
     assert all(item.num_shards == 1 and item.shard_id == 0 for item in items)
     assert all(item.storage_options == {"anon": False} for item in items)
     assert all(item.meta_index2meta is True for item in items)
+
+
+class TestRODatasetPhysicalCount:
+    @pytest.mark.parametrize("rows", [0, 7])
+    def test_metadata_count_does_not_construct_reader(self, tmp_path, rows):
+        hg_datasets.DatasetInfo(
+            splits={
+                "train": asdict(
+                    hg_datasets.SplitInfo("train", num_examples=rows)
+                )
+            }
+        ).write_to_directory(str(tmp_path))
+
+        class MetadataReader(RODataset):
+            def __init__(self, dataset_path, **kwargs):
+                raise AssertionError("Metadata count constructed a reader")
+
+        assert (
+            RODatasetItem(
+                class_type=MetadataReader, dataset_path=str(tmp_path)
+            ).get_dataset_row_num()
+            == rows
+        )
+
+    @pytest.mark.parametrize("fail_count", [False, True])
+    def test_missing_splits_closes_selected_reader(self, tmp_path, fail_count):
+        root = tmp_path / "dataset"
+        episode = DummyEpisodePackaging(gen_frame_num=2)
+        DatasetPackaging(episode.features, database_driver="sqlite").packaging(
+            [episode], root, fail_fast=True
+        )
+        info = hg_datasets.DatasetInfo.from_directory(str(root))
+        info.splits = None
+        info.write_to_directory(str(root))
+        opened = []
+        closed = []
+        marker = object()
+
+        class SelectedReader(RODataset):
+            def __init__(self, dataset_path, *, marker, **kwargs):
+                opened.append((dataset_path, marker, kwargs))
+                super().__init__(dataset_path, **kwargs)
+
+            def __len__(self):
+                if fail_count:
+                    raise RuntimeError("injected count failure")
+                return super().__len__()
+
+            def close(self):
+                super().close()
+                closed.append(self)
+
+        item = RODatasetItem(
+            class_type=SelectedReader,
+            dataset_path=str(root),
+            storage_options={},
+            meta_index2meta=True,
+            reader_init_kwargs={"marker": marker},
+        )
+        if fail_count:
+            with pytest.raises(RuntimeError, match="injected count failure"):
+                item.get_dataset_row_num()
+        else:
+            assert item.get_dataset_row_num() == 2
+        assert opened == [
+            (
+                str(root),
+                marker,
+                {
+                    "storage_options": {},
+                    "meta_index2meta": True,
+                },
+            )
+        ]
+        assert len(closed) == 1
+        assert closed[0]._db_resource.closed
+
+    @pytest.mark.parametrize("malformed", [False, True])
+    def test_invalid_metadata_does_not_fallback(self, tmp_path, malformed):
+        if malformed:
+            (tmp_path / "dataset_info.json").write_text("{broken json")
+
+        class ForbiddenReader(RODataset):
+            def __init__(self, dataset_path, **kwargs):
+                raise AssertionError("Invalid metadata opened a reader")
+
+        expected = json.JSONDecodeError if malformed else FileNotFoundError
+        with pytest.raises(expected):
+            RODatasetItem(
+                class_type=ForbiddenReader, dataset_path=str(tmp_path)
+            ).get_dataset_row_num()
+
+    def test_selected_contract_owns_group_counts_and_options(self, tmp_path):
+        from robo_orchard_lab.dataset.robot.dataset_ex import ShardConfig
+
+        calls = []
+        for name in ("parent", "part"):
+            (tmp_path / name).mkdir()
+
+        class SelectedReader(RODataset):
+            def __init__(self, dataset_path, **kwargs):
+                raise AssertionError("Fast count opened a reader")
+
+            @classmethod
+            def get_dataset_row_num(cls, dataset_path, **kwargs):
+                calls.append((dataset_path, kwargs))
+                return 6 if Path(dataset_path).name == "parent" else 2
+
+        group = RODatasetItemGroup(
+            class_type=SelectedReader,
+            dataset_path=[str(tmp_path / "parent"), str(tmp_path / "part")],
+            storage_options={"anon": False},
+            reader_init_kwargs={"marker": "selected"},
+            num_shards=2,
+            shard_id=1,
+        )
+        leaves = list(group.iter_dataset_items())
+        assert [leaf.get_dataset_row_num() for leaf in leaves] == [6, 2]
+        assert all(leaf.num_shards == 1 for leaf in leaves)
+        assert group.get_dataset_row_num() == 8
+        assert group.get_sharded_row_num(ShardConfig()) == 4
+        assert calls
+        assert all(
+            kwargs
+            == {
+                "storage_options": {"anon": False},
+                "meta_index2meta": False,
+                "marker": "selected",
+            }
+            for _, kwargs in calls
+        )
+
+    def test_remote_metadata_forwards_storage_options(
+        self, tmp_path, monkeypatch
+    ):
+        from fsspec.implementations.memory import MemoryFileSystem
+
+        root = "/physical-count-" + tmp_path.name
+        fs = fsspec.filesystem("memory")
+        info = hg_datasets.DatasetInfo(
+            splits={
+                "train": asdict(
+                    hg_datasets.SplitInfo("train", num_examples=9)
+                ),
+            }
+        )
+        with fs.open(root + "/dataset_info.json", "w") as stream:
+            json.dump(asdict(info), stream)
+        seen_options = []
+        original_open = MemoryFileSystem._open
+
+        def record_open(self, *args, **kwargs):
+            seen_options.append(self.storage_options)
+            return original_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(MemoryFileSystem, "_open", record_open)
+        try:
+            assert (
+                RODataset.get_dataset_row_num(
+                    "memory://" + root,
+                    storage_options={"count_marker": "selected"},
+                )
+                == 9
+            )
+            assert seen_options
+            assert all(
+                options.get("count_marker") == "selected"
+                for options in seen_options
+            )
+        finally:
+            fs.rm(root, recursive=True)
 
 
 class TestResolveDatasetPaths:

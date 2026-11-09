@@ -722,6 +722,78 @@ def test_staged_session_setup_rollback_preserves_setup_error(
     )
 
 
+@pytest.mark.parametrize("target_name", ["output", ".output"])
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_staged_session_nested_names_preserve_publish_and_cleanup(
+    tmp_path, monkeypatch, target_name, overwrite
+):
+    """Keep nested stage and backup names safe during real publication."""
+    from robo_orchard_lab.dataset.packaging_paths import DatasetPackagingPaths
+    from robo_orchard_lab.dataset.robot.packaging import _staging
+
+    target = tmp_path / target_name
+    if overwrite:
+        target.mkdir()
+        (target / "old").write_text("old")
+    created = []
+    make_directory = _staging.tempfile.mkdtemp
+
+    def checked_directory(*args, **kwargs):
+        # Check the actual allocation boundary before creating any bad name.
+        assert not kwargs["prefix"].startswith("..")
+        path = Path(make_directory(*args, **kwargs))
+        assert not path.name.startswith("..")
+        created.append(path)
+        return str(path)
+
+    monkeypatch.setattr(_staging.tempfile, "mkdtemp", checked_directory)
+    with StagedDatasetWriteSession(target, force_overwrite=overwrite) as outer:
+        outer_path = Path(outer.path)
+        with StagedDatasetWriteSession(
+            outer_path, force_overwrite=False
+        ) as inner:
+            inner_path = Path(inner.path)
+            assert inner_path != outer_path
+            assert inner_path.parent == outer_path.parent == tmp_path
+            assert not inner_path.exists() and not outer_path.exists()
+            inner_path.mkdir()
+            (inner_path / "value").write_text("new")
+            inner.commit()
+        assert (outer_path / "value").read_text() == "new"
+        outer.commit()
+    assert (target / "value").read_text() == "new"
+    assert not (target / "old").exists()
+    assert len(created) == (3 if overwrite else 2)
+    for path in created:
+        assert not path.exists()
+        paths = DatasetPackagingPaths.resolve(path)
+        assert not Path(paths.workspace_dir).exists()
+        assert not Path(paths.coordination_lock_path).exists()
+
+
+def test_staged_session_all_dot_stem_never_creates_parent_like_stage(
+    tmp_path, monkeypatch
+):
+    """An empty temporary-name stem uses a safe name without publishing it."""
+    from robo_orchard_lab.dataset.robot.packaging import _staging
+
+    make_directory = _staging.tempfile.mkdtemp
+    created = []
+
+    def checked_directory(*args, **kwargs):
+        assert not kwargs["prefix"].startswith("..")
+        path = Path(make_directory(*args, **kwargs))
+        created.append(path)
+        return str(path)
+
+    monkeypatch.setattr(_staging.tempfile, "mkdtemp", checked_directory)
+    target = tmp_path / "..."
+    with StagedDatasetWriteSession(target, force_overwrite=False) as output:
+        assert not Path(output.path).name.startswith("..")
+    assert len(created) == 1
+    assert not target.exists() and not created[0].exists()
+
+
 def test_staged_session_holds_final_target_coordination_lock(
     tmp_path: Path,
 ) -> None:

@@ -18,8 +18,17 @@ import json
 from typing import Literal
 
 import pytest
+from datasets import Features
 from pydantic import ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from robo_orchard_lab.dataset.robot.dataset_db_engine import (
+    create_engine,
+    create_tables,
+    get_local_db_url,
+)
+from robo_orchard_lab.dataset.robot.db_orm import Instruction
 from robo_orchard_lab.dataset.robot.metadata_schema import (
     DepthValueInfo,
     EpisodeMediaInfo,
@@ -38,6 +47,56 @@ from robo_orchard_lab.dataset.robot.metadata_schema import (
     resolve_metadata_schema,
     validate_json_value,
 )
+from robo_orchard_lab.dataset.robot.packaging import (
+    DatasetIndexState,
+    DatasetPackaging,
+    InstructionData,
+    get_or_add_instruction,
+)
+
+
+@pytest.mark.parametrize("driver", ["sqlite", "duckdb"])
+@pytest.mark.parametrize("through_writer", [False, True])
+def test_shared_instruction_lookup_preserves_cache_and_caller_state(
+    tmp_path, driver, through_writer
+):
+    """Shared lookup and the Lab writer retain their SQL/cache contract."""
+    engine = create_engine(
+        get_local_db_url(str(tmp_path / "metadata"), driver)
+    )
+    try:
+        create_tables(engine)
+        if through_writer:
+            owner = DatasetPackaging(Features({}), database_driver=driver)
+            state, cache = owner._index_state, owner._instruction_cache
+
+            def resolve(value):
+                return owner._add_instruction(value, engine)
+
+        else:
+            state, cache = DatasetIndexState(), {}
+
+            def resolve(value):
+                return get_or_add_instruction(
+                    value, index_state=state, engine=engine, cache=cache
+                )
+
+        value = InstructionData("goal", {"object": "cup"})
+        first = resolve(value)
+        assert first.index == 0
+        assert state.last_instruction_idx == -1
+        state.last_instruction_idx = first.index
+        assert resolve(value) is first
+        cache.clear()
+        assert resolve(value).index == first.index
+        assert state.last_instruction_idx == 0
+        with Session(engine) as session:
+            assert (
+                session.scalar(select(func.count()).select_from(Instruction))
+                == 1
+            )
+    finally:
+        engine.dispose()
 
 
 def test_instruction_content_dumps_tagged_json() -> None:

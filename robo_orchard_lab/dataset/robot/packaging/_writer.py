@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pickle
 import warnings
 from dataclasses import dataclass
 from typing import Iterable, Sequence
@@ -29,7 +28,7 @@ import datasets as hg_datasets
 import fsspec
 from datasets.exceptions import DatasetGenerationError
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, make_transient
+from sqlalchemy.orm import Session
 
 from robo_orchard_lab.dataset.packaging_paths import (
     DatasetPackagingPaths,
@@ -57,6 +56,7 @@ from robo_orchard_lab.dataset.robot.packaging._episode import (
 from robo_orchard_lab.dataset.robot.packaging._metadata import (
     EpisodeMetaORM,
     InstructionData,
+    get_or_add_instruction,
 )
 from robo_orchard_lab.utils.filesystem import (
     remove_path,
@@ -218,23 +218,13 @@ class DatasetPackaging:
     def _add_instruction(
         self, instruction_data: InstructionData, engine: Engine
     ) -> Instruction:
-        """Add an instruction to the database and update the index state."""
-        raw_key = pickle.dumps(instruction_data)
-        cached_instruction = self._instruction_cache.get(raw_key)
-        if cached_instruction is not None:
-            # If the instruction is already cached, return it
-            return cached_instruction
-
-        with Session(engine, expire_on_commit=False) as session:
-            instruction = instruction_data.make_transient_orm(
-                self._index_state, session=session
-            )
-            if instruction.index > self._index_state.last_instruction_idx:
-                session.add(instruction)
-                session.commit()
-                make_transient(instruction)
-            self._instruction_cache[raw_key] = instruction
-            return instruction
+        """Resolve metadata using this packaging run's state and cache."""
+        return get_or_add_instruction(
+            instruction_data,
+            index_state=self._index_state,
+            engine=engine,
+            cache=self._instruction_cache,
+        )
 
     def _make_packaging_generator(
         self,

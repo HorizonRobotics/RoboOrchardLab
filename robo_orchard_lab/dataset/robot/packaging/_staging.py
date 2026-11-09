@@ -49,6 +49,7 @@ class StagedDatasetWriteSession:
     Exiting without a successful commit removes the stage, direct writer's
     workspace, and the private coordination lock that the direct writer
     creates for that unique stage.
+    Stage and backup names use one leading dot, including nested sessions.
 
     This is deliberately a narrow local-filesystem contract. It coordinates
     one complete dataset-root publication; it does not provide a general
@@ -221,6 +222,7 @@ class StagedDatasetWriteSession:
                 "refusing to replace or remove it."
             )
         backup_path: str | None = None
+        temporary_name = os.path.basename(target_path).lstrip(".") or "dataset"
         try:
             if os.path.lexists(target_path):
                 if not self.force_overwrite:
@@ -229,7 +231,7 @@ class StagedDatasetWriteSession:
                         "Set force_overwrite=True to replace it."
                     )
                 backup_path = tempfile.mkdtemp(
-                    prefix=f".{os.path.basename(target_path)}.backup-",
+                    prefix=f".{temporary_name}.backup-",
                     dir=os.path.dirname(target_path),
                 )
                 remove_path(backup_path)
@@ -266,9 +268,10 @@ class StagedDatasetWriteSession:
     def _make_staging_path(self) -> str:
         target_path = os.fspath(self.target_path)
         target_parent = os.path.dirname(target_path)
+        temporary_name = os.path.basename(target_path).lstrip(".") or "dataset"
         os.makedirs(target_parent, exist_ok=True)
         staging_path = tempfile.mkdtemp(
-            prefix=f".{os.path.basename(target_path)}.tmp-",
+            prefix=f".{temporary_name}.tmp-",
             dir=target_parent,
         )
         remove_path(staging_path)

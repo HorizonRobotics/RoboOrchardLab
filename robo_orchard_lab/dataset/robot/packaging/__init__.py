@@ -39,6 +39,7 @@ from robo_orchard_lab.dataset.robot.packaging._metadata import (
     InstructionData,
     RobotData,
     TaskData,
+    get_or_add_instruction,
 )
 from robo_orchard_lab.dataset.robot.packaging._staging import (
     StagedDatasetWriteSession,
@@ -56,6 +57,7 @@ __all__ = [
     "RobotData",
     "TaskData",
     "InstructionData",
+    "get_or_add_instruction",
     "EpisodeMeta",
     "DataFrame",
     "normalize_local_dataset_path",

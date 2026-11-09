@@ -17,9 +17,11 @@
 """Metadata payload objects used while packaging RoboOrchard datasets."""
 
 from __future__ import annotations
+import pickle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, make_transient
 from typing_extensions import deprecated
 
@@ -40,6 +42,7 @@ __all__ = [
     "EpisodeData",
     "EpisodeMetaORM",
     "InstructionData",
+    "get_or_add_instruction",
     "RobotData",
     "TaskData",
 ]
@@ -273,3 +276,35 @@ class InstructionData:
                 return make_new()
         else:
             return make_new()
+
+
+def get_or_add_instruction(
+    instruction_data: InstructionData,
+    *,
+    index_state: DatasetIndexState,
+    engine: Engine,
+    cache: dict[bytes, Instruction],
+) -> Instruction:
+    """Resolve one instruction using the caller's allocation state and cache.
+
+    The exact input object supplies its ORM lookup and pickle cache identity,
+    including subclass overrides. New instructions are committed immediately;
+    the caller advances its instruction highwater and owns rollback and cache
+    lifetime. This function owns only its short-lived SQLAlchemy Session.
+    """
+    raw_key = pickle.dumps(instruction_data)
+    cached_instruction = cache.get(raw_key)
+    if cached_instruction is not None:
+        # If the instruction is already cached, return it
+        return cached_instruction
+
+    with Session(engine, expire_on_commit=False) as session:
+        instruction = instruction_data.make_transient_orm(
+            index_state, session=session
+        )
+        if instruction.index > index_state.last_instruction_idx:
+            session.add(instruction)
+            session.commit()
+            make_transient(instruction)
+        cache[raw_key] = instruction
+        return instruction

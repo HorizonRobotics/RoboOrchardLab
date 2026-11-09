@@ -24,6 +24,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from glob import has_magic
+from pathlib import Path
 from types import TracebackType
 from typing import (
     Any,
@@ -216,6 +217,36 @@ class RODataset(TorchDataset):
     meta_index2meta: bool
     """Whether to convert the index-based metadata to actual metadata
     objects when accessing the dataset."""
+
+    @classmethod
+    def get_dataset_row_num(
+        cls,
+        dataset_path: str | Path,
+        **reader_init_kwargs: Any,
+    ) -> int:
+        """Count stored rows for a lazy item using this reader's format.
+
+        Prefer DatasetInfo's total split count. Only valid metadata without
+        splits opens a temporary reader of ``cls``; context exit closes it
+        even if counting fails. Missing or invalid metadata remains an error.
+        Subclasses override this operation for their authoritative metadata.
+
+        Args:
+            dataset_path: Dataset directory, including supported fsspec URIs.
+            **reader_init_kwargs: Constructor options. ``storage_options``
+                also applies to metadata I/O.
+
+        Returns:
+            Full physical row count before item sharding or transforms.
+        """
+        rows = get_row_num_from_dataset_info(
+            dataset_path,
+            storage_options=reader_init_kwargs.get("storage_options"),
+        )
+        if rows is not None:
+            return rows
+        with cls(dataset_path=dataset_path, **reader_init_kwargs) as dataset:
+            return len(dataset)
 
     def __init__(
         self,
@@ -1711,22 +1742,10 @@ class RODatasetItem(DatasetItem[RODataset]):
         return kwargs
 
     def get_dataset_row_num(self) -> int:
-        """Return this physical dataset's row count without retaining a reader.
-
-        Prefer the packaged dataset metadata when it contains a count. If it
-        does not, construct and close a reader long enough to obtain ``len``.
-        ``RODatasetItemGroup`` uses this same per-path operation when it
-        aggregates its member count.
-        """
-        reader_init_kwargs = self._reader_init_kwargs()
-        rows = get_row_num_from_dataset_info(
-            dataset_path=self.dataset_path,
+        """Delegate physical counting to the configured reader's contract."""
+        return self.class_type.get_dataset_row_num(
+            **self._reader_init_kwargs()
         )
-        if rows is not None:
-            return rows
-
-        with self.class_type(**reader_init_kwargs) as dataset:
-            return len(dataset)
 
     def _create_dataset(self) -> RODataset:
         """Create a dataset from the dataset item configuration."""
@@ -2080,7 +2099,9 @@ def _complete_dataset_info(
     return True, dataset_info
 
 
-def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
+def get_row_num_from_dataset_info(
+    dataset_path: str | Path, *, storage_options: dict | None = None
+) -> int | None:
     """Get the number of rows in the dataset from the dataset info file.
 
     The row number is a total count of all rows in all splits. If the dataset
@@ -2093,7 +2114,8 @@ def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
         dataset info file.
 
     Args:
-        dataset_path (str): The path to the dataset directory.
+        dataset_path: Dataset directory, including supported fsspec URIs.
+        storage_options: Options for the metadata filesystem.
 
     Returns:
         int | None: The number of rows in the dataset if available,
@@ -2104,17 +2126,9 @@ def get_row_num_from_dataset_info(dataset_path: str) -> int | None:
             specified dataset path.
 
     """
-    import datasets.config as hg_datasets_config
-
-    dataset_info_path = os.path.join(
-        dataset_path, hg_datasets_config.DATASET_INFO_FILENAME
+    dataset_info = DatasetInfo.from_directory(
+        str(dataset_path), storage_options=storage_options
     )
-    if not os.path.exists(dataset_info_path):
-        raise FileNotFoundError(
-            f"Dataset info file not found in {dataset_path}."
-        )
-    with open(dataset_info_path, "r", encoding="utf-8") as f:
-        dataset_info = DatasetInfo.from_dict(json.load(f))
 
     if dataset_info.splits is None:
         return None
