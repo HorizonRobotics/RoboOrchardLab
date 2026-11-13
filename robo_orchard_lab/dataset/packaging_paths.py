@@ -17,117 +17,13 @@
 """Local output-path ownership for RODataset packaging."""
 
 from __future__ import annotations
-import errno
 import hashlib
 import os
-import stat
 from dataclasses import dataclass
-
-import filelock
-
-if os.name == "posix":
-    import fcntl
 
 __all__ = ["DatasetPackagingPaths", "normalize_local_dataset_path"]
 
 _PACKAGING_WORKSPACE_SUFFIX = ".__robo_orchard_packaging__"
-
-
-if os.name == "posix":
-
-    class _NoFollowFileLock(filelock.FileLock):
-        """Acquire a Unix advisory lock without following its final path."""
-
-        def _acquire(self) -> None:
-            """Open and lock a regular file without truncating symlinks."""
-
-            parent_dir = os.path.dirname(self.lock_file)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
-            open_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-            open_flags |= getattr(os, "O_NOFOLLOW", 0)
-            open_mode_getter = getattr(self, "_open_mode", None)
-            open_mode = (
-                open_mode_getter()
-                if callable(open_mode_getter)
-                else self._context.mode
-            )
-            try:
-                fd = os.open(self.lock_file, open_flags, open_mode)
-            except OSError as exc:
-                if exc.errno == errno.ELOOP:
-                    raise ValueError(
-                        "Dataset packaging coordination lock must not be a "
-                        f"symbolic link: {self.lock_file!r}."
-                    ) from exc
-                raise
-
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                os.close(fd)
-                raise ValueError(
-                    "Dataset packaging coordination lock must be a "
-                    f"regular file: {self.lock_file!r}."
-                )
-            if getattr(self, "has_explicit_mode", False):
-                try:
-                    os.fchmod(fd, self._context.mode)
-                except PermissionError:
-                    pass
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                os.close(fd)
-                if exc.errno in {
-                    errno.EACCES,
-                    errno.EAGAIN,
-                    errno.EWOULDBLOCK,
-                }:
-                    # Let BaseFileLock retry until its configured timeout.
-                    return
-                if exc.errno == errno.ENOSYS:
-                    raise NotImplementedError(
-                        "FileSystem does not appear to support flock; use "
-                        "SoftFileLock instead."
-                    ) from exc
-                raise
-            except BaseException:
-                os.close(fd)
-                raise
-            if os.fstat(fd).st_nlink == 0:
-                os.close(fd)
-                return
-            self._context.lock_file_fd = fd
-
-        def _release(self) -> None:
-            """Unlock without unlinking the shared coordination file."""
-
-            fd = self._context.lock_file_fd
-            self._context.lock_file_fd = None
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
-
-else:
-
-    class _NoFollowFileLock(filelock.FileLock):
-        """Reject an existing lock symlink before platform lock handling."""
-
-        def _acquire(self) -> None:
-            """Reject a final symlink before delegating to filelock."""
-
-            if os.path.islink(self.lock_file):
-                raise ValueError(
-                    "Dataset packaging coordination lock must not be a "
-                    f"symbolic link: {self.lock_file!r}."
-                )
-            super()._acquire()
-
-
-def _create_coordination_lock(lock_path: str) -> filelock.BaseFileLock:
-    """Create the shared safe lock used by direct and staged packaging."""
-
-    return _NoFollowFileLock(lock_path)
 
 
 def normalize_local_dataset_path(

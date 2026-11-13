@@ -18,16 +18,13 @@
 
 from __future__ import annotations
 import os
-import stat
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-import filelock
 import pytest
 
 from robo_orchard_lab.dataset.packaging_paths import (
     DatasetPackagingPaths,
-    _create_coordination_lock,
     normalize_local_dataset_path,
 )
 
@@ -65,81 +62,6 @@ def test_empty_lock_cache_uses_default_cache_path(
     assert paths.coordination_lock_path.startswith(
         str(tmp_path.parent / "home" / ".cache")
     )
-
-
-def test_coordination_lock_rejects_symlink_without_truncating_target(
-    tmp_path: Path,
-) -> None:
-    paths = DatasetPackagingPaths.resolve(tmp_path / "dataset")
-    lock_path = Path(paths.coordination_lock_path)
-    lock_path.parent.mkdir(parents=True)
-    victim_path = tmp_path / "victim"
-    victim_path.write_text("do-not-truncate", encoding="utf-8")
-    lock_path.symlink_to(victim_path)
-
-    with pytest.raises(ValueError, match="symbolic link"):
-        _create_coordination_lock(paths.coordination_lock_path).acquire(
-            timeout=0
-        )
-
-    assert victim_path.read_text(encoding="utf-8") == "do-not-truncate"
-
-
-def test_coordination_lock_waits_on_contention(
-    tmp_path: Path,
-) -> None:
-    paths = DatasetPackagingPaths.resolve(tmp_path / "dataset")
-    first_lock = _create_coordination_lock(paths.coordination_lock_path)
-    second_lock = _create_coordination_lock(paths.coordination_lock_path)
-    first_lock.acquire(timeout=0)
-
-    try:
-        with pytest.raises(filelock.Timeout):
-            second_lock.acquire(timeout=0.05)
-    finally:
-        first_lock.release()
-
-    second_lock.acquire(timeout=0)
-    second_lock.release()
-
-
-def test_coordination_lock_uses_non_executable_persistent_inode(
-    tmp_path: Path,
-) -> None:
-    paths = DatasetPackagingPaths.resolve(tmp_path / "dataset")
-    lock_path = Path(paths.coordination_lock_path)
-    lock = _create_coordination_lock(paths.coordination_lock_path)
-
-    lock.acquire(timeout=0)
-    lock.release()
-
-    assert lock_path.is_file()
-    assert stat.S_IMODE(lock_path.stat().st_mode) & 0o111 == 0
-
-
-def test_coordination_lock_discards_unlinked_inode_during_acquire(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import robo_orchard_lab.dataset.packaging_paths as packaging_paths
-
-    paths = DatasetPackagingPaths.resolve(tmp_path / "dataset")
-    lock_path = Path(paths.coordination_lock_path)
-    original_flock = packaging_paths.fcntl.flock
-
-    def unlink_before_flock(fd: int, operation: int) -> None:
-        if operation == packaging_paths.fcntl.LOCK_EX | (
-            packaging_paths.fcntl.LOCK_NB
-        ):
-            lock_path.unlink()
-        original_flock(fd, operation)
-
-    monkeypatch.setattr(packaging_paths.fcntl, "flock", unlink_before_flock)
-    with pytest.raises(filelock.Timeout):
-        _create_coordination_lock(paths.coordination_lock_path).acquire(
-            timeout=0
-        )
-    assert not lock_path.exists()
 
 
 def test_default_cache_accepts_home_dataset(

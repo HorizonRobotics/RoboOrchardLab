@@ -696,7 +696,7 @@ def test_staged_session_setup_rollback_preserves_setup_error(
 
     monkeypatch.setattr(
         staging_module,
-        "_create_coordination_lock",
+        "ReclaimingFileLock",
         lambda _lock_path: _ReleaseFailureLock(),
     )
     monkeypatch.setattr(
@@ -1870,9 +1870,7 @@ def test_repack_cleans_private_stage_coordination_locks(
         )
 
     remaining_locks = set(lock_dir.glob("*.lock"))
-    assert remaining_locks <= initial_locks | {
-        Path(target_paths.coordination_lock_path)
-    }
+    assert remaining_locks <= initial_locks
 
 
 def test_staged_repack_cleans_private_stage_lock_after_failed_write(
@@ -1880,10 +1878,8 @@ def test_staged_repack_cleans_private_stage_lock_after_failed_write(
 ) -> None:
     """An aborted repack retires its released direct-writer stage lock."""
 
-    from robo_orchard_lab.dataset.packaging_paths import (
-        DatasetPackagingPaths,
-        _create_coordination_lock,
-    )
+    from robo_orchard_lab.dataset.packaging_paths import DatasetPackagingPaths
+    from robo_orchard_lab.utils.filelock import ReclaimingFileLock
 
     stage_lock_path: Path | None = None
     with pytest.raises(RuntimeError, match="write failed"):
@@ -1893,9 +1889,7 @@ def test_staged_repack_cleans_private_stage_lock_after_failed_write(
         ) as stage:
             stage_paths = DatasetPackagingPaths.resolve(stage.path)
             stage_lock_path = Path(stage_paths.coordination_lock_path)
-            stage_lock = _create_coordination_lock(
-                stage_paths.coordination_lock_path
-            )
+            stage_lock = ReclaimingFileLock(stage_paths.coordination_lock_path)
             stage_lock.acquire(timeout=0)
             stage_lock.release()
             stage_lock_path.touch(exist_ok=True)
@@ -1914,11 +1908,11 @@ def test_staged_repack_retires_private_lock_after_cleanup_failure(
 
     from robo_orchard_lab.dataset.packaging_paths import (
         DatasetPackagingPaths,
-        _create_coordination_lock,
     )
     from robo_orchard_lab.dataset.robot.packaging import (
         _staging as staging_module,
     )
+    from robo_orchard_lab.utils.filelock import ReclaimingFileLock
 
     stage_lock_path: Path | None = None
     with pytest.raises(RuntimeError, match="write failed"):
@@ -1929,9 +1923,7 @@ def test_staged_repack_retires_private_lock_after_cleanup_failure(
             stage_paths = DatasetPackagingPaths.resolve(stage.path)
             Path(stage_paths.workspace_dir).mkdir()
             stage_lock_path = Path(stage_paths.coordination_lock_path)
-            stage_lock = _create_coordination_lock(
-                stage_paths.coordination_lock_path
-            )
+            stage_lock = ReclaimingFileLock(stage_paths.coordination_lock_path)
             stage_lock.acquire(timeout=0)
             stage_lock.release()
             stage_lock_path.touch(exist_ok=True)

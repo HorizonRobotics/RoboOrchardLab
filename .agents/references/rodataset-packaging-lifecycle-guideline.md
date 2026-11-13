@@ -39,6 +39,28 @@ semantics, also read `rodataset-repack-guideline.md`.
   target identity and recheck overwrite preconditions under the held lock;
   an earlier preflight is diagnostic evidence, not write authorization.
 
+## Coordination Lock Contract
+
+- Use `robo_orchard_lab.utils.filelock.ReclaimingFileLock` for the shared
+  packaging lock. Keep reusable locking mechanics there; keep dataset keys,
+  cache placement, target validation and protected work in their existing
+  owners. Do not add a second retry scheduler or business-specific lock API.
+  Let the lock create its parent directory; do not repeat that immediately
+  before acquisition.
+- On POSIX, finish protected work before unlinking the lock name, then
+  unlock and close. A waiter may already have opened the removed file:
+  after flock, reject a descriptor with zero links and let filelock retry.
+  Adding only an unlink to ordinary FileLock release is unsafe.
+- All users of the same lock path must follow this protocol, including
+  converter cleanup paths. Exit old/plain-lock participants before switching.
+  The directory is managed by cooperating programs; external replacement,
+  rename, deletion of active locks and extra hardlinks are outside the
+  contract. Do not require general pathname/inode replacement protection.
+- Keep these assumptions and the delta from filelock in the class docstring.
+  Do not promise distributed coordination, immediate crash-zero residue or
+  historical-cache cleanup. Non-POSIX handling delegates to filelock after
+  the existing symlink guard; POSIX reclamation is not a platform-wide claim.
+
 ## Cleanup And Failure Semantics
 
 - Cleanup methods should remove only paths owned by the active packaging or
@@ -49,6 +71,10 @@ semantics, also read `rodataset-repack-guideline.md`.
   active, report cleanup failure without replacing the primary error. When no
   primary error exists, propagate cleanup failure rather than reporting a
   clean successful return.
+- Let the lock own descriptor state, name reclamation and attempted unlock
+  and close. Leave business-error preservation in staging/writer boundaries;
+  the base lock follows filelock/Python exception chaining without a custom
+  exception-priority framework. Do not duplicate its cleanup in each caller.
 - Do not conflate direct packaging overwrite with repack replacement. Direct
   `DatasetPackaging(..., force_overwrite=True)` may remove the old target
   before generation and does not promise rollback. Repack uses an outer

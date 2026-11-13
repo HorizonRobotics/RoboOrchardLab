@@ -2503,9 +2503,8 @@ def test_packaging_cleans_a_same_parent_workspace(
     assert target_path.is_dir()
     assert not Path(paths.workspace_dir).exists()
     assert Path(paths.workspace_dir).parent == target_path.parent
-    # filelock 3.29 removes the lock inode after release; the public
-    # contract is the stable lock path and its cache directory, not inode
-    # persistence after the writer exits.
+    # The shared coordination owner reclaims its inode after protected work.
+    assert not Path(paths.coordination_lock_path).exists()
     assert Path(paths.coordination_lock_path).parent.is_dir()
     assert not list(target_path.parent.rglob("*.incomplete_info.lock"))
 
@@ -2541,7 +2540,7 @@ def test_packaging_checks_workspace_only_after_target_lock(
 
     monkeypatch.setattr(
         writer_module,
-        "_create_coordination_lock",
+        "ReclaimingFileLock",
         lambda lock_path: _ReleasedWriterLock(),
     )
     episode = DummyEpisodePackaging(gen_frame_num=1)

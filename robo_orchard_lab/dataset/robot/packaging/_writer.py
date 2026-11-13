@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session
 
 from robo_orchard_lab.dataset.packaging_paths import (
     DatasetPackagingPaths,
-    _create_coordination_lock,
 )
 from robo_orchard_lab.dataset.robot.columns import (
     PreservedColumnsKeys,
@@ -58,6 +57,7 @@ from robo_orchard_lab.dataset.robot.packaging._metadata import (
     InstructionData,
     get_or_add_instruction,
 )
+from robo_orchard_lab.utils.filelock import ReclaimingFileLock
 from robo_orchard_lab.utils.filesystem import (
     remove_path,
     rename_noreplace,
@@ -518,11 +518,7 @@ class DatasetPackaging:
             include_workspace=False,
         )
         dataset_path = packaging_paths.dataset_dir
-        os.makedirs(
-            os.path.dirname(packaging_paths.coordination_lock_path),
-            exist_ok=True,
-        )
-        with _create_coordination_lock(packaging_paths.coordination_lock_path):
+        with ReclaimingFileLock(packaging_paths.coordination_lock_path):
             packaging_paths.validate_locked_target_identity()
             # The first check is a cheap preflight. This second check is the
             # live authorization after serializing writers for this target.

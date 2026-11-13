@@ -28,8 +28,8 @@ import filelock
 
 from robo_orchard_lab.dataset.packaging_paths import (
     DatasetPackagingPaths,
-    _create_coordination_lock,
 )
+from robo_orchard_lab.utils.filelock import ReclaimingFileLock
 from robo_orchard_lab.utils.filesystem import (
     remove_path,
     rename_noreplace,
@@ -95,11 +95,7 @@ class StagedDatasetWriteSession:
 
     def __enter__(self) -> StagedDatasetWriteSession:
         target_paths = DatasetPackagingPaths.resolve(self.target_path)
-        os.makedirs(
-            os.path.dirname(target_paths.coordination_lock_path),
-            exist_ok=True,
-        )
-        coordination_lock = _create_coordination_lock(
+        coordination_lock = ReclaimingFileLock(
             target_paths.coordination_lock_path
         )
         coordination_lock.acquire()
